@@ -5,15 +5,10 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::distributions::Normal;
-use rustmc_core::graph::Graph;
+use rustmc_core::graph::{Graph, NodeId};
 use rustmc_core::sampler::{self, SampleResult, SamplerConfig};
 use std::collections::HashMap;
 
-/// Python-visible model definition.
-///
-/// Users call `rmc.Normal(...)`, `rmc.model(...)` etc. from Python.
-/// The Python side only builds a description (the "model spec") — the
-/// actual graph construction and all sampling happen entirely in Rust.
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ModelSpec {
@@ -35,15 +30,30 @@ struct LikelihoodSpec {
     observed_key: String,
 }
 
+/// Recursive expression tree built on the Python side, compiled to graph
+/// nodes at sampling time.
 #[derive(Debug, Clone)]
 enum MuExpr {
     ParamTimesData {
         param_name: String,
         data_key: String,
     },
+    /// Element-wise sum of two vector expressions.
+    Add(Box<MuExpr>, Box<MuExpr>),
+    /// Bare parameter broadcast-added to a vector expression.
+    Param(String),
 }
 
-/// Python-side handle for building models.
+impl MuExpr {
+    fn is_scalar(&self) -> bool {
+        match self {
+            MuExpr::Param(_) => true,
+            MuExpr::ParamTimesData { .. } => false,
+            MuExpr::Add(a, b) => a.is_scalar() && b.is_scalar(),
+        }
+    }
+}
+
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
@@ -52,14 +62,12 @@ struct ModelBuilder {
     param_names: Vec<String>,
 }
 
-/// Represents a parameter reference that can participate in expressions.
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ParamRef {
     name: String,
 }
 
-/// Represents an expression (param * data) that can be used as mu.
 #[pyclass]
 #[derive(Debug, Clone)]
 struct Expr {
@@ -76,6 +84,72 @@ impl ParamRef {
             },
         }
     }
+
+    fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
+        if let Ok(other_expr) = other.downcast::<Expr>() {
+            let rhs = other_expr.borrow().inner.clone();
+            Ok(Expr {
+                inner: MuExpr::Add(
+                    Box::new(MuExpr::Param(self.name.clone())),
+                    Box::new(rhs),
+                ),
+            })
+        } else if let Ok(other_param) = other.downcast::<ParamRef>() {
+            let rhs_name = other_param.borrow().name.clone();
+            Ok(Expr {
+                inner: MuExpr::Add(
+                    Box::new(MuExpr::Param(self.name.clone())),
+                    Box::new(MuExpr::Param(rhs_name)),
+                ),
+            })
+        } else {
+            Err(PyValueError::new_err(
+                "unsupported operand type for + with ParamRef",
+            ))
+        }
+    }
+
+    fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
+        self.__add__(other)
+    }
+}
+
+#[pymethods]
+impl Expr {
+    fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
+        if let Ok(other_expr) = other.downcast::<Expr>() {
+            let rhs = other_expr.borrow().inner.clone();
+            Ok(Expr {
+                inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(rhs)),
+            })
+        } else if let Ok(other_param) = other.downcast::<ParamRef>() {
+            let rhs_name = other_param.borrow().name.clone();
+            Ok(Expr {
+                inner: MuExpr::Add(
+                    Box::new(self.inner.clone()),
+                    Box::new(MuExpr::Param(rhs_name)),
+                ),
+            })
+        } else {
+            Err(PyValueError::new_err(
+                "unsupported operand type for + with Expr",
+            ))
+        }
+    }
+
+    fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
+        if let Ok(other_param) = other.downcast::<ParamRef>() {
+            let lhs_name = other_param.borrow().name.clone();
+            Ok(Expr {
+                inner: MuExpr::Add(
+                    Box::new(MuExpr::Param(lhs_name)),
+                    Box::new(self.inner.clone()),
+                ),
+            })
+        } else {
+            self.__add__(other)
+        }
+    }
 }
 
 #[pymethods]
@@ -89,8 +163,6 @@ impl ModelBuilder {
         }
     }
 
-    /// Add a Normal prior on a free parameter.
-    /// Returns a ParamRef for use in expressions.
     #[pyo3(signature = (name, mu, sigma))]
     fn normal_prior(&mut self, name: &str, mu: f64, sigma: f64) -> ParamRef {
         self.priors.push(PriorSpec {
@@ -104,7 +176,6 @@ impl ModelBuilder {
         }
     }
 
-    /// Add a Normal likelihood for observed data.
     #[pyo3(signature = (name, mu_expr, sigma, observed_key))]
     fn normal_likelihood(
         &mut self,
@@ -129,7 +200,124 @@ impl ModelBuilder {
     }
 }
 
-/// Result object returned to Python after sampling.
+/// Try to decompose a MuExpr tree into a flat linear combination:
+/// ([(param_name, data_key), ...], optional_intercept_param_name)
+fn try_extract_linear(expr: &MuExpr) -> Option<(Vec<(String, String)>, Option<String>)> {
+    let mut terms = Vec::new();
+    let mut intercept: Option<String> = None;
+
+    fn walk(
+        e: &MuExpr,
+        terms: &mut Vec<(String, String)>,
+        intercept: &mut Option<String>,
+    ) -> bool {
+        match e {
+            MuExpr::ParamTimesData {
+                param_name,
+                data_key,
+            } => {
+                terms.push((param_name.clone(), data_key.clone()));
+                true
+            }
+            MuExpr::Add(a, b) => walk(a, terms, intercept) && walk(b, terms, intercept),
+            MuExpr::Param(name) => {
+                if intercept.is_none() {
+                    *intercept = Some(name.clone());
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    if walk(expr, &mut terms, &mut intercept) && !terms.is_empty() {
+        Some((terms, intercept))
+    } else {
+        None
+    }
+}
+
+/// Compile a MuExpr tree into graph nodes.
+///
+/// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
+/// this emits a single FusedLinearMu op instead of individual
+/// ScalarMulData / VectorAdd / ScalarBroadcastAdd nodes.
+fn build_mu_expr(
+    graph: &mut Graph,
+    expr: &MuExpr,
+    data_map: &HashMap<String, Vec<f64>>,
+) -> Result<NodeId, PyErr> {
+    // Fast path: fuse linear combinations into a single op
+    if let Some((terms, intercept_name)) = try_extract_linear(expr) {
+        let mut param_nodes = Vec::with_capacity(terms.len());
+        let mut data_indices = Vec::with_capacity(terms.len());
+
+        for (param_name, data_key) in &terms {
+            let pn = graph
+                .node_by_name(param_name)
+                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            param_nodes.push(pn);
+
+            let data_vec = data_map
+                .get(data_key)
+                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
+                .clone();
+            data_indices.push(graph.store_data_vec(data_vec));
+        }
+
+        let intercept_node = match intercept_name {
+            Some(ref name) => Some(
+                graph
+                    .node_by_name(name)
+                    .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?,
+            ),
+            None => None,
+        };
+
+        return Ok(graph.fused_linear_mu(param_nodes, data_indices, intercept_node));
+    }
+
+    // Fallback: individual ops
+    match expr {
+        MuExpr::ParamTimesData {
+            param_name,
+            data_key,
+        } => {
+            let param_node = graph
+                .node_by_name(param_name)
+                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            let data_vec = data_map
+                .get(data_key)
+                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
+                .clone();
+            let data_node = graph.add_data(data_key, data_vec);
+            Ok(graph.scalar_mul_data(param_node, data_node))
+        }
+        MuExpr::Param(name) => {
+            let param_node = graph
+                .node_by_name(name)
+                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?;
+            Ok(param_node)
+        }
+        MuExpr::Add(a, b) => {
+            let na = build_mu_expr(graph, a, data_map)?;
+            let nb = build_mu_expr(graph, b, data_map)?;
+            let a_scalar = a.is_scalar();
+            let b_scalar = b.is_scalar();
+            if a_scalar && !b_scalar {
+                Ok(graph.scalar_broadcast_add(na, nb))
+            } else if !a_scalar && b_scalar {
+                Ok(graph.scalar_broadcast_add(nb, na))
+            } else if !a_scalar && !b_scalar {
+                Ok(graph.vector_add(na, nb))
+            } else {
+                Ok(graph.add(na, nb))
+            }
+        }
+    }
+}
+
 #[pyclass]
 struct FitResult {
     result: SampleResult,
@@ -137,10 +325,8 @@ struct FitResult {
 
 #[pymethods]
 impl FitResult {
-    /// Get posterior samples as a dict of {param_name: ndarray}.
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-
         for (pidx, name) in self.result.param_names.iter().enumerate() {
             let mut all_samples = Vec::new();
             for chain in &self.result.samples {
@@ -154,10 +340,8 @@ impl FitResult {
         Ok(dict)
     }
 
-    /// Get posterior samples as a 2D array per param: shape (chains, draws).
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
-
         for (pidx, name) in self.result.param_names.iter().enumerate() {
             let n_chains = self.result.samples.len();
             let n_draws = self.result.samples[0].len();
@@ -172,7 +356,6 @@ impl FitResult {
         Ok(dict)
     }
 
-    /// Posterior means as a dict.
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let means = self.result.mean();
         let dict = PyDict::new(py);
@@ -182,7 +365,6 @@ impl FitResult {
         Ok(dict)
     }
 
-    /// Posterior standard deviations as a dict.
     fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let stds = self.result.std();
         let dict = PyDict::new(py);
@@ -192,7 +374,6 @@ impl FitResult {
         Ok(dict)
     }
 
-    /// Per-chain acceptance rates.
     fn accept_rates<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::new(py, &self.result.accept_rates)?;
         Ok(list)
@@ -203,7 +384,10 @@ impl FitResult {
         let stds = self.result.std();
         let mut parts = Vec::new();
         for (i, name) in self.result.param_names.iter().enumerate() {
-            parts.push(format!("  {}: mean={:.4}, std={:.4}", name, means[i], stds[i]));
+            parts.push(format!(
+                "  {}: mean={:.4}, std={:.4}",
+                name, means[i], stds[i]
+            ));
         }
         let n_chains = self.result.samples.len();
         let n_draws = if self.result.samples.is_empty() {
@@ -220,13 +404,8 @@ impl FitResult {
     }
 }
 
-/// Main sampling entry point called from Python.
-///
-/// `model_spec`: a ModelSpec built via ModelBuilder
-/// `data`: a Python dict mapping string keys to numpy arrays
-/// `chains`, `draws`, `warmup`, `seed`, `threads`: sampling configuration
 #[pyfunction]
-#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.01, num_leapfrog_steps=20))]
+#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -239,6 +418,7 @@ fn sample(
     threads: usize,
     step_size: f64,
     num_leapfrog_steps: usize,
+    show_progress: bool,
 ) -> PyResult<FitResult> {
     let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
     for (key, value) in data.iter() {
@@ -255,33 +435,18 @@ fn sample(
     }
 
     for lik in &model_spec.likelihoods {
-        match &lik.mu_expr {
-            MuExpr::ParamTimesData {
-                param_name,
-                data_key,
-            } => {
-                let param_node = graph
-                    .node_by_name(param_name)
-                    .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
-                let data_vec = data_map
-                    .get(data_key)
-                    .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
-                    .clone();
-                let data_node = graph.add_data(data_key, data_vec);
-                let mu_vec = graph.scalar_mul_data(param_node, data_node);
+        let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map)?;
 
-                let obs_vec = data_map
-                    .get(&lik.observed_key)
-                    .ok_or_else(|| {
-                        PyValueError::new_err(format!(
-                            "Missing observed data key: {}",
-                            lik.observed_key
-                        ))
-                    })?
-                    .clone();
-                Normal::observed(&mut graph, mu_vec, lik.sigma, obs_vec);
-            }
-        }
+        let obs_vec = data_map
+            .get(&lik.observed_key)
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "Missing observed data key: {}",
+                    lik.observed_key
+                ))
+            })?
+            .clone();
+        Normal::observed(&mut graph, mu_node, lik.sigma, obs_vec);
     }
 
     let config = SamplerConfig {
@@ -292,9 +457,9 @@ fn sample(
         num_leapfrog_steps,
         seed,
         num_threads: threads,
+        show_progress,
     };
 
-    // Release the GIL during sampling so Python threads aren't blocked.
     let result = py.allow_threads(|| sampler::sample(graph, config));
 
     Ok(FitResult { result })

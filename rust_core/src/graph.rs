@@ -23,6 +23,10 @@ pub enum Op {
     Square(NodeId),
     /// Element-wise multiply: scalar * data vector.
     ScalarMulData(NodeId, NodeId),
+    /// Element-wise addition of two vectors.
+    VectorAdd(NodeId, NodeId),
+    /// Broadcast scalar + vector → vector.
+    ScalarBroadcastAdd(NodeId, NodeId),
     /// Log-probability of a Normal distribution: logp(x | mu, sigma).
     NormalLogP {
         x: NodeId,
@@ -34,6 +38,15 @@ pub enum Op {
         mu_vec: NodeId,
         sigma: NodeId,
         obs_data_idx: usize,
+    },
+    /// Fused linear combination: mu[i] = intercept + Σ_k params[k] * data[k][i]
+    ///
+    /// Replaces a chain of ScalarMulData + VectorAdd + ScalarBroadcastAdd with
+    /// a single pass over the data, dramatically improving cache utilization.
+    FusedLinearMu {
+        param_nodes: Vec<NodeId>,
+        data_indices: Vec<usize>,
+        intercept: Option<NodeId>,
     },
 }
 
@@ -142,6 +155,14 @@ impl Graph {
         self.add_node(Op::ScalarMulData(scalar, data), None)
     }
 
+    pub fn vector_add(&mut self, a: NodeId, b: NodeId) -> NodeId {
+        self.add_node(Op::VectorAdd(a, b), None)
+    }
+
+    pub fn scalar_broadcast_add(&mut self, scalar: NodeId, vec: NodeId) -> NodeId {
+        self.add_node(Op::ScalarBroadcastAdd(scalar, vec), None)
+    }
+
     pub fn normal_logp(&mut self, x: NodeId, mu: NodeId, sigma: NodeId) -> NodeId {
         let node = self.add_node(Op::NormalLogP { x, mu, sigma }, None);
         self.logp_terms.push(node);
@@ -164,6 +185,29 @@ impl Graph {
         );
         self.logp_terms.push(node);
         node
+    }
+
+    /// Store a data vector without creating a graph node (used by FusedLinearMu).
+    pub fn store_data_vec(&mut self, values: Vec<f64>) -> usize {
+        let idx = self.data_vectors.len();
+        self.data_vectors.push(values);
+        idx
+    }
+
+    pub fn fused_linear_mu(
+        &mut self,
+        param_nodes: Vec<NodeId>,
+        data_indices: Vec<usize>,
+        intercept: Option<NodeId>,
+    ) -> NodeId {
+        self.add_node(
+            Op::FusedLinearMu {
+                param_nodes,
+                data_indices,
+                intercept,
+            },
+            None,
+        )
     }
 
     pub fn node_by_name(&self, name: &str) -> Option<NodeId> {
