@@ -29,16 +29,15 @@ fit = rmc.sample(
     model_spec=model,
     data=data,
     chains=4,
-    draws=1000,
+    draws=3000,
+    warmup=1000,
     seed=42,
 )
 
-# --- Results ---
-print(fit)
+# --- Diagnostics ---
 print()
-print("Posterior means:", fit.mean())
-print("Posterior stds:", fit.std())
-print("Accept rates:", fit.accept_rates())
+print(fit.summary())
 print()
 print(f"True beta = {beta_true}")
 print(f"Estimated beta = {fit.mean()['beta']:.4f} ± {fit.std()['beta']:.4f}")
+print(f"Step sizes: {[round(s, 4) for s in fit.step_sizes()]}")
