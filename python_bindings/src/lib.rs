@@ -405,7 +405,7 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, num_leapfrog_steps=15))]
+#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -418,6 +418,7 @@ fn sample(
     threads: usize,
     step_size: f64,
     num_leapfrog_steps: usize,
+    show_progress: bool,
 ) -> PyResult<FitResult> {
     let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
     for (key, value) in data.iter() {
@@ -456,6 +457,7 @@ fn sample(
         num_leapfrog_steps,
         seed,
         num_threads: threads,
+        show_progress,
     };
 
     let result = py.allow_threads(|| sampler::sample(graph, config));

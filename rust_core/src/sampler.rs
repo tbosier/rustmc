@@ -1,11 +1,11 @@
 use crate::graph::Graph;
 use crate::hmc::{self, ChainResult, HmcConfig};
+use crate::progress::{self, ProgressState};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::sync::Arc;
 
-/// Configuration for the multi-chain sampler.
 #[derive(Debug, Clone)]
 pub struct SamplerConfig {
     pub num_chains: usize,
@@ -14,8 +14,8 @@ pub struct SamplerConfig {
     pub step_size: f64,
     pub num_leapfrog_steps: usize,
     pub seed: u64,
-    /// Number of threads. 0 means use Rayon's default (all cores).
     pub num_threads: usize,
+    pub show_progress: bool,
 }
 
 impl Default for SamplerConfig {
@@ -28,21 +28,19 @@ impl Default for SamplerConfig {
             num_leapfrog_steps: 15,
             seed: 42,
             num_threads: 0,
+            show_progress: true,
         }
     }
 }
 
-/// Result of sampling across all chains.
 #[derive(Debug, Clone)]
 pub struct SampleResult {
-    /// samples[chain][draw][param]
     pub samples: Vec<Vec<Vec<f64>>>,
     pub accept_rates: Vec<f64>,
     pub param_names: Vec<String>,
 }
 
 impl SampleResult {
-    /// Get posterior mean for each parameter.
     pub fn mean(&self) -> Vec<f64> {
         let n_params = self.param_names.len();
         let mut sums = vec![0.0; n_params];
@@ -60,7 +58,6 @@ impl SampleResult {
         sums.iter().map(|s| s / count as f64).collect()
     }
 
-    /// Get posterior standard deviation for each parameter.
     pub fn std(&self) -> Vec<f64> {
         let means = self.mean();
         let n_params = self.param_names.len();
@@ -81,11 +78,6 @@ impl SampleResult {
     }
 }
 
-/// Run parallel HMC chains on the given graph.
-///
-/// The graph is wrapped in an `Arc` and shared read-only across all chains.
-/// Each chain gets a deterministic RNG seeded from `config.seed + chain_index`,
-/// guaranteeing reproducible results regardless of thread scheduling.
 pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
     if config.num_threads > 0 {
         rayon::ThreadPoolBuilder::new()
@@ -104,15 +96,38 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
         num_warmup: config.num_warmup,
     };
 
+    let progress_state = if config.show_progress {
+        Some(Arc::new(ProgressState::new(
+            config.num_chains,
+            config.num_draws,
+            config.num_warmup,
+            config.num_leapfrog_steps,
+        )))
+    } else {
+        None
+    };
+
+    let progress_handle = progress_state
+        .as_ref()
+        .map(|ps| progress::spawn_progress_thread(Arc::clone(ps)));
+
     let chain_indices: Vec<usize> = (0..config.num_chains).collect();
 
     let results: Vec<ChainResult> = chain_indices
         .par_iter()
         .map(|&chain_idx| {
             let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_idx as u64);
-            hmc::run_chain(&graph, &hmc_config, &mut rng, None)
+            let prog_ref = progress_state.as_deref();
+            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
         })
         .collect();
+
+    if let Some(ps) = &progress_state {
+        ps.finish();
+    }
+    if let Some(h) = progress_handle {
+        h.join().ok();
+    }
 
     let samples: Vec<Vec<Vec<f64>>> = results.iter().map(|r| r.samples.clone()).collect();
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
@@ -123,9 +138,3 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
         param_names,
     }
 }
-
-// Future: Particle filtering can be integrated as an alternative sampler
-// that reuses the same Graph and autodiff infrastructure.
-//
-// Future: Distributed posterior aggregation for multi-machine setups can
-// be added by serializing SampleResult and merging across nodes.

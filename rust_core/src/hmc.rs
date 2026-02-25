@@ -1,5 +1,6 @@
 use crate::autodiff::Evaluator;
 use crate::graph::Graph;
+use crate::progress::ProgressState;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
@@ -43,6 +44,7 @@ pub fn run_chain(
     config: &HmcConfig,
     rng: &mut ChaCha8Rng,
     init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
 ) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
@@ -148,9 +150,17 @@ pub fn run_chain(
         let accept_prob = log_accept_ratio.min(0.0).exp();
 
         total += 1;
-        if log_accept_ratio.is_finite() && rng.gen::<f64>().ln() < log_accept_ratio {
+        let divergent = !log_accept_ratio.is_finite();
+        if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
             accepted += 1;
+        }
+
+        if let Some(p) = progress {
+            p.increment();
+            if divergent {
+                p.add_divergence();
+            }
         }
 
         // --- Warmup adaptation ---

@@ -18,8 +18,8 @@ import numpy as np
 # Synthetic data: y = X @ beta + noise
 # ---------------------------------------------------------------------------
 np.random.seed(42)
-N = 10_000
-P = 4
+N = 100_000
+P = 10
 
 X = np.random.randn(N, P)
 beta_true = np.linspace(0.5, 3.0, P)
