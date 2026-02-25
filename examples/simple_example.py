@@ -30,7 +30,6 @@ fit = rmc.sample(
     data=data,
     chains=4,
     draws=1000,
-    warmup=500,
     seed=42,
 )
 

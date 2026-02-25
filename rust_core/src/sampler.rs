@@ -24,8 +24,8 @@ impl Default for SamplerConfig {
             num_chains: 4,
             num_draws: 1000,
             num_warmup: 500,
-            step_size: 0.01,
-            num_leapfrog_steps: 20,
+            step_size: 0.0,
+            num_leapfrog_steps: 15,
             seed: 42,
             num_threads: 0,
         }
