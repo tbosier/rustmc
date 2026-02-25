@@ -1,4 +1,5 @@
 pub mod autodiff;
+pub mod diagnostics;
 pub mod distributions;
 pub mod graph;
 pub mod hmc;

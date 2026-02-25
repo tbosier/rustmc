@@ -379,6 +379,47 @@ impl FitResult {
         Ok(list)
     }
 
+    /// Print a formatted diagnostics table (R-hat, ESS, MCSE, HDI, divergences).
+    fn summary(&self) -> String {
+        self.result.diagnostics().to_table()
+    }
+
+    /// Return per-parameter diagnostics as a list of dicts.
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let report = self.result.diagnostics();
+        let items: Vec<Bound<'py, PyDict>> = report
+            .params
+            .iter()
+            .map(|p| {
+                let d = PyDict::new(py);
+                d.set_item("name", &p.name).unwrap();
+                d.set_item("mean", p.mean).unwrap();
+                d.set_item("std", p.std).unwrap();
+                d.set_item("hdi_3%", p.hdi_3).unwrap();
+                d.set_item("hdi_97%", p.hdi_97).unwrap();
+                d.set_item("ess_bulk", p.ess_bulk).unwrap();
+                d.set_item("ess_tail", p.ess_tail).unwrap();
+                d.set_item("r_hat", p.r_hat).unwrap();
+                d.set_item("mcse_mean", p.mcse_mean).unwrap();
+                d
+            })
+            .collect();
+        let list = PyList::new(py, &items)?;
+        Ok(list)
+    }
+
+    /// Per-chain adapted step sizes.
+    fn step_sizes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::new(py, &self.result.step_sizes)?;
+        Ok(list)
+    }
+
+    /// Per-chain divergence counts.
+    fn divergences<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::new(py, &self.result.divergences)?;
+        Ok(list)
+    }
+
     fn __repr__(&self) -> String {
         let means = self.result.mean();
         let stds = self.result.std();

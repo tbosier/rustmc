@@ -1,3 +1,4 @@
+use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
 use crate::hmc::{self, ChainResult, HmcConfig};
 use crate::progress::{self, ProgressState};
@@ -37,6 +38,8 @@ impl Default for SamplerConfig {
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
     pub accept_rates: Vec<f64>,
+    pub step_sizes: Vec<f64>,
+    pub divergences: Vec<usize>,
     pub param_names: Vec<String>,
 }
 
@@ -75,6 +78,19 @@ impl SampleResult {
         }
 
         sum_sq.iter().map(|s| (s / count as f64).sqrt()).collect()
+    }
+
+    pub fn total_divergences(&self) -> usize {
+        self.divergences.iter().sum()
+    }
+
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        diagnostics::compute_diagnostics(
+            &self.samples,
+            &self.param_names,
+            &self.accept_rates,
+            self.total_divergences(),
+        )
     }
 }
 
@@ -131,10 +147,14 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
 
     let samples: Vec<Vec<Vec<f64>>> = results.iter().map(|r| r.samples.clone()).collect();
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
+    let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
+    let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
 
     SampleResult {
         samples,
         accept_rates,
+        step_sizes,
+        divergences,
         param_names,
     }
 }

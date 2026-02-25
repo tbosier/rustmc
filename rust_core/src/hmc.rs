@@ -28,6 +28,8 @@ impl Default for HmcConfig {
 pub struct ChainResult {
     pub samples: Vec<Vec<f64>>,
     pub accept_rate: f64,
+    pub step_size: f64,
+    pub divergences: usize,
 }
 
 /// Run a single HMC chain with diagonal mass matrix adaptation.
@@ -58,6 +60,7 @@ pub fn run_chain(
     let mut samples = Vec::with_capacity(config.num_draws);
     let mut accepted = 0u64;
     let mut total = 0u64;
+    let mut n_divergences = 0usize;
 
     // Diagonal mass matrix: M = diag(mass_diag)
     //   p ~ N(0, M)  →  p_i = sqrt(mass_diag[i]) * z_i
@@ -151,7 +154,9 @@ pub fn run_chain(
 
         total += 1;
         let divergent = !log_accept_ratio.is_finite();
-        if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
+        if divergent {
+            n_divergences += 1;
+        } else if rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
             accepted += 1;
         }
@@ -226,6 +231,8 @@ pub fn run_chain(
     ChainResult {
         samples,
         accept_rate: accepted as f64 / total as f64,
+        step_size,
+        divergences: n_divergences,
     }
 }
 
