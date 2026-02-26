@@ -12,7 +12,7 @@ credible interval) against Prophet and ARIMA.
 This demonstrates a capability that doesn't exist in Python-first Bayesian
 frameworks: thousands of independent posterior inferences in parallel,
 using a single Rayon thread pool, with zero Python in the inner loop.
-"""#
+"""##
 
 import time
 import numpy as np
