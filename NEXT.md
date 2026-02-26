@@ -26,3 +26,8 @@ What's needed next (ordered by impact)
     — For large hierarchical models (10K+ parameters), a full diagonal mass matrix isn't enough. Block-diagonal structure that mirrors the model hierarchy would give Stan-level sampling quality.
 ## Automatic reparameterization 
     — Detect funnels and other pathologies in the posterior geometry, automatically apply non-centered parameterizations. This is research-level but would be genuinely novel.
+
+
+- Constrained parameters don't work. Half the distributions you just added can't actually be sampled because there are no parameter transforms. Anyone who tries Gamma or Beta priors — which are everywhere in real models — will hit 100% divergences. This is the kind of thing that makes people close the tab in 30 seconds. <- Done
+- The model API is limited. You can only express y = Σ βₖxₖ + noise. No hierarchical priors (parameter as hyperparameter of another parameter's prior), no link functions, no GLMs, no custom likelihood functions. PyMC lets you write arbitrary model structures.
+- No model validation workflow. No posterior predictive checks, no prior predictive sampling, no LOO-CV, no trace plots. Data scientists don't just want point estimates — they want the full Bayesian workflow.

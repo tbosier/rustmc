@@ -114,6 +114,10 @@ impl Evaluator {
                 Op::Neg(a) => self.scalars[idx] = -self.scalars[a.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
                 Op::Log(a) => self.scalars[idx] = self.scalars[a.0].ln(),
+                Op::Sigmoid(a) => {
+                    let v = self.scalars[a.0];
+                    self.scalars[idx] = 1.0 / (1.0 + (-v).exp());
+                }
                 Op::Square(a) => {
                     let v = self.scalars[a.0];
                     self.scalars[idx] = v * v;
@@ -156,6 +160,36 @@ impl Evaluator {
                     let mv = self.scalars[mu.0];
                     let sv = self.scalars[sigma.0];
                     self.scalars[idx] = normal_logp_scalar(xv, mv, sv);
+                }
+                Op::HalfNormalLogP { x, sigma } => {
+                    self.scalars[idx] = half_normal_logp_scalar(self.scalars[x.0], self.scalars[sigma.0]);
+                }
+                Op::StudentTLogP { x, nu, mu, sigma } => {
+                    self.scalars[idx] = student_t_logp_scalar(
+                        self.scalars[x.0], self.scalars[nu.0],
+                        self.scalars[mu.0], self.scalars[sigma.0],
+                    );
+                }
+                Op::UniformLogP { x, lower, upper } => {
+                    self.scalars[idx] = uniform_logp_scalar(
+                        self.scalars[x.0], self.scalars[lower.0], self.scalars[upper.0],
+                    );
+                }
+                Op::BernoulliLogP { x, p } => {
+                    self.scalars[idx] = bernoulli_logp_scalar(self.scalars[x.0], self.scalars[p.0]);
+                }
+                Op::PoissonLogP { x, lam } => {
+                    self.scalars[idx] = poisson_logp_scalar(self.scalars[x.0], self.scalars[lam.0]);
+                }
+                Op::GammaLogP { x, alpha, beta } => {
+                    self.scalars[idx] = gamma_logp_scalar(
+                        self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
+                    );
+                }
+                Op::BetaLogP { x, alpha, beta } => {
+                    self.scalars[idx] = beta_logp_scalar(
+                        self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
+                    );
                 }
                 Op::NormalObsLogP {
                     mu_vec,
@@ -250,6 +284,10 @@ impl Evaluator {
                     self.adj_scalars[a.0] += a_s * va;
                 }
                 Op::Log(a) => self.adj_scalars[a.0] += a_s / self.scalars[a.0],
+                Op::Sigmoid(a) => {
+                    let s = self.scalars[idx];
+                    self.adj_scalars[a.0] += a_s * s * (1.0 - s);
+                }
                 Op::Square(a) => self.adj_scalars[a.0] += a_s * 2.0 * self.scalars[a.0],
 
                 Op::ScalarMulData(scalar, data) => {
@@ -309,6 +347,75 @@ impl Evaluator {
                     self.adj_scalars[x.0] += a_s * (-diff / s2);
                     self.adj_scalars[mu.0] += a_s * (diff / s2);
                     self.adj_scalars[sigma.0] += a_s * (diff * diff / (s2 * sv) - 1.0 / sv);
+                }
+                Op::HalfNormalLogP { x, sigma } => {
+                    let xv = self.scalars[x.0];
+                    let sv = self.scalars[sigma.0];
+                    if xv >= 0.0 {
+                        self.adj_scalars[x.0] += a_s * (-xv / (sv * sv));
+                        self.adj_scalars[sigma.0] += a_s * (xv * xv / (sv * sv * sv) - 1.0 / sv);
+                    }
+                }
+                Op::StudentTLogP { x, nu, mu, sigma } => {
+                    let xv = self.scalars[x.0];
+                    let nv = self.scalars[nu.0];
+                    let mv = self.scalars[mu.0];
+                    let sv = self.scalars[sigma.0];
+                    let z = (xv - mv) / sv;
+                    let z2 = z * z;
+                    let denom = 1.0 + z2 / nv;
+                    // d/dx
+                    self.adj_scalars[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
+                    // d/dmu
+                    self.adj_scalars[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
+                    // d/dsigma
+                    self.adj_scalars[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
+                    // d/dnu
+                    self.adj_scalars[nu.0] += a_s * (
+                        0.5 * digamma(0.5 * (nv + 1.0)) - 0.5 * digamma(0.5 * nv)
+                        - 0.5 / nv
+                        - 0.5 * (1.0 + z2 / nv).ln()
+                        + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom)
+                    );
+                }
+                Op::UniformLogP { x: _, lower, upper } => {
+                    let lv = self.scalars[lower.0];
+                    let uv = self.scalars[upper.0];
+                    let range = uv - lv;
+                    if range > 0.0 {
+                        self.adj_scalars[lower.0] += a_s / range;
+                        self.adj_scalars[upper.0] -= a_s / range;
+                    }
+                }
+                Op::BernoulliLogP { x, p } => {
+                    let xv = self.scalars[x.0];
+                    let pv = self.scalars[p.0].clamp(1e-12, 1.0 - 1e-12);
+                    self.adj_scalars[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+                }
+                Op::PoissonLogP { x, lam } => {
+                    let xv = self.scalars[x.0];
+                    let lv = self.scalars[lam.0];
+                    self.adj_scalars[lam.0] += a_s * (xv / lv - 1.0);
+                }
+                Op::GammaLogP { x, alpha, beta } => {
+                    let xv = self.scalars[x.0];
+                    let av = self.scalars[alpha.0];
+                    let bv = self.scalars[beta.0];
+                    if xv > 0.0 {
+                        self.adj_scalars[x.0] += a_s * ((av - 1.0) / xv - bv);
+                        self.adj_scalars[alpha.0] += a_s * (bv.ln() - digamma(av) + xv.ln());
+                        self.adj_scalars[beta.0] += a_s * (av / bv - xv);
+                    }
+                }
+                Op::BetaLogP { x, alpha, beta } => {
+                    let xv = self.scalars[x.0];
+                    let av = self.scalars[alpha.0];
+                    let bv = self.scalars[beta.0];
+                    if xv > 0.0 && xv < 1.0 {
+                        self.adj_scalars[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
+                        self.adj_scalars[alpha.0] += a_s * (digamma(av + bv) - digamma(av) + xv.ln());
+                        self.adj_scalars[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
+                    }
                 }
                 Op::NormalObsLogP {
                     mu_vec,
@@ -413,6 +520,10 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::Neg(a) => Value::Scalar(-values[a.0].as_scalar()),
             Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
             Op::Log(a) => Value::Scalar(values[a.0].as_scalar().ln()),
+            Op::Sigmoid(a) => {
+                let v = values[a.0].as_scalar();
+                Value::Scalar(1.0 / (1.0 + (-v).exp()))
+            }
             Op::Square(a) => {
                 let v = values[a.0].as_scalar();
                 Value::Scalar(v * v)
@@ -433,10 +544,28 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 Value::Vector(v.iter().map(|x| s + x).collect())
             }
             Op::NormalLogP { x, mu, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let mv = values[mu.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                Value::Scalar(normal_logp_scalar(xv, mv, sv))
+                Value::Scalar(normal_logp_scalar(values[x.0].as_scalar(), values[mu.0].as_scalar(), values[sigma.0].as_scalar()))
+            }
+            Op::HalfNormalLogP { x, sigma } => {
+                Value::Scalar(half_normal_logp_scalar(values[x.0].as_scalar(), values[sigma.0].as_scalar()))
+            }
+            Op::StudentTLogP { x, nu, mu, sigma } => {
+                Value::Scalar(student_t_logp_scalar(values[x.0].as_scalar(), values[nu.0].as_scalar(), values[mu.0].as_scalar(), values[sigma.0].as_scalar()))
+            }
+            Op::UniformLogP { x, lower, upper } => {
+                Value::Scalar(uniform_logp_scalar(values[x.0].as_scalar(), values[lower.0].as_scalar(), values[upper.0].as_scalar()))
+            }
+            Op::BernoulliLogP { x, p } => {
+                Value::Scalar(bernoulli_logp_scalar(values[x.0].as_scalar(), values[p.0].as_scalar()))
+            }
+            Op::PoissonLogP { x, lam } => {
+                Value::Scalar(poisson_logp_scalar(values[x.0].as_scalar(), values[lam.0].as_scalar()))
+            }
+            Op::GammaLogP { x, alpha, beta } => {
+                Value::Scalar(gamma_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
+            }
+            Op::BetaLogP { x, alpha, beta } => {
+                Value::Scalar(beta_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
             }
             Op::NormalObsLogP {
                 mu_vec,
@@ -524,6 +653,10 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             Op::Neg(a) => adj_scalar[a.0] -= a_s,
             Op::Exp(a) => adj_scalar[a.0] += a_s * values[a.0].as_scalar().exp(),
             Op::Log(a) => adj_scalar[a.0] += a_s / values[a.0].as_scalar(),
+            Op::Sigmoid(a) => {
+                let s = values[idx].as_scalar();
+                adj_scalar[a.0] += a_s * s * (1.0 - s);
+            }
             Op::Square(a) => adj_scalar[a.0] += a_s * 2.0 * values[a.0].as_scalar(),
             Op::ScalarMulData(scalar, data) => {
                 let s = values[scalar.0].as_scalar();
@@ -556,6 +689,70 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 adj_scalar[x.0] += a_s * (-diff / s2);
                 adj_scalar[mu.0] += a_s * (diff / s2);
                 adj_scalar[sigma.0] += a_s * (diff * diff / (s2 * sv) - 1.0 / sv);
+            }
+            Op::HalfNormalLogP { x, sigma } => {
+                let xv = values[x.0].as_scalar();
+                let sv = values[sigma.0].as_scalar();
+                if xv >= 0.0 {
+                    adj_scalar[x.0] += a_s * (-xv / (sv * sv));
+                    adj_scalar[sigma.0] += a_s * (xv * xv / (sv * sv * sv) - 1.0 / sv);
+                }
+            }
+            Op::StudentTLogP { x, nu, mu, sigma } => {
+                let xv = values[x.0].as_scalar();
+                let nv = values[nu.0].as_scalar();
+                let mv = values[mu.0].as_scalar();
+                let sv = values[sigma.0].as_scalar();
+                let z = (xv - mv) / sv;
+                let z2 = z * z;
+                let denom = 1.0 + z2 / nv;
+                adj_scalar[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
+                adj_scalar[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
+                adj_scalar[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
+                adj_scalar[nu.0] += a_s * (
+                    0.5 * digamma(0.5 * (nv + 1.0)) - 0.5 * digamma(0.5 * nv)
+                    - 0.5 / nv - 0.5 * denom.ln()
+                    + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom)
+                );
+            }
+            Op::UniformLogP { x: _, lower, upper } => {
+                let lv = values[lower.0].as_scalar();
+                let uv = values[upper.0].as_scalar();
+                let range = uv - lv;
+                if range > 0.0 {
+                    adj_scalar[lower.0] += a_s / range;
+                    adj_scalar[upper.0] -= a_s / range;
+                }
+            }
+            Op::BernoulliLogP { x, p } => {
+                let xv = values[x.0].as_scalar();
+                let pv = values[p.0].as_scalar().clamp(1e-12, 1.0 - 1e-12);
+                adj_scalar[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+            }
+            Op::PoissonLogP { x, lam } => {
+                let xv = values[x.0].as_scalar();
+                let lv = values[lam.0].as_scalar();
+                adj_scalar[lam.0] += a_s * (xv / lv - 1.0);
+            }
+            Op::GammaLogP { x, alpha, beta } => {
+                let xv = values[x.0].as_scalar();
+                let av = values[alpha.0].as_scalar();
+                let bv = values[beta.0].as_scalar();
+                if xv > 0.0 {
+                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - bv);
+                    adj_scalar[alpha.0] += a_s * (bv.ln() - digamma(av) + xv.ln());
+                    adj_scalar[beta.0] += a_s * (av / bv - xv);
+                }
+            }
+            Op::BetaLogP { x, alpha, beta } => {
+                let xv = values[x.0].as_scalar();
+                let av = values[alpha.0].as_scalar();
+                let bv = values[beta.0].as_scalar();
+                if xv > 0.0 && xv < 1.0 {
+                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
+                    adj_scalar[alpha.0] += a_s * (digamma(av + bv) - digamma(av) + xv.ln());
+                    adj_scalar[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
+                }
             }
             Op::NormalObsLogP {
                 mu_vec,
@@ -643,6 +840,90 @@ fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
         })
         .sum();
     n * log_norm - 0.5 * sum_sq / s2
+}
+
+fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
+    if x < 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln() - x * x / (2.0 * sigma * sigma)
+}
+
+fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
+    let z = (x - mu) / sigma;
+    ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+        - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln()
+        - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
+}
+
+fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
+    if x < lower || x > upper {
+        f64::NEG_INFINITY
+    } else {
+        -(upper - lower).ln()
+    }
+}
+
+fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
+    let p_clamped = p.clamp(1e-12, 1.0 - 1e-12);
+    x * p_clamped.ln() + (1.0 - x) * (1.0 - p_clamped).ln()
+}
+
+fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
+    x * lam.ln() - lam - ln_gamma(x + 1.0)
+}
+
+fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    alpha * beta.ln() - ln_gamma(alpha) + (alpha - 1.0) * x.ln() - beta * x
+}
+
+fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
+    if x <= 0.0 || x >= 1.0 {
+        return f64::NEG_INFINITY;
+    }
+    ln_gamma(alpha + beta) - ln_gamma(alpha) - ln_gamma(beta)
+        + (alpha - 1.0) * x.ln()
+        + (beta - 1.0) * (1.0 - x).ln()
+}
+
+/// Lanczos approximation to ln(Γ(x)) for x > 0.
+fn ln_gamma(x: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::INFINITY;
+    }
+    let coeffs = [
+        76.18009172947146,
+        -86.50532032941677,
+        24.01409824083091,
+        -1.231739572450155,
+        0.001208650973866179,
+        -0.000005395239384953,
+    ];
+    let y = x;
+    let tmp = y + 5.5;
+    let tmp = tmp - (y - 0.5) * tmp.ln();
+    let mut ser = 1.000000000190015f64;
+    for (i, &c) in coeffs.iter().enumerate() {
+        ser += c / (y + 1.0 + i as f64);
+    }
+    (std::f64::consts::TAU.sqrt() * ser / y).ln() - tmp
+}
+
+/// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
+fn digamma(mut x: f64) -> f64 {
+    let mut result = 0.0;
+    while x < 8.0 {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    // Asymptotic expansion for large x
+    result += x.ln() - 0.5 / x;
+    let x2 = 1.0 / (x * x);
+    result -= x2 * (1.0 / 12.0 - x2 * (1.0 / 120.0 - x2 / 252.0));
+    result
 }
 
 #[cfg(test)]
@@ -779,5 +1060,80 @@ mod tests {
                 grad_old[i]
             );
         }
+    }
+
+    fn finite_diff_check(g: &Graph, params: &[f64], tol: f64) {
+        let (_, grad) = grad_logp(g, params);
+        let eps = 1e-6;
+        for i in 0..params.len() {
+            let mut p_plus = params.to_vec();
+            let mut p_minus = params.to_vec();
+            p_plus[i] += eps;
+            p_minus[i] -= eps;
+            let num = (eval_logp(g, &p_plus) - eval_logp(g, &p_minus)) / (2.0 * eps);
+            assert!(
+                (grad[i] - num).abs() < tol,
+                "param {}: analytic={}, numerical={}, diff={}",
+                i, grad[i], num, (grad[i] - num).abs()
+            );
+        }
+    }
+
+    #[test]
+    fn test_half_normal_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let sigma = g.add_constant(2.0);
+        g.half_normal_logp(x, sigma);
+        finite_diff_check(&g, &[1.5], 1e-4);
+    }
+
+    #[test]
+    fn test_student_t_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let nu = g.add_constant(4.0);
+        let mu = g.add_constant(1.0);
+        let sigma = g.add_constant(2.0);
+        g.student_t_logp(x, nu, mu, sigma);
+        finite_diff_check(&g, &[1.8], 1e-4);
+    }
+
+    #[test]
+    fn test_gamma_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let alpha = g.add_constant(2.0);
+        let beta = g.add_constant(1.5);
+        g.gamma_logp(x, alpha, beta);
+        finite_diff_check(&g, &[1.2], 1e-4);
+    }
+
+    #[test]
+    fn test_beta_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let alpha = g.add_constant(2.0);
+        let beta = g.add_constant(5.0);
+        g.beta_logp(x, alpha, beta);
+        finite_diff_check(&g, &[0.3], 1e-4);
+    }
+
+    #[test]
+    fn test_poisson_gradient() {
+        let mut g = Graph::new();
+        let lam = g.add_param("lam");
+        let x = g.add_constant(5.0);
+        g.poisson_logp(x, lam);
+        finite_diff_check(&g, &[3.0], 1e-4);
+    }
+
+    #[test]
+    fn test_bernoulli_gradient() {
+        let mut g = Graph::new();
+        let p = g.add_param("p");
+        let x = g.add_constant(1.0);
+        g.bernoulli_logp(x, p);
+        finite_diff_check(&g, &[0.7], 1e-4);
     }
 }

@@ -1,147 +1,210 @@
 # rustmc
 
-**High-performance probabilistic inference engine written in Rust.**
+Bayesian inference engine written in Rust. Python API via PyO3.
 
-rustmc is a Rust-native MCMC engine designed for industrial-scale Bayesian inference. It exposes a Python API via PyO3 while keeping the entire sampling loop in Rust — no Python in the inner loop.
+rustmc runs the entire sampling loop in compiled Rust, with no Python in the inner loop. Chains are parallelized across threads using Rayon. The result is fast enough to fit thousands of independent Bayesian models in a single call.
 
-## Why rustmc?
+## Why rustmc
 
-Current Python-first frameworks (PyMC, Stan via PyStan, etc.) face performance ceilings:
+PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, and analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets -- per-store demand models, per-SKU pricing models, per-patient dosing models.
 
-| Limitation | PyMC / Python-first | rustmc |
-|---|---|---|
-| Sampling loop | Python + Aesara/PyTensor | Pure Rust |
-| Chain parallelism | Process-based (multiprocessing) | Thread-based (Rayon) |
-| Serialization overhead | Pickle between processes | Zero — shared memory |
-| Large models (10k+ params) | Slow graph compilation | Compiled once, reused |
-| Latency | High (JIT, Python overhead) | Low (native binary) |
-| Embeddability | Python only | Rust library or Python extension |
+rustmc is designed for that use case. It provides a batch inference API that runs 10,000 independent NUTS chains through a single Rayon thread pool, sharing compute across all available cores with zero serialization overhead.
 
-rustmc is **not** trying to replace PyMC's research ergonomics. It exists for workloads where **performance, latency, and throughput** are the bottleneck.
+**10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
 
-## Architecture
+Fitting those same 10,000 models sequentially with ARIMA takes ~160 seconds. With Prophet, ~28 minutes. Neither gives you credible intervals for free.
 
-```
-┌─────────────────────────────────────────────┐
-│  Python (orchestration only)                │
-│  ┌───────────────────────────────────────┐  │
-│  │  rustmc Python API (PyO3)             │  │
-│  │  - ModelBuilder, sample(), FitResult  │  │
-│  └──────────────┬────────────────────────┘  │
-│                 │ GIL released              │
-├─────────────────┼───────────────────────────┤
-│  Rust Core      │                           │
-│  ┌──────────────▼────────────────────────┐  │
-│  │  Graph (computational DAG)            │  │
-│  ├───────────────────────────────────────┤  │
-│  │  Autodiff (reverse-mode)              │  │
-│  ├───────────────────────────────────────┤  │
-│  │  HMC Sampler (leapfrog integration)   │  │
-│  ├───────────────────────────────────────┤  │
-│  │  Parallel Chains (Rayon threads)      │  │
-│  │  - Deterministic RNG per chain        │  │
-│  │  - Read-only shared graph             │  │
-│  └───────────────────────────────────────┘  │
-└─────────────────────────────────────────────┘
-```
+## Benchmark
 
-### Module breakdown
+10 parameters, 100,000 observations, 8 chains, 2,000 draws:
 
-| Module | Purpose |
-|---|---|
-| `graph.rs` | Computational DAG — nodes, ops, data storage |
-| `autodiff.rs` | Forward evaluation + reverse-mode gradient |
-| `distributions.rs` | Trait-based distributions (Normal) |
-| `hmc.rs` | HMC with leapfrog integrator + dual-averaging step-size adaptation |
-| `sampler.rs` | Multi-chain parallel runner via Rayon |
-| `python_bindings/` | PyO3 bridge — ModelBuilder, sample(), FitResult |
+| Method | Time | Speedup |
+|--------|------|---------|
+| rustmc (NUTS) | 72s | 5.3x |
+| PyMC (NUTS) | 383s | 1.0x |
 
-### Design principles
+Batch inference, 10,000 independent 3-parameter models:
 
-- **Separate model graph from sampler** — the graph is built once and shared read-only across chains.
-- **Generic sampler interface** — the HMC sampler accepts any `(logp, grad)` function derived from a Graph.
-- **Trait-based distributions** — new distributions plug in without modifying the sampler.
-- **No global state** — all state is explicit and owned.
-- **Minimal allocation in the hot loop** — parameter vectors are reused, gradient vectors are stack-allocated where possible.
-- **Deterministic RNG** — each chain gets `ChaCha8Rng` seeded from `base_seed + chain_index`.
+| Method | Total time | Per model | Uncertainty |
+|--------|-----------|-----------|-------------|
+| rustmc (batch NUTS) | 70s | 7ms | Yes (full posterior) |
+| ARIMA (sequential) | 160s | 16ms | No |
+| Prophet (sequential) | 28min | 170ms | Partial |
 
 ## Quick start
 
-### Build
-
 ```bash
-# Install maturin
 pip install maturin
-
-# Build and install in development mode
+git clone https://github.com/your-username/rustmc.git
+cd rustmc
+python -m venv .venv && source .venv/bin/activate
+pip install numpy maturin
 maturin develop --manifest-path python_bindings/Cargo.toml --release
 ```
 
-### Usage
+### Single model
 
 ```python
 import numpy as np
 import rustmc as rmc
 
-# Generate data
 np.random.seed(42)
-N = 1000
-x = np.random.randn(N)
-y = 2.5 * x + np.random.randn(N)
+x = np.random.randn(1000)
+y = 2.5 * x + np.random.randn(1000)
 
-# Define model
 builder = rmc.ModelBuilder()
 beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
 mu_expr = beta * "x"
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
 model = builder.build()
 
-# Sample (all MCMC runs in Rust, GIL released)
-fit = rmc.sample(
-    model_spec=model,
-    data={"x": x, "y": y},
-    chains=8,
-    draws=1000,
-    warmup=500,
-)
-
-print(fit)
-print("Posterior mean:", fit.mean())
+fit = rmc.sample(model_spec=model, data={"x": x, "y": y}, chains=4, draws=1000)
+print(fit.summary())
 ```
 
-## Performance goals
+Output:
 
-- **Sampling throughput**: 10-100x faster than PyMC for equivalent models on multi-core machines.
-- **Latency**: Sub-second for small models (< 100 params, 1000 draws).
-- **Scalability**: Linear scaling with number of chains up to available cores.
-- **Memory**: O(params × draws × chains) — no unnecessary copies.
+```
+4 chains x 1000 draws per chain
+
+Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
+-----------------------------------------------------------------------------------------------
+beta           2.4575   0.0313     2.3982     2.5133       2638       2966   1.0055   0.000610
+-----------------------------------------------------------------------------------------------
+Mean accept rate: 0.94  |  Divergences: 0
+```
+
+### Batch inference (10,000 models)
+
+```python
+import rustmc as rmc
+import numpy as np
+
+models = []
+for i in range(10_000):
+    builder = rmc.ModelBuilder()
+    intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
+    trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
+    mu_expr = intercept + trend * "t"
+    builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=5.0, observed_key="y")
+    model = builder.build()
+
+    t = np.arange(52, dtype=np.float64) / 52
+    y = some_data[i]  # your per-SKU time series
+    models.append((model, {"t": t, "y": y}))
+
+results = rmc.batch_sample(models, draws=500, warmup=300)
+
+# Each result has .mean(), .std(), .get_samples()
+for r in results[:5]:
+    print(r)
+```
+
+## What is implemented
+
+### Sampling
+
+- NUTS (No-U-Turn Sampler) with multinomial candidate selection, generalized U-turn criterion, and divergence detection. Follows Hoffman and Gelman (2014) and Betancourt (2017).
+- HMC with fixed leapfrog steps, available as a fallback via `sampler="hmc"`.
+- Diagonal mass matrix adaptation with 3-phase warmup (step-size only, mass matrix estimation, final step-size tuning).
+- Auto step-size initialization via binary search.
+- Deterministic per-chain RNG (ChaCha8) for reproducible results.
+- Multithreaded chains via Rayon. Batch inference shares the thread pool across all models.
+
+### Distributions
+
+| Distribution | Support | Transform | Status |
+|-------------|---------|-----------|--------|
+| Normal | (-inf, inf) | None | Working |
+| StudentT | (-inf, inf) | None | Working |
+| HalfNormal | (0, inf) | log | Working |
+| Gamma | (0, inf) | log | Working |
+| Beta | (0, 1) | logit | Working |
+| Uniform | (a, b) | logit | Working |
+| Bernoulli | {0, 1} | None | Discrete, limited |
+| Poisson | {0, 1, 2, ...} | None | Discrete, limited |
+
+Constrained distributions are automatically sampled in unconstrained space via log/logit transforms with Jacobian corrections. Samples are back-transformed before being returned to the user.
+
+### Computation
+
+- Computational graph with reverse-mode automatic differentiation.
+- Fused linear combination op for regression models. Replaces N separate multiply-add passes with a single cache-friendly loop over the data.
+- Zero-allocation evaluator. All vector intermediates are pre-allocated in a flat buffer and reused across gradient evaluations. No heap allocation in the sampling loop.
+
+### Diagnostics
+
+- Split R-hat with rank normalization (Vehtari et al. 2021).
+- Bulk and tail effective sample size (ESS).
+- Monte Carlo standard error (MCSE).
+- 94% highest density interval.
+- Per-chain acceptance rates, step sizes, and divergence counts.
+- Automatic warnings for convergence issues.
+
+Available via `fit.summary()` for a formatted table or `fit.diagnostics()` for programmatic access.
+
+### Progress reporting
+
+Live progress bar rendered from Rust at 10 Hz using atomic counters, with no GIL involvement:
+
+```
+Sampling 8 chains ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% | 24.0k/24.0k | 0 divergences | 384.0k grad evals | 6.7s
+```
+
+## Architecture
+
+```
+Python (orchestration only)
+  |
+  v  GIL released
+Rust Core
+  +-- Graph         Computational DAG, nodes, ops, data storage
+  +-- Autodiff      Forward evaluation + reverse-mode gradient
+  +-- Distributions  8 distributions with automatic transforms
+  +-- NUTS          Multinomial tree-building, U-turn detection
+  +-- HMC           Fixed-step leapfrog (fallback)
+  +-- Sampler       Multi-chain parallel runner, batch inference
+  +-- Diagnostics   R-hat, ESS, MCSE, HDI
+  +-- Progress      Atomic counters, background render thread
+```
+
+Design principles:
+
+- Model graph is built once and shared read-only across chains.
+- Sampler accepts any log-probability + gradient function derived from a Graph.
+- No global state. All state is explicit and owned.
+- Deterministic RNG per chain (ChaCha8 seeded from base_seed + chain_index).
+- Parameter transforms and Jacobian corrections are handled in the graph, not the sampler.
 
 ## Roadmap
 
-| Priority | Feature | Status |
-|---|---|---|
-| MVP | HMC sampler | Done |
-| MVP | Reverse-mode autodiff | Done |
-| MVP | Normal distribution | Done |
-| MVP | Multithreaded chains (Rayon) | Done |
-| MVP | PyO3 Python bindings | Done |
-| Next | NUTS (No-U-Turn Sampler) | Planned |
-| Next | Step-size + mass matrix adaptation | Planned |
-| Next | More distributions (HalfNormal, Uniform, StudentT, Bernoulli) | Planned |
-| Future | Online / streaming posterior updates | Planned |
-| Future | Particle filtering | Planned |
-| Future | Large hierarchical model optimizations | Planned |
-| Future | GPU integration via wgpu | Planned |
-| Future | Distributed posterior aggregation | Planned |
+Near term:
 
-## Key differentiators vs PyMC
+- Hierarchical priors (parameter as hyperparameter of another parameter's prior)
+- Link functions and GLMs
+- Custom likelihood functions
+- Prior and posterior predictive sampling
+- LOO-CV (Pareto-smoothed importance sampling)
+- Trace plots and visual diagnostics
+- PyPI package (`pip install rustmc`)
 
-1. **Fully Rust sampling loop** — zero Python overhead during MCMC.
-2. **True multithreaded chains** — Rayon thread pool, not multiprocessing.
-3. **No Python inside inner sampling loop** — GIL is released for the entire sampling run.
-4. **Designed for simulation throughput** — minimal allocation, cache-friendly data layout.
-5. **Embeddable in Rust systems** — use `rustmc_core` as a standalone Rust library.
-6. **Deterministic, low-latency inference** — reproducible results with ChaCha8 RNG per chain.
+Medium term:
+
+- Sufficient statistics optimization for linear-Normal models
+- MAP estimation (L-BFGS)
+- Laplace approximation
+- Sparse indicator variable support
+- Stochastic gradient MCMC (SGLD/SGHMC) for large datasets
+- Model serialization (compile once, deploy without Python)
+
+Long term:
+
+- Variational inference (ADVI)
+- GPU-accelerated log-probability via wgpu
+- WASM compilation for browser/edge inference
+- Distributed posterior aggregation
+- Automatic reparameterization for funnel geometries
+- C FFI for embedding in non-Python systems
 
 ## License
 

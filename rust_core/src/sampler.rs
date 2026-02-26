@@ -177,7 +177,24 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
         h.join().ok();
     }
 
-    let samples: Vec<Vec<Vec<f64>>> = results.iter().map(|r| r.samples.clone()).collect();
+    let transforms = &graph.param_transforms;
+
+    // Back-transform samples from unconstrained to constrained space
+    let samples: Vec<Vec<Vec<f64>>> = results
+        .iter()
+        .map(|r| {
+            r.samples
+                .iter()
+                .map(|draw| {
+                    draw.iter()
+                        .enumerate()
+                        .map(|(i, &raw)| transforms[i].apply(raw))
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
@@ -189,4 +206,124 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
         divergences,
         param_names,
     }
+}
+
+/// Lightweight result for a single model in a batch run (1 chain).
+#[derive(Debug, Clone)]
+pub struct BatchModelResult {
+    pub samples: Vec<Vec<f64>>,
+    pub param_names: Vec<String>,
+    pub accept_rate: f64,
+    pub divergences: usize,
+}
+
+impl BatchModelResult {
+    pub fn mean(&self) -> Vec<f64> {
+        let n_params = self.param_names.len();
+        let n_draws = self.samples.len();
+        let mut sums = vec![0.0; n_params];
+        for draw in &self.samples {
+            for (i, v) in draw.iter().enumerate() {
+                sums[i] += v;
+            }
+        }
+        sums.iter().map(|s| s / n_draws as f64).collect()
+    }
+
+    pub fn std(&self) -> Vec<f64> {
+        let means = self.mean();
+        let n_params = self.param_names.len();
+        let n_draws = self.samples.len();
+        let mut sum_sq = vec![0.0; n_params];
+        for draw in &self.samples {
+            for (i, v) in draw.iter().enumerate() {
+                let d = v - means[i];
+                sum_sq[i] += d * d;
+            }
+        }
+        sum_sq.iter().map(|s| (s / n_draws as f64).sqrt()).collect()
+    }
+
+    pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {
+        let mut vals: Vec<f64> = self.samples.iter().map(|d| d[param_idx]).collect();
+        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+        let idx = (q * (vals.len() - 1) as f64) as usize;
+        vals[idx.min(vals.len() - 1)]
+    }
+}
+
+/// Run many independent models in parallel through one Rayon thread pool.
+///
+/// Each model gets 1 NUTS chain. This is designed for throughput over
+/// per-model diagnostic quality — run thousands of small models fast.
+pub fn batch_sample(
+    models: Vec<(Graph, Vec<f64>)>,
+    num_draws: usize,
+    num_warmup: usize,
+    seed: u64,
+    show_progress: bool,
+) -> Vec<BatchModelResult> {
+    let n_models = models.len();
+
+    let progress_state = if show_progress {
+        Some(Arc::new(ProgressState::new(
+            n_models,
+            num_draws,
+            num_warmup,
+            8, // approximate leapfrog for progress display
+        )))
+    } else {
+        None
+    };
+
+    let progress_handle = progress_state
+        .as_ref()
+        .map(|ps| progress::spawn_progress_thread(Arc::clone(ps)));
+
+    let results: Vec<BatchModelResult> = models
+        .into_par_iter()
+        .enumerate()
+        .map(|(model_idx, (graph, obs_y))| {
+            let _ = obs_y; // data is already baked into the graph
+            let mut rng = ChaCha8Rng::seed_from_u64(seed + model_idx as u64);
+            let prog_ref = progress_state.as_deref();
+
+            let nuts_config = NutsConfig {
+                step_size: 0.0,
+                max_tree_depth: 8,
+                num_draws,
+                num_warmup,
+            };
+
+            let chain = nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref);
+
+            let transforms = &graph.param_transforms;
+            let samples: Vec<Vec<f64>> = chain
+                .samples
+                .iter()
+                .map(|draw| {
+                    draw.iter()
+                        .enumerate()
+                        .map(|(i, &raw)| transforms[i].apply(raw))
+                        .collect()
+                })
+                .collect();
+
+            BatchModelResult {
+                samples,
+                param_names: graph.param_names.clone(),
+                accept_rate: chain.accept_rate,
+                divergences: chain.divergences,
+            }
+        })
+        .collect();
+
+    if let Some(ps) = &progress_state {
+        ps.finish();
+    }
+    if let Some(h) = progress_handle {
+        h.join().ok();
+    }
+
+    results
 }
