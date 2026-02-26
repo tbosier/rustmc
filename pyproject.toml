@@ -29,7 +29,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/taylorai/rustmc"
+Repository = "https://github.com/tbosier/rustmc"
 
 [tool.maturin]
 manifest-path = "python_bindings/Cargo.toml"
