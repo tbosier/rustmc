@@ -2,6 +2,8 @@
 name = "rustmc"
 version = "0.3.0"
 edition = "2021"
+license = "MIT"
+license-file = "../LICENSE"
 
 [lib]
 name = "rustmc"
