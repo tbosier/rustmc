@@ -4,7 +4,9 @@ use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::distributions::Normal;
+use rustmc_core::distributions::{
+    BetaDist, Bernoulli, Gamma, HalfNormal, Normal, Poisson, StudentT, Uniform,
+};
 use rustmc_core::graph::{Graph, NodeId};
 use rustmc_core::sampler::{self, SampleResult, SamplerConfig, SamplerType};
 use std::collections::HashMap;
@@ -17,10 +19,30 @@ struct ModelSpec {
 }
 
 #[derive(Debug, Clone)]
-struct PriorSpec {
-    name: String,
-    mu: f64,
-    sigma: f64,
+enum PriorSpec {
+    Normal { name: String, mu: f64, sigma: f64 },
+    HalfNormal { name: String, sigma: f64 },
+    StudentT { name: String, nu: f64, mu: f64, sigma: f64 },
+    Uniform { name: String, lower: f64, upper: f64 },
+    Bernoulli { name: String, p: f64 },
+    Poisson { name: String, lam: f64 },
+    Gamma { name: String, alpha: f64, beta: f64 },
+    Beta { name: String, alpha: f64, beta: f64 },
+}
+
+impl PriorSpec {
+    fn name(&self) -> &str {
+        match self {
+            PriorSpec::Normal { name, .. }
+            | PriorSpec::HalfNormal { name, .. }
+            | PriorSpec::StudentT { name, .. }
+            | PriorSpec::Uniform { name, .. }
+            | PriorSpec::Bernoulli { name, .. }
+            | PriorSpec::Poisson { name, .. }
+            | PriorSpec::Gamma { name, .. }
+            | PriorSpec::Beta { name, .. } => name,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -165,15 +187,58 @@ impl ModelBuilder {
 
     #[pyo3(signature = (name, mu, sigma))]
     fn normal_prior(&mut self, name: &str, mu: f64, sigma: f64) -> ParamRef {
-        self.priors.push(PriorSpec {
-            name: name.to_string(),
-            mu,
-            sigma,
-        });
+        self.priors.push(PriorSpec::Normal { name: name.to_string(), mu, sigma });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, sigma))]
+    fn half_normal_prior(&mut self, name: &str, sigma: f64) -> ParamRef {
+        self.priors.push(PriorSpec::HalfNormal { name: name.to_string(), sigma });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, nu, mu=0.0, sigma=1.0))]
+    fn student_t_prior(&mut self, name: &str, nu: f64, mu: f64, sigma: f64) -> ParamRef {
+        self.priors.push(PriorSpec::StudentT { name: name.to_string(), nu, mu, sigma });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, lower=0.0, upper=1.0))]
+    fn uniform_prior(&mut self, name: &str, lower: f64, upper: f64) -> ParamRef {
+        self.priors.push(PriorSpec::Uniform { name: name.to_string(), lower, upper });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, p=0.5))]
+    fn bernoulli_prior(&mut self, name: &str, p: f64) -> ParamRef {
+        self.priors.push(PriorSpec::Bernoulli { name: name.to_string(), p });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, lam))]
+    fn poisson_prior(&mut self, name: &str, lam: f64) -> ParamRef {
+        self.priors.push(PriorSpec::Poisson { name: name.to_string(), lam });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, alpha, beta))]
+    fn gamma_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
+        self.priors.push(PriorSpec::Gamma { name: name.to_string(), alpha, beta });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
+    }
+
+    #[pyo3(signature = (name, alpha, beta))]
+    fn beta_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
+        self.priors.push(PriorSpec::Beta { name: name.to_string(), alpha, beta });
+        self.param_names.push(name.to_string());
+        ParamRef { name: name.to_string() }
     }
 
     #[pyo3(signature = (name, mu_expr, sigma, observed_key))]
@@ -474,7 +539,16 @@ fn sample(
     let mut graph = Graph::new();
 
     for prior in &model_spec.priors {
-        Normal::prior(&mut graph, &prior.name, prior.mu, prior.sigma);
+        match prior {
+            PriorSpec::Normal { name, mu, sigma } => { Normal::prior(&mut graph, name, *mu, *sigma); }
+            PriorSpec::HalfNormal { name, sigma } => { HalfNormal::prior(&mut graph, name, *sigma); }
+            PriorSpec::StudentT { name, nu, mu, sigma } => { StudentT::prior(&mut graph, name, *nu, *mu, *sigma); }
+            PriorSpec::Uniform { name, lower, upper } => { Uniform::prior(&mut graph, name, *lower, *upper); }
+            PriorSpec::Bernoulli { name, p } => { Bernoulli::prior(&mut graph, name, *p); }
+            PriorSpec::Poisson { name, lam } => { Poisson::prior(&mut graph, name, *lam); }
+            PriorSpec::Gamma { name, alpha, beta } => { Gamma::prior(&mut graph, name, *alpha, *beta); }
+            PriorSpec::Beta { name, alpha, beta } => { BetaDist::prior(&mut graph, name, *alpha, *beta); }
+        }
     }
 
     for lik in &model_spec.likelihoods {
@@ -518,6 +592,124 @@ fn sample(
     Ok(FitResult { result })
 }
 
+/// Result for a single model in a batch run.
+#[pyclass]
+struct BatchResult {
+    inner: sampler::BatchModelResult,
+}
+
+#[pymethods]
+impl BatchResult {
+    fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let means = self.inner.mean();
+        let dict = PyDict::new(py);
+        for (name, val) in self.inner.param_names.iter().zip(means.iter()) {
+            dict.set_item(name, val)?;
+        }
+        Ok(dict)
+    }
+
+    fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let stds = self.inner.std();
+        let dict = PyDict::new(py);
+        for (name, val) in self.inner.param_names.iter().zip(stds.iter()) {
+            dict.set_item(name, val)?;
+        }
+        Ok(dict)
+    }
+
+    fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (pidx, name) in self.inner.param_names.iter().enumerate() {
+            let vals: Vec<f64> = self.inner.samples.iter().map(|d| d[pidx]).collect();
+            let arr = PyArray1::from_vec(py, vals);
+            dict.set_item(name, arr)?;
+        }
+        Ok(dict)
+    }
+
+    #[getter]
+    fn accept_rate(&self) -> f64 {
+        self.inner.accept_rate
+    }
+
+    #[getter]
+    fn divergences(&self) -> usize {
+        self.inner.divergences
+    }
+
+    fn __repr__(&self) -> String {
+        let means = self.inner.mean();
+        let parts: Vec<String> = self
+            .inner
+            .param_names
+            .iter()
+            .zip(means.iter())
+            .map(|(n, m)| format!("{}={:.4}", n, m))
+            .collect();
+        format!("BatchResult({})", parts.join(", "))
+    }
+}
+
+/// Run thousands of independent models in parallel through Rayon.
+///
+/// Each entry in `models` is a (ModelSpec, data_dict) pair. Each gets 1 NUTS chain.
+/// Returns a list of BatchResult objects.
+#[pyfunction]
+#[pyo3(signature = (models, draws=500, warmup=300, seed=42, show_progress=true))]
+fn batch_sample(
+    py: Python<'_>,
+    models: Vec<(Bound<'_, ModelSpec>, Bound<'_, PyDict>)>,
+    draws: usize,
+    warmup: usize,
+    seed: u64,
+    show_progress: bool,
+) -> PyResult<Vec<BatchResult>> {
+    let mut graphs = Vec::with_capacity(models.len());
+
+    for (spec_bound, data_bound) in &models {
+        let spec = spec_bound.borrow();
+
+        let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
+        for (key, value) in data_bound.iter() {
+            let key_str: String = key.extract()?;
+            let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
+            let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
+            data_map.insert(key_str, vec);
+        }
+
+        let mut graph = Graph::new();
+        for prior in &spec.priors {
+            match prior {
+                PriorSpec::Normal { name, mu, sigma } => { Normal::prior(&mut graph, name, *mu, *sigma); }
+                PriorSpec::HalfNormal { name, sigma } => { HalfNormal::prior(&mut graph, name, *sigma); }
+                PriorSpec::StudentT { name, nu, mu, sigma } => { StudentT::prior(&mut graph, name, *nu, *mu, *sigma); }
+                PriorSpec::Uniform { name, lower, upper } => { Uniform::prior(&mut graph, name, *lower, *upper); }
+                PriorSpec::Bernoulli { name, p } => { Bernoulli::prior(&mut graph, name, *p); }
+                PriorSpec::Poisson { name, lam } => { Poisson::prior(&mut graph, name, *lam); }
+                PriorSpec::Gamma { name, alpha, beta } => { Gamma::prior(&mut graph, name, *alpha, *beta); }
+                PriorSpec::Beta { name, alpha, beta } => { BetaDist::prior(&mut graph, name, *alpha, *beta); }
+            }
+        }
+        for lik in &spec.likelihoods {
+            let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map)?;
+            let obs_vec = data_map
+                .get(&lik.observed_key)
+                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
+                .clone();
+            Normal::observed(&mut graph, mu_node, lik.sigma, obs_vec);
+        }
+
+        graphs.push((graph, vec![]));
+    }
+
+    let results = py.allow_threads(|| {
+        sampler::batch_sample(graphs, draws, warmup, seed, show_progress)
+    });
+
+    Ok(results.into_iter().map(|r| BatchResult { inner: r }).collect())
+}
+
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModelBuilder>()?;
@@ -525,6 +717,8 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ParamRef>()?;
     m.add_class::<Expr>()?;
     m.add_class::<FitResult>()?;
+    m.add_class::<BatchResult>()?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;
+    m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
     Ok(())
 }
