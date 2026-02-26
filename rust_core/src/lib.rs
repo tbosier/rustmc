@@ -3,6 +3,7 @@ pub mod diagnostics;
 pub mod distributions;
 pub mod graph;
 pub mod hmc;
+pub mod nuts;
 pub mod progress;
 pub mod sampler;
 
