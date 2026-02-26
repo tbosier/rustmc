@@ -1,19 +1,30 @@
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
 use crate::hmc::{self, ChainResult, HmcConfig};
+use crate::nuts::{self, NutsConfig};
 use crate::progress::{self, ProgressState};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::sync::Arc;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SamplerType {
+    Nuts,
+    Hmc,
+}
+
 #[derive(Debug, Clone)]
 pub struct SamplerConfig {
+    pub sampler: SamplerType,
     pub num_chains: usize,
     pub num_draws: usize,
     pub num_warmup: usize,
     pub step_size: f64,
+    /// HMC only: fixed number of leapfrog steps.
     pub num_leapfrog_steps: usize,
+    /// NUTS only: maximum tree depth (default 10).
+    pub max_tree_depth: usize,
     pub seed: u64,
     pub num_threads: usize,
     pub show_progress: bool,
@@ -22,11 +33,13 @@ pub struct SamplerConfig {
 impl Default for SamplerConfig {
     fn default() -> Self {
         Self {
+            sampler: SamplerType::Nuts,
             num_chains: 4,
             num_draws: 1000,
             num_warmup: 500,
             step_size: 0.0,
             num_leapfrog_steps: 15,
+            max_tree_depth: 10,
             seed: 42,
             num_threads: 0,
             show_progress: true,
@@ -105,11 +118,10 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
     let graph = Arc::new(graph);
     let param_names = graph.param_names.clone();
 
-    let hmc_config = HmcConfig {
-        step_size: config.step_size,
-        num_leapfrog_steps: config.num_leapfrog_steps,
-        num_draws: config.num_draws,
-        num_warmup: config.num_warmup,
+    // For progress bar, leapfrog count is approximate for NUTS
+    let approx_leapfrog = match config.sampler {
+        SamplerType::Hmc => config.num_leapfrog_steps,
+        SamplerType::Nuts => 1 << (config.max_tree_depth / 2),
     };
 
     let progress_state = if config.show_progress {
@@ -117,7 +129,7 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
             config.num_chains,
             config.num_draws,
             config.num_warmup,
-            config.num_leapfrog_steps,
+            approx_leapfrog,
         )))
     } else {
         None
@@ -134,7 +146,27 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
         .map(|&chain_idx| {
             let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_idx as u64);
             let prog_ref = progress_state.as_deref();
-            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+
+            match config.sampler {
+                SamplerType::Nuts => {
+                    let nuts_config = NutsConfig {
+                        step_size: config.step_size,
+                        max_tree_depth: config.max_tree_depth,
+                        num_draws: config.num_draws,
+                        num_warmup: config.num_warmup,
+                    };
+                    nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                }
+                SamplerType::Hmc => {
+                    let hmc_config = HmcConfig {
+                        step_size: config.step_size,
+                        num_leapfrog_steps: config.num_leapfrog_steps,
+                        num_draws: config.num_draws,
+                        num_warmup: config.num_warmup,
+                    };
+                    hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                }
+            }
         })
         .collect();
 

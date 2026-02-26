@@ -6,7 +6,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::distributions::Normal;
 use rustmc_core::graph::{Graph, NodeId};
-use rustmc_core::sampler::{self, SampleResult, SamplerConfig};
+use rustmc_core::sampler::{self, SampleResult, SamplerConfig, SamplerType};
 use std::collections::HashMap;
 
 #[pyclass]
@@ -446,7 +446,7 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -458,6 +458,8 @@ fn sample(
     seed: u64,
     threads: usize,
     step_size: f64,
+    sampler: &str,
+    max_tree_depth: usize,
     num_leapfrog_steps: usize,
     show_progress: bool,
 ) -> PyResult<FitResult> {
@@ -490,12 +492,22 @@ fn sample(
         Normal::observed(&mut graph, mu_node, lik.sigma, obs_vec);
     }
 
+    let sampler_type = match sampler {
+        "nuts" | "NUTS" => SamplerType::Nuts,
+        "hmc" | "HMC" => SamplerType::Hmc,
+        _ => return Err(PyValueError::new_err(
+            format!("Unknown sampler '{}'. Use 'nuts' or 'hmc'.", sampler),
+        )),
+    };
+
     let config = SamplerConfig {
+        sampler: sampler_type,
         num_chains: chains,
         num_draws: draws,
         num_warmup: warmup,
         step_size,
         num_leapfrog_steps,
+        max_tree_depth,
         seed,
         num_threads: threads,
         show_progress,

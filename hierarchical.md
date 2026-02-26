@@ -1,0 +1,5 @@
+- Sufficient statistics / precomputed Hessian for linear models — instant fix for this class of problems
+- MAP estimation (L-BFGS optimizer) — the 80/20 of Bayesian inference, handles huge models
+- Laplace approximation — MAP + Hessian gives you uncertainty without sampling
+- Stochastic gradient MCMC — makes full Bayesian inference feasible at scale
+- VI/ADVI — the production workhorse for approximate posteriors
