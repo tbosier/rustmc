@@ -176,6 +176,17 @@ Design principles:
 - Deterministic RNG per chain (ChaCha8 seeded from base_seed + chain_index).
 - Parameter transforms and Jacobian corrections are handled in the graph, not the sampler.
 
+### Data structures (Rust vs JAX)
+
+The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`, parameters and gradients are `Vec<f64>`, and the autodiff evaluator uses contiguous `vec_buf` / `adj_vec_buf` (flat `Vec<f64>`) for all vector intermediates. There is no ndarray or external array library in the inner loop; `ndarray` appears only in the Python bindings when building the 2D sample array to return to NumPy. Benefits of this layout:
+
+- **Cache-friendly**: One pass over the graph touches sequential memory; vector slots are in a single allocation.
+- **Zero allocation in the loop**: Buffers are allocated once per chain and reused for every gradient evaluation.
+- **No Python or FFI in the inner loop**: The entire NUTS/HMC step runs in Rust; Python is only used to build the model and consume results.
+- **Fixed graph traversal**: The same DAG is walked every time; there is no tracing or recompilation per model or per step.
+
+JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and GPU support but adds per-model compilation and dispatch overhead. For many small, independent models (e.g. 10,000 SKUs), rustmc's "compile once, run fixed graph over contiguous buffers" approach often wins on CPU because there is no per-model JAX trace/compile and no Python in the inner loop. Nutpie (JAX-based) is faster than default PyMC for a single model; the batch example compares rustmc's batch NUTS against PyMC+nutpie run in a loop over the same number of models.
+
 ## Roadmap
 
 Near term:
