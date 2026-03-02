@@ -35,11 +35,17 @@ Batch inference, 10,000 independent 3-parameter models:
 
 ```bash
 pip install maturin
-git clone https://github.com/your-username/rustmc.git
+git clone https://github.com/tbosier/rustmc.git
 cd rustmc
 python -m venv .venv && source .venv/bin/activate
 pip install numpy maturin
 maturin develop --manifest-path python_bindings/Cargo.toml --release
+```
+
+or if you prefer, I have made this publically downloadable via pip 
+
+```bash
+pip install rustmc
 ```
 
 ### Single model
