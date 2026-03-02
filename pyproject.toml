@@ -34,3 +34,4 @@ Repository = "https://github.com/tbosier/rustmc"
 [tool.maturin]
 manifest-path = "python_bindings/Cargo.toml"
 features = ["pyo3/extension-module"]
+include = ["LICENSE"]
