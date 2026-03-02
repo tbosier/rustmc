@@ -37,13 +37,17 @@ pub struct Evaluator {
     /// Cached total log-probability from the last `compute` call.
     pub total_logp: f64,
     /// Map from param index to node id, for extracting gradients.
-    param_node_ids: Vec<usize>,
+    /// `None` for vector params that have no `Op::Param` node (e.g. MatVecMul params).
+    param_node_ids: Vec<Option<usize>>,
 }
 
 impl Evaluator {
     pub fn new(graph: &Graph) -> Self {
         let n = graph.nodes.len();
-        let vec_len = graph.data_vectors.first().map(|v| v.len()).unwrap_or(0);
+        let vec_len = graph.data_vectors.first().map(|v| v.len())
+            .or_else(|| graph.obs_vectors.first().map(|v| v.len()))
+            .or_else(|| graph.data_matrices.first().map(|m| m.n_rows))
+            .unwrap_or(0);
 
         let mut node_kind = Vec::with_capacity(n);
         let mut vec_slot_count = 0usize;
@@ -54,7 +58,8 @@ impl Evaluator {
                 Op::ScalarMulData(_, _)
                 | Op::VectorAdd(_, _)
                 | Op::ScalarBroadcastAdd(_, _)
-                | Op::FusedLinearMu { .. } => {
+                | Op::FusedLinearMu { .. }
+                | Op::MatVecMul { .. } => {
                     let offset = vec_slot_count * vec_len;
                     vec_slot_count += 1;
                     NodeKind::ComputedVec(offset)
@@ -64,10 +69,10 @@ impl Evaluator {
             node_kind.push(kind);
         }
 
-        let mut param_node_ids = vec![0usize; graph.param_count];
+        let mut param_node_ids: Vec<Option<usize>> = vec![None; graph.param_count];
         for node in &graph.nodes {
             if let Op::Param(pidx) = node.op {
-                param_node_ids[pidx] = node.id.0;
+                param_node_ids[pidx] = Some(node.id.0);
             }
         }
 
@@ -231,6 +236,41 @@ impl Evaluator {
                         }
                     }
                 }
+                Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+                    use faer::{col, mat, linalg::matmul::matmul, Parallelism};
+                    let out_off = match self.node_kind[idx] {
+                        NodeKind::ComputedVec(o) => o,
+                        _ => unreachable!(),
+                    };
+                    let matrix = &graph.data_matrices[*matrix_idx];
+                    let base = intercept.map_or(0.0, |n| self.scalars[n.0]);
+                    let out = &mut self.vec_buf[out_off..out_off + vl];
+                    out.fill(base);
+                    let x = mat::from_row_major_slice::<f64>(
+                        &matrix.data, matrix.n_rows, matrix.n_cols,
+                    );
+                    let beta_slice = &params[*param_start..*param_start + *n_params];
+                    let beta_col = col::from_slice::<f64>(beta_slice);
+                    let out_col = col::from_slice_mut::<f64>(out);
+                    // Use Rayon threads for matrices large enough to amortise spawn cost.
+                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
+                        Parallelism::Rayon(0)
+                    } else {
+                        Parallelism::None
+                    };
+                    matmul(out_col.as_2d_mut(), x, beta_col.as_2d(), Some(1.0), 1.0, par);
+                }
+                Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+                    let s2 = sigma * sigma;
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let v = params[param_start + k];
+                        let d = v - mu;
+                        sum += log_norm - 0.5 * d * d / s2;
+                    }
+                    self.scalars[idx] = sum;
+                }
             }
         }
 
@@ -242,9 +282,10 @@ impl Evaluator {
             .sum();
 
         // === Backward pass ===
-        // Zero adjoint buffers
+        // Zero adjoint buffers and gradient
         self.adj_scalars.iter_mut().for_each(|x| *x = 0.0);
         self.adj_vec_buf.iter_mut().for_each(|x| *x = 0.0);
+        self.grad.iter_mut().for_each(|x| *x = 0.0);
 
         // Seed
         for &id in &graph.logp_terms {
@@ -469,12 +510,48 @@ impl Evaluator {
                         self.adj_scalars[n.0] += ds;
                     }
                 }
+                Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+                    use faer::{col, mat, linalg::matmul::matmul, Parallelism};
+                    let out_off = match self.node_kind[idx] {
+                        NodeKind::ComputedVec(o) => o,
+                        _ => unreachable!(),
+                    };
+                    let matrix = &graph.data_matrices[*matrix_idx];
+                    let x = mat::from_row_major_slice::<f64>(
+                        &matrix.data, matrix.n_rows, matrix.n_cols,
+                    );
+                    let adj_slice = &self.adj_vec_buf[out_off..out_off + vl];
+                    let adj_col = col::from_slice::<f64>(adj_slice);
+                    let grad_slice = &mut self.grad[*param_start..*param_start + *n_params];
+                    let grad_col = col::from_slice_mut::<f64>(grad_slice);
+                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
+                        Parallelism::Rayon(0)
+                    } else {
+                        Parallelism::None
+                    };
+                    // grad += X^T @ adj
+                    matmul(grad_col.as_2d_mut(), x.transpose(), adj_col.as_2d(), Some(1.0), 1.0, par);
+                    if let Some(n) = intercept {
+                        let ds: f64 = adj_slice.iter().sum();
+                        self.adj_scalars[n.0] += ds;
+                    }
+                }
+                Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                    let s2 = sigma * sigma;
+                    for k in 0..*n_params {
+                        let v = params[param_start + k];
+                        self.grad[param_start + k] += a_s * (-(v - mu) / s2);
+                    }
+                }
             }
         }
 
-        // Extract parameter gradients
-        for (pidx, &nid) in self.param_node_ids.iter().enumerate() {
-            self.grad[pidx] = self.adj_scalars[nid];
+        // Extract parameter gradients from adj_scalars for regular Param nodes;
+        // vector-param gradients are already accumulated directly into self.grad.
+        for (pidx, nid_opt) in self.param_node_ids.iter().enumerate() {
+            if let Some(nid) = nid_opt {
+                self.grad[pidx] += self.adj_scalars[*nid];
+            }
         }
     }
 }
@@ -594,6 +671,26 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 }
                 Value::Vector(result)
             }
+            Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+                let matrix = &graph.data_matrices[*matrix_idx];
+                let base = intercept.map_or(0.0, |n| values[n.0].as_scalar());
+                let mut result = vec![base; matrix.n_rows];
+                for i in 0..matrix.n_rows {
+                    for j in 0..*n_params {
+                        result[i] += matrix.data[i * matrix.n_cols + j] * params[param_start + j];
+                    }
+                }
+                Value::Vector(result)
+            }
+            Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+                let s2 = sigma * sigma;
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let d = params[param_start + k] - mu;
+                    log_norm - 0.5 * d * d / s2
+                }).sum();
+                Value::Scalar(sum)
+            }
         };
         values.push(val);
     }
@@ -621,6 +718,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
 
     let mut adj_scalar = vec![0.0f64; n];
     let mut adj_vector: Vec<Option<Vec<f64>>> = vec![None; n];
+    let mut grad = vec![0.0f64; graph.param_count];
 
     for &id in &graph.logp_terms {
         adj_scalar[id.0] += 1.0;
@@ -795,10 +893,32 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     }
                 }
             }
+            Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+                if let Some(ref uv) = adj_vector[idx].take() {
+                    let matrix = &graph.data_matrices[*matrix_idx];
+                    // grad[param_start + k] += sum_i X[i,k] * adj[i]
+                    for k in 0..*n_params {
+                        let mut ds = 0.0f64;
+                        for i in 0..matrix.n_rows {
+                            ds += uv[i] * matrix.data[i * matrix.n_cols + k];
+                        }
+                        grad[param_start + k] += ds;
+                    }
+                    if let Some(n) = *intercept {
+                        adj_scalar[n.0] += uv.iter().sum::<f64>();
+                    }
+                }
+            }
+            Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                let s2 = sigma * sigma;
+                for k in 0..*n_params {
+                    let v = params[param_start + k];
+                    grad[param_start + k] += a_s * (-(v - mu) / s2);
+                }
+            }
         }
     }
 
-    let mut grad = vec![0.0; graph.param_count];
     for node in &graph.nodes {
         if let Op::Param(pidx) = node.op {
             grad[pidx] = adj_scalar[node.id.0];
@@ -1135,5 +1255,90 @@ mod tests {
         let x = g.add_constant(1.0);
         g.bernoulli_logp(x, p);
         finite_diff_check(&g, &[0.7], 1e-4);
+    }
+
+    /// Test MatVecMul + VectorNormalLogP forward and gradient via finite differences.
+    /// Model: 10 observations, 5 beta parameters, 1 scalar intercept.
+    /// Prior: beta ~ Normal(0,1) via VectorNormalLogP
+    ///        intercept ~ Normal(0,10) via NormalLogP
+    /// Likelihood: Normal(intercept + X @ beta, sigma=1)
+    #[test]
+    fn test_mat_vec_mul_gradient() {
+        // 10 obs × 5 params
+        #[rustfmt::skip]
+        let x_data: Vec<f64> = vec![
+            0.1, 0.2, 0.3, 0.4, 0.5,
+            0.6, 0.7, 0.8, 0.9, 1.0,
+            1.1, 1.2, 1.3, 1.4, 1.5,
+            1.6, 1.7, 1.8, 1.9, 2.0,
+            2.1, 2.2, 2.3, 2.4, 2.5,
+            2.6, 2.7, 2.8, 2.9, 3.0,
+            3.1, 3.2, 3.3, 3.4, 3.5,
+            3.6, 3.7, 3.8, 3.9, 4.0,
+            4.1, 4.2, 4.3, 4.4, 4.5,
+            4.6, 4.7, 4.8, 4.9, 5.0,
+        ];
+        let obs: Vec<f64> = vec![1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5, 10.5];
+
+        let mut g = Graph::new();
+
+        // intercept: scalar param, Normal(0,10) prior
+        let intercept = g.add_param("intercept");
+        let mu0 = g.add_constant(0.0);
+        let sigma10 = g.add_constant(10.0);
+        g.normal_logp(intercept, mu0, sigma10);
+
+        // beta: vector params, VectorNormal(0,1) prior
+        let param_start = g.add_vector_params("beta", 5);
+        g.vector_normal_logp(param_start, 5, 0.0, 1.0);
+
+        // mu = intercept + X @ beta
+        let matrix_idx = g.store_matrix(x_data, 10, 5);
+        let mu_node = g.mat_vec_mul(matrix_idx, param_start, 5, Some(intercept));
+
+        // likelihood
+        let sigma1 = g.add_constant(1.0);
+        let obs_idx = g.add_obs_data(obs);
+        g.normal_obs_logp(mu_node, sigma1, obs_idx);
+
+        // params = [intercept, beta[0..5]] = 6 total
+        let params = vec![0.5, 0.1, 0.2, -0.1, 0.3, -0.2];
+
+        // Check that Evaluator and grad_logp agree
+        let (logp_ref, grad_ref) = grad_logp(&g, &params);
+
+        let mut eval = Evaluator::new(&g);
+        eval.compute(&g, &params);
+
+        assert!(
+            (eval.total_logp - logp_ref).abs() < 1e-8,
+            "logp mismatch: Evaluator={} grad_logp={}",
+            eval.total_logp, logp_ref
+        );
+        for i in 0..params.len() {
+            assert!(
+                (eval.grad[i] - grad_ref[i]).abs() < 1e-8,
+                "grad[{}] mismatch: Evaluator={} grad_logp={}",
+                i, eval.grad[i], grad_ref[i]
+            );
+        }
+
+        // Finite-difference check on grad_logp
+        finite_diff_check(&g, &params, 1e-4);
+
+        // Also check Evaluator gradient with finite differences on eval_logp
+        let eps = 1e-6;
+        for i in 0..params.len() {
+            let mut p_plus = params.clone();
+            let mut p_minus = params.clone();
+            p_plus[i] += eps;
+            p_minus[i] -= eps;
+            let num = (eval_logp(&g, &p_plus) - eval_logp(&g, &p_minus)) / (2.0 * eps);
+            assert!(
+                (eval.grad[i] - num).abs() < 1e-4,
+                "Evaluator grad[{}]: analytic={}, numerical={}",
+                i, eval.grad[i], num
+            );
+        }
     }
 }

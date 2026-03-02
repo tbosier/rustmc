@@ -4,6 +4,14 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
+/// A 2-D data matrix stored row-major (n_rows × n_cols).
+#[derive(Debug, Clone)]
+pub struct MatrixData {
+    pub data: Vec<f64>,
+    pub n_rows: usize,
+    pub n_cols: usize,
+}
+
 /// Operations supported in the computation graph.
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -64,6 +72,21 @@ pub enum Op {
         data_indices: Vec<usize>,
         intercept: Option<NodeId>,
     },
+    /// faer-backed matrix-vector multiply: mu = X @ params[param_start..param_start+n_params]
+    /// X is stored row-major in graph.data_matrices[matrix_idx].
+    MatVecMul {
+        matrix_idx: usize,
+        param_start: usize,
+        n_params: usize,
+        intercept: Option<NodeId>,
+    },
+    /// Vectorized Normal prior: Σ_k Normal.logp(params[param_start+k], mu, sigma)
+    VectorNormalLogP {
+        param_start: usize,
+        n_params: usize,
+        mu: f64,
+        sigma: f64,
+    },
 }
 
 /// A single node in the computation graph.
@@ -112,6 +135,7 @@ pub struct Graph {
     pub param_count: usize,
     pub data_vectors: Vec<Vec<f64>>,
     pub obs_vectors: Vec<Vec<f64>>,
+    pub data_matrices: Vec<MatrixData>,
     pub param_names: Vec<String>,
     pub param_transforms: Vec<ParamTransform>,
     pub logp_terms: Vec<NodeId>,
@@ -125,6 +149,7 @@ impl Graph {
             param_count: 0,
             data_vectors: Vec::new(),
             obs_vectors: Vec::new(),
+            data_matrices: Vec::new(),
             param_names: Vec::new(),
             param_transforms: Vec::new(),
             logp_terms: Vec::new(),
@@ -319,6 +344,47 @@ impl Graph {
 
     pub fn node_by_name(&self, name: &str) -> Option<NodeId> {
         self.name_to_node.get(name).copied()
+    }
+
+    /// Allocate `n` contiguous parameters with no individual `Param` nodes.
+    /// Returns the `param_start` index into the parameter vector.
+    pub fn add_vector_params(&mut self, base_name: &str, n: usize) -> usize {
+        let param_start = self.param_count;
+        self.param_count += n;
+        for k in 0..n {
+            self.param_names.push(format!("{}[{}]", base_name, k));
+            self.param_transforms.push(ParamTransform::Identity);
+        }
+        param_start
+    }
+
+    /// Store a row-major matrix and return its index in `data_matrices`.
+    pub fn store_matrix(&mut self, data: Vec<f64>, n_rows: usize, n_cols: usize) -> usize {
+        let idx = self.data_matrices.len();
+        self.data_matrices.push(MatrixData { data, n_rows, n_cols });
+        idx
+    }
+
+    pub fn mat_vec_mul(
+        &mut self,
+        matrix_idx: usize,
+        param_start: usize,
+        n_params: usize,
+        intercept: Option<NodeId>,
+    ) -> NodeId {
+        self.add_node(Op::MatVecMul { matrix_idx, param_start, n_params, intercept }, None)
+    }
+
+    pub fn vector_normal_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        mu: f64,
+        sigma: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorNormalLogP { param_start, n_params, mu, sigma }, None);
+        self.logp_terms.push(node);
+        node
     }
 }
 

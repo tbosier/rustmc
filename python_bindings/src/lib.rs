@@ -1,6 +1,6 @@
 use ndarray::Array2;
-use numpy::PyArrayMethods;
-use numpy::{IntoPyArray, PyArray1};
+use numpy::{PyArrayMethods, PyUntypedArrayMethods};
+use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -28,6 +28,7 @@ enum PriorSpec {
     Poisson { name: String, lam: f64 },
     Gamma { name: String, alpha: f64, beta: f64 },
     Beta { name: String, alpha: f64, beta: f64 },
+    VectorNormal { name: String, n: usize, mu: f64, sigma: f64 },
 }
 
 impl PriorSpec {
@@ -40,7 +41,8 @@ impl PriorSpec {
             | PriorSpec::Bernoulli { name, .. }
             | PriorSpec::Poisson { name, .. }
             | PriorSpec::Gamma { name, .. }
-            | PriorSpec::Beta { name, .. } => name,
+            | PriorSpec::Beta { name, .. }
+            | PriorSpec::VectorNormal { name, .. } => name,
         }
     }
 }
@@ -64,6 +66,11 @@ enum MuExpr {
     Add(Box<MuExpr>, Box<MuExpr>),
     /// Bare parameter broadcast-added to a vector expression.
     Param(String),
+    /// faer-backed matrix-vector multiply: matrix_data_key @ vector_param.
+    MatVec {
+        param_name: String,
+        data_key: String,
+    },
 }
 
 impl MuExpr {
@@ -71,7 +78,27 @@ impl MuExpr {
         match self {
             MuExpr::Param(_) => true,
             MuExpr::ParamTimesData { .. } => false,
+            MuExpr::MatVec { .. } => false,
             MuExpr::Add(a, b) => a.is_scalar() && b.is_scalar(),
+        }
+    }
+}
+
+#[pyclass]
+#[derive(Debug, Clone)]
+struct VectorParamRef {
+    name: String,
+    n: usize,
+}
+
+#[pymethods]
+impl VectorParamRef {
+    fn __matmul__(&self, data_key: &str) -> Expr {
+        Expr {
+            inner: MuExpr::MatVec {
+                param_name: self.name.clone(),
+                data_key: data_key.to_string(),
+            },
         }
     }
 }
@@ -241,6 +268,23 @@ impl ModelBuilder {
         ParamRef { name: name.to_string() }
     }
 
+    #[pyo3(signature = (name, n, mu=0.0, sigma=1.0))]
+    fn vector_normal_prior(
+        &mut self,
+        name: &str,
+        n: usize,
+        mu: f64,
+        sigma: f64,
+    ) -> VectorParamRef {
+        self.priors.push(PriorSpec::VectorNormal {
+            name: name.to_string(),
+            n,
+            mu,
+            sigma,
+        });
+        VectorParamRef { name: name.to_string(), n }
+    }
+
     #[pyo3(signature = (name, mu_expr, sigma, observed_key))]
     fn normal_likelihood(
         &mut self,
@@ -293,6 +337,8 @@ fn try_extract_linear(expr: &MuExpr) -> Option<(Vec<(String, String)>, Option<St
                     false
                 }
             }
+            // MatVec uses faer GEMV — never fuse into scalar linear combination
+            MuExpr::MatVec { .. } => false,
         }
     }
 
@@ -312,6 +358,8 @@ fn build_mu_expr(
     graph: &mut Graph,
     expr: &MuExpr,
     data_map: &HashMap<String, Vec<f64>>,
+    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
+    vector_param_map: &HashMap<String, (usize, usize)>,
 ) -> Result<NodeId, PyErr> {
     // Fast path: fuse linear combinations into a single op
     if let Some((terms, intercept_name)) = try_extract_linear(expr) {
@@ -365,9 +413,21 @@ fn build_mu_expr(
                 .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?;
             Ok(param_node)
         }
+        MuExpr::MatVec { param_name, data_key } => {
+            let &(param_start, n_params) = vector_param_map.get(param_name.as_str())
+                .ok_or_else(|| PyValueError::new_err(
+                    format!("Unknown vector param '{}' — did you call vector_normal_prior?", param_name)
+                ))?;
+            let (data, n_rows, n_cols) = matrix_map.get(data_key.as_str())
+                .ok_or_else(|| PyValueError::new_err(
+                    format!("Missing matrix key '{}' in data dict", data_key)
+                ))?;
+            let matrix_idx = graph.store_matrix(data.clone(), *n_rows, *n_cols);
+            Ok(graph.mat_vec_mul(matrix_idx, param_start, n_params, None))
+        }
         MuExpr::Add(a, b) => {
-            let na = build_mu_expr(graph, a, data_map)?;
-            let nb = build_mu_expr(graph, b, data_map)?;
+            let na = build_mu_expr(graph, a, data_map, matrix_map, vector_param_map)?;
+            let nb = build_mu_expr(graph, b, data_map, matrix_map, vector_param_map)?;
             let a_scalar = a.is_scalar();
             let b_scalar = b.is_scalar();
             if a_scalar && !b_scalar {
@@ -529,14 +589,24 @@ fn sample(
     show_progress: bool,
 ) -> PyResult<FitResult> {
     let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = HashMap::new();
+
     for (key, value) in data.iter() {
         let key_str: String = key.extract()?;
-        let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
-        let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
-        data_map.insert(key_str, vec);
+        if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
+            let shape = arr.shape().to_vec();
+            let slice = unsafe { arr.as_slice()? };
+            matrix_map.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
+        } else {
+            let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
+            let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
+            data_map.insert(key_str, vec);
+        }
     }
 
     let mut graph = Graph::new();
+    // Maps vector-param name → (param_start, n_params)
+    let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
 
     for prior in &model_spec.priors {
         match prior {
@@ -548,11 +618,18 @@ fn sample(
             PriorSpec::Poisson { name, lam } => { Poisson::prior(&mut graph, name, *lam); }
             PriorSpec::Gamma { name, alpha, beta } => { Gamma::prior(&mut graph, name, *alpha, *beta); }
             PriorSpec::Beta { name, alpha, beta } => { BetaDist::prior(&mut graph, name, *alpha, *beta); }
+            PriorSpec::VectorNormal { name, n, mu, sigma } => {
+                let param_start = graph.add_vector_params(name, *n);
+                vector_param_map.insert(name.clone(), (param_start, *n));
+                graph.vector_normal_logp(param_start, *n, *mu, *sigma);
+            }
         }
     }
 
     for lik in &model_spec.likelihoods {
-        let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map)?;
+        let mu_node = build_mu_expr(
+            &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
+        )?;
 
         let obs_vec = data_map
             .get(&lik.observed_key)
@@ -671,14 +748,22 @@ fn batch_sample(
         let spec = spec_bound.borrow();
 
         let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
+        let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = HashMap::new();
         for (key, value) in data_bound.iter() {
             let key_str: String = key.extract()?;
-            let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
-            let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
-            data_map.insert(key_str, vec);
+            if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
+                let shape = arr.shape().to_vec();
+                let slice = unsafe { arr.as_slice()? };
+                matrix_map.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
+            } else {
+                let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
+                let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
+                data_map.insert(key_str, vec);
+            }
         }
 
         let mut graph = Graph::new();
+        let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
         for prior in &spec.priors {
             match prior {
                 PriorSpec::Normal { name, mu, sigma } => { Normal::prior(&mut graph, name, *mu, *sigma); }
@@ -689,10 +774,17 @@ fn batch_sample(
                 PriorSpec::Poisson { name, lam } => { Poisson::prior(&mut graph, name, *lam); }
                 PriorSpec::Gamma { name, alpha, beta } => { Gamma::prior(&mut graph, name, *alpha, *beta); }
                 PriorSpec::Beta { name, alpha, beta } => { BetaDist::prior(&mut graph, name, *alpha, *beta); }
+                PriorSpec::VectorNormal { name, n, mu, sigma } => {
+                    let param_start = graph.add_vector_params(name, *n);
+                    vector_param_map.insert(name.clone(), (param_start, *n));
+                    graph.vector_normal_logp(param_start, *n, *mu, *sigma);
+                }
             }
         }
         for lik in &spec.likelihoods {
-            let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map)?;
+            let mu_node = build_mu_expr(
+                &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
+            )?;
             let obs_vec = data_map
                 .get(&lik.observed_key)
                 .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
@@ -715,6 +807,7 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModelBuilder>()?;
     m.add_class::<ModelSpec>()?;
     m.add_class::<ParamRef>()?;
+    m.add_class::<VectorParamRef>()?;
     m.add_class::<Expr>()?;
     m.add_class::<FitResult>()?;
     m.add_class::<BatchResult>()?;
