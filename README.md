@@ -106,6 +106,31 @@ for r in results[:5]:
     print(r)
 ```
 
+### Vector parameter model (high-dimensional regression)
+
+For models where the parameter count is large — e.g. a regression with thousands of features — use `vector_normal_prior` to allocate all coefficients as a contiguous block and dispatch `X @ beta` via faer:
+
+```python
+import numpy as np
+import rustmc as rmc
+
+N, P = 10_000, 500
+X = np.random.randn(N, P)           # 2-D array → stored as faer matrix
+beta_true = np.random.randn(P)
+y = X @ beta_true + np.random.randn(N)
+
+builder = rmc.ModelBuilder()
+beta = builder.vector_normal_prior("beta", n=P, mu=0.0, sigma=1.0)
+mu_expr = beta @ "X"                # dispatches to faer GEMV in the inner loop
+builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
+model = builder.build()
+
+fit = rmc.sample(model_spec=model, data={"X": X, "y": y}, chains=4, draws=500)
+print(fit.summary())
+```
+
+Instead of 500 separate scalar graph nodes (one per coefficient), rustmc allocates a single `MatVecMul` op backed by faer. The entire `X @ beta` forward pass and its gradient are computed with a single BLAS-level call, giving cache-efficient performance regardless of how many parameters are in the vector.
+
 ## What is implemented
 
 ### Sampling
@@ -137,6 +162,9 @@ Constrained distributions are automatically sampled in unconstrained space via l
 - Computational graph with reverse-mode automatic differentiation.
 - Fused linear combination op for regression models. Replaces N separate multiply-add passes with a single cache-friendly loop over the data.
 - Zero-allocation evaluator. All vector intermediates are pre-allocated in a flat buffer and reused across gradient evaluations. No heap allocation in the sampling loop.
+- faer-backed matrix-vector multiply (`MatVecMul`). For models with large parameter vectors (e.g. 5,000-feature regressions), parameters are grouped into a contiguous block and `X @ beta` is dispatched to faer's GEMV routine. This replaces 5,000 individual scalar multiply-add graph ops with a single BLAS-level call and automatically uses Rayon threads for matrices above 100K elements.
+- Vectorized Normal prior (`VectorNormalLogP`). A single graph op evaluates the log-probability of an entire parameter vector under `Normal(mu, sigma)`, replacing one graph node per parameter with a single tight loop. Gradients for all vector parameters accumulate directly into the gradient buffer in one backward pass.
+- 2-D NumPy arrays in the data dict are automatically detected and stored as row-major matrices for use with `MatVecMul`.
 
 ### Diagnostics
 
@@ -164,7 +192,7 @@ Python (orchestration only)
   |
   v  GIL released
 Rust Core
-  +-- Graph         Computational DAG, nodes, ops, data storage
+  +-- Graph         Computational DAG, nodes, ops, data + matrix storage
   +-- Autodiff      Forward evaluation + reverse-mode gradient
   +-- Distributions  8 distributions with automatic transforms
   +-- NUTS          Multinomial tree-building, U-turn detection
@@ -172,6 +200,7 @@ Rust Core
   +-- Sampler       Multi-chain parallel runner, batch inference
   +-- Diagnostics   R-hat, ESS, MCSE, HDI
   +-- Progress      Atomic counters, background render thread
+  +-- faer          BLAS-level MatVecMul for high-dimensional parameter vectors
 ```
 
 Design principles:
@@ -184,12 +213,13 @@ Design principles:
 
 ### Data structures (Rust vs JAX)
 
-The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`, parameters and gradients are `Vec<f64>`, and the autodiff evaluator uses contiguous `vec_buf` / `adj_vec_buf` (flat `Vec<f64>`) for all vector intermediates. There is no ndarray or external array library in the inner loop; `ndarray` appears only in the Python bindings when building the 2D sample array to return to NumPy. Benefits of this layout:
+The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`, parameters and gradients are `Vec<f64>`, and the autodiff evaluator uses contiguous `vec_buf` / `adj_vec_buf` (flat `Vec<f64>`) for all vector intermediates. For high-dimensional parameter vectors, data matrices are stored row-major as `Vec<f64>` inside the graph and handed to faer's `matmul` kernel as zero-copy views. `ndarray` appears only in the Python bindings for converting incoming 2-D NumPy arrays; it is not present in the inner loop. Benefits of this layout:
 
 - **Cache-friendly**: One pass over the graph touches sequential memory; vector slots are in a single allocation.
 - **Zero allocation in the loop**: Buffers are allocated once per chain and reused for every gradient evaluation.
 - **No Python or FFI in the inner loop**: The entire NUTS/HMC step runs in Rust; Python is only used to build the model and consume results.
 - **Fixed graph traversal**: The same DAG is walked every time; there is no tracing or recompilation per model or per step.
+- **BLAS-level throughput for large parameter vectors**: `MatVecMul` calls faer's GEMV, which uses SIMD intrinsics and can optionally spawn Rayon threads for matrices above 100K elements. A 5,000-parameter vector prior that previously required 5,000 individual scalar multiply-add nodes in the graph is now a single op.
 
 JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and GPU support but adds per-model compilation and dispatch overhead. For many small, independent models (e.g. 10,000 SKUs), rustmc's "compile once, run fixed graph over contiguous buffers" approach often wins on CPU because there is no per-model JAX trace/compile and no Python in the inner loop. Nutpie (JAX-based) is faster than default PyMC for a single model; the batch example compares rustmc's batch NUTS against PyMC+nutpie run in a loop over the same number of models.
 
@@ -203,11 +233,9 @@ Near term:
 - Prior and posterior predictive sampling
 - LOO-CV (Pareto-smoothed importance sampling)
 - Trace plots and visual diagnostics
-- PyPI package (`pip install rustmc`)
 
 Medium term:
 
-- Sufficient statistics optimization for linear-Normal models
 - MAP estimation (L-BFGS)
 - Laplace approximation
 - Sparse indicator variable support
