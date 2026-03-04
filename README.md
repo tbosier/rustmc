@@ -108,7 +108,7 @@ for r in results[:5]:
 
 ### Vector parameter model (high-dimensional regression)
 
-For models where the parameter count is large — e.g. a regression with thousands of features — use `vector_normal_prior` to allocate all coefficients as a contiguous block and dispatch `X @ beta` via faer:
+For models where the parameter count is large — e.g. a regression with thousands of features — use `normal_prior` with `@` to dispatch `X @ beta` via faer. rustmc automatically detects that `beta` is used in a matrix multiply, infers the number of parameters from the matrix dimensions, and promotes it to a contiguous vector parameter block:
 
 ```python
 import numpy as np
@@ -120,8 +120,8 @@ beta_true = np.random.randn(P)
 y = X @ beta_true + np.random.randn(N)
 
 builder = rmc.ModelBuilder()
-beta = builder.vector_normal_prior("beta", n=P, mu=0.0, sigma=1.0)
-mu_expr = beta @ "X"                # dispatches to faer GEMV in the inner loop
+beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
+mu_expr = beta @ "X"                # auto-promoted to faer GEMV
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
 model = builder.build()
 
@@ -130,6 +130,8 @@ print(fit.summary())
 ```
 
 Instead of 500 separate scalar graph nodes (one per coefficient), rustmc allocates a single `MatVecMul` op backed by faer. The entire `X @ beta` forward pass and its gradient are computed with a single BLAS-level call, giving cache-efficient performance regardless of how many parameters are in the vector.
+
+For explicit control over the vector size, `vector_normal_prior("beta", n=P)` is also available.
 
 ## What is implemented
 
@@ -162,7 +164,7 @@ Constrained distributions are automatically sampled in unconstrained space via l
 - Computational graph with reverse-mode automatic differentiation.
 - Fused linear combination op for regression models. Replaces N separate multiply-add passes with a single cache-friendly loop over the data.
 - Zero-allocation evaluator. All vector intermediates are pre-allocated in a flat buffer and reused across gradient evaluations. No heap allocation in the sampling loop.
-- faer-backed matrix-vector multiply (`MatVecMul`). For models with large parameter vectors (e.g. 5,000-feature regressions), parameters are grouped into a contiguous block and `X @ beta` is dispatched to faer's GEMV routine. This replaces 5,000 individual scalar multiply-add graph ops with a single BLAS-level call and automatically uses Rayon threads for matrices above 100K elements.
+- faer-backed matrix-vector multiply (`MatVecMul`). When a `normal_prior` parameter is used with `@` (e.g. `beta @ "X"`), rustmc automatically promotes it to a contiguous vector parameter block and dispatches the multiply to faer's GEMV routine. This replaces thousands of individual scalar multiply-add graph ops with a single BLAS-level call. Rayon threads are used for matrices above 100K elements. Explicit `vector_normal_prior` is also available for manual control.
 - Vectorized Normal prior (`VectorNormalLogP`). A single graph op evaluates the log-probability of an entire parameter vector under `Normal(mu, sigma)`, replacing one graph node per parameter with a single tight loop. Gradients for all vector parameters accumulate directly into the gradient buffer in one backward pass.
 - 2-D NumPy arrays in the data dict are automatically detected and stored as row-major matrices for use with `MatVecMul`.
 

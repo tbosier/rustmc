@@ -87,6 +87,42 @@ pub enum Op {
         mu: f64,
         sigma: f64,
     },
+    /// Vectorized HalfNormal prior on exp-transformed params.
+    /// logp(exp(raw)) + raw (Jacobian) summed over n_params.
+    VectorHalfNormalLogP {
+        param_start: usize,
+        n_params: usize,
+        sigma: f64,
+    },
+    /// Vectorized StudentT prior (identity transform).
+    VectorStudentTLogP {
+        param_start: usize,
+        n_params: usize,
+        nu: f64,
+        mu: f64,
+        sigma: f64,
+    },
+    /// Vectorized Gamma prior on exp-transformed params.
+    VectorGammaLogP {
+        param_start: usize,
+        n_params: usize,
+        alpha: f64,
+        beta: f64,
+    },
+    /// Vectorized Beta prior on sigmoid-transformed params.
+    VectorBetaLogP {
+        param_start: usize,
+        n_params: usize,
+        alpha: f64,
+        beta: f64,
+    },
+    /// Vectorized Uniform prior on bounded-sigmoid-transformed params.
+    VectorUniformLogP {
+        param_start: usize,
+        n_params: usize,
+        lower: f64,
+        upper: f64,
+    },
 }
 
 /// A single node in the computation graph.
@@ -349,11 +385,22 @@ impl Graph {
     /// Allocate `n` contiguous parameters with no individual `Param` nodes.
     /// Returns the `param_start` index into the parameter vector.
     pub fn add_vector_params(&mut self, base_name: &str, n: usize) -> usize {
+        self.add_vector_params_with_transform(base_name, n, ParamTransform::Identity)
+    }
+
+    /// Allocate `n` contiguous parameters with a specific transform.
+    /// Returns the `param_start` index into the parameter vector.
+    pub fn add_vector_params_with_transform(
+        &mut self,
+        base_name: &str,
+        n: usize,
+        transform: ParamTransform,
+    ) -> usize {
         let param_start = self.param_count;
         self.param_count += n;
         for k in 0..n {
             self.param_names.push(format!("{}[{}]", base_name, k));
-            self.param_transforms.push(ParamTransform::Identity);
+            self.param_transforms.push(transform.clone());
         }
         param_start
     }
@@ -383,6 +430,66 @@ impl Graph {
         sigma: f64,
     ) -> NodeId {
         let node = self.add_node(Op::VectorNormalLogP { param_start, n_params, mu, sigma }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn vector_half_normal_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        sigma: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorHalfNormalLogP { param_start, n_params, sigma }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn vector_student_t_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        nu: f64,
+        mu: f64,
+        sigma: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn vector_gamma_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        alpha: f64,
+        beta: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorGammaLogP { param_start, n_params, alpha, beta }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn vector_beta_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        alpha: f64,
+        beta: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorBetaLogP { param_start, n_params, alpha, beta }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn vector_uniform_logp(
+        &mut self,
+        param_start: usize,
+        n_params: usize,
+        lower: f64,
+        upper: f64,
+    ) -> NodeId {
+        let node = self.add_node(Op::VectorUniformLogP { param_start, n_params, lower, upper }, None);
         self.logp_terms.push(node);
         node
     }

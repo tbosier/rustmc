@@ -271,6 +271,65 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
+                Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                    // Combined logp(exp(raw), sigma) + raw (Jacobian)
+                    let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
+                    let s2 = sigma * sigma;
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        // log(sqrt(2/π)/σ) - exp(2·raw)/(2σ²) + raw
+                        sum += log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw;
+                    }
+                    self.scalars[idx] = sum;
+                }
+                Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+                    let log_norm = ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+                        - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let v = params[param_start + k];
+                        let z = (v - mu) / sigma;
+                        sum += log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln();
+                    }
+                    self.scalars[idx] = sum;
+                }
+                Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                    // Combined logp(exp(raw), alpha, beta) + raw (Jacobian = exp(raw), log = raw)
+                    // = α·log(β) - lnΓ(α) + α·raw - β·exp(raw)
+                    let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        sum += log_norm + alpha * raw - beta * raw.exp();
+                    }
+                    self.scalars[idx] = sum;
+                }
+                Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                    // s = sigmoid(raw), logp = lnΓ(α+β)-lnΓ(α)-lnΓ(β) + α·log(s) + β·log(1-s)
+                    // Jacobian of sigmoid = s·(1-s), so log|J| = log(s) + log(1-s)
+                    // Combined: lnΓ(α+β)-lnΓ(α)-lnΓ(β) + (α-1)·log(s) + (β-1)·log(1-s) + log(s) + log(1-s)
+                    //         = lnΓ(α+β)-lnΓ(α)-lnΓ(β) + α·log(s) + β·log(1-s)
+                    let log_norm = ln_gamma(alpha + beta) - ln_gamma(*alpha) - ln_gamma(*beta);
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        sum += log_norm + alpha * s.ln() + beta * (1.0 - s).ln();
+                    }
+                    self.scalars[idx] = sum;
+                }
+                Op::VectorUniformLogP { param_start, n_params, .. } => {
+                    // s = sigmoid(raw), logp_uniform = -log(hi-lo) (const), Jacobian = s·(1-s)·(hi-lo)
+                    // Combined: -log(hi-lo) + log(s·(1-s)·(hi-lo)) = log(s·(1-s)) = log(s) + log(1-s)
+                    let mut sum = 0.0f64;
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        sum += s.ln() + (1.0 - s).ln();
+                    }
+                    self.scalars[idx] = sum;
+                }
             }
         }
 
@@ -543,6 +602,45 @@ impl Evaluator {
                         self.grad[param_start + k] += a_s * (-(v - mu) / s2);
                     }
                 }
+                Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                    let s2 = sigma * sigma;
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        // d/draw = -exp(2·raw)/σ² + 1
+                        self.grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
+                    }
+                }
+                Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+                    for k in 0..*n_params {
+                        let v = params[param_start + k];
+                        let z = (v - mu) / sigma;
+                        // d/dv = -(ν+1)·z / (σ·ν·(1 + z²/ν))
+                        self.grad[param_start + k] += a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                    }
+                }
+                Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        // d/draw = α - β·exp(raw)
+                        self.grad[param_start + k] += a_s * (alpha - beta * raw.exp());
+                    }
+                }
+                Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        // d/draw = α·(1-s) - β·s
+                        self.grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                    }
+                }
+                Op::VectorUniformLogP { param_start, n_params, .. } => {
+                    for k in 0..*n_params {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        // d/draw = 1 - 2s
+                        self.grad[param_start + k] += a_s * (1.0 - 2.0 * s);
+                    }
+                }
             }
         }
 
@@ -688,6 +786,50 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 let sum: f64 = (0..*n_params).map(|k| {
                     let d = params[param_start + k] - mu;
                     log_norm - 0.5 * d * d / s2
+                }).sum();
+                Value::Scalar(sum)
+            }
+            Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
+                let s2 = sigma * sigma;
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let raw = params[param_start + k];
+                    log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw
+                }).sum();
+                Value::Scalar(sum)
+            }
+            Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+                let log_norm = ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+                    - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let v = params[param_start + k];
+                    let z = (v - mu) / sigma;
+                    log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
+                }).sum();
+                Value::Scalar(sum)
+            }
+            Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let raw = params[param_start + k];
+                    log_norm + alpha * raw - beta * raw.exp()
+                }).sum();
+                Value::Scalar(sum)
+            }
+            Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                let log_norm = ln_gamma(alpha + beta) - ln_gamma(*alpha) - ln_gamma(*beta);
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let raw = params[param_start + k];
+                    let s = 1.0 / (1.0 + (-raw).exp());
+                    log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
+                }).sum();
+                Value::Scalar(sum)
+            }
+            Op::VectorUniformLogP { param_start, n_params, .. } => {
+                let sum: f64 = (0..*n_params).map(|k| {
+                    let raw = params[param_start + k];
+                    let s = 1.0 / (1.0 + (-raw).exp());
+                    s.ln() + (1.0 - s).ln()
                 }).sum();
                 Value::Scalar(sum)
             }
@@ -914,6 +1056,40 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 for k in 0..*n_params {
                     let v = params[param_start + k];
                     grad[param_start + k] += a_s * (-(v - mu) / s2);
+                }
+            }
+            Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                let s2 = sigma * sigma;
+                for k in 0..*n_params {
+                    let raw = params[param_start + k];
+                    grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
+                }
+            }
+            Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+                for k in 0..*n_params {
+                    let v = params[param_start + k];
+                    let z = (v - mu) / sigma;
+                    grad[param_start + k] += a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                }
+            }
+            Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                for k in 0..*n_params {
+                    let raw = params[param_start + k];
+                    grad[param_start + k] += a_s * (alpha - beta * raw.exp());
+                }
+            }
+            Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                for k in 0..*n_params {
+                    let raw = params[param_start + k];
+                    let s = 1.0 / (1.0 + (-raw).exp());
+                    grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                }
+            }
+            Op::VectorUniformLogP { param_start, n_params, .. } => {
+                for k in 0..*n_params {
+                    let raw = params[param_start + k];
+                    let s = 1.0 / (1.0 + (-raw).exp());
+                    grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                 }
             }
         }
@@ -1340,5 +1516,89 @@ mod tests {
                 i, eval.grad[i], num
             );
         }
+    }
+
+    /// Helper: check both grad_logp and Evaluator against finite differences.
+    fn full_finite_diff_check(g: &Graph, params: &[f64], tol: f64) {
+        // Check free-standing grad_logp
+        finite_diff_check(g, params, tol);
+
+        // Check Evaluator
+        let mut eval = Evaluator::new(g);
+        eval.compute(g, params);
+        let (logp_ref, grad_ref) = grad_logp(g, params);
+        assert!(
+            (eval.total_logp - logp_ref).abs() < 1e-8,
+            "logp mismatch: Evaluator={} grad_logp={}",
+            eval.total_logp, logp_ref
+        );
+        let eps = 1e-6;
+        for i in 0..params.len() {
+            assert!(
+                (eval.grad[i] - grad_ref[i]).abs() < 1e-8,
+                "grad[{}] mismatch: Evaluator={} grad_logp={}",
+                i, eval.grad[i], grad_ref[i]
+            );
+            let mut p_plus = params.to_vec();
+            let mut p_minus = params.to_vec();
+            p_plus[i] += eps;
+            p_minus[i] -= eps;
+            let num = (eval_logp(g, &p_plus) - eval_logp(g, &p_minus)) / (2.0 * eps);
+            assert!(
+                (eval.grad[i] - num).abs() < tol,
+                "Evaluator grad[{}]: analytic={}, numerical={}",
+                i, eval.grad[i], num
+            );
+        }
+    }
+
+    #[test]
+    fn test_vector_half_normal_logp() {
+        use crate::graph::ParamTransform;
+        let mut g = Graph::new();
+        let param_start = g.add_vector_params_with_transform("x", 3, ParamTransform::Exp);
+        g.vector_half_normal_logp(param_start, 3, 2.0);
+        // raw values (unconstrained); exp(raw) > 0 always
+        let params = vec![0.5, -0.3, 1.2];
+        full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    #[test]
+    fn test_vector_student_t_logp() {
+        let mut g = Graph::new();
+        let param_start = g.add_vector_params("x", 3);
+        g.vector_student_t_logp(param_start, 3, 4.0, 1.0, 2.0);
+        let params = vec![0.5, -0.3, 1.8];
+        full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    #[test]
+    fn test_vector_gamma_logp() {
+        use crate::graph::ParamTransform;
+        let mut g = Graph::new();
+        let param_start = g.add_vector_params_with_transform("x", 3, ParamTransform::Exp);
+        g.vector_gamma_logp(param_start, 3, 2.0, 1.5);
+        let params = vec![0.5, -0.3, 1.2];
+        full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    #[test]
+    fn test_vector_beta_logp() {
+        use crate::graph::ParamTransform;
+        let mut g = Graph::new();
+        let param_start = g.add_vector_params_with_transform("x", 3, ParamTransform::Sigmoid);
+        g.vector_beta_logp(param_start, 3, 2.0, 5.0);
+        let params = vec![0.5, -0.3, 1.2];
+        full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    #[test]
+    fn test_vector_uniform_logp() {
+        use crate::graph::ParamTransform;
+        let mut g = Graph::new();
+        let param_start = g.add_vector_params_with_transform("x", 3, ParamTransform::BoundedSigmoid { lower: 0.0, upper: 1.0 });
+        g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
+        let params = vec![0.5, -0.3, 1.2];
+        full_finite_diff_check(&g, &params, 1e-4);
     }
 }

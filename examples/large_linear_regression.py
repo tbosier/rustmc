@@ -4,6 +4,9 @@ rustmc — large-parameter linear regression benchmark
 Demonstrates the faer-backed MatVecMul path: 1001 graph nodes instead of
 ~15,000, and a single SIMD-vectorized GEMV instead of 5000 scalar axpy loops.
 
+normal_prior + @ auto-promotes beta to a contiguous vector parameter block
+backed by faer GEMV — no need to call vector_normal_prior explicitly.
+
 Runtime note: NUTS gradient evaluation streams the full design matrix from RAM
 on every leapfrog step. For N_OBS=6000, N_PARAMS=5000 that is ~240 MB per
 GEMV. Expect ~30–90 min for 400 samples depending on core count and NUTS tree
@@ -23,11 +26,11 @@ y = X @ true_beta + np.random.randn(N_OBS) * 1.0
 
 print(f"Dataset: {N_OBS:,} obs × {N_PARAMS:,} params")
 
-# ── Vector-param model (faer MatVecMul path) ─────────────────────────────
+# ── Auto-promoted vector-param model (faer MatVecMul path) ───────────────
 t0 = time.time()
 builder = rmc.ModelBuilder()
 intercept = builder.normal_prior("intercept", mu=0.0, sigma=10.0)
-beta      = builder.vector_normal_prior("beta", n=N_PARAMS, mu=0.0, sigma=1.0)
+beta      = builder.normal_prior("beta", mu=0.0, sigma=1.0)
 mu_expr   = intercept + beta @ "X"
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
 model = builder.build()
