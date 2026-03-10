@@ -34,7 +34,7 @@ print("=" * 50)
 
 import rustmc as rmc
 
-builder   = rmc.ModelBuilder()
+builder   = rmc.ModelBuilder(data={"X": X, "y": y})
 intercept = builder.normal_prior("intercept", mu=0.0, sigma=10.0)
 beta      = builder.vector_normal_prior("beta", n=N_PARAMS, mu=0.0, sigma=1.0)
 builder.normal_likelihood("obs",
@@ -44,7 +44,7 @@ builder.normal_likelihood("obs",
 model = builder.build()
 
 t0 = time.perf_counter()
-rmc_result = rmc.sample(model, {"X": X, "y": y},
+rmc_result = rmc.sample(model,
                         draws=DRAWS, warmup=WARMUP,
                         chains=CHAINS, seed=SEED,
                         show_progress=True)

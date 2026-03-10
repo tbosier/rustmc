@@ -56,7 +56,7 @@ except Exception as e:
 # ---------------------------------------------------------------------------
 import rustmc as rmc
 
-builder = rmc.ModelBuilder()
+builder = rmc.ModelBuilder(data=data)
 beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
 mu_expr = beta * "x"
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
@@ -65,7 +65,6 @@ model = builder.build()
 start = time.time()
 fit = rmc.sample(
     model_spec=model,
-    data=data,
     chains=NUM_CHAINS,
     draws=NUM_DRAWS,
     warmup=500,

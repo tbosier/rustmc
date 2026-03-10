@@ -155,7 +155,7 @@ print(f"Design matrix built in {time.time() - t_build:.1f}s")
 import rustmc as rmc
 
 print("\nBuilding model...")
-builder = rmc.ModelBuilder()
+builder = rmc.ModelBuilder(data=data)
 
 params = []
 for name, data_key, mu, sigma in param_specs:
@@ -181,7 +181,6 @@ print(f"Sampler: NUTS  |  Max tree depth: 10")
 start = time.time()
 fit = rmc.sample(
     model_spec=model,
-    data=data,
     chains=NUM_CHAINS,
     draws=NUM_DRAWS,
     warmup=NUM_WARMUP,
