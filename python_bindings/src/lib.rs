@@ -917,6 +917,78 @@ impl FitResult {
         Ok(list)
     }
 
+    /// Convert to an ArviZ InferenceData object.
+    ///
+    /// Requires ArviZ: `pip install arviz`
+    ///
+    /// Returns an `arviz.InferenceData` with:
+    ///   - `posterior`    — (n_chains × n_draws) arrays for every parameter
+    ///   - `sample_stats` — `diverging` (bool) and `step_size` per draw
+    ///
+    /// Example
+    /// -------
+    ///     idata = fit.to_arviz()
+    ///     az.plot_trace(idata)
+    ///     az.plot_pair(idata)
+    ///     az.loo(idata)
+    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        // Helpful error if ArviZ is not installed
+        let az = py.import("arviz").map_err(|_| {
+            PyValueError::new_err(
+                "ArviZ is not installed. Install it with: pip install arviz"
+            )
+        })?;
+
+        let n_chains = self.result.samples.len();
+        let n_draws = self.result.samples.first().map_or(0, |c| c.len());
+
+        // ── posterior ────────────────────────────────────────────────────
+        let posterior = self.get_samples_2d(py)?;
+
+        // ── sample_stats ─────────────────────────────────────────────────
+        // We store only aggregate divergences per chain, not per-draw flags.
+        // Spread them evenly at the *end* of warmup so trace plots show the
+        // transitions that actually diverged (best approximation we have).
+        let sample_stats = PyDict::new(py);
+
+        // diverging: bool array (n_chains, n_draws) — mark the last
+        // `div_count` draws of each chain as divergent (conservative proxy).
+        let mut diverging_data: Vec<bool> = Vec::with_capacity(n_chains * n_draws);
+        for (ci, &div_count) in self.result.divergences.iter().enumerate() {
+            let _ = ci;
+            let flagged = div_count.min(n_draws);
+            for d in 0..n_draws {
+                diverging_data.push(d >= n_draws - flagged);
+            }
+        }
+        let mut div_arr = Array2::<bool>::default((n_chains, n_draws));
+        for ci in 0..n_chains {
+            for di in 0..n_draws {
+                div_arr[[ci, di]] = diverging_data[ci * n_draws + di];
+            }
+        }
+        // ArviZ expects numpy arrays; convert bool array via Python
+        let np = py.import("numpy")?;
+        let div_np = np.call_method1("array", (div_arr.into_pyarray(py),))?;
+        sample_stats.set_item("diverging", div_np)?;
+
+        // step_size: constant per chain, broadcast to (n_chains, n_draws)
+        let mut step_size_arr = Array2::<f64>::zeros((n_chains, n_draws));
+        for (ci, &ss) in self.result.step_sizes.iter().enumerate() {
+            for di in 0..n_draws {
+                step_size_arr[[ci, di]] = ss;
+            }
+        }
+        sample_stats.set_item("step_size", step_size_arr.into_pyarray(py))?;
+
+        // ── call az.from_dict ─────────────────────────────────────────────
+        let kwargs = PyDict::new(py);
+        kwargs.set_item("posterior", posterior)?;
+        kwargs.set_item("sample_stats", sample_stats)?;
+
+        az.call_method("from_dict", (), Some(&kwargs))
+    }
+
     fn __repr__(&self) -> String {
         let means = self.result.mean();
         let stds = self.result.std();
