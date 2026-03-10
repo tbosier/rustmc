@@ -66,7 +66,10 @@ print()
 # ---------------------------------------------------------------------------
 import rustmc as rmc
 
-builder = rmc.ModelBuilder()
+data = {f"x_{i}": np.ascontiguousarray(X[:, i]) for i in range(P)}
+data["y"] = y
+
+builder = rmc.ModelBuilder(data=data)
 params = [builder.normal_prior(f"beta_{i}", mu=0.0, sigma=10.0) for i in range(P)]
 
 mu_expr = params[0] * "x_0"
@@ -75,13 +78,9 @@ for i in range(1, P):
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=0.5, observed_key="y")
 model = builder.build()
 
-data = {f"x_{i}": np.ascontiguousarray(X[:, i]) for i in range(P)}
-data["y"] = y
-
 start = time.time()
 fit = rmc.sample(
     model_spec=model,
-    data=data,
     chains=NUM_CHAINS,
     draws=NUM_DRAWS,
     warmup=1000,

@@ -71,7 +71,12 @@ cos_train = cos_t[:TRAIN_WEEKS]
 
 models = []
 for i in range(N_SKUS):
-    builder = rmc.ModelBuilder()
+    data = {
+        "t": t_train,
+        "sin_t": sin_train,
+        "y": all_series[i, :TRAIN_WEEKS],
+    }
+    builder = rmc.ModelBuilder(data=data)
     intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
     trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
     seas = builder.normal_prior("seasonality", mu=0.0, sigma=50.0)
@@ -79,13 +84,7 @@ for i in range(N_SKUS):
     mu_expr = intercept + trend * "t" + seas * "sin_t"
     builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=true_noise[i], observed_key="y")
     model = builder.build()
-
-    data = {
-        "t": t_train,
-        "sin_t": sin_train,
-        "y": all_series[i, :TRAIN_WEEKS],
-    }
-    models.append((model, data))
+    models.append((model, {}))
 
 build_time = time.time() - t_build_start
 print(f"Models built in {build_time:.2f}s")

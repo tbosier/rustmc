@@ -28,20 +28,19 @@ print(f"Dataset: {N_OBS:,} obs × {N_PARAMS:,} params")
 
 # ── Auto-promoted vector-param model (faer MatVecMul path) ───────────────
 t0 = time.time()
-builder = rmc.ModelBuilder()
+builder   = rmc.ModelBuilder(data={"X": X, "y": y})
 intercept = builder.normal_prior("intercept", mu=0.0, sigma=10.0)
 beta      = builder.normal_prior("beta", mu=0.0, sigma=1.0)
 mu_expr   = intercept + beta @ "X"
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
-model = builder.build()
-data  = {"X": X, "y": y}
+model     = builder.build()
 build_time = time.time() - t0
 print(f"Model built in {build_time:.3f}s")
 
 DRAWS, WARMUP = 200, 200
 print(f"\nSampling: NUTS, 1 chain, {WARMUP} warmup + {DRAWS} draws ...")
 t0 = time.time()
-result = rmc.sample(model, data, draws=DRAWS, warmup=WARMUP, chains=1, seed=42,
+result = rmc.sample(model, draws=DRAWS, warmup=WARMUP, chains=1, seed=42,
                     show_progress=True)
 elapsed = time.time() - t0
 

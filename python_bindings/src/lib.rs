@@ -16,6 +16,8 @@ use std::collections::HashMap;
 struct ModelSpec {
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
+    bound_data_1d: HashMap<String, Vec<f64>>,
+    bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -109,6 +111,8 @@ struct ModelBuilder {
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
     param_names: Vec<String>,
+    bound_data_1d: HashMap<String, Vec<f64>>,
+    bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
 
 #[pyclass]
@@ -213,12 +217,19 @@ impl Expr {
 #[pymethods]
 impl ModelBuilder {
     #[new]
-    fn new() -> Self {
-        Self {
+    #[pyo3(signature = (data=None))]
+    fn new(data: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+        let (bound_data_1d, bound_data_2d) = match data {
+            Some(d) => parse_data_dict(d)?,
+            None => (HashMap::new(), HashMap::new()),
+        };
+        Ok(Self {
             priors: Vec::new(),
             likelihoods: Vec::new(),
             param_names: Vec::new(),
-        }
+            bound_data_1d,
+            bound_data_2d,
+        })
     }
 
     #[pyo3(signature = (name, mu, sigma))]
@@ -301,19 +312,109 @@ impl ModelBuilder {
         mu_expr: &Expr,
         sigma: f64,
         observed_key: &str,
-    ) {
+    ) -> PyResult<()> {
         let _ = name;
+        if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
+            validate_data_keys(
+                &mu_expr.inner,
+                observed_key,
+                &self.bound_data_1d,
+                &self.bound_data_2d,
+            )?;
+        }
         self.likelihoods.push(LikelihoodSpec {
             mu_expr: mu_expr.inner.clone(),
             sigma,
             observed_key: observed_key.to_string(),
         });
+        Ok(())
     }
 
     fn build(&self) -> ModelSpec {
         ModelSpec {
             priors: self.priors.clone(),
             likelihoods: self.likelihoods.clone(),
+            bound_data_1d: self.bound_data_1d.clone(),
+            bound_data_2d: self.bound_data_2d.clone(),
+        }
+    }
+}
+
+/// Extract numpy arrays from a Python dict into typed Rust maps.
+fn parse_data_dict(
+    data: &Bound<'_, PyDict>,
+) -> PyResult<(
+    HashMap<String, Vec<f64>>,
+    HashMap<String, (Vec<f64>, usize, usize)>,
+)> {
+    let mut data_1d = HashMap::new();
+    let mut data_2d = HashMap::new();
+    for (key, value) in data.iter() {
+        let key_str: String = key.extract()?;
+        if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
+            let shape = arr.shape().to_vec();
+            let slice = unsafe { arr.as_slice()? };
+            data_2d.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
+        } else {
+            let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
+            let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
+            data_1d.insert(key_str, vec);
+        }
+    }
+    Ok((data_1d, data_2d))
+}
+
+/// Validate that every data key referenced in `expr` and `observed_key` exists in the
+/// bound data maps.  Called eagerly at `normal_likelihood()` time when data is bound.
+fn validate_data_keys(
+    expr: &MuExpr,
+    observed_key: &str,
+    data_1d: &HashMap<String, Vec<f64>>,
+    data_2d: &HashMap<String, (Vec<f64>, usize, usize)>,
+) -> PyResult<()> {
+    if !data_1d.contains_key(observed_key) {
+        let available: Vec<&str> = data_1d.keys().map(String::as_str).collect();
+        return Err(PyValueError::new_err(format!(
+            "observed key '{}' not found in bound data. Available 1-D keys: [{}]",
+            observed_key,
+            available.join(", ")
+        )));
+    }
+    validate_expr_keys(expr, data_1d, data_2d)
+}
+
+fn validate_expr_keys(
+    expr: &MuExpr,
+    data_1d: &HashMap<String, Vec<f64>>,
+    data_2d: &HashMap<String, (Vec<f64>, usize, usize)>,
+) -> PyResult<()> {
+    match expr {
+        MuExpr::ParamTimesData { data_key, .. } => {
+            if !data_1d.contains_key(data_key) {
+                let available: Vec<&str> = data_1d.keys().map(String::as_str).collect();
+                return Err(PyValueError::new_err(format!(
+                    "data key '{}' not found in bound data. Available 1-D keys: [{}]",
+                    data_key,
+                    available.join(", ")
+                )));
+            }
+            Ok(())
+        }
+        MuExpr::MatVec { data_key, .. } => {
+            if !data_2d.contains_key(data_key) {
+                let available: Vec<&str> = data_2d.keys().map(String::as_str).collect();
+                return Err(PyValueError::new_err(format!(
+                    "matrix key '{}' not found in bound data. Available 2-D keys: [{}]",
+                    data_key,
+                    available.join(", ")
+                )));
+            }
+            Ok(())
+        }
+        MuExpr::Param(_) => Ok(()),
+        MuExpr::Add(a, b) => {
+            validate_expr_keys(a, data_1d, data_2d)?;
+            validate_expr_keys(b, data_1d, data_2d)
         }
     }
 }
@@ -618,12 +719,12 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
     model_spec: &ModelSpec,
-    data: &Bound<'_, PyDict>,
+    data: Option<&Bound<'_, PyDict>>,
     chains: usize,
     draws: usize,
     warmup: usize,
@@ -635,20 +736,20 @@ fn sample(
     num_leapfrog_steps: usize,
     show_progress: bool,
 ) -> PyResult<FitResult> {
-    let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
-    let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = HashMap::new();
+    // Start from data bound at build time, then let call-site data override/extend.
+    let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
+    let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = model_spec.bound_data_2d.clone();
 
-    for (key, value) in data.iter() {
-        let key_str: String = key.extract()?;
-        if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
-            let shape = arr.shape().to_vec();
-            let slice = unsafe { arr.as_slice()? };
-            matrix_map.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
-        } else {
-            let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
-            let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
-            data_map.insert(key_str, vec);
-        }
+    if let Some(data_dict) = data {
+        let (extra_1d, extra_2d) = parse_data_dict(data_dict)?;
+        data_map.extend(extra_1d);
+        matrix_map.extend(extra_2d);
+    }
+
+    if data_map.is_empty() && matrix_map.is_empty() && !model_spec.likelihoods.is_empty() {
+        return Err(PyValueError::new_err(
+            "No data provided. Pass data= to sample() or bind it via ModelBuilder(data=...).",
+        ));
     }
 
     let mut graph = Graph::new();
@@ -862,20 +963,12 @@ fn batch_sample(
     for (spec_bound, data_bound) in &models {
         let spec = spec_bound.borrow();
 
-        let mut data_map: HashMap<String, Vec<f64>> = HashMap::new();
-        let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = HashMap::new();
-        for (key, value) in data_bound.iter() {
-            let key_str: String = key.extract()?;
-            if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
-                let shape = arr.shape().to_vec();
-                let slice = unsafe { arr.as_slice()? };
-                matrix_map.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
-            } else {
-                let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
-                let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
-                data_map.insert(key_str, vec);
-            }
-        }
+        // Bound data from ModelSpec is the base; call-site dict overrides/extends.
+        let mut data_map: HashMap<String, Vec<f64>> = spec.bound_data_1d.clone();
+        let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = spec.bound_data_2d.clone();
+        let (extra_1d, extra_2d) = parse_data_dict(data_bound)?;
+        data_map.extend(extra_1d);
+        matrix_map.extend(extra_2d);
 
         let mut graph = Graph::new();
         let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();

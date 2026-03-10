@@ -18,7 +18,7 @@ y = beta_true * x + np.random.randn(N)
 data = {"x": x, "y": y}
 
 # --- Define model ---
-builder = rmc.ModelBuilder()
+builder = rmc.ModelBuilder(data=data)
 beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
 mu_expr = beta * "x"
 builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=1.0, observed_key="y")
@@ -27,7 +27,6 @@ model = builder.build()
 # --- Sample ---
 fit = rmc.sample(
     model_spec=model,
-    data=data,
     chains=4,
     draws=3000,
     warmup=1000,
