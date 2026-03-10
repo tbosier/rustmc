@@ -50,9 +50,15 @@ impl PriorSpec {
 }
 
 #[derive(Debug, Clone)]
+enum SigmaSpec {
+    Const(f64),
+    Param(String),
+}
+
+#[derive(Debug, Clone)]
 struct LikelihoodSpec {
     mu_expr: MuExpr,
-    sigma: f64,
+    sigma: SigmaSpec,
     observed_key: String,
 }
 
@@ -310,10 +316,19 @@ impl ModelBuilder {
         &mut self,
         name: &str,
         mu_expr: &Expr,
-        sigma: f64,
+        sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
         let _ = name;
+        let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
+            SigmaSpec::Const(v)
+        } else if let Ok(p) = sigma.downcast::<ParamRef>() {
+            SigmaSpec::Param(p.borrow().name.clone())
+        } else {
+            return Err(PyValueError::new_err(
+                "sigma must be a float or a ParamRef (e.g. from half_normal_prior)",
+            ));
+        };
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &mu_expr.inner,
@@ -324,7 +339,7 @@ impl ModelBuilder {
         }
         self.likelihoods.push(LikelihoodSpec {
             mu_expr: mu_expr.inner.clone(),
-            sigma,
+            sigma: sigma_spec,
             observed_key: observed_key.to_string(),
         });
         Ok(())
@@ -415,6 +430,25 @@ fn validate_expr_keys(
         MuExpr::Add(a, b) => {
             validate_expr_keys(a, data_1d, data_2d)?;
             validate_expr_keys(b, data_1d, data_2d)
+        }
+    }
+}
+
+/// Resolve a SigmaSpec to a graph NodeId.
+fn resolve_sigma(
+    spec: &SigmaSpec,
+    graph: &mut Graph,
+    value_node_map: &HashMap<String, NodeId>,
+) -> Result<NodeId, PyErr> {
+    match spec {
+        SigmaSpec::Const(v) => Ok(graph.add_constant(*v)),
+        SigmaSpec::Param(name) => {
+            value_node_map.get(name.as_str()).copied().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "sigma parameter '{}' not found. Did you declare it as a prior?",
+                    name
+                ))
+            })
         }
     }
 }
@@ -755,6 +789,9 @@ fn sample(
     let mut graph = Graph::new();
     // Maps vector-param name → (param_start, n_params)
     let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
+    // Maps param name → the graph node representing its value (post-transform).
+    // For Normal this is the Param node itself; for HalfNormal/Gamma it's the Exp node.
+    let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
 
     // Auto-detect which Normal priors are used in MatVec expressions
     let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, &matrix_map)?;
@@ -768,7 +805,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_normal_logp(param_start, n, *mu, *sigma);
                 } else {
-                    Normal::prior(&mut graph, name, *mu, *sigma);
+                    let v = Normal::prior(&mut graph, name, *mu, *sigma);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::HalfNormal { name, sigma } => {
@@ -777,7 +815,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_half_normal_logp(param_start, n, *sigma);
                 } else {
-                    HalfNormal::prior(&mut graph, name, *sigma);
+                    let v = HalfNormal::prior(&mut graph, name, *sigma);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::StudentT { name, nu, mu, sigma } => {
@@ -786,7 +825,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
                 } else {
-                    StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
+                    let v = StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::Uniform { name, lower, upper } => {
@@ -795,7 +835,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_uniform_logp(param_start, n, *lower, *upper);
                 } else {
-                    Uniform::prior(&mut graph, name, *lower, *upper);
+                    let v = Uniform::prior(&mut graph, name, *lower, *upper);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::Bernoulli { name, p } => {
@@ -805,7 +846,8 @@ fn sample(
                          Discrete distributions cannot be auto-promoted to vector params.", name
                     )));
                 }
-                Bernoulli::prior(&mut graph, name, *p);
+                let v = Bernoulli::prior(&mut graph, name, *p);
+                value_node_map.insert(name.clone(), v);
             }
             PriorSpec::Poisson { name, lam } => {
                 if auto_vector_params.contains_key(name) {
@@ -814,7 +856,8 @@ fn sample(
                          Discrete distributions cannot be auto-promoted to vector params.", name
                     )));
                 }
-                Poisson::prior(&mut graph, name, *lam);
+                let v = Poisson::prior(&mut graph, name, *lam);
+                value_node_map.insert(name.clone(), v);
             }
             PriorSpec::Gamma { name, alpha, beta } => {
                 if let Some(&n) = auto_vector_params.get(name) {
@@ -822,7 +865,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_gamma_logp(param_start, n, *alpha, *beta);
                 } else {
-                    Gamma::prior(&mut graph, name, *alpha, *beta);
+                    let v = Gamma::prior(&mut graph, name, *alpha, *beta);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::Beta { name, alpha, beta } => {
@@ -831,7 +875,8 @@ fn sample(
                     vector_param_map.insert(name.clone(), (param_start, n));
                     graph.vector_beta_logp(param_start, n, *alpha, *beta);
                 } else {
-                    BetaDist::prior(&mut graph, name, *alpha, *beta);
+                    let v = BetaDist::prior(&mut graph, name, *alpha, *beta);
+                    value_node_map.insert(name.clone(), v);
                 }
             }
             PriorSpec::VectorNormal { name, n, mu, sigma } => {
@@ -847,6 +892,8 @@ fn sample(
             &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
         )?;
 
+        let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
+
         let obs_vec = data_map
             .get(&lik.observed_key)
             .ok_or_else(|| {
@@ -856,7 +903,8 @@ fn sample(
                 ))
             })?
             .clone();
-        Normal::observed(&mut graph, mu_node, lik.sigma, obs_vec);
+        let obs_idx = graph.add_obs_data(obs_vec);
+        graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
     }
 
     let sampler_type = match sampler {
@@ -972,6 +1020,7 @@ fn batch_sample(
 
         let mut graph = Graph::new();
         let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
+        let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
         let auto_vector_params = collect_matvec_params(&spec.likelihoods, &matrix_map)?;
         for prior in &spec.priors {
             match prior {
@@ -981,7 +1030,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_normal_logp(param_start, n, *mu, *sigma);
                     } else {
-                        Normal::prior(&mut graph, name, *mu, *sigma);
+                        let v = Normal::prior(&mut graph, name, *mu, *sigma);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::HalfNormal { name, sigma } => {
@@ -990,7 +1040,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_half_normal_logp(param_start, n, *sigma);
                     } else {
-                        HalfNormal::prior(&mut graph, name, *sigma);
+                        let v = HalfNormal::prior(&mut graph, name, *sigma);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::StudentT { name, nu, mu, sigma } => {
@@ -999,7 +1050,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
                     } else {
-                        StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
+                        let v = StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::Uniform { name, lower, upper } => {
@@ -1008,7 +1060,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_uniform_logp(param_start, n, *lower, *upper);
                     } else {
-                        Uniform::prior(&mut graph, name, *lower, *upper);
+                        let v = Uniform::prior(&mut graph, name, *lower, *upper);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::Bernoulli { name, p } => {
@@ -1018,7 +1071,8 @@ fn batch_sample(
                              Discrete distributions cannot be auto-promoted to vector params.", name
                         )));
                     }
-                    Bernoulli::prior(&mut graph, name, *p);
+                    let v = Bernoulli::prior(&mut graph, name, *p);
+                    value_node_map.insert(name.clone(), v);
                 }
                 PriorSpec::Poisson { name, lam } => {
                     if auto_vector_params.contains_key(name) {
@@ -1027,7 +1081,8 @@ fn batch_sample(
                              Discrete distributions cannot be auto-promoted to vector params.", name
                         )));
                     }
-                    Poisson::prior(&mut graph, name, *lam);
+                    let v = Poisson::prior(&mut graph, name, *lam);
+                    value_node_map.insert(name.clone(), v);
                 }
                 PriorSpec::Gamma { name, alpha, beta } => {
                     if let Some(&n) = auto_vector_params.get(name) {
@@ -1035,7 +1090,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_gamma_logp(param_start, n, *alpha, *beta);
                     } else {
-                        Gamma::prior(&mut graph, name, *alpha, *beta);
+                        let v = Gamma::prior(&mut graph, name, *alpha, *beta);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::Beta { name, alpha, beta } => {
@@ -1044,7 +1100,8 @@ fn batch_sample(
                         vector_param_map.insert(name.clone(), (param_start, n));
                         graph.vector_beta_logp(param_start, n, *alpha, *beta);
                     } else {
-                        BetaDist::prior(&mut graph, name, *alpha, *beta);
+                        let v = BetaDist::prior(&mut graph, name, *alpha, *beta);
+                        value_node_map.insert(name.clone(), v);
                     }
                 }
                 PriorSpec::VectorNormal { name, n, mu, sigma } => {
@@ -1058,11 +1115,13 @@ fn batch_sample(
             let mu_node = build_mu_expr(
                 &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
             )?;
+            let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
             let obs_vec = data_map
                 .get(&lik.observed_key)
                 .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
                 .clone();
-            Normal::observed(&mut graph, mu_node, lik.sigma, obs_vec);
+            let obs_idx = graph.add_obs_data(obs_vec);
+            graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
         }
 
         graphs.push((graph, vec![]));
