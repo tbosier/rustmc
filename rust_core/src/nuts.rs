@@ -78,12 +78,18 @@ struct TreeResult {
     diverging: bool,
 }
 
-/// Run a single NUTS chain with diagonal mass matrix adaptation.
+/// Run a single NUTS chain with windowed diagonal mass matrix adaptation.
 ///
-/// The warmup structure mirrors `hmc::run_chain`:
-///   Phase 1 (15%): step-size adaptation, identity mass matrix
-///   Phase 2 (75%): collect samples → diagonal mass matrix
-///   Phase 3 (10%): final step-size adaptation with adapted mass matrix
+/// Warmup schedule (mirrors Stan's default):
+///   Init buffer  (~75 draws or 15% of warmup, whichever is smaller):
+///       step-size dual-averaging only, identity mass matrix.
+///   Mass-matrix windows (doubling: 25 → 50 → 100 → 200 → …):
+///       At the end of each window the diagonal mass matrix is updated
+///       from Welford online variance estimates collected in that window.
+///       Dual averaging and step size are reset after each update so the
+///       sampler can re-converge with the new metric.
+///   Terminal buffer (~50 draws or 10% of warmup):
+///       step-size dual-averaging only, final fixed mass matrix.
 pub fn run_chain(
     graph: &Graph,
     config: &NutsConfig,
@@ -101,16 +107,26 @@ pub fn run_chain(
     let mut sum_accept_prob = 0.0f64;
     let mut total_iters_done = 0u64;
 
-    // Mass matrix
+    // Diagonal mass matrix (M⁻¹ diagonal and √M diagonal for momentum sampling).
     let mut inv_mass_diag = vec![1.0f64; dim];
     let mut mass_sqrt = vec![1.0f64; dim];
 
-    // Warmup phases
-    let phase1_end = config.num_warmup * 15 / 100;
-    let phase2_end = config.num_warmup * 90 / 100;
-    let mut warmup_q_sum = vec![0.0f64; dim];
-    let mut warmup_q_sq_sum = vec![0.0f64; dim];
-    let mut warmup_count = 0usize;
+    // --- Windowed warmup schedule (Stan defaults) ---
+    // init_buffer: step size only, identity mass
+    // windows:     growing mass-estimation windows
+    // term_buffer: step size only, fixed final mass
+    let init_buffer = 75_usize.min(config.num_warmup * 15 / 100).max(1);
+    let term_buffer = 50_usize.min(config.num_warmup * 10 / 100);
+    let terminal_start = config.num_warmup.saturating_sub(term_buffer);
+    // First mass-matrix window ends after 25 draws past init_buffer (clamped).
+    let first_window = 25_usize;
+    let mut next_window_end = (init_buffer + first_window).min(terminal_start);
+    let mut window_size = first_window;
+
+    // Welford online variance accumulator for the current mass-matrix window.
+    let mut w_count = 0usize;
+    let mut w_mean = vec![0.0f64; dim];
+    let mut w_m2 = vec![0.0f64; dim]; // sum of squared deviations
 
     // Step-size initialization
     let mut step_size = if config.step_size > 0.0 {
@@ -121,7 +137,7 @@ pub fn run_chain(
 
     // Dual averaging (target = 0.80 for NUTS, following Stan)
     let target_accept = 0.80;
-    let da_mu = (10.0 * step_size).ln();
+    let mut da_mu = (10.0 * step_size).ln();
     let da_gamma = 0.05;
     let da_t0 = 10.0;
     let da_kappa = 0.75;
@@ -141,7 +157,7 @@ pub fn run_chain(
     for iter in 0..total_iters {
         let is_warmup = iter < config.num_warmup;
 
-        // Sample momentum
+        // Sample momentum from N(0, M) where M = diag(mass_sqrt²)
         for i in 0..dim {
             let z: f64 = StandardNormal.sample(rng);
             current.p[i] = z * mass_sqrt[i];
@@ -162,8 +178,7 @@ pub fn run_chain(
             rng,
         );
 
-        // Accept the NUTS proposal (always accepted if no divergence/u-turn stopped it —
-        // the multinomial weighting handles the acceptance probability internally)
+        // Accept the NUTS proposal (multinomial weighting handles acceptance internally)
         if !tree_stats.diverging {
             current.q.copy_from_slice(&proposal.q);
             current.grad.copy_from_slice(&proposal.grad);
@@ -187,6 +202,7 @@ pub fn run_chain(
 
         // --- Warmup adaptation ---
         if is_warmup {
+            // Dual averaging step-size update (always, throughout warmup)
             adapt_count += 1;
             let m = adapt_count as f64;
             let w = 1.0 / (m + da_t0);
@@ -196,44 +212,52 @@ pub fn run_chain(
             let m_pow = m.powf(-da_kappa);
             log_eps_bar = m_pow * log_eps + (1.0 - m_pow) * log_eps_bar;
 
-            if iter >= phase1_end && iter < phase2_end {
-                for i in 0..dim {
-                    warmup_q_sum[i] += current.q[i];
-                    warmup_q_sq_sum[i] += current.q[i] * current.q[i];
-                }
-                warmup_count += 1;
-            }
+            // Mass-matrix estimation: collect samples in the current window
+            let in_window = iter >= init_buffer && iter < terminal_start;
+            if in_window {
+                welford_update(&current.q, &mut w_count, &mut w_mean, &mut w_m2);
 
-            if iter == phase2_end && warmup_count > 10 {
-                let n = warmup_count as f64;
-                for i in 0..dim {
-                    let mean = warmup_q_sum[i] / n;
-                    let var = warmup_q_sq_sum[i] / n - mean * mean;
-                    if var > 1e-8 {
+                // End of window: update mass matrix, reset adaptation
+                let window_done = (iter + 1 >= next_window_end) || (iter + 1 >= terminal_start);
+                if window_done && w_count > 3 {
+                    // Apply Welford variance estimate to mass matrix.
+                    // Stan-style regularisation: shrink toward 1 with weight 5/(n+5)
+                    // to prevent catastrophically large inv_mass from near-zero variance.
+                    let n = w_count as f64;
+                    for i in 0..dim {
+                        let var_hat = if w_count > 1 {
+                            w_m2[i] / (w_count - 1) as f64
+                        } else {
+                            1.0
+                        };
+                        let var = (n / (n + 5.0)) * var_hat + 1e-3 * (5.0 / (n + 5.0));
                         inv_mass_diag[i] = 1.0 / var;
                         mass_sqrt[i] = var.sqrt();
                     }
+
+                    // Keep the current step size — the dual averaging state
+                    // already has a reasonable estimate and re-running
+                    // find_initial_step_size causes a transient instability
+                    // (~20 extra divergences) while dual averaging re-converges.
+                    // Just update the dual averaging anchor and reset accumulators.
+                    da_mu = (10.0 * step_size).ln();
+                    log_eps_bar = step_size.ln();
+                    adapt_count = 0;
+                    h_bar = 0.0;
+
+                    // Advance window (doubling schedule)
+                    window_size *= 2;
+                    next_window_end = (iter + 1 + window_size).min(terminal_start);
+
+                    // Reset Welford accumulator for next window
+                    w_count = 0;
+                    w_mean.iter_mut().for_each(|x| *x = 0.0);
+                    w_m2.iter_mut().for_each(|x| *x = 0.0);
                 }
-                adapt_count = 0;
-                h_bar = 0.0;
-                let new_eps = find_initial_step_size(
-                    graph,
-                    &mut evaluator,
-                    &current.q,
-                    &inv_mass_diag,
-                    &mass_sqrt,
-                    dim,
-                    rng,
-                );
-                step_size = new_eps;
-                log_eps_bar = new_eps.ln();
-                // Recompute state with new evaluator state
-                evaluator.compute(graph, &current.q);
-                current.logp = evaluator.total_logp;
-                current.grad.copy_from_slice(&evaluator.grad);
             }
         }
 
+        // At end of warmup, lock in the dual-averaged step size
         if iter == config.num_warmup.saturating_sub(1) && config.num_warmup > 0 {
             step_size = log_eps_bar.exp();
         }
@@ -254,6 +278,19 @@ pub fn run_chain(
         accept_rate,
         step_size,
         divergences: n_divergences,
+    }
+}
+
+/// Welford online algorithm for computing variance incrementally.
+/// Numerically stable alternative to the two-pass variance formula.
+fn welford_update(x: &[f64], count: &mut usize, mean: &mut [f64], m2: &mut [f64]) {
+    *count += 1;
+    let n = *count as f64;
+    for i in 0..x.len() {
+        let delta = x[i] - mean[i];
+        mean[i] += delta / n;
+        let delta2 = x[i] - mean[i];
+        m2[i] += delta * delta2;
     }
 }
 
