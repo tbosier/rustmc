@@ -20,10 +20,19 @@ struct ModelSpec {
     bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
 
+/// A hyperparameter value: either a scalar constant or a reference to another
+/// already-declared parameter (for hierarchical / multilevel models).
+#[derive(Debug, Clone)]
+enum HyperParam {
+    Const(f64),
+    /// Name of a parameter whose value node (post-transform) is used as the hyperparameter.
+    Param(String),
+}
+
 #[derive(Debug, Clone)]
 enum PriorSpec {
-    Normal { name: String, mu: f64, sigma: f64 },
-    HalfNormal { name: String, sigma: f64 },
+    Normal { name: String, mu: HyperParam, sigma: HyperParam },
+    HalfNormal { name: String, sigma: HyperParam },
     StudentT { name: String, nu: f64, mu: f64, sigma: f64 },
     Uniform { name: String, lower: f64, upper: f64 },
     Bernoulli { name: String, p: f64 },
@@ -239,17 +248,33 @@ impl ModelBuilder {
     }
 
     #[pyo3(signature = (name, mu, sigma))]
-    fn normal_prior(&mut self, name: &str, mu: f64, sigma: f64) -> ParamRef {
-        self.priors.push(PriorSpec::Normal { name: name.to_string(), mu, sigma });
+    fn normal_prior(
+        &mut self,
+        name: &str,
+        mu: &Bound<'_, PyAny>,
+        sigma: &Bound<'_, PyAny>,
+    ) -> PyResult<ParamRef> {
+        let mu_hp = extract_hyper(mu, "mu")?;
+        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        self.priors.push(PriorSpec::Normal {
+            name: name.to_string(),
+            mu: mu_hp,
+            sigma: sigma_hp,
+        });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        Ok(ParamRef { name: name.to_string() })
     }
 
     #[pyo3(signature = (name, sigma))]
-    fn half_normal_prior(&mut self, name: &str, sigma: f64) -> ParamRef {
-        self.priors.push(PriorSpec::HalfNormal { name: name.to_string(), sigma });
+    fn half_normal_prior(
+        &mut self,
+        name: &str,
+        sigma: &Bound<'_, PyAny>,
+    ) -> PyResult<ParamRef> {
+        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        self.priors.push(PriorSpec::HalfNormal { name: name.to_string(), sigma: sigma_hp });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        Ok(ParamRef { name: name.to_string() })
     }
 
     #[pyo3(signature = (name, nu, mu=0.0, sigma=1.0))]
@@ -315,11 +340,21 @@ impl ModelBuilder {
     fn normal_likelihood(
         &mut self,
         name: &str,
-        mu_expr: &Expr,
+        mu_expr: &Bound<'_, PyAny>,
         sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
         let _ = name;
+        // Accept either an Expr or a bare ParamRef as mu_expr
+        let inner_expr = if let Ok(e) = mu_expr.downcast::<Expr>() {
+            e.borrow().inner.clone()
+        } else if let Ok(p) = mu_expr.downcast::<ParamRef>() {
+            MuExpr::Param(p.borrow().name.clone())
+        } else {
+            return Err(PyValueError::new_err(
+                "mu_expr must be an Expr (e.g. beta * 'x') or a ParamRef",
+            ));
+        };
         let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
             SigmaSpec::Const(v)
         } else if let Ok(p) = sigma.downcast::<ParamRef>() {
@@ -331,14 +366,14 @@ impl ModelBuilder {
         };
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
-                &mu_expr.inner,
+                &inner_expr,
                 observed_key,
                 &self.bound_data_1d,
                 &self.bound_data_2d,
             )?;
         }
         self.likelihoods.push(LikelihoodSpec {
-            mu_expr: mu_expr.inner.clone(),
+            mu_expr: inner_expr,
             sigma: sigma_spec,
             observed_key: observed_key.to_string(),
         });
@@ -432,6 +467,161 @@ fn validate_expr_keys(
             validate_expr_keys(b, data_1d, data_2d)
         }
     }
+}
+
+/// Parse a Python value (float or ParamRef) into a HyperParam.
+fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam> {
+    if let Ok(v) = obj.extract::<f64>() {
+        Ok(HyperParam::Const(v))
+    } else if let Ok(p) = obj.downcast::<ParamRef>() {
+        Ok(HyperParam::Param(p.borrow().name.clone()))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "'{}' must be a float or a ParamRef (e.g. from normal_prior / half_normal_prior)",
+            arg_name
+        )))
+    }
+}
+
+/// Resolve a HyperParam to a graph NodeId.
+/// Constant → adds a constant node; Param → looks up the value node for a prior parameter.
+fn resolve_hyper(
+    hp: &HyperParam,
+    graph: &mut Graph,
+    value_node_map: &HashMap<String, NodeId>,
+) -> Result<NodeId, PyErr> {
+    match hp {
+        HyperParam::Const(v) => Ok(graph.add_constant(*v)),
+        HyperParam::Param(name) => {
+            value_node_map.get(name.as_str()).copied().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "Hyperparameter '{}' not found. Declare it before the prior that references it.",
+                    name
+                ))
+            })
+        }
+    }
+}
+
+/// Build a single prior into the graph. Used by both `sample()` and `batch_sample()`
+/// to avoid duplicating the large match.
+fn build_prior_into_graph(
+    prior: &PriorSpec,
+    graph: &mut Graph,
+    vector_param_map: &mut HashMap<String, (usize, usize)>,
+    value_node_map: &mut HashMap<String, NodeId>,
+    auto_vector_params: &HashMap<String, usize>,
+) -> Result<(), PyErr> {
+    match prior {
+        PriorSpec::Normal { name, mu, sigma } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                // MatVec auto-promotion: constant hyperparams only
+                let (mu_f, sigma_f) = match (mu, sigma) {
+                    (HyperParam::Const(m), HyperParam::Const(s)) => (*m, *s),
+                    _ => return Err(PyValueError::new_err(format!(
+                        "Parameter '{}' is used in a matrix multiply (@) but has hierarchical \
+                         hyperparameters. Hierarchical vector params are not yet supported.",
+                        name
+                    ))),
+                };
+                let param_start = graph.add_vector_params(name, n);
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_normal_logp(param_start, n, mu_f, sigma_f);
+            } else {
+                let mu_node = resolve_hyper(mu, graph, value_node_map)?;
+                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
+                let v = Normal::prior_with_nodes(graph, name, mu_node, sigma_node);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::HalfNormal { name, sigma } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                let sigma_f = match sigma {
+                    HyperParam::Const(s) => *s,
+                    _ => return Err(PyValueError::new_err(format!(
+                        "Parameter '{}' is used in a matrix multiply (@) but has a hierarchical \
+                         sigma. Hierarchical vector params are not yet supported.",
+                        name
+                    ))),
+                };
+                let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_half_normal_logp(param_start, n, sigma_f);
+            } else {
+                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
+                let v = HalfNormal::prior_with_node_sigma(graph, name, sigma_node);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::StudentT { name, nu, mu, sigma } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                let param_start = graph.add_vector_params(name, n);
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
+            } else {
+                let v = StudentT::prior(graph, name, *nu, *mu, *sigma);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::Uniform { name, lower, upper } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                let param_start = graph.add_vector_params_with_transform(
+                    name, n, ParamTransform::BoundedSigmoid { lower: *lower, upper: *upper },
+                );
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_uniform_logp(param_start, n, *lower, *upper);
+            } else {
+                let v = Uniform::prior(graph, name, *lower, *upper);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::Bernoulli { name, p } => {
+            if auto_vector_params.contains_key(name) {
+                return Err(PyValueError::new_err(format!(
+                    "Parameter '{}' is used with @ but has a Bernoulli prior. \
+                     Discrete distributions cannot be auto-promoted to vector params.", name
+                )));
+            }
+            let v = Bernoulli::prior(graph, name, *p);
+            value_node_map.insert(name.clone(), v);
+        }
+        PriorSpec::Poisson { name, lam } => {
+            if auto_vector_params.contains_key(name) {
+                return Err(PyValueError::new_err(format!(
+                    "Parameter '{}' is used with @ but has a Poisson prior. \
+                     Discrete distributions cannot be auto-promoted to vector params.", name
+                )));
+            }
+            let v = Poisson::prior(graph, name, *lam);
+            value_node_map.insert(name.clone(), v);
+        }
+        PriorSpec::Gamma { name, alpha, beta } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_gamma_logp(param_start, n, *alpha, *beta);
+            } else {
+                let v = Gamma::prior(graph, name, *alpha, *beta);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::Beta { name, alpha, beta } => {
+            if let Some(&n) = auto_vector_params.get(name) {
+                let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Sigmoid);
+                vector_param_map.insert(name.clone(), (param_start, n));
+                graph.vector_beta_logp(param_start, n, *alpha, *beta);
+            } else {
+                let v = BetaDist::prior(graph, name, *alpha, *beta);
+                value_node_map.insert(name.clone(), v);
+            }
+        }
+        PriorSpec::VectorNormal { name, n, mu, sigma } => {
+            let param_start = graph.add_vector_params(name, *n);
+            vector_param_map.insert(name.clone(), (param_start, *n));
+            graph.vector_normal_logp(param_start, *n, *mu, *sigma);
+        }
+    }
+    Ok(())
 }
 
 /// Resolve a SigmaSpec to a graph NodeId.
@@ -797,100 +987,22 @@ fn sample(
     let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, &matrix_map)?;
 
     for prior in &model_spec.priors {
-        match prior {
-            PriorSpec::Normal { name, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    // Auto-promote to vector param for faer GEMV
-                    let param_start = graph.add_vector_params(name, n);
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_normal_logp(param_start, n, *mu, *sigma);
-                } else {
-                    let v = Normal::prior(&mut graph, name, *mu, *sigma);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::HalfNormal { name, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_half_normal_logp(param_start, n, *sigma);
-                } else {
-                    let v = HalfNormal::prior(&mut graph, name, *sigma);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::StudentT { name, nu, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let param_start = graph.add_vector_params(name, n);
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
-                } else {
-                    let v = StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::Uniform { name, lower, upper } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::BoundedSigmoid { lower: *lower, upper: *upper });
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_uniform_logp(param_start, n, *lower, *upper);
-                } else {
-                    let v = Uniform::prior(&mut graph, name, *lower, *upper);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::Bernoulli { name, p } => {
-                if auto_vector_params.contains_key(name) {
-                    return Err(PyValueError::new_err(format!(
-                        "Parameter '{}' is used with @ (matrix multiply) but has a Bernoulli prior. \
-                         Discrete distributions cannot be auto-promoted to vector params.", name
-                    )));
-                }
-                let v = Bernoulli::prior(&mut graph, name, *p);
-                value_node_map.insert(name.clone(), v);
-            }
-            PriorSpec::Poisson { name, lam } => {
-                if auto_vector_params.contains_key(name) {
-                    return Err(PyValueError::new_err(format!(
-                        "Parameter '{}' is used with @ (matrix multiply) but has a Poisson prior. \
-                         Discrete distributions cannot be auto-promoted to vector params.", name
-                    )));
-                }
-                let v = Poisson::prior(&mut graph, name, *lam);
-                value_node_map.insert(name.clone(), v);
-            }
-            PriorSpec::Gamma { name, alpha, beta } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_gamma_logp(param_start, n, *alpha, *beta);
-                } else {
-                    let v = Gamma::prior(&mut graph, name, *alpha, *beta);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::Beta { name, alpha, beta } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Sigmoid);
-                    vector_param_map.insert(name.clone(), (param_start, n));
-                    graph.vector_beta_logp(param_start, n, *alpha, *beta);
-                } else {
-                    let v = BetaDist::prior(&mut graph, name, *alpha, *beta);
-                    value_node_map.insert(name.clone(), v);
-                }
-            }
-            PriorSpec::VectorNormal { name, n, mu, sigma } => {
-                let param_start = graph.add_vector_params(name, *n);
-                vector_param_map.insert(name.clone(), (param_start, *n));
-                graph.vector_normal_logp(param_start, *n, *mu, *sigma);
-            }
-        }
+        build_prior_into_graph(
+            prior, &mut graph, &mut vector_param_map, &mut value_node_map, &auto_vector_params,
+        )?;
     }
 
     for lik in &model_spec.likelihoods {
         let mu_node = build_mu_expr(
             &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
         )?;
+        // NormalObsLogP requires a vector mu. Broadcast scalar params (e.g. a
+        // group mean in a hierarchical model) to a vector over all observations.
+        let mu_node = if lik.mu_expr.is_scalar() {
+            graph.scalar_broadcast(mu_node)
+        } else {
+            mu_node
+        };
 
         let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
 
@@ -1023,98 +1135,19 @@ fn batch_sample(
         let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
         let auto_vector_params = collect_matvec_params(&spec.likelihoods, &matrix_map)?;
         for prior in &spec.priors {
-            match prior {
-                PriorSpec::Normal { name, mu, sigma } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params(name, n);
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_normal_logp(param_start, n, *mu, *sigma);
-                    } else {
-                        let v = Normal::prior(&mut graph, name, *mu, *sigma);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::HalfNormal { name, sigma } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_half_normal_logp(param_start, n, *sigma);
-                    } else {
-                        let v = HalfNormal::prior(&mut graph, name, *sigma);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::StudentT { name, nu, mu, sigma } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params(name, n);
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
-                    } else {
-                        let v = StudentT::prior(&mut graph, name, *nu, *mu, *sigma);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::Uniform { name, lower, upper } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::BoundedSigmoid { lower: *lower, upper: *upper });
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_uniform_logp(param_start, n, *lower, *upper);
-                    } else {
-                        let v = Uniform::prior(&mut graph, name, *lower, *upper);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::Bernoulli { name, p } => {
-                    if auto_vector_params.contains_key(name) {
-                        return Err(PyValueError::new_err(format!(
-                            "Parameter '{}' is used with @ but has a Bernoulli prior. \
-                             Discrete distributions cannot be auto-promoted to vector params.", name
-                        )));
-                    }
-                    let v = Bernoulli::prior(&mut graph, name, *p);
-                    value_node_map.insert(name.clone(), v);
-                }
-                PriorSpec::Poisson { name, lam } => {
-                    if auto_vector_params.contains_key(name) {
-                        return Err(PyValueError::new_err(format!(
-                            "Parameter '{}' is used with @ but has a Poisson prior. \
-                             Discrete distributions cannot be auto-promoted to vector params.", name
-                        )));
-                    }
-                    let v = Poisson::prior(&mut graph, name, *lam);
-                    value_node_map.insert(name.clone(), v);
-                }
-                PriorSpec::Gamma { name, alpha, beta } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_gamma_logp(param_start, n, *alpha, *beta);
-                    } else {
-                        let v = Gamma::prior(&mut graph, name, *alpha, *beta);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::Beta { name, alpha, beta } => {
-                    if let Some(&n) = auto_vector_params.get(name) {
-                        let param_start = graph.add_vector_params_with_transform(name, n, ParamTransform::Sigmoid);
-                        vector_param_map.insert(name.clone(), (param_start, n));
-                        graph.vector_beta_logp(param_start, n, *alpha, *beta);
-                    } else {
-                        let v = BetaDist::prior(&mut graph, name, *alpha, *beta);
-                        value_node_map.insert(name.clone(), v);
-                    }
-                }
-                PriorSpec::VectorNormal { name, n, mu, sigma } => {
-                    let param_start = graph.add_vector_params(name, *n);
-                    vector_param_map.insert(name.clone(), (param_start, *n));
-                    graph.vector_normal_logp(param_start, *n, *mu, *sigma);
-                }
-            }
+            build_prior_into_graph(
+                prior, &mut graph, &mut vector_param_map, &mut value_node_map, &auto_vector_params,
+            )?;
         }
         for lik in &spec.likelihoods {
             let mu_node = build_mu_expr(
                 &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
             )?;
+            let mu_node = if lik.mu_expr.is_scalar() {
+                graph.scalar_broadcast(mu_node)
+            } else {
+                mu_node
+            };
             let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
             let obs_vec = data_map
                 .get(&lik.observed_key)

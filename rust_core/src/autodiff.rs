@@ -58,6 +58,7 @@ impl Evaluator {
                 Op::ScalarMulData(_, _)
                 | Op::VectorAdd(_, _)
                 | Op::ScalarBroadcastAdd(_, _)
+                | Op::ScalarBroadcast(_)
                 | Op::FusedLinearMu { .. }
                 | Op::MatVecMul { .. } => {
                     let offset = vec_slot_count * vec_len;
@@ -158,6 +159,16 @@ impl Evaluator {
                     for i in 0..vl {
                         let v = self.read_vec(vec.0, i, graph);
                         self.vec_buf[out_off + i] = s + v;
+                    }
+                }
+                Op::ScalarBroadcast(scalar) => {
+                    let s = self.scalars[scalar.0];
+                    let out_off = match self.node_kind[idx] {
+                        NodeKind::ComputedVec(o) => o,
+                        _ => unreachable!(),
+                    };
+                    for i in 0..vl {
+                        self.vec_buf[out_off + i] = s;
                     }
                 }
                 Op::NormalLogP { x, mu, sigma } => {
@@ -436,6 +447,15 @@ impl Evaluator {
                             self.adj_vec_buf[v_off + i] += upstream;
                         }
                     }
+                    self.adj_scalars[scalar.0] += ds;
+                }
+                Op::ScalarBroadcast(scalar) => {
+                    let out_off = match self.node_kind[idx] {
+                        NodeKind::ComputedVec(o) => o,
+                        _ => unreachable!(),
+                    };
+                    // d(loss)/d(scalar) = sum of d(loss)/d(out[i]) over all i
+                    let ds: f64 = self.adj_vec_buf[out_off..out_off + vl].iter().sum();
                     self.adj_scalars[scalar.0] += ds;
                 }
                 Op::NormalLogP { x, mu, sigma } => {
@@ -718,6 +738,13 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 let v = values[vec.0].as_vector();
                 Value::Vector(v.iter().map(|x| s + x).collect())
             }
+            Op::ScalarBroadcast(scalar) => {
+                let s = values[scalar.0].as_scalar();
+                let n = graph.obs_vectors.first()
+                    .or_else(|| graph.data_vectors.first())
+                    .map_or(0, |v| v.len());
+                Value::Vector(vec![s; n])
+            }
             Op::NormalLogP { x, mu, sigma } => {
                 Value::Scalar(normal_logp_scalar(values[x.0].as_scalar(), values[mu.0].as_scalar(), values[sigma.0].as_scalar()))
             }
@@ -918,6 +945,11 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 if let Some(ref uv) = adj_vector[idx].take() {
                     adj_scalar[scalar.0] += uv.iter().sum::<f64>();
                     merge_vec_adj(&mut adj_vector[vec.0], uv);
+                }
+            }
+            Op::ScalarBroadcast(scalar) => {
+                if let Some(ref uv) = adj_vector[idx].take() {
+                    adj_scalar[scalar.0] += uv.iter().sum::<f64>();
                 }
             }
             Op::NormalLogP { x, mu, sigma } => {
