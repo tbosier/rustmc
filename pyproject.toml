@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "rustmc"
-version = "0.5.1"
+version = "0.6.0"
 description = "High-performance Bayesian inference engine written in Rust"
 readme = "README.md"
 license = { text = "MIT" }
