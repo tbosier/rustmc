@@ -17,6 +17,19 @@ impl Normal {
         param
     }
 
+    /// Like `prior`, but accepts pre-built graph nodes for mu and sigma.
+    /// Used for hierarchical priors where mu/sigma are themselves parameters.
+    pub fn prior_with_nodes(
+        graph: &mut Graph,
+        name: &str,
+        mu_node: NodeId,
+        sigma_node: NodeId,
+    ) -> NodeId {
+        let param = graph.add_param(name);
+        graph.normal_logp(param, mu_node, sigma_node);
+        param
+    }
+
     pub fn observed(graph: &mut Graph, mu_vec: NodeId, sigma: f64, obs: Vec<f64>) -> NodeId {
         let sigma_node = graph.add_constant(sigma);
         let obs_idx = graph.add_obs_data(obs);
@@ -37,6 +50,17 @@ impl HalfNormal {
         let sigma_node = graph.add_constant(sigma);
         graph.half_normal_logp(x, sigma_node);
         // Jacobian correction: log|det J| = raw (since dx/draw = exp(raw) = x, log = raw)
+        let jacobian = graph.add_node_as_logp(raw);
+        let _ = jacobian;
+        x
+    }
+
+    /// Like `prior`, but accepts a pre-built graph node for sigma.
+    /// Used for hierarchical priors where sigma is itself a parameter.
+    pub fn prior_with_node_sigma(graph: &mut Graph, name: &str, sigma_node: NodeId) -> NodeId {
+        let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
+        let x = graph.exp(raw);
+        graph.half_normal_logp(x, sigma_node);
         let jacobian = graph.add_node_as_logp(raw);
         let _ = jacobian;
         x

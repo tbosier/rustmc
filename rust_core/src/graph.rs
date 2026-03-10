@@ -37,6 +37,9 @@ pub enum Op {
     VectorAdd(NodeId, NodeId),
     /// Broadcast scalar + vector → vector.
     ScalarBroadcastAdd(NodeId, NodeId),
+    /// Broadcast scalar → constant vector (every element equals the scalar).
+    /// Used when a scalar parameter is the mean for all N observations.
+    ScalarBroadcast(NodeId),
     /// Log-probability of a Normal distribution: logp(x | mu, sigma).
     NormalLogP {
         x: NodeId,
@@ -276,6 +279,12 @@ impl Graph {
 
     pub fn scalar_broadcast_add(&mut self, scalar: NodeId, vec: NodeId) -> NodeId {
         self.add_node(Op::ScalarBroadcastAdd(scalar, vec), None)
+    }
+
+    /// Broadcast a scalar node into a vector node (each element = scalar).
+    /// Used so a scalar parameter can serve as the mu in NormalObsLogP.
+    pub fn scalar_broadcast(&mut self, scalar: NodeId) -> NodeId {
+        self.add_node(Op::ScalarBroadcast(scalar), None)
     }
 
     pub fn normal_logp(&mut self, x: NodeId, mu: NodeId, sigma: NodeId) -> NodeId {
