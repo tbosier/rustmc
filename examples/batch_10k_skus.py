@@ -84,7 +84,7 @@ for i in range(N_SKUS):
     mu_expr = intercept + trend * "t" + seas * "sin_t"
     builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=true_noise[i], observed_key="y")
     model = builder.build()
-    models.append((model, {}))
+    models.append((model, {}))#
 
 build_time = time.time() - t_build_start
 print(f"Models built in {build_time:.2f}s")
