@@ -919,6 +919,9 @@ dependencies = [
  "ndarray",
  "numpy",
  "pyo3",
+ "rand",
+ "rand_chacha",
+ "rand_distr",
  "rustmc_core",
 ]
 

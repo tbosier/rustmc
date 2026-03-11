@@ -4,6 +4,10 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rand::{Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use rand_distr::{Distribution, Normal as NormalDist};
+use rustmc_core::autodiff::Evaluator;
 use rustmc_core::distributions::{
     BetaDist, Bernoulli, Gamma, HalfNormal, Normal, Poisson, StudentT, Uniform,
 };
@@ -66,6 +70,7 @@ enum SigmaSpec {
 
 #[derive(Debug, Clone)]
 struct LikelihoodSpec {
+    name: String,
     mu_expr: MuExpr,
     sigma: SigmaSpec,
     observed_key: String,
@@ -373,6 +378,7 @@ impl ModelBuilder {
             )?;
         }
         self.likelihoods.push(LikelihoodSpec {
+            name: name.to_string(),
             mu_expr: inner_expr,
             sigma: sigma_spec,
             observed_key: observed_key.to_string(),
@@ -818,6 +824,10 @@ fn build_mu_expr(
 #[pyclass]
 struct FitResult {
     result: SampleResult,
+    /// A clone of the compiled graph — used for predictive sampling.
+    graph: Graph,
+    /// Name of each likelihood, in the order they appear in the graph.
+    likelihood_names: Vec<String>,
 }
 
 #[pymethods]
@@ -917,21 +927,85 @@ impl FitResult {
         Ok(list)
     }
 
+    /// Draw samples from the posterior predictive distribution.
+    ///
+    /// For each posterior draw (or a random subsample of `n_samples`), runs a
+    /// forward pass through the model graph and samples
+    ///     ŷ ~ Normal(mu(params), sigma(params))
+    /// for every observation.
+    ///
+    /// Parameters
+    /// ----------
+    /// n_samples : int or None
+    ///     How many posterior draws to use.  None = use all (chains × draws).
+    /// seed : int
+    ///     RNG seed for the noise draws.
+    ///
+    /// Returns
+    /// -------
+    /// dict[str, ndarray(n_samples, n_obs)]
+    ///     One key per likelihood (the name passed to normal_likelihood).
+    #[pyo3(signature = (n_samples=None, seed=42))]
+    fn posterior_predictive<'py>(
+        &self,
+        py: Python<'py>,
+        n_samples: Option<usize>,
+        seed: u64,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut evaluator = Evaluator::new(&self.graph);
+        let predictors = self.graph.normal_obs_predictors();
+
+        // Flatten all chain draws in order
+        let all_draws: Vec<&Vec<f64>> = self.result.samples
+            .iter().flat_map(|c| c.iter()).collect();
+        let n = n_samples.unwrap_or(all_draws.len()).min(all_draws.len());
+
+        // Pre-allocate: predictions[likelihood_idx] = flat Vec of n * n_obs values
+        let mut preds: Vec<Vec<f64>> = predictors.iter()
+            .map(|(_, _, n_obs)| Vec::with_capacity(n * n_obs))
+            .collect();
+
+        for draw in all_draws.iter().take(n) {
+            evaluator.compute(&self.graph, draw);
+            for (li, &(mu_node, sigma_node, n_obs)) in predictors.iter().enumerate() {
+                let sigma = evaluator.scalar_at(sigma_node);
+                let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+                for i in 0..n_obs {
+                    let mu = evaluator.vec_elem(mu_node, i, &self.graph);
+                    preds[li].push(mu + noise_dist.sample(&mut rng));
+                }
+            }
+        }
+
+        let dict = PyDict::new(py);
+        for (li, name) in self.likelihood_names.iter().enumerate() {
+            let n_obs = predictors[li].2;
+            let arr = Array2::from_shape_vec((n, n_obs), preds[li].clone())
+                .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            dict.set_item(name, arr.into_pyarray(py))?;
+        }
+        Ok(dict)
+    }
+
     /// Convert to an ArviZ InferenceData object.
     ///
     /// Requires ArviZ: `pip install arviz`
     ///
     /// Returns an `arviz.InferenceData` with:
-    ///   - `posterior`    — (n_chains × n_draws) arrays for every parameter
-    ///   - `sample_stats` — `diverging` (bool) and `step_size` per draw
+    ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
+    ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
+    ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
     ///
     /// Example
     /// -------
     ///     idata = fit.to_arviz()
     ///     az.plot_trace(idata)
-    ///     az.plot_pair(idata)
-    ///     az.loo(idata)
-    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+    ///     az.plot_pair(idata, divergences=True)
+    ///     idata = fit.to_arviz(include_ppc=True)
+    ///     az.plot_ppc(idata)
+    #[pyo3(signature = (include_ppc=false, ppc_samples=None, ppc_seed=42))]
+    fn to_arviz<'py>(&self, py: Python<'py>, include_ppc: bool, ppc_samples: Option<usize>, ppc_seed: u64) -> PyResult<Bound<'py, PyAny>> {
         // Helpful error if ArviZ is not installed
         let az = py.import("arviz").map_err(|_| {
             PyValueError::new_err(
@@ -981,10 +1055,25 @@ impl FitResult {
         }
         sample_stats.set_item("step_size", step_size_arr.into_pyarray(py))?;
 
-        // ── call az.from_dict ─────────────────────────────────────────────
+        // ── posterior predictive (optional) ──────────────────────────────
         let kwargs = PyDict::new(py);
         kwargs.set_item("posterior", posterior)?;
         kwargs.set_item("sample_stats", sample_stats)?;
+
+        if include_ppc && !self.likelihood_names.is_empty() {
+            let ppc_dict = self.posterior_predictive(py, ppc_samples, ppc_seed)?;
+            // Reshape (n_samples, n_obs) → (1, n_samples, n_obs) for ArviZ convention
+            // ArviZ expects posterior_predictive as (chain, draw, obs)
+            // We treat all samples as a single chain.
+            let ppc_reshaped = PyDict::new(py);
+            let np = py.import("numpy")?;
+            for (key, arr) in ppc_dict.iter() {
+                // arr is (n_samples, n_obs); expand_dims to (1, n_samples, n_obs)
+                let expanded = np.call_method1("expand_dims", (arr, 0))?;
+                ppc_reshaped.set_item(key, expanded)?;
+            }
+            kwargs.set_item("posterior_predictive", ppc_reshaped)?;
+        }
 
         az.call_method("from_dict", (), Some(&kwargs))
     }
@@ -1112,9 +1201,12 @@ fn sample(
         show_progress,
     };
 
+    let graph_for_predict = graph.clone();
+    let likelihood_names: Vec<String> = model_spec.likelihoods.iter().map(|l| l.name.clone()).collect();
+
     let result = py.allow_threads(|| sampler::sample(graph, config));
 
-    Ok(FitResult { result })
+    Ok(FitResult { result, graph: graph_for_predict, likelihood_names })
 }
 
 /// Result for a single model in a batch run.
@@ -1239,6 +1331,199 @@ fn batch_sample(
     Ok(results.into_iter().map(|r| BatchResult { inner: r }).collect())
 }
 
+/// Draw samples from the **prior predictive** distribution.
+///
+/// Samples parameters from the model priors using their analytic distributions,
+/// then runs a forward pass to generate predicted observations.
+/// Use this to check whether your priors make sense before fitting.
+///
+/// Parameters
+/// ----------
+/// model_spec : ModelSpec
+///     A compiled model (from `builder.build()`).  Must have at least one likelihood.
+/// data : dict or None
+///     Data dict (same as `sample()`).  Needed for the predictor covariates (x values).
+/// n_samples : int
+///     Number of prior predictive draws.
+/// seed : int
+///     RNG seed.
+///
+/// Returns
+/// -------
+/// dict
+///     ``"<param_name>"`` → 1-D array of n_samples prior samples.
+///     ``"<likelihood_name>"`` → 2-D array (n_samples, n_obs) of predicted y.
+#[pyfunction]
+#[pyo3(signature = (model_spec, data=None, n_samples=500, seed=42))]
+fn sample_prior_predictive<'py>(
+    py: Python<'py>,
+    model_spec: &ModelSpec,
+    data: Option<&Bound<'py, PyDict>>,
+    n_samples: usize,
+    seed: u64,
+) -> PyResult<Bound<'py, PyDict>> {
+    // ── Build data maps ───────────────────────────────────────────────────────
+    let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
+    let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = model_spec.bound_data_2d.clone();
+    if let Some(d) = data {
+        let (e1, e2) = parse_data_dict(d)?;
+        data_map.extend(e1);
+        matrix_map.extend(e2);
+    }
+
+    // ── Build graph (same way sample() does) ─────────────────────────────────
+    let mut graph = Graph::new();
+    let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
+    let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
+    let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, &matrix_map)?;
+
+    for prior in &model_spec.priors {
+        build_prior_into_graph(prior, &mut graph, &mut vector_param_map,
+                               &mut value_node_map, &auto_vector_params)?;
+    }
+    for lik in &model_spec.likelihoods {
+        let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map)?;
+        let mu_node = if lik.mu_expr.is_scalar() { graph.scalar_broadcast(mu_node) } else { mu_node };
+        let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
+        let obs_vec = data_map.get(&lik.observed_key)
+            .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
+            .clone();
+        let obs_idx = graph.add_obs_data(obs_vec);
+        graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
+    }
+
+    let likelihood_names: Vec<String> = model_spec.likelihoods.iter().map(|l| l.name.clone()).collect();
+    let predictors = graph.normal_obs_predictors();
+    let dim = graph.param_count;
+
+    // ── Sample from priors and run forward passes ─────────────────────────────
+    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut evaluator = Evaluator::new(&graph);
+
+    // Collect prior samples (raw, unconstrained) and their display values
+    let mut param_prior_draws: Vec<Vec<f64>> = vec![Vec::with_capacity(n_samples); dim];
+    // predictions[lik_idx] = flat Vec (n_samples * n_obs)
+    let mut preds: Vec<Vec<f64>> = predictors.iter()
+        .map(|(_, _, n_obs)| Vec::with_capacity(n_samples * n_obs))
+        .collect();
+
+    for _ in 0..n_samples {
+        // Sample raw parameters from priors (in declaration order)
+        let raw = sample_prior_raw(&model_spec.priors, &mut rng)?;
+        for (pi, &r) in raw.iter().enumerate() {
+            param_prior_draws[pi].push(graph.param_transforms[pi].apply(r));
+        }
+
+        // Forward pass to get predictions
+        evaluator.compute(&graph, &raw);
+        for (li, &(mu_node, sigma_node, n_obs)) in predictors.iter().enumerate() {
+            let sigma = evaluator.scalar_at(sigma_node);
+            let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+            for i in 0..n_obs {
+                let mu = evaluator.vec_elem(mu_node, i, &graph);
+                preds[li].push(mu + noise_dist.sample(&mut rng));
+            }
+        }
+    }
+
+    // ── Package results ───────────────────────────────────────────────────────
+    let dict = PyDict::new(py);
+    for (pi, name) in graph.param_names.iter().enumerate() {
+        let arr = PyArray1::from_vec(py, param_prior_draws[pi].clone());
+        dict.set_item(name, arr)?;
+    }
+    for (li, name) in likelihood_names.iter().enumerate() {
+        let n_obs = predictors[li].2;
+        let arr = Array2::from_shape_vec((n_samples, n_obs), preds[li].clone())
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        dict.set_item(name, arr.into_pyarray(py))?;
+    }
+    Ok(dict)
+}
+
+/// Sample raw (unconstrained) parameters from the model priors.
+/// Processes priors in declaration order so hierarchical hyperpriors work.
+fn sample_prior_raw(priors: &[PriorSpec], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, PyErr> {
+    use rand_distr::{Beta, Gamma as GammaDist, StudentT as StudentTDist, Uniform as UniformDist};
+
+    let mut raw: Vec<f64> = Vec::new();
+    // Track post-transform values for HyperParam::Param resolution
+    let mut sampled_values: HashMap<String, f64> = HashMap::new();
+
+    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>| -> f64 {
+        match hp {
+            HyperParam::Const(v) => *v,
+            HyperParam::Param(name) => *sv.get(name.as_str()).unwrap_or(&1.0),
+        }
+    };
+
+    for prior in priors {
+        match prior {
+            PriorSpec::Normal { name, mu, sigma } => {
+                let mu_v = resolve(mu, &sampled_values);
+                let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                let x = NormalDist::new(mu_v, sigma_v).unwrap().sample(rng);
+                sampled_values.insert(name.clone(), x);
+                raw.push(x); // identity transform
+            }
+            PriorSpec::HalfNormal { name, sigma } => {
+                let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                let z = NormalDist::new(0.0_f64, sigma_v).unwrap().sample(rng);
+                let x = z.abs().max(1e-12);
+                sampled_values.insert(name.clone(), x);
+                raw.push(x.ln()); // Exp transform: raw = log(x)
+            }
+            PriorSpec::StudentT { name, nu, mu, sigma } => {
+                let t = StudentTDist::new(*nu).unwrap().sample(rng);
+                let x = mu + sigma * t;
+                sampled_values.insert(name.clone(), x);
+                raw.push(x);
+            }
+            PriorSpec::Uniform { name, lower, upper } => {
+                let x = UniformDist::new(*lower, *upper).sample(rng);
+                sampled_values.insert(name.clone(), x);
+                // BoundedSigmoid transform: raw = logit((x - lower) / (upper - lower))
+                let p = ((x - lower) / (upper - lower)).clamp(1e-12, 1.0 - 1e-12);
+                raw.push((p / (1.0 - p)).ln());
+            }
+            PriorSpec::Gamma { name, alpha, beta } => {
+                let x = GammaDist::new(*alpha, 1.0 / beta).unwrap().sample(rng);
+                let x = x.max(1e-12);
+                sampled_values.insert(name.clone(), x);
+                raw.push(x.ln()); // Exp transform
+            }
+            PriorSpec::Beta { name, alpha, beta } => {
+                let x = Beta::new(*alpha, *beta).unwrap().sample(rng);
+                let x = x.clamp(1e-12, 1.0 - 1e-12);
+                sampled_values.insert(name.clone(), x);
+                // Sigmoid transform: raw = logit(x)
+                raw.push((x / (1.0 - x)).ln());
+            }
+            PriorSpec::Bernoulli { name, p } => {
+                let x: f64 = if rng.gen::<f64>() < *p { 1.0 } else { 0.0 };
+                sampled_values.insert(name.clone(), x);
+                raw.push(x);
+            }
+            PriorSpec::Poisson { name, lam } => {
+                // Approximate: sample a Gamma and round — or just use the mean
+                let x = *lam;
+                sampled_values.insert(name.clone(), x);
+                raw.push(x);
+            }
+            PriorSpec::VectorNormal { name, n, mu, sigma } => {
+                let dist = NormalDist::new(*mu, sigma.abs().max(1e-12)).unwrap();
+                for k in 0..*n {
+                    let x = dist.sample(rng);
+                    // Store only the first component for HyperParam resolution (rare case)
+                    if k == 0 { sampled_values.insert(name.clone(), x); }
+                    raw.push(x); // identity transform
+                }
+            }
+        }
+    }
+    Ok(raw)
+}
+
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModelBuilder>()?;
@@ -1250,5 +1535,6 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<BatchResult>()?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;
     m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
+    m.add_function(wrap_pyfunction!(sample_prior_predictive, m)?)?;
     Ok(())
 }

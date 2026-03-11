@@ -1,4 +1,4 @@
-use crate::graph::{Graph, Op};
+use crate::graph::{Graph, NodeId, Op};
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -99,6 +99,21 @@ impl Evaluator {
             NodeKind::ComputedVec(off) => unsafe { *self.vec_buf.get_unchecked(off + i) },
             NodeKind::Scalar => unreachable!(),
         }
+    }
+
+    /// Read the scalar value of a node after `compute()`.
+    pub fn scalar_at(&self, node: NodeId) -> f64 {
+        self.scalars[node.0]
+    }
+
+    /// Read the i-th element of a vector node after `compute()`.
+    pub fn vec_elem(&self, node: NodeId, i: usize, graph: &Graph) -> f64 {
+        self.read_vec(node.0, i, graph)
+    }
+
+    /// Copy a full vector node into a Vec after `compute()`.
+    pub fn vec_to_owned(&self, node: NodeId, graph: &Graph) -> Vec<f64> {
+        (0..self.vec_len).map(|i| self.read_vec(node.0, i, graph)).collect()
     }
 
     /// Compute log-probability and its gradient. Results are stored in
