@@ -364,6 +364,21 @@ impl Graph {
         node
     }
 
+    /// Return (mu_vec_node, sigma_node, n_obs) for every NormalObsLogP in the graph.
+    /// Used by posterior_predictive and prior_predictive to read predictions.
+    pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
+        self.nodes
+            .iter()
+            .filter_map(|n| {
+                if let Op::NormalObsLogP { mu_vec, sigma, obs_data_idx } = &n.op {
+                    Some((*mu_vec, *sigma, self.obs_vectors[*obs_data_idx].len()))
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     /// Store a data vector without creating a graph node (used by FusedLinearMu).
     pub fn store_data_vec(&mut self, values: Vec<f64>) -> usize {
         let idx = self.data_vectors.len();

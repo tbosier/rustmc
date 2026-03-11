@@ -20,6 +20,11 @@ This is the prototypical hierarchical model:
   are tied together through the shared hyperprior Normal(mu_global, sigma_group).
 - Partial pooling: groups with few observations are pulled toward the global
   mean; groups with many observations stay close to their sample mean.
+
+Demonstrates the full Bayesian workflow:
+  1. Prior predictive check  — verify priors are reasonable before fitting
+  2. Posterior sampling       — NUTS with partial pooling
+  3. Posterior predictive     — validate model fit on observed groups
 """
 
 import numpy as np
@@ -75,7 +80,20 @@ for j in range(J):
 
 model = builder.build()
 
-# ── 3. Sample ────────────────────────────────────────────────────────────────
+# ── 3. Prior predictive check ─────────────────────────────────────────────────
+
+print("Prior predictive check …")
+prior_pred = rmc.sample_prior_predictive(model, n_samples=200, seed=0)
+print(f"  mu_global  prior: mean={prior_pred['mu_global'].mean():.2f}, std={prior_pred['mu_global'].std():.2f}")
+print(f"  sigma_group prior: mean={prior_pred['sigma_group'].mean():.2f}, std={prior_pred['sigma_group'].std():.2f}")
+for j in range(J):
+    key = f"obs_{j}"
+    if key in prior_pred:
+        prior_y = prior_pred[key]
+        print(f"  Group {j} prior y range: [{prior_y.min():.1f}, {prior_y.max():.1f}]")
+print()
+
+# ── 4. Sample ────────────────────────────────────────────────────────────────
 
 print("Sampling …")
 fit = rmc.sample(
@@ -126,3 +144,18 @@ print("The group-level parameters (mu_j) converge cleanly because the data")
 print("strongly constrains them.  A non-centered reparameterization would")
 print("improve sampling of the hyperparameters at the cost of a more complex")
 print("model specification.")
+
+# ── 7. Posterior predictive check ────────────────────────────────────────────
+
+print()
+print("Posterior predictive check …")
+ppc = fit.posterior_predictive(n_samples=500, seed=42)
+print(f"  Likelihood keys in PPC: {sorted(ppc.keys())}")
+for j in range(J):
+    key = f"obs_{j}"
+    if key in ppc:
+        y_rep = ppc[key]          # (n_samples, N_per_group)
+        y_obs = ys[j]
+        coverage = ((y_rep.mean(axis=0) - 2 * y_rep.std(axis=0)) < y_obs).mean() * \
+                   (y_obs < (y_rep.mean(axis=0) + 2 * y_rep.std(axis=0))).mean()
+        print(f"  Group {j}: obs mean={y_obs.mean():.2f}  ppc mean={y_rep.mean():.2f}  ~95% coverage={coverage:.2%}")
