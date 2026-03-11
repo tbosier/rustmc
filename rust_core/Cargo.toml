@@ -3,6 +3,10 @@ name = "rustmc_core"
 version = "0.6.0"
 edition = "2021"
 description = "High-performance probabilistic inference engine"
+license = "MIT"
+repository = "https://github.com/tbosier/rustmc"
+documentation = "https://github.com/tbosier/rustmc#readme"
+readme = "../README.md"
 
 [dependencies]
 rayon = "1"

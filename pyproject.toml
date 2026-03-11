@@ -10,9 +10,6 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.9"
 dependencies = ["numpy"]
-
-[project.optional-dependencies]
-viz = ["arviz", "matplotlib"]
 keywords = ["bayesian", "mcmc", "nuts", "inference", "statistics", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -30,6 +27,9 @@ classifiers = [
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
+
+[project.optional-dependencies]
+viz = ["arviz", "matplotlib"]
 
 [project.urls]
 Repository = "https://github.com/tbosier/rustmc"
