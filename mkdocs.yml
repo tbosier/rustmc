@@ -24,7 +24,7 @@ theme:
     code: JetBrains Mono
   features:
     - navigation.tabs
-    - navigation.sections
+    - navigation.expand
     - navigation.top
     - content.code.copy
     - content.code.annotate
@@ -44,7 +44,6 @@ plugins:
   - mkdocs-jupyter:
       execute: false
       include: ["*.ipynb"]
-      ignore_h1: false
       show_input: true
 
 markdown_extensions:
