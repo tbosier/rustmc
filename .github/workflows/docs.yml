@@ -17,6 +17,14 @@ jobs:
         with:
           python-version: "3.11"
 
-      - run: pip install mkdocs-material
+      - name: Install docs dependencies
+        run: pip install mkdocs-material mkdocs-jupyter jupyter nbconvert rustmc arviz matplotlib
+
+      - name: Execute notebooks
+        run: |
+          jupyter nbconvert --to notebook --execute --inplace \
+            --ExecutePreprocessor.timeout=300 \
+            docs/examples/linear-regression.ipynb \
+            docs/examples/hierarchical.ipynb
 
       - run: mkdocs gh-deploy --force

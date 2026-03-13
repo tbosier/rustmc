@@ -33,11 +33,19 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Examples:
-    - Linear Regression: examples/linear-regression.md
-    - Hierarchical Models: examples/hierarchical.md
+    - Linear Regression: examples/linear-regression.ipynb
+    - Hierarchical Models: examples/hierarchical.ipynb
     - Batch Inference: examples/batch-inference.md
     - High-Dimensional Regression: examples/high-dimensional.md
   - API Reference: reference.md
+
+plugins:
+  - search
+  - mkdocs-jupyter:
+      execute: false
+      include: ["*.ipynb"]
+      ignore_h1: false
+      show_input: true
 
 markdown_extensions:
   - pymdownx.highlight:
