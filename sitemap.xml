@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://tbosier.github.io/rustmc/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/getting-started/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/reference/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/examples/batch-inference/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/examples/hierarchical/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/examples/high-dimensional/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+    <url>
+         <loc>https://tbosier.github.io/rustmc/examples/linear-regression/</loc>
+         <lastmod>2026-03-13</lastmod>
+    </url>
+</urlset>
