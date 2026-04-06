@@ -12,7 +12,7 @@ rustmc runs the entire sampling loop in compiled Rust — no Python in the inner
 
 PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets — per-store demand models, per-SKU pricing models, per-patient dosing models.
 
-rustmc is designed for that use case. Its batch inference API runs 10,000 independent NUTS chains through a single Rayon thread pool, sharing compute across all available cores with zero serialization overhead.
+rustmc is designed for that use case. Its batch inference API runs many independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
 
 ## Benchmarks
 
@@ -70,6 +70,10 @@ Mean accept rate: 0.94  |  Divergences: 0
 **Sampling:** NUTS with multinomial candidate selection, diagonal mass matrix adaptation, dual-averaging step size, multi-chain parallelism via Rayon.
 
 **Distributions:** Normal, StudentT, HalfNormal, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
+
+**Modeling surface:** scalar hierarchical priors are supported for Normal and HalfNormal priors, along with parameter-valued likelihood scale terms. Vector-valued hierarchical blocks and custom likelihood families are still on the roadmap.
+
+**Predictive workflow:** prior predictive sampling, posterior predictive sampling, and ArviZ export are already implemented for the current Normal likelihood path.
 
 **Diagnostics:** Split R-hat (Vehtari et al. 2021), bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
 

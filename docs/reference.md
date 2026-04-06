@@ -8,6 +8,8 @@ builder = rmc.ModelBuilder(data=None)
 
 Constructs a model. `data` can be passed here or via `rmc.sample(data=...)`.
 
+`normal_prior()` supports limited scalar hierarchical priors today: `mu` and `sigma` may each be a `ParamRef`, as long as the referenced parameter is declared earlier. `half_normal_prior()` accepts a `ParamRef` sigma, and `normal_likelihood()` accepts a parameter-valued `sigma` too. Vector-valued hierarchical priors are not yet supported.
+
 ### Priors
 
 | Method | Distribution | Notes |
@@ -19,6 +21,8 @@ Constructs a model. `data` can be passed here or via `rmc.sample(data=...)`.
 | `gamma_prior(name, alpha, beta)` | Gamma(α, β) | sampled in log-space |
 | `uniform_prior(name, lower, upper)` | Uniform(a, b) | sampled via logit transform |
 | `vector_normal_prior(name, n, mu, sigma)` | Normal(μ, σ)^n | explicit vector of n parameters |
+
+`bernoulli_prior()` and `poisson_prior()` exist in the API but are limited. They are discrete and do not participate cleanly in gradient-based NUTS/HMC workflows today.
 
 All scalar prior methods return a `ParamRef`.
 
@@ -58,6 +62,8 @@ fit = rmc.sample(
 
 Returns a `FitResult`.
 
+`sample()` fits the model with either NUTS or fixed-step HMC. It returns posterior draws plus diagnostics and predictive helpers.
+
 ---
 
 ## `rmc.batch_sample()`
@@ -71,7 +77,7 @@ results = rmc.batch_sample(
 )
 ```
 
-Returns a list of `FitResult`, one per model. All models share the Rayon thread pool.
+Returns a list of `BatchResult`, one per model. Each `BatchResult` exposes `mean()`, `std()`, `get_samples()`, `accept_rate`, and `divergences`.
 
 ---
 
@@ -82,11 +88,13 @@ Returns a list of `FitResult`, one per model. All models share the Rayon thread 
 | `summary()` | `str` | Formatted table of all parameters |
 | `mean()` | `dict[str, float]` | Posterior mean per parameter |
 | `std()` | `dict[str, float]` | Posterior std per parameter |
-| `get_samples(name)` | `np.ndarray (chains, draws)` | Raw samples for one parameter |
-| `diagnostics()` | `dict` | r_hat, ess_bulk, ess_tail, mcse per parameter |
+| `get_samples()` | `dict[str, np.ndarray]` | All samples flattened across chains for each parameter |
+| `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped as `(chains, draws)` for each parameter |
+| `diagnostics()` | `list[dict]` | Per-parameter diagnostics: r_hat, ess_bulk, ess_tail, mcse, HDIs |
 | `step_sizes()` | `list[float]` | Per-chain adapted step size |
-| `divergences()` | `int` | Total divergence count across all chains |
-| `posterior_predictive(n_samples, seed)` | `dict[str, np.ndarray]` | Samples from posterior predictive |
+| `divergences()` | `list[int]` | Per-chain divergence count |
+| `posterior_predictive(n_samples, seed)` | `dict[str, np.ndarray]` | Samples from posterior predictive; `n_samples=None` uses all draws, otherwise posterior draws are randomly subsampled without replacement |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42)` | `arviz.InferenceData` | Convert the fit to ArviZ for plotting and inspection |
 
 ---
 
@@ -97,6 +105,16 @@ prior_pred = rmc.sample_prior_predictive(model, n_samples=500, seed=0)
 ```
 
 Returns `dict[str, np.ndarray]` with samples from the prior predictive distribution. Keys include all parameter names and likelihood names.
+
+For `rmc.batch_sample()`, each result is a `BatchResult`:
+
+| Method / property | Returns | Description |
+|--------|---------|-------------|
+| `mean()` | `dict[str, float]` | Posterior mean per parameter |
+| `std()` | `dict[str, float]` | Posterior std per parameter |
+| `get_samples()` | `dict[str, np.ndarray]` | Samples per parameter |
+| `accept_rate` | `float` | Mean acceptance rate for the chain |
+| `divergences` | `int` | Divergence count for the chain |
 
 ---
 
@@ -116,3 +134,5 @@ Direct use as `mu_expr` (no data key) is also valid for hierarchical models:
 mu_j = builder.normal_prior("mu_j", mu=mu_global, sigma=sigma_group)
 builder.normal_likelihood("obs_j", mu_expr=mu_j, sigma=2.0, observed_key="y_j")
 ```
+
+That pattern works for scalar latent parameters. It does not yet extend to hierarchical vector blocks or arbitrary custom likelihoods.

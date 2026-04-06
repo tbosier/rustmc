@@ -107,14 +107,23 @@ impl SampleResult {
     }
 }
 
-pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
-    if config.num_threads > 0 {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(config.num_threads)
-            .build_global()
-            .ok();
+fn with_thread_pool<T, F>(num_threads: usize, f: F) -> T
+where
+    F: FnOnce() -> T + Send,
+    T: Send,
+{
+    if num_threads > 0 {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .expect("failed to build Rayon thread pool");
+        pool.install(f)
+    } else {
+        f()
     }
+}
 
+pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, String> {
     let graph = Arc::new(graph);
     let param_names = graph.param_names.clone();
 
@@ -141,34 +150,36 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
 
     let chain_indices: Vec<usize> = (0..config.num_chains).collect();
 
-    let results: Vec<ChainResult> = chain_indices
-        .par_iter()
-        .map(|&chain_idx| {
-            let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_idx as u64);
-            let prog_ref = progress_state.as_deref();
+    let results: Vec<ChainResult> = with_thread_pool(config.num_threads, || {
+        chain_indices
+            .par_iter()
+            .map(|&chain_idx| {
+                let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_idx as u64);
+                let prog_ref = progress_state.as_deref();
 
-            match config.sampler {
-                SamplerType::Nuts => {
-                    let nuts_config = NutsConfig {
-                        step_size: config.step_size,
-                        max_tree_depth: config.max_tree_depth,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                    };
-                    nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                match config.sampler {
+                    SamplerType::Nuts => {
+                        let nuts_config = NutsConfig {
+                            step_size: config.step_size,
+                            max_tree_depth: config.max_tree_depth,
+                            num_draws: config.num_draws,
+                            num_warmup: config.num_warmup,
+                        };
+                        nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                    }
+                    SamplerType::Hmc => {
+                        let hmc_config = HmcConfig {
+                            step_size: config.step_size,
+                            num_leapfrog_steps: config.num_leapfrog_steps,
+                            num_draws: config.num_draws,
+                            num_warmup: config.num_warmup,
+                        };
+                        hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                    }
                 }
-                SamplerType::Hmc => {
-                    let hmc_config = HmcConfig {
-                        step_size: config.step_size,
-                        num_leapfrog_steps: config.num_leapfrog_steps,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                    };
-                    hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
-                }
-            }
-        })
-        .collect();
+            })
+            .collect()
+    });
 
     if let Some(ps) = &progress_state {
         ps.finish();
@@ -199,13 +210,13 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> SampleResult {
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
 
-    SampleResult {
+    Ok(SampleResult {
         samples,
         accept_rates,
         step_sizes,
         divergences,
         param_names,
-    }
+    })
 }
 
 /// Lightweight result for a single model in a batch run (1 chain).
@@ -280,43 +291,45 @@ pub fn batch_sample(
         .as_ref()
         .map(|ps| progress::spawn_progress_thread(Arc::clone(ps)));
 
-    let results: Vec<BatchModelResult> = models
-        .into_par_iter()
-        .enumerate()
-        .map(|(model_idx, (graph, obs_y))| {
-            let _ = obs_y; // data is already baked into the graph
-            let mut rng = ChaCha8Rng::seed_from_u64(seed + model_idx as u64);
-            let prog_ref = progress_state.as_deref();
+    let results: Vec<BatchModelResult> = with_thread_pool(0, || {
+        models
+            .into_par_iter()
+            .enumerate()
+            .map(|(model_idx, (graph, obs_y))| {
+                let _ = obs_y; // data is already baked into the graph
+                let mut rng = ChaCha8Rng::seed_from_u64(seed + model_idx as u64);
+                let prog_ref = progress_state.as_deref();
 
-            let nuts_config = NutsConfig {
-                step_size: 0.0,
-                max_tree_depth: 8,
-                num_draws,
-                num_warmup,
-            };
+                let nuts_config = NutsConfig {
+                    step_size: 0.0,
+                    max_tree_depth: 8,
+                    num_draws,
+                    num_warmup,
+                };
 
-            let chain = nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref);
+                let chain = nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref);
 
-            let transforms = &graph.param_transforms;
-            let samples: Vec<Vec<f64>> = chain
-                .samples
-                .iter()
-                .map(|draw| {
-                    draw.iter()
-                        .enumerate()
-                        .map(|(i, &raw)| transforms[i].apply(raw))
-                        .collect()
-                })
-                .collect();
+                let transforms = &graph.param_transforms;
+                let samples: Vec<Vec<f64>> = chain
+                    .samples
+                    .iter()
+                    .map(|draw| {
+                        draw.iter()
+                            .enumerate()
+                            .map(|(i, &raw)| transforms[i].apply(raw))
+                            .collect()
+                    })
+                    .collect();
 
-            BatchModelResult {
-                samples,
-                param_names: graph.param_names.clone(),
-                accept_rate: chain.accept_rate,
-                divergences: chain.divergences,
-            }
-        })
-        .collect();
+                BatchModelResult {
+                    samples,
+                    param_names: graph.param_names.clone(),
+                    accept_rate: chain.accept_rate,
+                    divergences: chain.divergences,
+                }
+            })
+            .collect()
+    });
 
     if let Some(ps) = &progress_state {
         ps.finish();
@@ -326,4 +339,19 @@ pub fn batch_sample(
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rayon::current_num_threads;
+
+    #[test]
+    fn thread_pool_helper_uses_requested_parallelism() {
+        let one = with_thread_pool(1, current_num_threads);
+        let two = with_thread_pool(2, current_num_threads);
+
+        assert_eq!(one, 1);
+        assert_eq!(two, 2);
+    }
 }

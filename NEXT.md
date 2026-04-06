@@ -1,33 +1,28 @@
-What's needed next (ordered by impact)
-# Tier 1 — Credibility
-## NUTS sampler
-     — Without this, any benchmark comparison is questioned. NUTS with dual averaging + mass matrix adaptation is the standard. This is the single most important missing piece.
-## Diagnostic metrics 
-    — R-hat, effective sample size (ESS), BFMO diagnostic. Users need to know if the chains converged. Without these, no statistician will trust the output.
-## More distributions 
-    — HalfNormal, StudentT, Uniform, Bernoulli, Poisson, Beta, Gamma. The distribution catalog is what determines what models people can express.
-# Tier 2 — Production readiness
-## Model serialization 
-    — Compile a model graph once, serialize to disk, load in production without Python. This is a killer feature for deployment pipelines: data scientists define models in Python, ops deploys a Rust binary.
-## Streaming/online posterior updates 
-    — Start from an existing posterior and incorporate new data without re-sampling from scratch. Critical for real-time systems (fraud detection, dynamic pricing, sensor fusion).
-## C API / FFI 
-    — Expose rustmc_core via C headers so C++, Go, Julia, and other languages can use it. Broader adoption.
-## Predictive sampling 
-    — posterior_predictive() is how users validate models. Without it, the library is incomplete for the standard Bayesian workflow.
-# Tier 3 — Competitive moat
-## Batched multi-model execution 
-    — Run 10K independent small models in a single call, sharing the thread pool. No Python equivalent can do this efficiently. Think: hierarchical marketing mix models per region, per-SKU demand forecasting, per-patient pharmacokinetic models.
-## WASM compilation 
-    — Rust compiles to WebAssembly. Bayesian inference in the browser, in Cloudflare Workers, in edge functions. PyMC will never do this.
-## GPU-accelerated log-probability 
-    — For very large observation counts (1M+), offload the likelihood sum to the GPU via wgpu/CUDA. The graph is already structured for this.
-## Sparse/block mass matrices 
-    — For large hierarchical models (10K+ parameters), a full diagonal mass matrix isn't enough. Block-diagonal structure that mirrors the model hierarchy would give Stan-level sampling quality.
-## Automatic reparameterization 
-    — Detect funnels and other pathologies in the posterior geometry, automatically apply non-centered parameterizations. This is research-level but would be genuinely novel.
+What's needed next, ordered by impact
 
+## Tier 1: Credibility and reach
 
-- Constrained parameters don't work. Half the distributions you just added can't actually be sampled because there are no parameter transforms. Anyone who tries Gamma or Beta priors — which are everywhere in real models — will hit 100% divergences. This is the kind of thing that makes people close the tab in 30 seconds. <- Done
-- The model API is limited. You can only express y = Σ βₖxₖ + noise. No hierarchical priors (parameter as hyperparameter of another parameter's prior), no link functions, no GLMs, no custom likelihood functions. PyMC lets you write arbitrary model structures.
-- No model validation workflow. No posterior predictive checks, no prior predictive sampling, no LOO-CV, no trace plots. Data scientists don't just want point estimates — they want the full Bayesian workflow.
+- Expand the modeling surface beyond Normal likelihoods into real GLM families.
+- Add explicit support for more link functions and likelihoods that cover common production use cases.
+- Strengthen validation tooling with LOO-CV, trace plots, and better predictive checks.
+
+## Tier 2: Production readiness
+
+- Compile a model graph once, serialize it, and load it without Python in deployment.
+- Add streaming and online posterior updates for systems that ingest new data continuously.
+- Expose a stable C API / FFI so other ecosystems can embed the core engine.
+
+## Tier 3: Competitive moat
+
+- Grow batched multi-model execution into a polished first-class workflow.
+- Add WASM compilation for browser and edge deployments.
+- Explore GPU-accelerated log-probability evaluation for very large observation sets.
+- Add sparse or block-structured mass matrices for large hierarchical models.
+- Investigate automatic reparameterization for funnel geometries.
+
+## Current state
+
+- Constrained parameters are now sampled with transforms and Jacobian corrections.
+- Scalar hierarchical priors are supported in a limited form.
+- Prior predictive and posterior predictive sampling are implemented.
+- The remaining gap is breadth of model families and deployment tooling, not basic sampler credibility.
