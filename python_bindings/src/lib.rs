@@ -4,6 +4,7 @@ use numpy::{IntoPyArray, PyArray1, PyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal as NormalDist};
@@ -821,6 +822,23 @@ fn build_mu_expr(
     }
 }
 
+fn select_posterior_draw_indices(
+    total_draws: usize,
+    n_samples: Option<usize>,
+    rng: &mut ChaCha8Rng,
+) -> Vec<usize> {
+    let n = n_samples.unwrap_or(total_draws).min(total_draws);
+    if n >= total_draws {
+        return (0..total_draws).collect();
+    }
+
+    let mut indices: Vec<usize> = (0..total_draws).collect();
+    indices.shuffle(rng);
+    indices.truncate(n);
+    indices.sort_unstable();
+    indices
+}
+
 #[pyclass]
 struct FitResult {
     result: SampleResult,
@@ -956,17 +974,20 @@ impl FitResult {
         let mut evaluator = Evaluator::new(&self.graph);
         let predictors = self.graph.normal_obs_predictors();
 
-        // Flatten all chain draws in order
+        // Flatten all chain draws in order, then subsample without replacement
+        // when the caller requests fewer draws than are available.
         let all_draws: Vec<&Vec<f64>> = self.result.samples
             .iter().flat_map(|c| c.iter()).collect();
-        let n = n_samples.unwrap_or(all_draws.len()).min(all_draws.len());
+        let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
+        let n = chosen_indices.len();
 
         // Pre-allocate: predictions[likelihood_idx] = flat Vec of n * n_obs values
         let mut preds: Vec<Vec<f64>> = predictors.iter()
             .map(|(_, _, n_obs)| Vec::with_capacity(n * n_obs))
             .collect();
 
-        for draw in all_draws.iter().take(n) {
+        for draw_idx in chosen_indices {
+            let draw = all_draws[draw_idx];
             evaluator.compute(&self.graph, draw);
             for (li, &(mu_node, sigma_node, n_obs)) in predictors.iter().enumerate() {
                 let sigma = evaluator.scalar_at(sigma_node);
@@ -1020,31 +1041,17 @@ impl FitResult {
         let posterior = self.get_samples_2d(py)?;
 
         // ── sample_stats ─────────────────────────────────────────────────
-        // We store only aggregate divergences per chain, not per-draw flags.
-        // Spread them evenly at the *end* of warmup so trace plots show the
-        // transitions that actually diverged (best approximation we have).
+        // Divergence flags are not stored per draw in SampleResult, so we do
+        // not fabricate an exact-looking `diverging` array here.
+        if self.result.total_divergences() > 0 {
+            py.import("warnings")?.call_method1(
+                "warn",
+                (
+                    "Exact per-draw divergence flags are not stored; ArviZ export omits sample_stats['diverging'] and only preserves step_size.",
+                ),
+            )?;
+        }
         let sample_stats = PyDict::new(py);
-
-        // diverging: bool array (n_chains, n_draws) — mark the last
-        // `div_count` draws of each chain as divergent (conservative proxy).
-        let mut diverging_data: Vec<bool> = Vec::with_capacity(n_chains * n_draws);
-        for (ci, &div_count) in self.result.divergences.iter().enumerate() {
-            let _ = ci;
-            let flagged = div_count.min(n_draws);
-            for d in 0..n_draws {
-                diverging_data.push(d >= n_draws - flagged);
-            }
-        }
-        let mut div_arr = Array2::<bool>::default((n_chains, n_draws));
-        for ci in 0..n_chains {
-            for di in 0..n_draws {
-                div_arr[[ci, di]] = diverging_data[ci * n_draws + di];
-            }
-        }
-        // ArviZ expects numpy arrays; convert bool array via Python
-        let np = py.import("numpy")?;
-        let div_np = np.call_method1("array", (div_arr.into_pyarray(py),))?;
-        sample_stats.set_item("diverging", div_np)?;
 
         // step_size: constant per chain, broadcast to (n_chains, n_draws)
         let mut step_size_arr = Array2::<f64>::zeros((n_chains, n_draws));
@@ -1204,9 +1211,15 @@ fn sample(
     let graph_for_predict = graph.clone();
     let likelihood_names: Vec<String> = model_spec.likelihoods.iter().map(|l| l.name.clone()).collect();
 
-    let result = py.allow_threads(|| sampler::sample(graph, config));
+    let result = py
+        .allow_threads(|| sampler::sample(graph, config))
+        .map_err(PyValueError::new_err)?;
 
-    Ok(FitResult { result, graph: graph_for_predict, likelihood_names })
+    Ok(FitResult {
+        result,
+        graph: graph_for_predict,
+        likelihood_names,
+    })
 }
 
 /// Result for a single model in a batch run.
@@ -1444,7 +1457,10 @@ fn sample_prior_predictive<'py>(
 /// Sample raw (unconstrained) parameters from the model priors.
 /// Processes priors in declaration order so hierarchical hyperpriors work.
 fn sample_prior_raw(priors: &[PriorSpec], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, PyErr> {
-    use rand_distr::{Beta, Gamma as GammaDist, StudentT as StudentTDist, Uniform as UniformDist};
+    use rand_distr::{
+        Beta, Gamma as GammaDist, Poisson as PoissonDist, StudentT as StudentTDist,
+        Uniform as UniformDist,
+    };
 
     let mut raw: Vec<f64> = Vec::new();
     // Track post-transform values for HyperParam::Param resolution
@@ -1505,8 +1521,9 @@ fn sample_prior_raw(priors: &[PriorSpec], rng: &mut ChaCha8Rng) -> Result<Vec<f6
                 raw.push(x);
             }
             PriorSpec::Poisson { name, lam } => {
-                // Approximate: sample a Gamma and round — or just use the mean
-                let x = *lam;
+                let x = PoissonDist::new(*lam)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?
+                    .sample(rng) as f64;
                 sampled_values.insert(name.clone(), x);
                 raw.push(x);
             }

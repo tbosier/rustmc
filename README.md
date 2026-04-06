@@ -8,7 +8,7 @@ rustmc runs the entire sampling loop in compiled Rust, with no Python in the inn
 
 PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, and analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets -- per-store demand models, per-SKU pricing models, per-patient dosing models.
 
-rustmc is designed for that use case. It provides a batch inference API that runs 10,000 independent NUTS chains through a single Rayon thread pool, sharing compute across all available cores with zero serialization overhead.
+rustmc is designed for that use case. It provides a batch inference API that runs 10,000 independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
 
 **10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
 
@@ -42,7 +42,7 @@ pip install numpy maturin
 maturin develop --manifest-path python_bindings/Cargo.toml --release
 ```
 
-or if you prefer, I have made this publically downloadable via pip 
+or if you prefer, install the published wheel from PyPI:
 
 ```bash
 pip install rustmc
@@ -101,7 +101,7 @@ for i in range(10_000):
 
 results = rmc.batch_sample(models, draws=500, warmup=300)
 
-# Each result has .mean(), .std(), .get_samples()
+# Each result is a BatchResult with .mean(), .std(), .get_samples()
 for r in results[:5]:
     print(r)
 ```
@@ -133,6 +133,8 @@ Instead of 500 separate scalar graph nodes (one per coefficient), rustmc allocat
 
 For explicit control over the vector size, `vector_normal_prior("beta", n=P)` is also available.
 
+The builder also supports limited scalar hierarchical priors today. For `normal_prior`, both `mu` and `sigma` can be other parameters; for `half_normal_prior`, `sigma` can be a parameter; and likelihood `sigma` can be a parameter as well. Vector-valued hierarchical priors are not yet supported.
+
 ## What is implemented
 
 ### Sampling
@@ -159,6 +161,8 @@ For explicit control over the vector size, `vector_normal_prior("beta", n=P)` is
 
 Constrained distributions are automatically sampled in unconstrained space via log/logit transforms with Jacobian corrections. Samples are back-transformed before being returned to the user.
 
+Discrete priors are exposed for completeness, but they are not differentiable and are not suitable for gradient-based sampling in their current form. In practice, use the continuous relaxations or a model structure that keeps the latent parameters continuous.
+
 ### Computation
 
 - Computational graph with reverse-mode automatic differentiation.
@@ -178,6 +182,12 @@ Constrained distributions are automatically sampled in unconstrained space via l
 - Automatic warnings for convergence issues.
 
 Available via `fit.summary()` for a formatted table or `fit.diagnostics()` for programmatic access.
+
+### Predictive checks
+
+- `sample_prior_predictive()` is implemented and returns prior draws plus simulated observations.
+- `FitResult.posterior_predictive()` is implemented and returns simulated observations from posterior draws.
+- `FitResult.to_arviz()` is implemented for downstream plotting and inspection.
 
 ### Progress reporting
 
@@ -229,12 +239,10 @@ JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and 
 
 Near term:
 
-- Hierarchical priors (parameter as hyperparameter of another parameter's prior)
-- Link functions and GLMs
-- Custom likelihood functions
-- Prior and posterior predictive sampling
-- LOO-CV (Pareto-smoothed importance sampling)
-- Trace plots and visual diagnostics
+- Expand the scalar modeling DSL into more GLM families and link functions.
+- Add more likelihoods and better discrete-model support where gradients permit it.
+- Improve posterior diagnostics and plotting output for routine model validation.
+- Make model compilation and serialization explicit so Python becomes optional in production.
 
 Medium term:
 
