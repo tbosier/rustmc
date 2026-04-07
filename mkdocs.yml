@@ -35,6 +35,7 @@ nav:
   - Examples:
     - Linear Regression: examples/linear-regression.md
     - Hierarchical Models: examples/hierarchical.md
+    - Hierarchical Templates: examples/hierarchical-templates.md
     - Batch Inference: examples/batch-inference.md
     - High-Dimensional Regression: examples/high-dimensional.md
   - API Reference: reference.md

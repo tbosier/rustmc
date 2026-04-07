@@ -222,23 +222,37 @@ impl Evaluator {
                         self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
                     );
                 }
-                Op::NormalObsLogP {
-                    mu_vec,
-                    sigma,
+                Op::ObsLogP {
+                    family,
+                    linpred_vec,
+                    aux,
                     obs_data_idx,
                 } => {
-                    let sv = self.scalars[sigma.0];
                     let obs = &graph.obs_vectors[*obs_data_idx];
-                    let s2 = sv * sv;
-                    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
-                    let n = obs.len() as f64;
-                    let mut sum_sq = 0.0f64;
-                    for i in 0..vl {
-                        let m = self.read_vec(mu_vec.0, i, graph);
-                        let d = obs[i] - m;
-                        sum_sq += d * d;
+                    match family {
+                        crate::graph::ObsFamily::Normal => {
+                            let sigma_node = aux.expect("Normal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            let n = obs.len() as f64;
+                            let mut sum_sq = 0.0f64;
+                            for i in 0..vl {
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let d = obs[i] - m;
+                                sum_sq += d * d;
+                            }
+                            self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
+                        }
+                        crate::graph::ObsFamily::BernoulliLogit => {
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                sum += obs[i] * eta - softplus(eta);
+                            }
+                            self.scalars[idx] = sum;
+                        }
                     }
-                    self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
                 }
                 Op::FusedLinearMu {
                     param_nodes,
@@ -552,31 +566,49 @@ impl Evaluator {
                         self.adj_scalars[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                     }
                 }
-                Op::NormalObsLogP {
-                    mu_vec,
-                    sigma,
+                Op::ObsLogP {
+                    family,
+                    linpred_vec,
+                    aux,
                     obs_data_idx,
                 } => {
-                    let sv = self.scalars[sigma.0];
                     let obs = &graph.obs_vectors[*obs_data_idx];
-                    let s2 = sv * sv;
-                    let mut dsigma = 0.0f64;
+                    match family {
+                        crate::graph::ObsFamily::Normal => {
+                            let sigma_node = aux.expect("Normal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let mut dsigma = 0.0f64;
 
-                    let mu_off = match self.node_kind[mu_vec.0] {
-                        NodeKind::ComputedVec(o) => Some(o),
-                        _ => None,
-                    };
+                            let mu_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
 
-                    for i in 0..vl {
-                        let m = self.read_vec(mu_vec.0, i, graph);
-                        let diff = obs[i] - m;
-                        // Adjoint for mu_vec
-                        if let Some(off) = mu_off {
-                            self.adj_vec_buf[off + i] += a_s * diff / s2;
+                            for i in 0..vl {
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let diff = obs[i] - m;
+                                if let Some(off) = mu_off {
+                                    self.adj_vec_buf[off + i] += a_s * diff / s2;
+                                }
+                                dsigma += diff * diff / (s2 * sv) - 1.0 / sv;
+                            }
+                            self.adj_scalars[sigma_node.0] += a_s * dsigma;
                         }
-                        dsigma += diff * diff / (s2 * sv) - 1.0 / sv;
+                        crate::graph::ObsFamily::BernoulliLogit => {
+                            let eta_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let grad = obs[i] - sigmoid_stable(eta);
+                                if let Some(off) = eta_off {
+                                    self.adj_vec_buf[off + i] += a_s * grad;
+                                }
+                            }
+                        }
                     }
-                    self.adj_scalars[sigma.0] += a_s * dsigma;
                 }
                 Op::FusedLinearMu {
                     param_nodes,
@@ -784,15 +816,25 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::BetaLogP { x, alpha, beta } => {
                 Value::Scalar(beta_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
             }
-            Op::NormalObsLogP {
-                mu_vec,
-                sigma,
+            Op::ObsLogP {
+                family,
+                linpred_vec,
+                aux,
                 obs_data_idx,
             } => {
-                let mu = values[mu_vec.0].as_vector();
-                let sv = values[sigma.0].as_scalar();
                 let obs = &graph.obs_vectors[*obs_data_idx];
-                Value::Scalar(normal_obs_logp_sum(mu, sv, obs))
+                match family {
+                    crate::graph::ObsFamily::Normal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("Normal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        Value::Scalar(normal_obs_logp_sum(mu, sv, obs))
+                    }
+                    crate::graph::ObsFamily::BernoulliLogit => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        Value::Scalar(bernoulli_logit_obs_logp_sum(eta, obs))
+                    }
+                }
             }
             Op::FusedLinearMu {
                 param_nodes,
@@ -1041,30 +1083,45 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                 }
             }
-            Op::NormalObsLogP {
-                mu_vec,
-                sigma,
+            Op::ObsLogP {
+                family,
+                linpred_vec,
+                aux,
                 obs_data_idx,
             } => {
-                let mu = values[mu_vec.0].as_vector();
-                let sv = values[sigma.0].as_scalar();
                 let obs = &graph.obs_vectors[*obs_data_idx];
-                let s2 = sv * sv;
-                let dmu: Vec<f64> = mu
-                    .iter()
-                    .zip(obs.iter())
-                    .map(|(m, o)| a_s * (o - m) / s2)
-                    .collect();
-                merge_vec_adj(&mut adj_vector[mu_vec.0], &dmu);
-                let dsigma: f64 = mu
-                    .iter()
-                    .zip(obs.iter())
-                    .map(|(m, o)| {
-                        let diff = o - m;
-                        diff * diff / (s2 * sv) - 1.0 / sv
-                    })
-                    .sum::<f64>();
-                adj_scalar[sigma.0] += a_s * dsigma;
+                match family {
+                    crate::graph::ObsFamily::Normal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("Normal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        let s2 = sv * sv;
+                        let dmu: Vec<f64> = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, o)| a_s * (o - m) / s2)
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
+                        let dsigma: f64 = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, o)| {
+                                let diff = o - m;
+                                diff * diff / (s2 * sv) - 1.0 / sv
+                            })
+                            .sum::<f64>();
+                        adj_scalar[sigma_node.0] += a_s * dsigma;
+                    }
+                    crate::graph::ObsFamily::BernoulliLogit => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let deta: Vec<f64> = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| a_s * (y - sigmoid_stable(*e)))
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
+                    }
+                }
             }
             Op::FusedLinearMu {
                 param_nodes,
@@ -1185,6 +1242,13 @@ fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
     n * log_norm - 0.5 * sum_sq / s2
 }
 
+fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+    eta.iter()
+        .zip(obs.iter())
+        .map(|(e, y)| y * e - softplus(*e))
+        .sum()
+}
+
 fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
     if x < 0.0 {
         return f64::NEG_INFINITY;
@@ -1232,6 +1296,23 @@ fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
         + (beta - 1.0) * (1.0 - x).ln()
 }
 
+fn softplus(x: f64) -> f64 {
+    if x > 0.0 {
+        x + (-x).exp().ln_1p()
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+fn sigmoid_stable(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let ex = x.exp();
+        ex / (1.0 + ex)
+    }
+}
+
 /// Lanczos approximation to ln(Γ(x)) for x > 0.
 fn ln_gamma(x: f64) -> f64 {
     if x <= 0.0 {
@@ -1272,7 +1353,7 @@ fn digamma(mut x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Graph;
+    use crate::graph::{Graph, ObsFamily};
 
     #[test]
     fn test_normal_logp_gradient() {
@@ -1478,6 +1559,22 @@ mod tests {
         let x = g.add_constant(1.0);
         g.bernoulli_logp(x, p);
         finite_diff_check(&g, &[0.7], 1e-4);
+    }
+
+    #[test]
+    fn test_bernoulli_logit_obs_gradient() {
+        let mut g = Graph::new();
+        let eta = g.add_param("eta");
+        let eta_vec = g.scalar_broadcast(eta);
+        let obs_idx = g.add_obs_data(vec![1.0, 0.0, 1.0, 1.0]);
+        g.obs_logp_bernoulli_logit(eta_vec, obs_idx);
+
+        let heads = g.observation_heads();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].family, ObsFamily::BernoulliLogit);
+        assert_eq!(heads[0].n_obs, 4);
+
+        finite_diff_check(&g, &[0.3], 1e-4);
     }
 
     /// Test MatVecMul + VectorNormalLogP forward and gradient via finite differences.

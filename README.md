@@ -2,13 +2,21 @@
 
 Bayesian inference engine written in Rust. Python API via PyO3.
 
-rustmc runs the entire sampling loop in compiled Rust, with no Python in the inner loop. Chains are parallelized across threads using Rayon. The result is fast enough to fit thousands of independent Bayesian models in a single call.
-
 ## Why rustmc
 
-PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, and analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets -- per-store demand models, per-SKU pricing models, per-patient dosing models.
+rustmc is built for production workloads where the same model structure is fit repeatedly:
 
-rustmc is designed for that use case. It provides a batch inference API that runs 10,000 independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
+- Rust-native inference loop with no Python in the hot path.
+- Rayon-parallel chains and batch inference for repeated-model throughput.
+- Graph-based execution with cached buffers, transforms, and Jacobians.
+- Fast paths for linear regression and high-dimensional `X @ beta` models.
+- Built-in diagnostics, predictive checks, and ArviZ export.
+
+It is a strong fit for repeated Bayesian regression, forecasting, and hierarchical workflows on CPU. It is not yet a full arbitrary-PPL replacement for PyMC or Stan.
+
+What sets rustmc apart is the execution model: it shares one compiled Rust core across chains and across many independent models, so throughput stays high when the same structure is applied to thousands of datasets.
+
+PyMC and Stan are excellent general-purpose tools, but they are optimized around a broader single-model workflow. rustmc is optimized for the repeated-model setting where Python orchestration, per-model overhead, and deployment friction start to dominate.
 
 **10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
 

@@ -12,6 +12,24 @@ pub struct MatrixData {
     pub n_cols: usize,
 }
 
+/// Observation families supported by the generic observation op.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ObsFamily {
+    Normal,
+    BernoulliLogit,
+}
+
+/// Metadata for an observation term in the graph.
+#[derive(Debug, Clone)]
+pub struct ObservationHead {
+    pub name: String,
+    pub family: ObsFamily,
+    pub linpred: NodeId,
+    pub aux: Option<NodeId>,
+    pub obs_data_idx: usize,
+    pub n_obs: usize,
+}
+
 /// Operations supported in the computation graph.
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -46,10 +64,11 @@ pub enum Op {
         mu: NodeId,
         sigma: NodeId,
     },
-    /// Sum-of-log-probabilities for observed data under Normal(mu_vec, sigma).
-    NormalObsLogP {
-        mu_vec: NodeId,
-        sigma: NodeId,
+    /// Generic observation log-probability term for supported GLM families.
+    ObsLogP {
+        family: ObsFamily,
+        linpred_vec: NodeId,
+        aux: Option<NodeId>,
         obs_data_idx: usize,
     },
     /// logp(x | sigma) for x >= 0; HalfNormal
@@ -282,7 +301,7 @@ impl Graph {
     }
 
     /// Broadcast a scalar node into a vector node (each element = scalar).
-    /// Used so a scalar parameter can serve as the mu in NormalObsLogP.
+    /// Used so a scalar parameter can serve as the linear predictor in ObsLogP.
     pub fn scalar_broadcast(&mut self, scalar: NodeId) -> NodeId {
         self.add_node(Op::ScalarBroadcast(scalar), None)
     }
@@ -293,16 +312,45 @@ impl Graph {
         node
     }
 
+    /// Backward-compatible alias for the Normal observation op.
     pub fn normal_obs_logp(
         &mut self,
-        mu_vec: NodeId,
+        linpred_vec: NodeId,
+        sigma: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        self.obs_logp_normal(linpred_vec, sigma, obs_data_idx)
+    }
+
+    pub fn obs_logp_normal(
+        &mut self,
+        linpred_vec: NodeId,
         sigma: NodeId,
         obs_data_idx: usize,
     ) -> NodeId {
         let node = self.add_node(
-            Op::NormalObsLogP {
-                mu_vec,
-                sigma,
+            Op::ObsLogP {
+                family: ObsFamily::Normal,
+                linpred_vec,
+                aux: Some(sigma),
+                obs_data_idx,
+            },
+            None,
+        );
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn obs_logp_bernoulli_logit(
+        &mut self,
+        linpred_vec: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        let node = self.add_node(
+            Op::ObsLogP {
+                family: ObsFamily::BernoulliLogit,
+                linpred_vec,
+                aux: None,
                 obs_data_idx,
             },
             None,
@@ -364,17 +412,40 @@ impl Graph {
         node
     }
 
-    /// Return (mu_vec_node, sigma_node, n_obs) for every NormalObsLogP in the graph.
-    /// Used by posterior_predictive and prior_predictive to read predictions.
-    pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
+    /// Return observation metadata for every supported observation term.
+    pub fn observation_heads(&self) -> Vec<ObservationHead> {
         self.nodes
             .iter()
             .filter_map(|n| {
-                if let Op::NormalObsLogP { mu_vec, sigma, obs_data_idx } = &n.op {
-                    Some((*mu_vec, *sigma, self.obs_vectors[*obs_data_idx].len()))
+                if let Op::ObsLogP {
+                    family,
+                    linpred_vec,
+                    aux,
+                    obs_data_idx,
+                } = &n.op
+                {
+                    Some(ObservationHead {
+                        name: n.name.clone().unwrap_or_default(),
+                        family: *family,
+                        linpred: *linpred_vec,
+                        aux: *aux,
+                        obs_data_idx: *obs_data_idx,
+                        n_obs: self.obs_vectors[*obs_data_idx].len(),
+                    })
                 } else {
                     None
                 }
+            })
+            .collect()
+    }
+
+    /// Backward-compatible helper for the current Normal-only API surface.
+    pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
+        self.observation_heads()
+            .into_iter()
+            .filter_map(|head| match head.family {
+                ObsFamily::Normal => Some((head.linpred, head.aux.unwrap(), head.n_obs)),
+                ObsFamily::BernoulliLogit => None,
             })
             .collect()
     }

@@ -1,3 +1,5 @@
+use crate::hmc::TransitionStats;
+
 /// MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
 ///
 /// All algorithms follow the definitions in:
@@ -26,6 +28,37 @@ pub struct DiagnosticsReport {
     pub num_draws: usize,
     pub accept_rates: Vec<f64>,
     pub divergences: usize,
+}
+
+/// Per-chain transition telemetry summary.
+#[derive(Debug, Clone)]
+pub struct ChainTransitionDiagnostics {
+    pub chain_index: usize,
+    pub num_transitions: usize,
+    pub num_warmup_transitions: usize,
+    pub num_draw_transitions: usize,
+    pub divergences: usize,
+    pub accepted_transitions: usize,
+    pub mean_accept_prob: f64,
+    pub mean_energy_error: f64,
+    pub max_abs_energy_error: f64,
+    pub mean_step_size: f64,
+    pub max_tree_depth: Option<usize>,
+    pub total_leapfrog_steps: usize,
+}
+
+/// Aggregated telemetry across all chains for one sampling run.
+#[derive(Debug, Clone)]
+pub struct TransitionDiagnosticsReport {
+    pub chains: Vec<ChainTransitionDiagnostics>,
+    pub total_transitions: usize,
+    pub total_warmup_transitions: usize,
+    pub total_draw_transitions: usize,
+    pub total_divergences: usize,
+    pub total_leapfrog_steps: usize,
+    pub mean_accept_prob: f64,
+    pub mean_energy_error: f64,
+    pub max_abs_energy_error: f64,
 }
 
 impl DiagnosticsReport {
@@ -63,8 +96,11 @@ impl DiagnosticsReport {
 
         lines.push("─".repeat(96));
 
-        let avg_accept: f64 =
-            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64;
+        let avg_accept: f64 = if self.accept_rates.is_empty() {
+            0.0
+        } else {
+            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
+        };
         lines.push(format!(
             "Mean accept rate: {:.2}  │  Divergences: {}",
             avg_accept, self.divergences
@@ -90,6 +126,56 @@ impl DiagnosticsReport {
             ));
         }
 
+        lines.join("\n")
+    }
+}
+
+impl TransitionDiagnosticsReport {
+    /// Render the telemetry as a compact table.
+    pub fn to_table(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Transition telemetry: {} transitions ({} warmup, {} draws), {} divergences",
+            self.total_transitions,
+            self.total_warmup_transitions,
+            self.total_draw_transitions,
+            self.total_divergences
+        ));
+        lines.push(String::new());
+        lines.push(format!(
+            "{:<6} {:>8} {:>8} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10}",
+            "chain",
+            "trans",
+            "warmup",
+            "div",
+            "acc",
+            "mean_acc",
+            "mean_dH",
+            "max|dH|",
+            "leapfrogs"
+        ));
+        lines.push("─".repeat(100));
+
+        for chain in &self.chains {
+            lines.push(format!(
+                "{:<6} {:>8} {:>8} {:>10} {:>10} {:>12.4} {:>12.4} {:>12.4} {:>10}",
+                chain.chain_index,
+                chain.num_transitions,
+                chain.num_warmup_transitions,
+                chain.divergences,
+                chain.accepted_transitions,
+                chain.mean_accept_prob,
+                chain.mean_energy_error,
+                chain.max_abs_energy_error,
+                chain.total_leapfrog_steps
+            ));
+        }
+
+        lines.push("─".repeat(100));
+        lines.push(format!(
+            "Mean accept prob: {:.4}  |  Mean dH: {:.4}  |  Max |dH|: {:.4}",
+            self.mean_accept_prob, self.mean_energy_error, self.max_abs_energy_error
+        ));
         lines.join("\n")
     }
 }
@@ -147,6 +233,99 @@ pub fn compute_diagnostics(
         num_draws: n_draws,
         accept_rates: accept_rates.to_vec(),
         divergences,
+    }
+}
+
+/// Compute structured transition telemetry from per-chain transition lists.
+pub fn compute_transition_diagnostics(
+    transitions: &[Vec<TransitionStats>],
+) -> TransitionDiagnosticsReport {
+    let mut chains = Vec::with_capacity(transitions.len());
+    let mut total_transitions = 0usize;
+    let mut total_warmup_transitions = 0usize;
+    let mut total_draw_transitions = 0usize;
+    let mut total_divergences = 0usize;
+    let mut total_leapfrog_steps = 0usize;
+    let mut sum_accept_prob = 0.0f64;
+    let mut sum_energy_error = 0.0f64;
+    let mut n_energy_error = 0usize;
+    let mut max_abs_energy_error = 0.0f64;
+
+    for (chain_index, chain) in transitions.iter().enumerate() {
+        let num_transitions = chain.len();
+        let num_warmup_transitions = chain.iter().filter(|t| t.is_warmup).count();
+        let num_draw_transitions = num_transitions.saturating_sub(num_warmup_transitions);
+        let divergences = chain.iter().filter(|t| t.divergent).count();
+        let accepted_transitions = chain.iter().filter(|t| t.accepted).count();
+        let mean_accept_prob = if num_transitions > 0 {
+            chain.iter().map(|t| t.accept_prob).sum::<f64>() / num_transitions as f64
+        } else {
+            0.0
+        };
+        let mean_energy_error = if num_transitions > 0 {
+            chain.iter().map(|t| t.energy_error).sum::<f64>() / num_transitions as f64
+        } else {
+            0.0
+        };
+        let chain_max_abs_energy_error = chain
+            .iter()
+            .map(|t| t.energy_error.abs())
+            .fold(0.0, f64::max);
+        let mean_step_size = if num_transitions > 0 {
+            chain.iter().map(|t| t.step_size).sum::<f64>() / num_transitions as f64
+        } else {
+            0.0
+        };
+        let max_tree_depth = chain.iter().filter_map(|t| t.tree_depth).max();
+        let chain_leapfrog_steps: usize = chain.iter().map(|t| t.num_leapfrog_steps).sum();
+
+        total_transitions += num_transitions;
+        total_warmup_transitions += num_warmup_transitions;
+        total_draw_transitions += num_draw_transitions;
+        total_divergences += divergences;
+        total_leapfrog_steps += chain_leapfrog_steps;
+        sum_accept_prob += chain.iter().map(|t| t.accept_prob).sum::<f64>();
+        sum_energy_error += chain.iter().map(|t| t.energy_error).sum::<f64>();
+        n_energy_error += num_transitions;
+        max_abs_energy_error = max_abs_energy_error.max(chain_max_abs_energy_error);
+
+        chains.push(ChainTransitionDiagnostics {
+            chain_index,
+            num_transitions,
+            num_warmup_transitions,
+            num_draw_transitions,
+            divergences,
+            accepted_transitions,
+            mean_accept_prob,
+            mean_energy_error,
+            max_abs_energy_error,
+            mean_step_size,
+            max_tree_depth,
+            total_leapfrog_steps,
+        });
+    }
+
+    let mean_accept_prob = if total_transitions > 0 {
+        sum_accept_prob / total_transitions as f64
+    } else {
+        0.0
+    };
+    let mean_energy_error = if n_energy_error > 0 {
+        sum_energy_error / n_energy_error as f64
+    } else {
+        0.0
+    };
+
+    TransitionDiagnosticsReport {
+        chains,
+        total_transitions,
+        total_warmup_transitions,
+        total_draw_transitions,
+        total_divergences,
+        total_leapfrog_steps,
+        mean_accept_prob,
+        mean_energy_error,
+        max_abs_energy_error,
     }
 }
 
@@ -400,6 +579,7 @@ fn inv_normal_cdf(p: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hmc::TransitionStats;
 
     #[test]
     fn test_r_hat_converged() {
@@ -443,5 +623,57 @@ mod tests {
             .collect();
         let ess = ess_bulk_chains(&chains);
         assert!(ess > 0.0, "ESS should be positive, got {}", ess);
+    }
+
+    #[test]
+    fn test_transition_diagnostics_aggregate() {
+        let transitions = vec![
+            vec![
+                TransitionStats {
+                    is_warmup: true,
+                    accepted: true,
+                    accept_prob: 0.9,
+                    energy_error: 0.1,
+                    divergent: false,
+                    step_size: 1.0,
+                    num_leapfrog_steps: 5,
+                    tree_depth: Some(2),
+                },
+                TransitionStats {
+                    is_warmup: false,
+                    accepted: false,
+                    accept_prob: 0.7,
+                    energy_error: -0.4,
+                    divergent: true,
+                    step_size: 1.0,
+                    num_leapfrog_steps: 7,
+                    tree_depth: Some(3),
+                },
+            ],
+            vec![
+                TransitionStats {
+                    is_warmup: false,
+                    accepted: true,
+                    accept_prob: 0.8,
+                    energy_error: 0.2,
+                    divergent: false,
+                    step_size: 0.5,
+                    num_leapfrog_steps: 6,
+                    tree_depth: None,
+                },
+            ],
+        ];
+
+        let report = compute_transition_diagnostics(&transitions);
+        assert_eq!(report.total_transitions, 3);
+        assert_eq!(report.total_warmup_transitions, 1);
+        assert_eq!(report.total_draw_transitions, 2);
+        assert_eq!(report.total_divergences, 1);
+        assert_eq!(report.total_leapfrog_steps, 18);
+        assert_eq!(report.chains.len(), 2);
+        assert_eq!(report.chains[0].divergences, 1);
+        assert_eq!(report.chains[1].max_tree_depth, None);
+        assert!(report.mean_accept_prob.is_finite());
+        assert!(report.max_abs_energy_error >= 0.4);
     }
 }

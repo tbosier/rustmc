@@ -70,10 +70,17 @@ enum SigmaSpec {
 }
 
 #[derive(Debug, Clone)]
+enum LikelihoodFamily {
+    Normal,
+    BernoulliLogit,
+}
+
+#[derive(Debug, Clone)]
 struct LikelihoodSpec {
+    family: LikelihoodFamily,
     name: String,
     mu_expr: MuExpr,
-    sigma: SigmaSpec,
+    sigma: Option<SigmaSpec>,
     observed_key: String,
 }
 
@@ -379,9 +386,36 @@ impl ModelBuilder {
             )?;
         }
         self.likelihoods.push(LikelihoodSpec {
+            family: LikelihoodFamily::Normal,
             name: name.to_string(),
             mu_expr: inner_expr,
-            sigma: sigma_spec,
+            sigma: Some(sigma_spec),
+            observed_key: observed_key.to_string(),
+        });
+        Ok(())
+    }
+
+    #[pyo3(signature = (name, eta_expr, observed_key))]
+    fn bernoulli_logit_likelihood(
+        &mut self,
+        name: &str,
+        eta_expr: &Bound<'_, PyAny>,
+        observed_key: &str,
+    ) -> PyResult<()> {
+        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
+            validate_data_keys(
+                &inner_expr,
+                observed_key,
+                &self.bound_data_1d,
+                &self.bound_data_2d,
+            )?;
+        }
+        self.likelihoods.push(LikelihoodSpec {
+            family: LikelihoodFamily::BernoulliLogit,
+            name: name.to_string(),
+            mu_expr: inner_expr,
+            sigma: None,
             observed_key: observed_key.to_string(),
         });
         Ok(())
@@ -440,6 +474,19 @@ fn validate_data_keys(
     validate_expr_keys(expr, data_1d, data_2d)
 }
 
+fn parse_likelihood_expr(value: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<MuExpr> {
+    if let Ok(e) = value.downcast::<Expr>() {
+        Ok(e.borrow().inner.clone())
+    } else if let Ok(p) = value.downcast::<ParamRef>() {
+        Ok(MuExpr::Param(p.borrow().name.clone()))
+    } else {
+        Err(PyValueError::new_err(format!(
+            "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+            arg_name
+        )))
+    }
+}
+
 fn validate_expr_keys(
     expr: &MuExpr,
     data_1d: &HashMap<String, Vec<f64>>,
@@ -476,6 +523,28 @@ fn validate_expr_keys(
     }
 }
 
+fn validate_binary_observations(obs: &[f64], name: &str) -> PyResult<()> {
+    const TOL: f64 = 1e-8;
+    if let Some((idx, value)) = obs.iter().copied().enumerate().find(|(_, v)| {
+        (*v - 0.0).abs() > TOL && (*v - 1.0).abs() > TOL
+    }) {
+        return Err(PyValueError::new_err(format!(
+            "Bernoulli-logit likelihood '{}' requires binary observed values; found {} at index {}",
+            name, value, idx
+        )));
+    }
+    Ok(())
+}
+
+fn sigmoid_stable(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let ex = x.exp();
+        ex / (1.0 + ex)
+    }
+}
+
 /// Parse a Python value (float or ParamRef) into a HyperParam.
 fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam> {
     if let Ok(v) = obj.extract::<f64>() {
@@ -508,6 +577,57 @@ fn resolve_hyper(
             })
         }
     }
+}
+
+fn build_likelihood_into_graph(
+    graph: &mut Graph,
+    lik: &LikelihoodSpec,
+    data_map: &HashMap<String, Vec<f64>>,
+    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
+    vector_param_map: &HashMap<String, (usize, usize)>,
+    value_node_map: &HashMap<String, NodeId>,
+) -> PyResult<()> {
+    let linpred_node = build_mu_expr(
+        graph,
+        &lik.mu_expr,
+        data_map,
+        matrix_map,
+        vector_param_map,
+    )?;
+    let linpred_node = if lik.mu_expr.is_scalar() {
+        graph.scalar_broadcast(linpred_node)
+    } else {
+        linpred_node
+    };
+
+    let obs_vec = data_map
+        .get(&lik.observed_key)
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "Missing observed data key: {}",
+                lik.observed_key
+            ))
+        })?
+        .clone();
+    let obs_idx = graph.add_obs_data(obs_vec.clone());
+
+    match lik.family {
+        LikelihoodFamily::Normal => {
+            let sigma_spec = lik.sigma.as_ref().ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "Normal likelihood '{}' is missing sigma",
+                    lik.name
+                ))
+            })?;
+            let sigma_node = resolve_sigma(sigma_spec, graph, value_node_map)?;
+            graph.normal_obs_logp(linpred_node, sigma_node, obs_idx);
+        }
+        LikelihoodFamily::BernoulliLogit => {
+            validate_binary_observations(&obs_vec, &lik.name)?;
+            graph.obs_logp_bernoulli_logit(linpred_node, obs_idx);
+        }
+    }
+    Ok(())
 }
 
 /// Build a single prior into the graph. Used by both `sample()` and `batch_sample()`
@@ -972,7 +1092,7 @@ impl FitResult {
     ) -> PyResult<Bound<'py, PyDict>> {
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         let mut evaluator = Evaluator::new(&self.graph);
-        let predictors = self.graph.normal_obs_predictors();
+        let heads = self.graph.observation_heads();
 
         // Flatten all chain draws in order, then subsample without replacement
         // when the caller requests fewer draws than are available.
@@ -982,26 +1102,38 @@ impl FitResult {
         let n = chosen_indices.len();
 
         // Pre-allocate: predictions[likelihood_idx] = flat Vec of n * n_obs values
-        let mut preds: Vec<Vec<f64>> = predictors.iter()
-            .map(|(_, _, n_obs)| Vec::with_capacity(n * n_obs))
+        let mut preds: Vec<Vec<f64>> = heads.iter()
+            .map(|head| Vec::with_capacity(n * head.n_obs))
             .collect();
 
         for draw_idx in chosen_indices {
             let draw = all_draws[draw_idx];
             evaluator.compute(&self.graph, draw);
-            for (li, &(mu_node, sigma_node, n_obs)) in predictors.iter().enumerate() {
-                let sigma = evaluator.scalar_at(sigma_node);
-                let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
-                for i in 0..n_obs {
-                    let mu = evaluator.vec_elem(mu_node, i, &self.graph);
-                    preds[li].push(mu + noise_dist.sample(&mut rng));
+            for (li, head) in heads.iter().enumerate() {
+                match head.family {
+                    rustmc_core::graph::ObsFamily::Normal => {
+                        let sigma_node = head.aux.expect("Normal observation head requires sigma");
+                        let sigma = evaluator.scalar_at(sigma_node);
+                        let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+                        for i in 0..head.n_obs {
+                            let mu = evaluator.vec_elem(head.linpred, i, &self.graph);
+                            preds[li].push(mu + noise_dist.sample(&mut rng));
+                        }
+                    }
+                    rustmc_core::graph::ObsFamily::BernoulliLogit => {
+                        for i in 0..head.n_obs {
+                            let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
+                            let p = sigmoid_stable(eta).clamp(1e-12, 1.0 - 1e-12);
+                            preds[li].push(if rng.gen::<f64>() < p { 1.0 } else { 0.0 });
+                        }
+                    }
                 }
             }
         }
 
         let dict = PyDict::new(py);
         for (li, name) in self.likelihood_names.iter().enumerate() {
-            let n_obs = predictors[li].2;
+            let n_obs = heads[li].n_obs;
             let arr = Array2::from_shape_vec((n, n_obs), preds[li].clone())
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             dict.set_item(name, arr.into_pyarray(py))?;
@@ -1161,30 +1293,14 @@ fn sample(
     }
 
     for lik in &model_spec.likelihoods {
-        let mu_node = build_mu_expr(
-            &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
+        build_likelihood_into_graph(
+            &mut graph,
+            lik,
+            &data_map,
+            &matrix_map,
+            &vector_param_map,
+            &value_node_map,
         )?;
-        // NormalObsLogP requires a vector mu. Broadcast scalar params (e.g. a
-        // group mean in a hierarchical model) to a vector over all observations.
-        let mu_node = if lik.mu_expr.is_scalar() {
-            graph.scalar_broadcast(mu_node)
-        } else {
-            mu_node
-        };
-
-        let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
-
-        let obs_vec = data_map
-            .get(&lik.observed_key)
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "Missing observed data key: {}",
-                    lik.observed_key
-                ))
-            })?
-            .clone();
-        let obs_idx = graph.add_obs_data(obs_vec);
-        graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
     }
 
     let sampler_type = match sampler {
@@ -1317,21 +1433,14 @@ fn batch_sample(
             )?;
         }
         for lik in &spec.likelihoods {
-            let mu_node = build_mu_expr(
-                &mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map,
+            build_likelihood_into_graph(
+                &mut graph,
+                lik,
+                &data_map,
+                &matrix_map,
+                &vector_param_map,
+                &value_node_map,
             )?;
-            let mu_node = if lik.mu_expr.is_scalar() {
-                graph.scalar_broadcast(mu_node)
-            } else {
-                mu_node
-            };
-            let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
-            let obs_vec = data_map
-                .get(&lik.observed_key)
-                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
-                .clone();
-            let obs_idx = graph.add_obs_data(obs_vec);
-            graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
         }
 
         graphs.push((graph, vec![]));
@@ -1395,18 +1504,18 @@ fn sample_prior_predictive<'py>(
                                &mut value_node_map, &auto_vector_params)?;
     }
     for lik in &model_spec.likelihoods {
-        let mu_node = build_mu_expr(&mut graph, &lik.mu_expr, &data_map, &matrix_map, &vector_param_map)?;
-        let mu_node = if lik.mu_expr.is_scalar() { graph.scalar_broadcast(mu_node) } else { mu_node };
-        let sigma_node = resolve_sigma(&lik.sigma, &mut graph, &value_node_map)?;
-        let obs_vec = data_map.get(&lik.observed_key)
-            .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", lik.observed_key)))?
-            .clone();
-        let obs_idx = graph.add_obs_data(obs_vec);
-        graph.normal_obs_logp(mu_node, sigma_node, obs_idx);
+        build_likelihood_into_graph(
+            &mut graph,
+            lik,
+            &data_map,
+            &matrix_map,
+            &vector_param_map,
+            &value_node_map,
+        )?;
     }
 
     let likelihood_names: Vec<String> = model_spec.likelihoods.iter().map(|l| l.name.clone()).collect();
-    let predictors = graph.normal_obs_predictors();
+    let heads = graph.observation_heads();
     let dim = graph.param_count;
 
     // ── Sample from priors and run forward passes ─────────────────────────────
@@ -1416,8 +1525,8 @@ fn sample_prior_predictive<'py>(
     // Collect prior samples (raw, unconstrained) and their display values
     let mut param_prior_draws: Vec<Vec<f64>> = vec![Vec::with_capacity(n_samples); dim];
     // predictions[lik_idx] = flat Vec (n_samples * n_obs)
-    let mut preds: Vec<Vec<f64>> = predictors.iter()
-        .map(|(_, _, n_obs)| Vec::with_capacity(n_samples * n_obs))
+    let mut preds: Vec<Vec<f64>> = heads.iter()
+        .map(|head| Vec::with_capacity(n_samples * head.n_obs))
         .collect();
 
     for _ in 0..n_samples {
@@ -1429,12 +1538,24 @@ fn sample_prior_predictive<'py>(
 
         // Forward pass to get predictions
         evaluator.compute(&graph, &raw);
-        for (li, &(mu_node, sigma_node, n_obs)) in predictors.iter().enumerate() {
-            let sigma = evaluator.scalar_at(sigma_node);
-            let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
-            for i in 0..n_obs {
-                let mu = evaluator.vec_elem(mu_node, i, &graph);
-                preds[li].push(mu + noise_dist.sample(&mut rng));
+        for (li, head) in heads.iter().enumerate() {
+            match head.family {
+                rustmc_core::graph::ObsFamily::Normal => {
+                    let sigma_node = head.aux.expect("Normal observation head requires sigma");
+                    let sigma = evaluator.scalar_at(sigma_node);
+                    let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+                    for i in 0..head.n_obs {
+                        let mu = evaluator.vec_elem(head.linpred, i, &graph);
+                        preds[li].push(mu + noise_dist.sample(&mut rng));
+                    }
+                }
+                rustmc_core::graph::ObsFamily::BernoulliLogit => {
+                    for i in 0..head.n_obs {
+                        let eta = evaluator.vec_elem(head.linpred, i, &graph);
+                        let p = sigmoid_stable(eta).clamp(1e-12, 1.0 - 1e-12);
+                        preds[li].push(if rng.gen::<f64>() < p { 1.0 } else { 0.0 });
+                    }
+                }
             }
         }
     }
@@ -1446,7 +1567,7 @@ fn sample_prior_predictive<'py>(
         dict.set_item(name, arr)?;
     }
     for (li, name) in likelihood_names.iter().enumerate() {
-        let n_obs = predictors[li].2;
+        let n_obs = heads[li].n_obs;
         let arr = Array2::from_shape_vec((n_samples, n_obs), preds[li].clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         dict.set_item(name, arr.into_pyarray(py))?;

@@ -5,6 +5,22 @@ use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
 
+/// Per-transition sampler telemetry shared by HMC and NUTS.
+///
+/// `tree_depth` is only populated for NUTS. `num_leapfrog_steps` always
+/// records the actual integrator work done by the transition.
+#[derive(Debug, Clone)]
+pub struct TransitionStats {
+    pub is_warmup: bool,
+    pub accepted: bool,
+    pub accept_prob: f64,
+    pub energy_error: f64,
+    pub divergent: bool,
+    pub step_size: f64,
+    pub num_leapfrog_steps: usize,
+    pub tree_depth: Option<usize>,
+}
+
 #[derive(Debug, Clone)]
 pub struct HmcConfig {
     pub step_size: f64,
@@ -30,6 +46,7 @@ pub struct ChainResult {
     pub accept_rate: f64,
     pub step_size: f64,
     pub divergences: usize,
+    pub transitions: Vec<TransitionStats>,
 }
 
 /// Run a single HMC chain with diagonal mass matrix adaptation.
@@ -58,6 +75,7 @@ pub fn run_chain(
     let mut p_prop = vec![0.0; dim];
     let mut grad = vec![0.0; dim];
     let mut samples = Vec::with_capacity(config.num_draws);
+    let mut transitions = Vec::with_capacity(total_iters);
     let mut accepted = 0u64;
     let mut total = 0u64;
     let mut n_divergences = 0usize;
@@ -96,6 +114,7 @@ pub fn run_chain(
 
     for iter in 0..total_iters {
         let is_warmup = iter < config.num_warmup;
+        let step_size_used = step_size;
 
         evaluator.compute(graph, &q);
         let logp_current = evaluator.total_logp;
@@ -151,14 +170,17 @@ pub fn run_chain(
         let h_prop = -logp_prop + ke_prop;
         let log_accept_ratio = h_current - h_prop;
         let accept_prob = log_accept_ratio.min(0.0).exp();
+        let energy_error = h_prop - h_current;
 
         total += 1;
         let divergent = !log_accept_ratio.is_finite();
+        let mut accepted_transition = false;
         if divergent {
             n_divergences += 1;
         } else if rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
             accepted += 1;
+            accepted_transition = true;
         }
 
         if let Some(p) = progress {
@@ -218,7 +240,7 @@ pub fn run_chain(
             }
         }
 
-        // Fix step size at end of warmup
+        // Fix step size at end of warmup.
         if iter == config.num_warmup.saturating_sub(1) && config.num_warmup > 0 {
             step_size = log_eps_bar.exp();
         }
@@ -226,13 +248,29 @@ pub fn run_chain(
         if !is_warmup {
             samples.push(q.clone());
         }
+
+        transitions.push(TransitionStats {
+            is_warmup,
+            accepted: accepted_transition,
+            accept_prob,
+            energy_error,
+            divergent,
+            step_size: step_size_used,
+            num_leapfrog_steps: config.num_leapfrog_steps,
+            tree_depth: None,
+        });
     }
 
     ChainResult {
         samples,
-        accept_rate: accepted as f64 / total as f64,
+        accept_rate: if total > 0 {
+            accepted as f64 / total as f64
+        } else {
+            0.0
+        },
         step_size,
         divergences: n_divergences,
+        transitions,
     }
 }
 
@@ -322,4 +360,44 @@ fn one_step_log_ratio(
     let logp1 = evaluator.total_logp;
     let ke1: f64 = (0..dim).map(|i| 0.5 * p1[i] * p1[i] * inv_mass[i]).sum();
     (logp1 - ke1) - (logp0 - ke0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::Graph;
+    use rand::SeedableRng;
+
+    fn simple_gaussian_graph() -> Graph {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        graph.normal_logp(x, zero, one);
+        graph
+    }
+
+    #[test]
+    fn hmc_chain_emits_transition_stats() {
+        let graph = simple_gaussian_graph();
+        let config = HmcConfig {
+            step_size: 0.1,
+            num_leapfrog_steps: 2,
+            num_draws: 3,
+            num_warmup: 2,
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+
+        let chain = run_chain(&graph, &config, &mut rng, None, None);
+
+        assert_eq!(chain.samples.len(), 3);
+        assert_eq!(chain.transitions.len(), 5);
+        assert_eq!(chain.transitions.iter().filter(|t| t.is_warmup).count(), 2);
+        assert_eq!(chain.transitions.iter().filter(|t| !t.is_warmup).count(), 3);
+        assert!(chain.transitions.iter().all(|t| t.step_size > 0.0));
+        assert!(chain
+            .transitions
+            .iter()
+            .all(|t| t.accept_prob.is_finite() && t.energy_error.is_finite()));
+    }
 }

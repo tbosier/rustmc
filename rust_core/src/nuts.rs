@@ -10,7 +10,7 @@
 
 use crate::autodiff::Evaluator;
 use crate::graph::Graph;
-use crate::hmc::ChainResult;
+use crate::hmc::{ChainResult, TransitionStats};
 use crate::progress::ProgressState;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -103,6 +103,7 @@ pub fn run_chain(
     let mut evaluator = Evaluator::new(graph);
     let q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut samples = Vec::with_capacity(config.num_draws);
+    let mut transitions = Vec::with_capacity(total_iters);
     let mut n_divergences = 0usize;
     let mut sum_accept_prob = 0.0f64;
     let mut total_iters_done = 0u64;
@@ -156,6 +157,7 @@ pub fn run_chain(
 
     for iter in 0..total_iters {
         let is_warmup = iter < config.num_warmup;
+        let step_size_used = step_size;
 
         // Sample momentum from N(0, M) where M = diag(mass_sqrt²)
         for i in 0..dim {
@@ -265,6 +267,17 @@ pub fn run_chain(
         if !is_warmup {
             samples.push(current.q.clone());
         }
+
+        transitions.push(TransitionStats {
+            is_warmup,
+            accepted: !tree_stats.diverging,
+            accept_prob: accept_stat,
+            energy_error: tree_stats.energy_error,
+            divergent: tree_stats.diverging,
+            step_size: step_size_used,
+            num_leapfrog_steps: tree_stats.n_leapfrog,
+            tree_depth: Some(tree_stats.tree_depth),
+        });
     }
 
     let accept_rate = if total_iters_done > 0 {
@@ -278,6 +291,7 @@ pub fn run_chain(
         accept_rate,
         step_size,
         divergences: n_divergences,
+        transitions,
     }
 }
 
@@ -297,6 +311,9 @@ fn welford_update(x: &[f64], count: &mut usize, mean: &mut [f64], m2: &mut [f64]
 struct TreeStats {
     diverging: bool,
     mean_accept_prob: f64,
+    energy_error: f64,
+    tree_depth: usize,
+    n_leapfrog: usize,
 }
 
 /// Build the NUTS tree iteratively by doubling depth.
@@ -321,7 +338,7 @@ fn build_tree_iterative(
     let mut proposal = initial.clone();
     let mut log_sum_weight = 0.0f64; // log(exp(-H(initial))) normalized
     let mut depth = 0;
-    let mut _n_leapfrog_total = 0;
+    let mut n_leapfrog_total = 0;
     let mut sum_accept_stat = 0.0f64;
     let mut n_accept_stat = 0usize;
     let mut diverging = false;
@@ -340,7 +357,7 @@ fn build_tree_iterative(
             )
         };
 
-        _n_leapfrog_total += subtree.n_leapfrog;
+        n_leapfrog_total += subtree.n_leapfrog;
 
         if subtree.diverging {
             diverging = true;
@@ -386,12 +403,16 @@ fn build_tree_iterative(
     } else {
         0.0
     };
+    let energy_error = proposal.energy(inv_mass) - h0;
 
     (
         proposal,
         TreeStats {
             diverging,
             mean_accept_prob: mean_accept,
+            energy_error,
+            tree_depth: depth,
+            n_leapfrog: n_leapfrog_total,
         },
     )
 }

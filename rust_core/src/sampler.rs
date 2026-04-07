@@ -1,6 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
-use crate::hmc::{self, ChainResult, HmcConfig};
+use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{self, ProgressState};
 use rand::SeedableRng;
@@ -53,6 +53,7 @@ pub struct SampleResult {
     pub accept_rates: Vec<f64>,
     pub step_sizes: Vec<f64>,
     pub divergences: Vec<usize>,
+    pub transitions: Vec<Vec<TransitionStats>>,
     pub param_names: Vec<String>,
 }
 
@@ -104,6 +105,11 @@ impl SampleResult {
             &self.accept_rates,
             self.total_divergences(),
         )
+    }
+
+    /// Structured per-transition telemetry aggregated across chains.
+    pub fn transition_diagnostics(&self) -> diagnostics::TransitionDiagnosticsReport {
+        diagnostics::compute_transition_diagnostics(&self.transitions)
     }
 }
 
@@ -209,12 +215,15 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
+    let transitions: Vec<Vec<TransitionStats>> =
+        results.iter().map(|r| r.transitions.clone()).collect();
 
     Ok(SampleResult {
         samples,
         accept_rates,
         step_sizes,
         divergences,
+        transitions,
         param_names,
     })
 }
@@ -226,6 +235,7 @@ pub struct BatchModelResult {
     pub param_names: Vec<String>,
     pub accept_rate: f64,
     pub divergences: usize,
+    pub transitions: Vec<TransitionStats>,
 }
 
 impl BatchModelResult {
@@ -326,6 +336,7 @@ pub fn batch_sample(
                     param_names: graph.param_names.clone(),
                     accept_rate: chain.accept_rate,
                     divergences: chain.divergences,
+                    transitions: chain.transitions,
                 }
             })
             .collect()
@@ -353,5 +364,46 @@ mod tests {
 
         assert_eq!(one, 1);
         assert_eq!(two, 2);
+    }
+
+    #[test]
+    fn sample_result_exposes_transition_diagnostics() {
+        let result = SampleResult {
+            samples: vec![],
+            accept_rates: vec![0.8],
+            step_sizes: vec![0.1],
+            divergences: vec![1],
+            transitions: vec![vec![
+                TransitionStats {
+                    is_warmup: true,
+                    accepted: true,
+                    accept_prob: 0.9,
+                    energy_error: 0.2,
+                    divergent: false,
+                    step_size: 0.1,
+                    num_leapfrog_steps: 4,
+                    tree_depth: Some(2),
+                },
+                TransitionStats {
+                    is_warmup: false,
+                    accepted: false,
+                    accept_prob: 0.7,
+                    energy_error: -0.3,
+                    divergent: true,
+                    step_size: 0.1,
+                    num_leapfrog_steps: 4,
+                    tree_depth: Some(2),
+                },
+            ]],
+            param_names: vec!["x".to_string()],
+        };
+
+        let report = result.transition_diagnostics();
+        assert_eq!(report.total_transitions, 2);
+        assert_eq!(report.total_warmup_transitions, 1);
+        assert_eq!(report.total_divergences, 1);
+        assert_eq!(report.total_leapfrog_steps, 8);
+        assert_eq!(report.chains.len(), 1);
+        assert!(report.mean_accept_prob > 0.0);
     }
 }
