@@ -20,7 +20,7 @@ rustmc is designed for that repeated-model setting. Its batch inference API runs
 - Batch execution tuned for repeated independent models, not just single-model sampling.
 - Graph-based execution with cached buffers, transforms, and Jacobians.
 - Fast paths for regression-style models and high-dimensional `X @ beta` workloads.
-- Built-in diagnostics and predictive checks aimed at production validation.
+- Built-in diagnostics, predictive checks, pointwise log-likelihood, and ArviZ export aimed at production validation.
 
 ## Benchmarks
 
@@ -75,13 +75,15 @@ Mean accept rate: 0.94  |  Divergences: 0
 
 ## What's Implemented
 
-**Sampling:** NUTS with multinomial candidate selection, diagonal mass matrix adaptation, dual-averaging step size, multi-chain parallelism via Rayon.
+**Sampling:** NUTS with multinomial candidate selection, block-structured mass matrix adaptation, dual-averaging step size, fixed-step HMC fallback, and multi-chain parallelism via Rayon.
 
-**Distributions:** Normal, StudentT, HalfNormal, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
+**Priors:** Normal, HalfNormal, Exponential, LogNormal, StudentT, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
 
-**Modeling surface:** scalar hierarchical priors are supported for Normal and HalfNormal priors, along with parameter-valued likelihood scale terms. Vector-valued hierarchical blocks and custom likelihood families are still on the roadmap.
+**Likelihoods:** Normal, Bernoulli-logit, Poisson-log, Exponential-log, LogNormal, and NegativeBinomial-log.
 
-**Predictive workflow:** prior predictive sampling, posterior predictive sampling, and ArviZ export are already implemented for the current Normal likelihood path.
+**Modeling surface:** scalar hierarchical priors are supported, and scalar hierarchical normals are automatically compiled through a non-centered path where appropriate. Vector-valued hierarchical blocks are still on the roadmap.
+
+**Predictive workflow:** prior predictive sampling, posterior predictive sampling, pointwise log-likelihood, and ArviZ export are implemented for the current likelihood families.
 
 **Diagnostics:** Split R-hat (Vehtari et al. 2021), bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
 
@@ -89,7 +91,7 @@ Mean accept rate: 0.94  |  Divergences: 0
 
 ## What Is Still Missing
 
-- Broad likelihood coverage beyond the current Normal-observation path.
-- Vector-valued hierarchical models and richer reparameterization support.
-- Compiled model artifacts and a Python-free deployment story.
-- More explicit operational telemetry for large production batches.
+- Vector-valued hierarchical models and richer automatic reparameterization support.
+- Compiled model artifacts and a Python-free deployment story in the public API.
+- Benchmark regression gates and packaging/release automation.
+- Higher-level production templates for repeated forecasting and panel workflows.

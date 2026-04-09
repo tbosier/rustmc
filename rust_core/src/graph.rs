@@ -1,8 +1,36 @@
 use std::collections::HashMap;
+use std::fmt::{Display, Formatter};
 
 /// Unique identifier for a node in the computation graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
+
+/// Contiguous parameter span in declaration order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParamSpan {
+    pub start: usize,
+    pub len: usize,
+}
+
+/// Shape validation error for graph-level vector data.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphShapeError {
+    message: String,
+}
+
+impl GraphShapeError {
+    pub fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+impl Display for GraphShapeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
 
 /// A 2-D data matrix stored row-major (n_rows × n_cols).
 #[derive(Debug, Clone)]
@@ -17,6 +45,10 @@ pub struct MatrixData {
 pub enum ObsFamily {
     Normal,
     BernoulliLogit,
+    PoissonLog,
+    ExponentialLog,
+    LogNormal,
+    NegativeBinomialLog,
 }
 
 /// Metadata for an observation term in the graph.
@@ -196,6 +228,7 @@ pub struct Graph {
     pub data_matrices: Vec<MatrixData>,
     pub param_names: Vec<String>,
     pub param_transforms: Vec<ParamTransform>,
+    pub param_spans: Vec<ParamSpan>,
     pub logp_terms: Vec<NodeId>,
     name_to_node: HashMap<String, NodeId>,
 }
@@ -210,6 +243,7 @@ impl Graph {
             data_matrices: Vec::new(),
             param_names: Vec::new(),
             param_transforms: Vec::new(),
+            param_spans: Vec::new(),
             logp_terms: Vec::new(),
             name_to_node: HashMap::new(),
         }
@@ -233,6 +267,7 @@ impl Graph {
         self.param_count += 1;
         self.param_names.push(name.to_string());
         self.param_transforms.push(transform);
+        self.param_spans.push(ParamSpan { start: idx, len: 1 });
         self.add_node(Op::Param(idx), Some(name.to_string()))
     }
 
@@ -359,6 +394,80 @@ impl Graph {
         node
     }
 
+    pub fn obs_logp_poisson_log(
+        &mut self,
+        linpred_vec: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        let node = self.add_node(
+            Op::ObsLogP {
+                family: ObsFamily::PoissonLog,
+                linpred_vec,
+                aux: None,
+                obs_data_idx,
+            },
+            None,
+        );
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn obs_logp_exponential_log(
+        &mut self,
+        linpred_vec: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        let node = self.add_node(
+            Op::ObsLogP {
+                family: ObsFamily::ExponentialLog,
+                linpred_vec,
+                aux: None,
+                obs_data_idx,
+            },
+            None,
+        );
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn obs_logp_lognormal(
+        &mut self,
+        linpred_vec: NodeId,
+        sigma: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        let node = self.add_node(
+            Op::ObsLogP {
+                family: ObsFamily::LogNormal,
+                linpred_vec,
+                aux: Some(sigma),
+                obs_data_idx,
+            },
+            None,
+        );
+        self.logp_terms.push(node);
+        node
+    }
+
+    pub fn obs_logp_negative_binomial_log(
+        &mut self,
+        linpred_vec: NodeId,
+        alpha: NodeId,
+        obs_data_idx: usize,
+    ) -> NodeId {
+        let node = self.add_node(
+            Op::ObsLogP {
+                family: ObsFamily::NegativeBinomialLog,
+                linpred_vec,
+                aux: Some(alpha),
+                obs_data_idx,
+            },
+            None,
+        );
+        self.logp_terms.push(node);
+        node
+    }
+
     pub fn half_normal_logp(&mut self, x: NodeId, sigma: NodeId) -> NodeId {
         let node = self.add_node(Op::HalfNormalLogP { x, sigma }, None);
         self.logp_terms.push(node);
@@ -445,7 +554,11 @@ impl Graph {
             .into_iter()
             .filter_map(|head| match head.family {
                 ObsFamily::Normal => Some((head.linpred, head.aux.unwrap(), head.n_obs)),
-                ObsFamily::BernoulliLogit => None,
+                ObsFamily::BernoulliLogit
+                | ObsFamily::PoissonLog
+                | ObsFamily::ExponentialLog
+                | ObsFamily::LogNormal
+                | ObsFamily::NegativeBinomialLog => None,
             })
             .collect()
     }
@@ -493,6 +606,10 @@ impl Graph {
     ) -> usize {
         let param_start = self.param_count;
         self.param_count += n;
+        self.param_spans.push(ParamSpan {
+            start: param_start,
+            len: n,
+        });
         for k in 0..n {
             self.param_names.push(format!("{}[{}]", base_name, k));
             self.param_transforms.push(transform.clone());
@@ -587,6 +704,51 @@ impl Graph {
         let node = self.add_node(Op::VectorUniformLogP { param_start, n_params, lower, upper }, None);
         self.logp_terms.push(node);
         node
+    }
+
+    /// Validate that all vector-like graph payloads agree on a single length.
+    ///
+    /// This is the graph-level safety gate for the evaluator. It ensures that
+    /// every data vector, observation vector, and matrix row count is
+    /// consistent before any sampling or gradient evaluation occurs.
+    pub fn validate_shapes(&self) -> Result<usize, GraphShapeError> {
+        let mut expected_len: Option<usize> = None;
+
+        let mut set_expected = |actual: usize, kind: &str, index: usize| -> Result<(), GraphShapeError> {
+            match expected_len {
+                None => {
+                    expected_len = Some(actual);
+                    Ok(())
+                }
+                Some(expected) if expected == actual => Ok(()),
+                Some(expected) => Err(GraphShapeError::new(format!(
+                    "{} {} has length {}, expected {}",
+                    kind, index, actual, expected
+                ))),
+            }
+        };
+
+        for (idx, data) in self.data_vectors.iter().enumerate() {
+            set_expected(data.len(), "data vector", idx)?;
+        }
+
+        for (idx, obs) in self.obs_vectors.iter().enumerate() {
+            set_expected(obs.len(), "observation vector", idx)?;
+        }
+
+        for (idx, matrix) in self.data_matrices.iter().enumerate() {
+            let payload_len = matrix.data.len();
+            let expected_payload_len = matrix.n_rows * matrix.n_cols;
+            if payload_len != expected_payload_len {
+                return Err(GraphShapeError::new(format!(
+                    "matrix {} has shape {}x{} but {} values were provided",
+                    idx, matrix.n_rows, matrix.n_cols, payload_len
+                )));
+            }
+            set_expected(matrix.n_rows, "matrix row count", idx)?;
+        }
+
+        Ok(expected_len.unwrap_or(0))
     }
 }
 

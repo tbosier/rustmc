@@ -145,6 +145,58 @@ impl Poisson {
     }
 }
 
+// ── Exponential (x > 0, log-transform) ─────────────────────────────
+
+pub struct Exponential;
+
+impl Exponential {
+    pub fn prior(graph: &mut Graph, name: &str, rate: f64) -> NodeId {
+        let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
+        let x = graph.exp(raw);
+        let alpha_node = graph.add_constant(1.0);
+        let rate_node = graph.add_constant(rate);
+        graph.gamma_logp(x, alpha_node, rate_node);
+        graph.add_logp_term(raw);
+        x
+    }
+
+    pub fn prior_with_node_rate(graph: &mut Graph, name: &str, rate_node: NodeId) -> NodeId {
+        let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
+        let x = graph.exp(raw);
+        let alpha_node = graph.add_constant(1.0);
+        graph.gamma_logp(x, alpha_node, rate_node);
+        graph.add_logp_term(raw);
+        x
+    }
+}
+
+// ── LogNormal (x > 0, log-transform) ────────────────────────────────
+
+pub struct LogNormal;
+
+impl LogNormal {
+    pub fn prior(graph: &mut Graph, name: &str, mu: f64, sigma: f64) -> NodeId {
+        let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
+        let x = graph.exp(raw);
+        let mu_node = graph.add_constant(mu);
+        let sigma_node = graph.add_constant(sigma);
+        graph.normal_logp(raw, mu_node, sigma_node);
+        x
+    }
+
+    pub fn prior_with_nodes(
+        graph: &mut Graph,
+        name: &str,
+        mu_node: NodeId,
+        sigma_node: NodeId,
+    ) -> NodeId {
+        let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
+        let x = graph.exp(raw);
+        graph.normal_logp(raw, mu_node, sigma_node);
+        x
+    }
+}
+
 // ── Gamma (x > 0, log-transform) ───────────────────────────────────
 
 pub struct Gamma;

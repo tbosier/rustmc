@@ -1,13 +1,10 @@
 # Hierarchical Templates
 
-This page captures the reusable hierarchical template boundary for rustmc.
-It is the first step toward a proper template API, but it stays within the
-current centered-model capability so it does not depend on the GLM substrate
-work.
+This page describes the current reusable-hierarchy boundary in rustmc.
 
 ## What Exists Today
 
-rustmc can already express centered scalar hierarchies:
+rustmc supports scalar hierarchical priors directly in the builder:
 
 ```python
 mu_global = builder.normal_prior("mu_global", mu=0.0, sigma=10.0)
@@ -15,53 +12,50 @@ sigma_group = builder.half_normal_prior("sigma_group", sigma=5.0)
 mu_j = builder.normal_prior("mu_j", mu=mu_global, sigma=sigma_group)
 ```
 
-That is enough for partial pooling, but not yet for true non-centered random
-effects or vector-valued hierarchical blocks.
+That pattern works for centered-looking model code, but eligible scalar hierarchical
+normals are automatically compiled through a non-centered latent internally. Users still
+see `mu_j` in summaries, diagnostics, posterior samples, prior predictive draws, and
+ArviZ export.
 
-## Reusable Helper
+## Current Scope
 
-The repo now includes a small helper module:
+Supported today:
+
+- scalar hierarchical `Normal`
+- scalar hierarchical `HalfNormal`
+- scalar hierarchical `Exponential`
+- scalar hierarchical `LogNormal`
+- parameter-valued likelihood scale terms such as `sigma` or `alpha`
+
+Not supported yet:
+
+- vector-valued hierarchical random effects
+- grouped varying-slope blocks compiled automatically from one declaration
+- a dedicated high-level template API such as `builder.hierarchical_normal(...)`
+
+## Practical Pattern
+
+The recommended current pattern is still to write the hierarchy explicitly:
 
 ```python
-from hierarchical_templates import build_centered_normal_partial_pooling
+builder = rmc.ModelBuilder(data={"y": y})
 
-template = build_centered_normal_partial_pooling(
-    builder,
-    observed_keys=[f"y_{j}" for j in range(J)],
-    sigma_obs=sigma_obs,
-)
+mu_global = builder.normal_prior("mu_global", mu=0.0, sigma=5.0)
+sigma_group = builder.half_normal_prior("sigma_group", sigma=2.0)
+theta = builder.normal_prior("theta", mu=mu_global, sigma=sigma_group)
+
+builder.normal_likelihood("obs", mu_expr=theta, sigma=1.0, observed_key="y")
+model = builder.build()
 ```
 
-This helper builds the centered partial-pooling pattern and returns the
-global hyperprior, group-scale hyperprior, and per-group latent parameters.
-It is intentionally narrow: its job is to make the current supported pattern
-reusable while the core DSL grows.
+This keeps the Python surface simple while letting the compiler apply the safer geometry
+internally.
 
-## Future Contract
+## What Is Next
 
-The eventual non-centered API should preserve the same conceptual structure:
+The next meaningful extension is vector/group random effects, where automatic non-centering
+matters most. That will likely require:
 
-```python
-template = builder.hierarchical_normal(
-    name="mu",
-    location=mu_global,
-    scale=sigma_group,
-    shape=J,
-    centered=False,
-)
-```
-
-That future form is not implemented yet. It requires parameter-to-parameter
-transform support in the DSL and the corresponding graph/autodiff changes.
-
-## Ownership Notes
-
-- The helper layer is implemented in Python-facing code only.
-- The non-centered runtime path is deferred to the core substrate workstream.
-- The GLM expansion should land first because the same DSL machinery will be
-  used for both hierarchical templates and family-specific observation models.
-
-## Example
-
-See [Hierarchical Models](hierarchical.md) for the centered
-partial-pooling example built on top of this helper.
+- logical-parameter mappings for vector blocks
+- grouped latent templates in the builder
+- better support for correlated random effects

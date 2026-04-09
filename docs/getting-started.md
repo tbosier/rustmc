@@ -122,9 +122,11 @@ fit.std()                # dict: param -> float
 fit.get_samples()        # dict: param -> flattened samples
 fit.get_samples_2d()     # dict: param -> np.ndarray, shape (chains, draws)
 fit.diagnostics()        # list of per-parameter diagnostics
+fit.accept_rates()       # list of per-chain accept rates
 fit.step_sizes()         # list of per-chain step sizes
 fit.divergences()        # list of per-chain divergence counts
 fit.posterior_predictive(n_samples=500, seed=42)
+fit.log_likelihood()     # dict: likelihood -> np.ndarray, shape (chains, draws, obs)
 fit.to_arviz(include_ppc=True)
 ```
 
@@ -135,13 +137,13 @@ prior_pred = rmc.sample_prior_predictive(model, n_samples=500, seed=0)
 ppc        = fit.posterior_predictive(n_samples=500, seed=42)
 ```
 
-Both return `dict[str, np.ndarray]` keyed by likelihood name.
+`sample_prior_predictive()` returns parameter draws plus simulated observations. `posterior_predictive()` returns simulated observations keyed by likelihood name.
 
 If you pass `n_samples`, `posterior_predictive()` randomly subsamples posterior draws without replacement. Use `None` to include all draws.
 
 ### Hierarchical Priors
 
-Scalar hierarchical priors are supported in a limited form today:
+Scalar hierarchical priors are supported today:
 
 ```python
 mu_global = builder.normal_prior("mu_global", mu=0.0, sigma=5.0)
@@ -149,7 +151,27 @@ sigma_group = builder.half_normal_prior("sigma_group", sigma=2.0)
 mu_group = builder.normal_prior("mu_group", mu=mu_global, sigma=sigma_group)
 ```
 
-That works for scalar parameters and scalar `sigma` in the likelihood. Vector-valued hierarchical blocks are not implemented yet.
+That works for scalar parameters and scalar `sigma` in the likelihood. Eligible scalar hierarchical normals are automatically compiled through a non-centered parameterization, while still appearing under the logical parameter name in summaries and ArviZ output. Vector-valued hierarchical blocks are not implemented yet.
+
+### Other likelihood families
+
+The same builder also supports:
+
+```python
+builder.bernoulli_logit_likelihood("clicked", eta_expr=alpha + beta * "x", observed_key="y")
+builder.poisson_log_likelihood("count", eta_expr=alpha + beta * "x", observed_key="y")
+builder.exponential_likelihood("time", eta_expr=alpha + beta * "x", observed_key="y")
+builder.log_normal_likelihood("sales", mu_expr=alpha + beta * "x", sigma=sigma, observed_key="y")
+builder.negative_binomial_likelihood("orders", eta_expr=alpha + beta * "x", alpha=dispersion, observed_key="y")
+```
+
+For model comparison with ArviZ:
+
+```python
+idata = fit.to_arviz(include_log_likelihood=True)
+# az.loo(idata)
+# az.waic(idata)
+```
 
 ## Next Steps
 

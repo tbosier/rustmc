@@ -11,6 +11,10 @@ const ARTIFACT_FORMAT_VERSION: u32 = 1;
 pub enum SerializableObsFamily {
     Normal,
     BernoulliLogit,
+    PoissonLog,
+    ExponentialLog,
+    LogNormal,
+    NegativeBinomialLog,
 }
 
 impl From<&crate::graph::ObsFamily> for SerializableObsFamily {
@@ -18,6 +22,10 @@ impl From<&crate::graph::ObsFamily> for SerializableObsFamily {
         match value {
             crate::graph::ObsFamily::Normal => Self::Normal,
             crate::graph::ObsFamily::BernoulliLogit => Self::BernoulliLogit,
+            crate::graph::ObsFamily::PoissonLog => Self::PoissonLog,
+            crate::graph::ObsFamily::ExponentialLog => Self::ExponentialLog,
+            crate::graph::ObsFamily::LogNormal => Self::LogNormal,
+            crate::graph::ObsFamily::NegativeBinomialLog => Self::NegativeBinomialLog,
         }
     }
 }
@@ -27,6 +35,10 @@ impl From<&SerializableObsFamily> for crate::graph::ObsFamily {
         match value {
             SerializableObsFamily::Normal => crate::graph::ObsFamily::Normal,
             SerializableObsFamily::BernoulliLogit => crate::graph::ObsFamily::BernoulliLogit,
+            SerializableObsFamily::PoissonLog => crate::graph::ObsFamily::PoissonLog,
+            SerializableObsFamily::ExponentialLog => crate::graph::ObsFamily::ExponentialLog,
+            SerializableObsFamily::LogNormal => crate::graph::ObsFamily::LogNormal,
+            SerializableObsFamily::NegativeBinomialLog => crate::graph::ObsFamily::NegativeBinomialLog,
         }
     }
 }
@@ -434,7 +446,7 @@ impl CompiledModelArtifact {
                         Op::MatVecMul {
                             matrix_idx,
                             param_start,
-                            n_params,
+                            n_params: _,
                             intercept,
                         } => {
                             let param_name = param_index_to_block_name
@@ -879,6 +891,46 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                         }
                         graph.obs_logp_bernoulli_logit(linpred, obs_idx)
                     }
+                    SerializableObsFamily::PoissonLog => {
+                        if aux.is_some() {
+                            return Err(ArtifactError::invalid(
+                                "poisson-log observation must not carry aux data",
+                            ));
+                        }
+                        graph.obs_logp_poisson_log(linpred, obs_idx)
+                    }
+                    SerializableObsFamily::ExponentialLog => {
+                        if aux.is_some() {
+                            return Err(ArtifactError::invalid(
+                                "exponential-log observation must not carry aux data",
+                            ));
+                        }
+                        graph.obs_logp_exponential_log(linpred, obs_idx)
+                    }
+                    SerializableObsFamily::LogNormal => {
+                        let sigma = aux.as_ref().ok_or_else(|| {
+                            ArtifactError::invalid(
+                                "log-normal observation step is missing sigma",
+                            )
+                        })?;
+                        graph.obs_logp_lognormal(
+                            linpred,
+                            resolve_node_ref(sigma, &scalar_param_nodes, &op_nodes)?,
+                            obs_idx,
+                        )
+                    }
+                    SerializableObsFamily::NegativeBinomialLog => {
+                        let alpha = aux.as_ref().ok_or_else(|| {
+                            ArtifactError::invalid(
+                                "negative-binomial observation step is missing alpha",
+                            )
+                        })?;
+                        graph.obs_logp_negative_binomial_log(
+                            linpred,
+                            resolve_node_ref(alpha, &scalar_param_nodes, &op_nodes)?,
+                            obs_idx,
+                        )
+                    }
                 }
             }
             ModelStep::HalfNormalLogP { x, sigma } => graph.half_normal_logp(
@@ -1168,6 +1220,42 @@ fn validate_step(
                         )));
                     }
                     Ok(())
+                }
+                SerializableObsFamily::PoissonLog => {
+                    if aux.is_some() {
+                        return Err(ArtifactError::invalid(format!(
+                            "poisson-log observation step {} must not have aux data",
+                            step_idx
+                        )));
+                    }
+                    Ok(())
+                }
+                SerializableObsFamily::ExponentialLog => {
+                    if aux.is_some() {
+                        return Err(ArtifactError::invalid(format!(
+                            "exponential-log observation step {} must not have aux data",
+                            step_idx
+                        )));
+                    }
+                    Ok(())
+                }
+                SerializableObsFamily::LogNormal => {
+                    let sigma = aux.as_ref().ok_or_else(|| {
+                        ArtifactError::invalid(format!(
+                            "log-normal observation step {} is missing sigma",
+                            step_idx
+                        ))
+                    })?;
+                    check_ref(sigma)
+                }
+                SerializableObsFamily::NegativeBinomialLog => {
+                    let alpha = aux.as_ref().ok_or_else(|| {
+                        ArtifactError::invalid(format!(
+                            "negative-binomial observation step {} is missing alpha",
+                            step_idx
+                        ))
+                    })?;
+                    check_ref(alpha)
                 }
             }
         }

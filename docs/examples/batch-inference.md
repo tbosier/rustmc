@@ -37,7 +37,7 @@ for i in range(N_MODELS):
     models.append((model, {"t": t, "y": y}))
 
 # Fit all 10,000 models
-results = rmc.batch_sample(models, draws=500, warmup=300)
+results = rmc.batch_sample(models, chains=1, draws=500, warmup=300)
 
 # Inspect results
 for i, r in enumerate(results[:5]):
@@ -58,17 +58,20 @@ SKU    3: intercept= 95.03 ± 0.70  trend= 0.52 ± 0.02  (true: 94.5, 0.54)
 SKU    4: intercept=107.65 ± 0.69  trend= 0.44 ± 0.02  (true: 108.1, 0.41)
 ```
 
-## `BatchFitResult` API
+## `BatchResult` API
 
-Each element of the returned list is a `FitResult` with the same interface as single-model sampling:
+Each element of the returned list is a `BatchResult`:
 
 ```python
 r = results[0]
 r.mean()              # dict: param -> float
 r.std()               # dict: param -> float
-r.get_samples("intercept")  # np.ndarray, shape (chains, draws)
-r.summary()           # formatted table
-r.divergences()       # int
+r.get_samples()       # dict: param -> flattened draws
+r.get_samples_2d()    # dict: param -> np.ndarray, shape (chains, draws)
+r.accept_rate         # float
+r.accept_rates        # list[float]
+r.divergences         # int
+r.divergences_per_chain  # list[int]
 ```
 
 ## Comparison
@@ -84,4 +87,5 @@ r.divergences()       # int
 - All models in a batch must use the same `draws` and `warmup` count.
 - Models can have completely different structures — each gets its own graph and data.
 - The thread pool is shared; adding more CPU cores reduces wall time proportionally.
-- For single-chain batch runs, set `chains=1` per model in the builder — the Rayon pool will parallelize across models instead of within a single model.
+- `chains=1` is the throughput-first setting. Increase `chains` when you want stronger convergence diagnostics per model.
+- `sampler="hmc"` is available in batch mode as a fixed-step fallback.
