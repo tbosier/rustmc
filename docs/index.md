@@ -2,7 +2,7 @@
 
 **Fast Bayesian inference in Rust with a Python API.**
 
-rustmc runs the entire sampling loop in compiled Rust — no Python in the inner loop. Chains are parallelized across threads via Rayon. The result is fast enough to fit thousands of independent Bayesian models in a single call.
+rustmc runs the entire sampling loop in compiled Rust - no Python in the inner loop. Chains are parallelized across threads via Rayon. The result is designed for fitting many independent Bayesian models in a single call.
 
 ```
 10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.
@@ -10,9 +10,17 @@ rustmc runs the entire sampling loop in compiled Rust — no Python in the inner
 
 ## Why rustmc?
 
-PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets — per-store demand models, per-SKU pricing models, per-patient dosing models.
+PyMC, Stan, and other Bayesian frameworks are built for general single-model workflows. That is useful for research, but it becomes expensive when you need to fit the same model structure to thousands of datasets - per-store demand models, per-SKU pricing models, per-patient dosing models.
 
-rustmc is designed for that use case. Its batch inference API runs many independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
+rustmc is designed for that repeated-model setting. Its batch inference API runs many independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
+
+## Differentiation
+
+- Rust-native inference loop with no Python in the hot path.
+- Batch execution tuned for repeated independent models, not just single-model sampling.
+- Graph-based execution with cached buffers, transforms, and Jacobians.
+- Fast paths for regression-style models and high-dimensional `X @ beta` workloads.
+- Built-in diagnostics, predictive checks, pointwise log-likelihood, and ArviZ export aimed at production validation.
 
 ## Benchmarks
 
@@ -67,14 +75,23 @@ Mean accept rate: 0.94  |  Divergences: 0
 
 ## What's Implemented
 
-**Sampling:** NUTS with multinomial candidate selection, diagonal mass matrix adaptation, dual-averaging step size, multi-chain parallelism via Rayon.
+**Sampling:** NUTS with multinomial candidate selection, block-structured mass matrix adaptation, dual-averaging step size, fixed-step HMC fallback, and multi-chain parallelism via Rayon.
 
-**Distributions:** Normal, StudentT, HalfNormal, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
+**Priors:** Normal, HalfNormal, Exponential, LogNormal, StudentT, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
 
-**Modeling surface:** scalar hierarchical priors are supported for Normal and HalfNormal priors, along with parameter-valued likelihood scale terms. Vector-valued hierarchical blocks and custom likelihood families are still on the roadmap.
+**Likelihoods:** Normal, Bernoulli-logit, Poisson-log, Exponential-log, LogNormal, and NegativeBinomial-log.
 
-**Predictive workflow:** prior predictive sampling, posterior predictive sampling, and ArviZ export are already implemented for the current Normal likelihood path.
+**Modeling surface:** scalar hierarchical priors are supported, and scalar hierarchical normals are automatically compiled through a non-centered path where appropriate. Vector-valued hierarchical blocks are still on the roadmap.
+
+**Predictive workflow:** prior predictive sampling, posterior predictive sampling, pointwise log-likelihood, and ArviZ export are implemented for the current likelihood families.
 
 **Diagnostics:** Split R-hat (Vehtari et al. 2021), bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
 
 **High-dimensional regression:** faer-backed `MatVecMul` op — `beta @ "X"` dispatches to a BLAS-level GEMV rather than N scalar graph nodes.
+
+## What Is Still Missing
+
+- Vector-valued hierarchical models and richer automatic reparameterization support.
+- Compiled model artifacts and a Python-free deployment story in the public API.
+- Benchmark regression gates and packaging/release automation.
+- Higher-level production templates for repeated forecasting and panel workflows.

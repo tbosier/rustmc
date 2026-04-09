@@ -6,35 +6,61 @@
 builder = rmc.ModelBuilder(data=None)
 ```
 
-Constructs a model. `data` can be passed here or via `rmc.sample(data=...)`.
-
-`normal_prior()` supports limited scalar hierarchical priors today: `mu` and `sigma` may each be a `ParamRef`, as long as the referenced parameter is declared earlier. `half_normal_prior()` accepts a `ParamRef` sigma, and `normal_likelihood()` accepts a parameter-valued `sigma` too. Vector-valued hierarchical priors are not yet supported.
+Constructs a model. Data can be bound at build time or passed later to `rmc.sample()`,
+`rmc.batch_sample()`, or `rmc.sample_prior_predictive()`.
 
 ### Priors
 
 | Method | Distribution | Notes |
 |--------|-------------|-------|
-| `normal_prior(name, mu, sigma)` | Normal(mu, σ) | `mu`, `sigma` can be `float` or `ParamRef` |
-| `half_normal_prior(name, sigma)` | HalfNormal(σ) | sampled in log-space, back-transformed |
-| `student_t_prior(name, nu, mu, sigma)` | StudentT(ν, μ, σ) | |
-| `beta_prior(name, alpha, beta)` | Beta(α, β) | sampled via logit transform |
-| `gamma_prior(name, alpha, beta)` | Gamma(α, β) | sampled in log-space |
-| `uniform_prior(name, lower, upper)` | Uniform(a, b) | sampled via logit transform |
-| `vector_normal_prior(name, n, mu, sigma)` | Normal(μ, σ)^n | explicit vector of n parameters |
+| `normal_prior(name, mu, sigma)` | Normal(mu, sigma) | `mu` and `sigma` may be `float` or earlier `ParamRef` values |
+| `half_normal_prior(name, sigma)` | HalfNormal(sigma) | `sigma` may be `float` or earlier `ParamRef` |
+| `exponential_prior(name, rate)` | Exponential(rate) | `rate` may be `float` or earlier `ParamRef` |
+| `log_normal_prior(name, mu, sigma)` | LogNormal(mu, sigma) | `mu` and `sigma` may be `float` or earlier `ParamRef` |
+| `student_t_prior(name, nu, mu=0.0, sigma=1.0)` | StudentT(nu, mu, sigma) | scalar only |
+| `gamma_prior(name, alpha, beta)` | Gamma(alpha, beta) | scalar only |
+| `beta_prior(name, alpha, beta)` | Beta(alpha, beta) | scalar only |
+| `uniform_prior(name, lower=0.0, upper=1.0)` | Uniform(lower, upper) | scalar only |
+| `vector_normal_prior(name, n, mu=0.0, sigma=1.0)` | Normal(mu, sigma)^n | explicit vector block |
+| `bernoulli_prior(name, p=0.5)` | Bernoulli(p) | discrete, not suitable for gradient-based inference |
+| `poisson_prior(name, lam)` | Poisson(lam) | discrete, not suitable for gradient-based inference |
 
-`bernoulli_prior()` and `poisson_prior()` exist in the API but are limited. They are discrete and do not participate cleanly in gradient-based NUTS/HMC workflows today.
+All scalar prior methods return a `ParamRef`. `vector_normal_prior()` returns a `VectorParamRef`.
 
-All scalar prior methods return a `ParamRef`.
+### Hierarchical priors and automatic non-centering
+
+Scalar hierarchical priors are supported for:
+
+- `normal_prior()` with parameter-valued `mu` and/or `sigma`
+- `half_normal_prior()` with parameter-valued `sigma`
+- `exponential_prior()` with parameter-valued `rate`
+- `log_normal_prior()` with parameter-valued `mu` and/or `sigma`
+
+When a scalar `normal_prior()` depends on another parameter through `mu` or `sigma`,
+rustmc automatically compiles it as a non-centered latent where appropriate. Users still
+see the logical parameter name in summaries, diagnostics, ArviZ export, and predictive
+workflows.
+
+Vector-valued hierarchical priors are not yet supported.
 
 ### Likelihoods
 
-```python
-builder.normal_likelihood(name, mu_expr, sigma, observed_key)
-```
+| Method | Family | Linear predictor | Extra parameter |
+|--------|--------|------------------|-----------------|
+| `normal_likelihood(name, mu_expr, sigma, observed_key)` | Normal | `mu_expr` | `sigma` is `float` or `ParamRef` |
+| `bernoulli_logit_likelihood(name, eta_expr, observed_key)` | Bernoulli with logit link | `eta_expr` | none |
+| `poisson_log_likelihood(name, eta_expr, observed_key)` | Poisson with log link | `eta_expr` | none |
+| `exponential_likelihood(name, eta_expr, observed_key)` | Exponential with log-rate link | `eta_expr` | none |
+| `log_normal_likelihood(name, mu_expr, sigma, observed_key)` | LogNormal | `mu_expr` | `sigma` is `float` or `ParamRef` |
+| `negative_binomial_likelihood(name, eta_expr, alpha, observed_key)` | NegativeBinomial with log-mean link | `eta_expr` | `alpha` is `float` or `ParamRef` |
 
-- `mu_expr` — one of: `ParamRef`, `ParamRef * "key"`, `ParamRef + ParamRef * "key"`, `ParamRef @ "key"`
-- `sigma` — `float` or `ParamRef`
-- `observed_key` — key into the data dict
+Likelihood expressions accept:
+
+- a bare `ParamRef`
+- `beta * "x"`
+- `alpha + beta * "x"`
+- `beta @ "X"` for matrix-vector regression
+- additive constants such as `alpha + beta * "x" + 1.0`
 
 ### `build()`
 
@@ -42,9 +68,7 @@ builder.normal_likelihood(name, mu_expr, sigma, observed_key)
 model = builder.build()
 ```
 
-Returns a `ModelSpec` (opaque handle passed to `rmc.sample` or `rmc.batch_sample`).
-
----
+Returns a `ModelSpec`, the opaque handle passed to the sampling and predictive APIs.
 
 ## `rmc.sample()`
 
@@ -54,85 +78,123 @@ fit = rmc.sample(
     data=None,
     chains=4,
     draws=1000,
-    warmup=1000,
+    warmup=500,
     seed=42,
-    sampler="nuts",   # "nuts" or "hmc"
+    threads=0,
+    step_size=0.0,
+    sampler="nuts",
+    max_tree_depth=10,
+    num_leapfrog_steps=15,
+    show_progress=True,
 )
 ```
 
 Returns a `FitResult`.
 
-`sample()` fits the model with either NUTS or fixed-step HMC. It returns posterior draws plus diagnostics and predictive helpers.
+Notes:
 
----
+- `sampler` may be `"nuts"` or `"hmc"`.
+- `threads=0` uses Rayon defaults.
+- `max_tree_depth` applies to NUTS.
+- `num_leapfrog_steps` applies to HMC.
+- `step_size=0.0` means auto-tune.
 
 ## `rmc.batch_sample()`
 
 ```python
 results = rmc.batch_sample(
-    models,    # list of (ModelSpec, data_dict) tuples
+    models,  # list[(ModelSpec, data_dict)]
+    chains=1,
     draws=500,
     warmup=300,
     seed=42,
+    sampler="nuts",
+    step_size=0.0,
+    max_tree_depth=8,
+    num_leapfrog_steps=15,
+    show_progress=True,
 )
 ```
 
-Returns a list of `BatchResult`, one per model. Each `BatchResult` exposes `mean()`, `std()`, `get_samples()`, `accept_rate`, and `divergences`.
+Returns a list of `BatchResult`, one per model.
 
----
+Unlike the original throughput-only path, batch sampling now supports multiple chains per
+model and both NUTS and fixed-step HMC. Use `chains > 1` when reliability matters more
+than absolute batch throughput.
 
 ## `FitResult`
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `summary()` | `str` | Formatted table of all parameters |
+| `summary()` | `str` | Formatted diagnostics table |
 | `mean()` | `dict[str, float]` | Posterior mean per parameter |
 | `std()` | `dict[str, float]` | Posterior std per parameter |
-| `get_samples()` | `dict[str, np.ndarray]` | All samples flattened across chains for each parameter |
-| `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped as `(chains, draws)` for each parameter |
-| `diagnostics()` | `list[dict]` | Per-parameter diagnostics: r_hat, ess_bulk, ess_tail, mcse, HDIs |
-| `step_sizes()` | `list[float]` | Per-chain adapted step size |
-| `divergences()` | `list[int]` | Per-chain divergence count |
-| `posterior_predictive(n_samples, seed)` | `dict[str, np.ndarray]` | Samples from posterior predictive; `n_samples=None` uses all draws, otherwise posterior draws are randomly subsampled without replacement |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42)` | `arviz.InferenceData` | Convert the fit to ArviZ for plotting and inspection |
+| `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
+| `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
+| `diagnostics()` | `list[dict]` | Per-parameter diagnostics |
+| `accept_rates()` | `list[float]` | Per-chain accept rates |
+| `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
+| `divergences()` | `list[int]` | Per-chain divergence counts |
+| `posterior_predictive(n_samples=None, seed=42)` | `dict[str, np.ndarray]` | Posterior predictive samples shaped `(n_samples, n_obs)` per likelihood |
+| `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | `arviz.InferenceData` | Convert to ArviZ, optionally including predictive draws and pointwise log-likelihood |
 
----
+`log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 
 ## `rmc.sample_prior_predictive()`
 
 ```python
-prior_pred = rmc.sample_prior_predictive(model, n_samples=500, seed=0)
+prior_pred = rmc.sample_prior_predictive(
+    model,
+    data=None,
+    n_samples=500,
+    seed=42,
+)
 ```
 
-Returns `dict[str, np.ndarray]` with samples from the prior predictive distribution. Keys include all parameter names and likelihood names.
+Returns `dict[str, np.ndarray]` containing:
 
-For `rmc.batch_sample()`, each result is a `BatchResult`:
+- one 1-D array per parameter with `n_samples` prior draws
+- one 2-D array per likelihood with shape `(n_samples, n_obs)`
+
+For automatically non-centered scalar hierarchical normals, the returned parameter draws use
+the logical parameter name, not the hidden raw latent.
+
+## `BatchResult`
+
+Each element returned by `rmc.batch_sample()` is a `BatchResult`.
 
 | Method / property | Returns | Description |
 |--------|---------|-------------|
 | `mean()` | `dict[str, float]` | Posterior mean per parameter |
 | `std()` | `dict[str, float]` | Posterior std per parameter |
-| `get_samples()` | `dict[str, np.ndarray]` | Samples per parameter |
-| `accept_rate` | `float` | Mean acceptance rate for the chain |
-| `divergences` | `int` | Divergence count for the chain |
+| `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across all chains and draws |
+| `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
+| `chains` | `int` | Number of chains run for this model |
+| `draws` | `int` | Number of post-warmup draws per chain |
+| `accept_rate` | `float` | Mean accept rate across chains |
+| `accept_rates` | `list[float]` | Per-chain accept rates |
+| `divergences` | `int` | Total divergences across chains |
+| `divergences_per_chain` | `list[int]` | Per-chain divergence counts |
 
----
-
-## `ParamRef` operators
-
-`ParamRef` objects support arithmetic for building `mu_expr`:
-
-```python
-beta * "x"             # scalar multiply: beta_i * x_i
-alpha + beta * "x"     # linear combination
-beta @ "X"             # matrix multiply: X @ beta (auto-promotes to vector)
-```
-
-Direct use as `mu_expr` (no data key) is also valid for hierarchical models:
+## `ParamRef` and `Expr` operators
 
 ```python
-mu_j = builder.normal_prior("mu_j", mu=mu_global, sigma=sigma_group)
-builder.normal_likelihood("obs_j", mu_expr=mu_j, sigma=2.0, observed_key="y_j")
+beta * "x"             # elementwise scalar predictor
+alpha + beta * "x"     # additive linear predictor
+beta @ "X"             # matrix-vector regression
+beta + 1.0             # additive constant
+1.0 + beta * "x"       # constant plus expression
 ```
 
-That pattern works for scalar latent parameters. It does not yet extend to hierarchical vector blocks or arbitrary custom likelihoods.
+Direct use as the likelihood expression is also valid:
+
+```python
+mu_global = builder.normal_prior("mu_global", mu=0.0, sigma=5.0)
+sigma_group = builder.half_normal_prior("sigma_group", sigma=2.0)
+mu_group = builder.normal_prior("mu_group", mu=mu_global, sigma=sigma_group)
+builder.normal_likelihood("obs", mu_expr=mu_group, sigma=1.0, observed_key="y")
+```
+
+That scalar hierarchical pattern is supported today and will automatically use the
+non-centered compilation path when eligible.

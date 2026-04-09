@@ -1,4 +1,4 @@
-use crate::graph::{Graph, NodeId, Op};
+use crate::graph::{Graph, GraphShapeError, NodeId, Op};
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -42,12 +42,9 @@ pub struct Evaluator {
 }
 
 impl Evaluator {
-    pub fn new(graph: &Graph) -> Self {
+    pub fn try_new(graph: &Graph) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
-        let vec_len = graph.data_vectors.first().map(|v| v.len())
-            .or_else(|| graph.obs_vectors.first().map(|v| v.len()))
-            .or_else(|| graph.data_matrices.first().map(|m| m.n_rows))
-            .unwrap_or(0);
+        let vec_len = graph.validate_shapes()?;
 
         let mut node_kind = Vec::with_capacity(n);
         let mut vec_slot_count = 0usize;
@@ -77,7 +74,7 @@ impl Evaluator {
             }
         }
 
-        Self {
+        Ok(Self {
             vec_len,
             node_kind,
             scalars: vec![0.0; n],
@@ -87,7 +84,11 @@ impl Evaluator {
             grad: vec![0.0; graph.param_count],
             total_logp: 0.0,
             param_node_ids,
-        }
+        })
+    }
+
+    pub fn new(graph: &Graph) -> Self {
+        Self::try_new(graph).expect("graph shape validation failed")
     }
 
     /// Read a vector element from either a Data node (graph reference) or
@@ -95,8 +96,8 @@ impl Evaluator {
     #[inline(always)]
     fn read_vec(&self, node_id: usize, i: usize, graph: &Graph) -> f64 {
         match self.node_kind[node_id] {
-            NodeKind::DataRef(di) => unsafe { *graph.data_vectors[di].get_unchecked(i) },
-            NodeKind::ComputedVec(off) => unsafe { *self.vec_buf.get_unchecked(off + i) },
+            NodeKind::DataRef(di) => graph.data_vectors[di][i],
+            NodeKind::ComputedVec(off) => self.vec_buf[off + i],
             NodeKind::Scalar => unreachable!(),
         }
     }
@@ -222,23 +223,84 @@ impl Evaluator {
                         self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
                     );
                 }
-                Op::NormalObsLogP {
-                    mu_vec,
-                    sigma,
+                Op::ObsLogP {
+                    family,
+                    linpred_vec,
+                    aux,
                     obs_data_idx,
                 } => {
-                    let sv = self.scalars[sigma.0];
                     let obs = &graph.obs_vectors[*obs_data_idx];
-                    let s2 = sv * sv;
-                    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
-                    let n = obs.len() as f64;
-                    let mut sum_sq = 0.0f64;
-                    for i in 0..vl {
-                        let m = self.read_vec(mu_vec.0, i, graph);
-                        let d = obs[i] - m;
-                        sum_sq += d * d;
+                    match family {
+                        crate::graph::ObsFamily::Normal => {
+                            let sigma_node = aux.expect("Normal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            let n = obs.len() as f64;
+                            let mut sum_sq = 0.0f64;
+                            for i in 0..vl {
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let d = obs[i] - m;
+                                sum_sq += d * d;
+                            }
+                            self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
+                        }
+                        crate::graph::ObsFamily::BernoulliLogit => {
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                sum += obs[i] * eta - softplus(eta);
+                            }
+                            self.scalars[idx] = sum;
+                        }
+                        crate::graph::ObsFamily::PoissonLog => {
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                sum += obs[i] * eta - eta.exp() - ln_gamma(obs[i] + 1.0);
+                            }
+                            self.scalars[idx] = sum;
+                        }
+                        crate::graph::ObsFamily::ExponentialLog => {
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                sum += eta - obs[i] * eta.exp();
+                            }
+                            self.scalars[idx] = sum;
+                        }
+                        crate::graph::ObsFamily::LogNormal => {
+                            let sigma_node = aux.expect("LogNormal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let y = obs[i].max(1e-300);
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let ly = y.ln();
+                                let d = ly - m;
+                                sum += log_norm - ly - 0.5 * d * d / s2;
+                            }
+                            self.scalars[idx] = sum;
+                        }
+                        crate::graph::ObsFamily::NegativeBinomialLog => {
+                            let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
+                            let av = self.scalars[alpha_node.0];
+                            let mut sum = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let mu = eta.exp();
+                                let y = obs[i];
+                                sum += ln_gamma(y + av)
+                                    - ln_gamma(av)
+                                    - ln_gamma(y + 1.0)
+                                    + av * (av.ln() - (av + mu).ln())
+                                    + y * (eta - (av + mu).ln());
+                            }
+                            self.scalars[idx] = sum;
+                        }
                     }
-                    self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
                 }
                 Op::FusedLinearMu {
                     param_nodes,
@@ -552,31 +614,122 @@ impl Evaluator {
                         self.adj_scalars[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                     }
                 }
-                Op::NormalObsLogP {
-                    mu_vec,
-                    sigma,
+                Op::ObsLogP {
+                    family,
+                    linpred_vec,
+                    aux,
                     obs_data_idx,
                 } => {
-                    let sv = self.scalars[sigma.0];
                     let obs = &graph.obs_vectors[*obs_data_idx];
-                    let s2 = sv * sv;
-                    let mut dsigma = 0.0f64;
+                    match family {
+                        crate::graph::ObsFamily::Normal => {
+                            let sigma_node = aux.expect("Normal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let mut dsigma = 0.0f64;
 
-                    let mu_off = match self.node_kind[mu_vec.0] {
-                        NodeKind::ComputedVec(o) => Some(o),
-                        _ => None,
-                    };
+                            let mu_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
 
-                    for i in 0..vl {
-                        let m = self.read_vec(mu_vec.0, i, graph);
-                        let diff = obs[i] - m;
-                        // Adjoint for mu_vec
-                        if let Some(off) = mu_off {
-                            self.adj_vec_buf[off + i] += a_s * diff / s2;
+                            for i in 0..vl {
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let diff = obs[i] - m;
+                                if let Some(off) = mu_off {
+                                    self.adj_vec_buf[off + i] += a_s * diff / s2;
+                                }
+                                dsigma += diff * diff / (s2 * sv) - 1.0 / sv;
+                            }
+                            self.adj_scalars[sigma_node.0] += a_s * dsigma;
                         }
-                        dsigma += diff * diff / (s2 * sv) - 1.0 / sv;
+                        crate::graph::ObsFamily::BernoulliLogit => {
+                            let eta_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let grad = obs[i] - sigmoid_stable(eta);
+                                if let Some(off) = eta_off {
+                                    self.adj_vec_buf[off + i] += a_s * grad;
+                                }
+                            }
+                        }
+                        crate::graph::ObsFamily::PoissonLog => {
+                            let eta_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let grad = obs[i] - eta.exp();
+                                if let Some(off) = eta_off {
+                                    self.adj_vec_buf[off + i] += a_s * grad;
+                                }
+                            }
+                        }
+                        crate::graph::ObsFamily::ExponentialLog => {
+                            let eta_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let grad = 1.0 - obs[i] * eta.exp();
+                                if let Some(off) = eta_off {
+                                    self.adj_vec_buf[off + i] += a_s * grad;
+                                }
+                            }
+                        }
+                        crate::graph::ObsFamily::LogNormal => {
+                            let sigma_node = aux.expect("LogNormal obs logp requires sigma");
+                            let sv = self.scalars[sigma_node.0];
+                            let s2 = sv * sv;
+                            let mu_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            let mut dsigma = 0.0f64;
+                            for i in 0..vl {
+                                let y = obs[i].max(1e-300);
+                                let ly = y.ln();
+                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let d = ly - m;
+                                if let Some(off) = mu_off {
+                                    self.adj_vec_buf[off + i] += a_s * d / s2;
+                                }
+                                dsigma += d * d / (s2 * sv) - 1.0 / sv;
+                            }
+                            self.adj_scalars[sigma_node.0] += a_s * dsigma;
+                        }
+                        crate::graph::ObsFamily::NegativeBinomialLog => {
+                            let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
+                            let av = self.scalars[alpha_node.0];
+                            let eta_off = match self.node_kind[linpred_vec.0] {
+                                NodeKind::ComputedVec(o) => Some(o),
+                                _ => None,
+                            };
+                            let mut dalpha = 0.0f64;
+                            for i in 0..vl {
+                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let mu = eta.exp();
+                                let y = obs[i];
+                                let denom = av + mu;
+                                let deta = av * (y - mu) / denom;
+                                if let Some(off) = eta_off {
+                                    self.adj_vec_buf[off + i] += a_s * deta;
+                                }
+                                dalpha += digamma(y + av)
+                                    - digamma(av)
+                                    + av.ln()
+                                    + 1.0
+                                    - denom.ln()
+                                    - (y + av) / denom;
+                            }
+                            self.adj_scalars[alpha_node.0] += a_s * dalpha;
+                        }
                     }
-                    self.adj_scalars[sigma.0] += a_s * dsigma;
                 }
                 Op::FusedLinearMu {
                     param_nodes,
@@ -784,15 +937,45 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::BetaLogP { x, alpha, beta } => {
                 Value::Scalar(beta_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
             }
-            Op::NormalObsLogP {
-                mu_vec,
-                sigma,
+            Op::ObsLogP {
+                family,
+                linpred_vec,
+                aux,
                 obs_data_idx,
             } => {
-                let mu = values[mu_vec.0].as_vector();
-                let sv = values[sigma.0].as_scalar();
                 let obs = &graph.obs_vectors[*obs_data_idx];
-                Value::Scalar(normal_obs_logp_sum(mu, sv, obs))
+                match family {
+                    crate::graph::ObsFamily::Normal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("Normal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        Value::Scalar(normal_obs_logp_sum(mu, sv, obs))
+                    }
+                    crate::graph::ObsFamily::BernoulliLogit => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        Value::Scalar(bernoulli_logit_obs_logp_sum(eta, obs))
+                    }
+                    crate::graph::ObsFamily::PoissonLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        Value::Scalar(poisson_log_obs_logp_sum(eta, obs))
+                    }
+                    crate::graph::ObsFamily::ExponentialLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        Value::Scalar(exponential_log_obs_logp_sum(eta, obs))
+                    }
+                    crate::graph::ObsFamily::LogNormal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("LogNormal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        Value::Scalar(log_normal_obs_logp_sum(mu, sv, obs))
+                    }
+                    crate::graph::ObsFamily::NegativeBinomialLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
+                        let av = values[alpha_node.0].as_scalar();
+                        Value::Scalar(negative_binomial_log_obs_logp_sum(eta, av, obs))
+                    }
+                }
             }
             Op::FusedLinearMu {
                 param_nodes,
@@ -1041,30 +1224,117 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                 }
             }
-            Op::NormalObsLogP {
-                mu_vec,
-                sigma,
+            Op::ObsLogP {
+                family,
+                linpred_vec,
+                aux,
                 obs_data_idx,
             } => {
-                let mu = values[mu_vec.0].as_vector();
-                let sv = values[sigma.0].as_scalar();
                 let obs = &graph.obs_vectors[*obs_data_idx];
-                let s2 = sv * sv;
-                let dmu: Vec<f64> = mu
-                    .iter()
-                    .zip(obs.iter())
-                    .map(|(m, o)| a_s * (o - m) / s2)
-                    .collect();
-                merge_vec_adj(&mut adj_vector[mu_vec.0], &dmu);
-                let dsigma: f64 = mu
-                    .iter()
-                    .zip(obs.iter())
-                    .map(|(m, o)| {
-                        let diff = o - m;
-                        diff * diff / (s2 * sv) - 1.0 / sv
-                    })
-                    .sum::<f64>();
-                adj_scalar[sigma.0] += a_s * dsigma;
+                match family {
+                    crate::graph::ObsFamily::Normal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("Normal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        let s2 = sv * sv;
+                        let dmu: Vec<f64> = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, o)| a_s * (o - m) / s2)
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
+                        let dsigma: f64 = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, o)| {
+                                let diff = o - m;
+                                diff * diff / (s2 * sv) - 1.0 / sv
+                            })
+                            .sum::<f64>();
+                        adj_scalar[sigma_node.0] += a_s * dsigma;
+                    }
+                    crate::graph::ObsFamily::BernoulliLogit => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let deta: Vec<f64> = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| a_s * (y - sigmoid_stable(*e)))
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
+                    }
+                    crate::graph::ObsFamily::PoissonLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let deta: Vec<f64> = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| a_s * (y - e.exp()))
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
+                    }
+                    crate::graph::ObsFamily::ExponentialLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let deta: Vec<f64> = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| a_s * (1.0 - y * e.exp()))
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
+                    }
+                    crate::graph::ObsFamily::LogNormal => {
+                        let mu = values[linpred_vec.0].as_vector();
+                        let sigma_node = aux.expect("LogNormal obs logp requires sigma");
+                        let sv = values[sigma_node.0].as_scalar();
+                        let s2 = sv * sv;
+                        let dmu: Vec<f64> = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, y)| {
+                                let ly = y.max(1e-300).ln();
+                                a_s * (ly - m) / s2
+                            })
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
+                        let dsigma: f64 = mu
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(m, y)| {
+                                let ly = y.max(1e-300).ln();
+                                let d = ly - m;
+                                d * d / (s2 * sv) - 1.0 / sv
+                            })
+                            .sum::<f64>();
+                        adj_scalar[sigma_node.0] += a_s * dsigma;
+                    }
+                    crate::graph::ObsFamily::NegativeBinomialLog => {
+                        let eta = values[linpred_vec.0].as_vector();
+                        let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
+                        let av = values[alpha_node.0].as_scalar();
+                        let deta: Vec<f64> = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| {
+                                let mu = e.exp();
+                                a_s * av * (y - mu) / (av + mu)
+                            })
+                            .collect();
+                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
+                        let dalpha: f64 = eta
+                            .iter()
+                            .zip(obs.iter())
+                            .map(|(e, y)| {
+                                let mu = e.exp();
+                                let denom = av + mu;
+                                digamma(y + av)
+                                    - digamma(av)
+                                    + av.ln()
+                                    + 1.0
+                                    - denom.ln()
+                                    - (y + av) / denom
+                            })
+                            .sum::<f64>();
+                        adj_scalar[alpha_node.0] += a_s * dalpha;
+                    }
+                }
             }
             Op::FusedLinearMu {
                 param_nodes,
@@ -1185,6 +1455,54 @@ fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
     n * log_norm - 0.5 * sum_sq / s2
 }
 
+fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+    eta.iter()
+        .zip(obs.iter())
+        .map(|(e, y)| y * e - softplus(*e))
+        .sum()
+}
+
+fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+    eta.iter()
+        .zip(obs.iter())
+        .map(|(e, y)| y * e - e.exp() - ln_gamma(y + 1.0))
+        .sum()
+}
+
+fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+    eta.iter()
+        .zip(obs.iter())
+        .map(|(e, y)| e - y * e.exp())
+        .sum()
+}
+
+fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+    let s2 = sigma * sigma;
+    mu.iter()
+        .zip(obs.iter())
+        .map(|(m, y)| {
+            let ly = y.max(1e-300).ln();
+            let d = ly - m;
+            log_norm - ly - 0.5 * d * d / s2
+        })
+        .sum()
+}
+
+fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
+    eta.iter()
+        .zip(obs.iter())
+        .map(|(e, y)| {
+            let mu = e.exp();
+            ln_gamma(y + alpha)
+                - ln_gamma(alpha)
+                - ln_gamma(y + 1.0)
+                + alpha * (alpha.ln() - (alpha + mu).ln())
+                + y * (e - (alpha + mu).ln())
+        })
+        .sum()
+}
+
 fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
     if x < 0.0 {
         return f64::NEG_INFINITY;
@@ -1232,8 +1550,25 @@ fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
         + (beta - 1.0) * (1.0 - x).ln()
 }
 
+fn softplus(x: f64) -> f64 {
+    if x > 0.0 {
+        x + (-x).exp().ln_1p()
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+fn sigmoid_stable(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let ex = x.exp();
+        ex / (1.0 + ex)
+    }
+}
+
 /// Lanczos approximation to ln(Γ(x)) for x > 0.
-fn ln_gamma(x: f64) -> f64 {
+pub fn ln_gamma(x: f64) -> f64 {
     if x <= 0.0 {
         return f64::INFINITY;
     }
@@ -1272,7 +1607,7 @@ fn digamma(mut x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::Graph;
+    use crate::graph::{Graph, ObsFamily};
 
     #[test]
     fn test_normal_logp_gradient() {
@@ -1478,6 +1813,22 @@ mod tests {
         let x = g.add_constant(1.0);
         g.bernoulli_logp(x, p);
         finite_diff_check(&g, &[0.7], 1e-4);
+    }
+
+    #[test]
+    fn test_bernoulli_logit_obs_gradient() {
+        let mut g = Graph::new();
+        let eta = g.add_param("eta");
+        let eta_vec = g.scalar_broadcast(eta);
+        let obs_idx = g.add_obs_data(vec![1.0, 0.0, 1.0, 1.0]);
+        g.obs_logp_bernoulli_logit(eta_vec, obs_idx);
+
+        let heads = g.observation_heads();
+        assert_eq!(heads.len(), 1);
+        assert_eq!(heads[0].family, ObsFamily::BernoulliLogit);
+        assert_eq!(heads[0].n_obs, 4);
+
+        finite_diff_check(&g, &[0.3], 1e-4);
     }
 
     /// Test MatVecMul + VectorNormalLogP forward and gradient via finite differences.

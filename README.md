@@ -2,13 +2,21 @@
 
 Bayesian inference engine written in Rust. Python API via PyO3.
 
-rustmc runs the entire sampling loop in compiled Rust, with no Python in the inner loop. Chains are parallelized across threads using Rayon. The result is fast enough to fit thousands of independent Bayesian models in a single call.
-
 ## Why rustmc
 
-PyMC, Stan, and other Bayesian frameworks are built for single-model workflows. You define one model, fit it, and analyze it. This works well for research but falls apart when you need to fit the same model structure to thousands of datasets -- per-store demand models, per-SKU pricing models, per-patient dosing models.
+rustmc is built for production workloads where the same model structure is fit repeatedly:
 
-rustmc is designed for that use case. It provides a batch inference API that runs 10,000 independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
+- Rust-native inference loop with no Python in the hot path.
+- Rayon-parallel chains and batch inference for repeated-model throughput.
+- Graph-based execution with cached buffers, transforms, and Jacobians.
+- Fast paths for linear regression and high-dimensional `X @ beta` models.
+- Built-in diagnostics, predictive checks, pointwise log-likelihood, and ArviZ export.
+
+It is a strong fit for repeated Bayesian regression, forecasting, and hierarchical workflows on CPU. It is not yet a full arbitrary-PPL replacement for PyMC or Stan.
+
+What sets rustmc apart is the execution model: it shares one compiled Rust core across chains and across many independent models, so throughput stays high when the same structure is applied to thousands of datasets.
+
+PyMC and Stan are excellent general-purpose tools, but they are optimized around a broader single-model workflow. rustmc is optimized for the repeated-model setting where Python orchestration, per-model overhead, and deployment friction start to dominate.
 
 **10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
 
@@ -133,7 +141,7 @@ Instead of 500 separate scalar graph nodes (one per coefficient), rustmc allocat
 
 For explicit control over the vector size, `vector_normal_prior("beta", n=P)` is also available.
 
-The builder also supports limited scalar hierarchical priors today. For `normal_prior`, both `mu` and `sigma` can be other parameters; for `half_normal_prior`, `sigma` can be a parameter; and likelihood `sigma` can be a parameter as well. Vector-valued hierarchical priors are not yet supported.
+The builder supports scalar hierarchical priors today. For `normal_prior`, both `mu` and `sigma` can be other parameters; for `half_normal_prior`, `sigma` can be a parameter; `exponential_prior` and `log_normal_prior` also accept parameter-valued hyperparameters; and likelihood `sigma` or `alpha` can be parameter-valued as well. Scalar hierarchical normals are automatically compiled through a non-centered path where appropriate. Vector-valued hierarchical priors are not yet supported.
 
 ## What is implemented
 
@@ -141,7 +149,7 @@ The builder also supports limited scalar hierarchical priors today. For `normal_
 
 - NUTS (No-U-Turn Sampler) with multinomial candidate selection, generalized U-turn criterion, and divergence detection. Follows Hoffman and Gelman (2014) and Betancourt (2017).
 - HMC with fixed leapfrog steps, available as a fallback via `sampler="hmc"`.
-- Diagonal mass matrix adaptation with 3-phase warmup (step-size only, mass matrix estimation, final step-size tuning).
+- Block-structured mass matrix adaptation with 3-phase warmup (step-size only, mass matrix estimation, final step-size tuning).
 - Auto step-size initialization via binary search.
 - Deterministic per-chain RNG (ChaCha8) for reproducible results.
 - Multithreaded chains via Rayon. Batch inference shares the thread pool across all models.
@@ -153,6 +161,8 @@ The builder also supports limited scalar hierarchical priors today. For `normal_
 | Normal | (-inf, inf) | None | Working |
 | StudentT | (-inf, inf) | None | Working |
 | HalfNormal | (0, inf) | log | Working |
+| Exponential | (0, inf) | log | Working |
+| LogNormal | (0, inf) | log | Working |
 | Gamma | (0, inf) | log | Working |
 | Beta | (0, 1) | logit | Working |
 | Uniform | (a, b) | logit | Working |
@@ -162,6 +172,17 @@ The builder also supports limited scalar hierarchical priors today. For `normal_
 Constrained distributions are automatically sampled in unconstrained space via log/logit transforms with Jacobian corrections. Samples are back-transformed before being returned to the user.
 
 Discrete priors are exposed for completeness, but they are not differentiable and are not suitable for gradient-based sampling in their current form. In practice, use the continuous relaxations or a model structure that keeps the latent parameters continuous.
+
+### Likelihood families
+
+- `normal_likelihood(name, mu_expr, sigma, observed_key)`
+- `bernoulli_logit_likelihood(name, eta_expr, observed_key)`
+- `poisson_log_likelihood(name, eta_expr, observed_key)`
+- `exponential_likelihood(name, eta_expr, observed_key)`
+- `log_normal_likelihood(name, mu_expr, sigma, observed_key)`
+- `negative_binomial_likelihood(name, eta_expr, alpha, observed_key)`
+
+All GLM-style families use the same expression surface: bare parameters, `beta * "x"`, additive expressions, matrix multiplies via `beta @ "X"`, and additive constants.
 
 ### Computation
 
@@ -180,14 +201,16 @@ Discrete priors are exposed for completeness, but they are not differentiable an
 - 94% highest density interval.
 - Per-chain acceptance rates, step sizes, and divergence counts.
 - Automatic warnings for convergence issues.
+- Recovery suite covering canonical synthetic models in CI.
 
 Available via `fit.summary()` for a formatted table or `fit.diagnostics()` for programmatic access.
 
 ### Predictive checks
 
-- `sample_prior_predictive()` is implemented and returns prior draws plus simulated observations.
-- `FitResult.posterior_predictive()` is implemented and returns simulated observations from posterior draws.
-- `FitResult.to_arviz()` is implemented for downstream plotting and inspection.
+- `sample_prior_predictive()` returns prior draws plus simulated observations.
+- `FitResult.posterior_predictive()` returns simulated observations from posterior draws.
+- `FitResult.log_likelihood()` returns pointwise log-likelihood arrays with shape `(chain, draw, obs)`.
+- `FitResult.to_arviz()` exports posterior, sample stats, posterior predictive, and pointwise log-likelihood for downstream ArviZ/LOO/WAIC workflows.
 
 ### Progress reporting
 
@@ -206,7 +229,7 @@ Python (orchestration only)
 Rust Core
   +-- Graph         Computational DAG, nodes, ops, data + matrix storage
   +-- Autodiff      Forward evaluation + reverse-mode gradient
-  +-- Distributions  8 distributions with automatic transforms
+  +-- Distributions  Scalar priors, GLM likelihood families, automatic transforms
   +-- NUTS          Multinomial tree-building, U-turn detection
   +-- HMC           Fixed-step leapfrog (fallback)
   +-- Sampler       Multi-chain parallel runner, batch inference
@@ -239,10 +262,10 @@ JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and 
 
 Near term:
 
-- Expand the scalar modeling DSL into more GLM families and link functions.
-- Add more likelihoods and better discrete-model support where gradients permit it.
-- Improve posterior diagnostics and plotting output for routine model validation.
-- Make model compilation and serialization explicit so Python becomes optional in production.
+- Expose compiled model artifacts as a first-class public workflow in Python and Rust.
+- Extend automatic non-centering beyond scalar hierarchical normals to grouped/vector random effects.
+- Add a benchmark regression harness for wall time, ESS/s, memory, and divergence budgets.
+- Expand the modeling layer with production helpers such as offsets, exposure terms, and panel/hierarchical templates.
 
 Medium term:
 

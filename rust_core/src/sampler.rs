@@ -1,6 +1,6 @@
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
-use crate::hmc::{self, ChainResult, HmcConfig};
+use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{self, ProgressState};
 use rand::SeedableRng;
@@ -48,11 +48,41 @@ impl Default for SamplerConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct BatchSampleConfig {
+    pub sampler: SamplerType,
+    pub num_chains: usize,
+    pub num_draws: usize,
+    pub num_warmup: usize,
+    pub step_size: f64,
+    pub num_leapfrog_steps: usize,
+    pub max_tree_depth: usize,
+    pub seed: u64,
+    pub show_progress: bool,
+}
+
+impl Default for BatchSampleConfig {
+    fn default() -> Self {
+        Self {
+            sampler: SamplerType::Nuts,
+            num_chains: 1,
+            num_draws: 500,
+            num_warmup: 300,
+            step_size: 0.0,
+            num_leapfrog_steps: 15,
+            max_tree_depth: 8,
+            seed: 42,
+            show_progress: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
     pub accept_rates: Vec<f64>,
     pub step_sizes: Vec<f64>,
     pub divergences: Vec<usize>,
+    pub transitions: Vec<Vec<TransitionStats>>,
     pub param_names: Vec<String>,
 }
 
@@ -105,6 +135,11 @@ impl SampleResult {
             self.total_divergences(),
         )
     }
+
+    /// Structured per-transition telemetry aggregated across chains.
+    pub fn transition_diagnostics(&self) -> diagnostics::TransitionDiagnosticsReport {
+        diagnostics::compute_transition_diagnostics(&self.transitions)
+    }
 }
 
 fn with_thread_pool<T, F>(num_threads: usize, f: F) -> T
@@ -124,6 +159,7 @@ where
 }
 
 pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, String> {
+    graph.validate_shapes().map_err(|e| e.to_string())?;
     let graph = Arc::new(graph);
     let param_names = graph.param_names.clone();
 
@@ -209,12 +245,15 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
+    let transitions: Vec<Vec<TransitionStats>> =
+        results.iter().map(|r| r.transitions.clone()).collect();
 
     Ok(SampleResult {
         samples,
         accept_rates,
         step_sizes,
         divergences,
+        transitions,
         param_names,
     })
 }
@@ -224,8 +263,12 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
 pub struct BatchModelResult {
     pub samples: Vec<Vec<f64>>,
     pub param_names: Vec<String>,
-    pub accept_rate: f64,
-    pub divergences: usize,
+    pub num_chains: usize,
+    pub num_draws: usize,
+    pub accept_rates: Vec<f64>,
+    pub step_sizes: Vec<f64>,
+    pub divergences: Vec<usize>,
+    pub transitions: Vec<Vec<TransitionStats>>,
 }
 
 impl BatchModelResult {
@@ -261,26 +304,42 @@ impl BatchModelResult {
         let idx = (q * (vals.len() - 1) as f64) as usize;
         vals[idx.min(vals.len() - 1)]
     }
+
+    pub fn mean_accept_rate(&self) -> f64 {
+        if self.accept_rates.is_empty() {
+            0.0
+        } else {
+            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
+        }
+    }
+
+    pub fn total_divergences(&self) -> usize {
+        self.divergences.iter().sum()
+    }
 }
 
 /// Run many independent models in parallel through one Rayon thread pool.
 ///
-/// Each model gets 1 NUTS chain. This is designed for throughput over
-/// per-model diagnostic quality — run thousands of small models fast.
+/// Each model gets `num_chains` chains. The default remains throughput-first
+/// with a single chain, but callers can trade more work for more stable
+/// inference diagnostics when needed.
 pub fn batch_sample(
     models: Vec<(Graph, Vec<f64>)>,
-    num_draws: usize,
-    num_warmup: usize,
-    seed: u64,
-    show_progress: bool,
-) -> Vec<BatchModelResult> {
+    config: BatchSampleConfig,
+) -> Result<Vec<BatchModelResult>, String> {
     let n_models = models.len();
+    let chains_per_model = config.num_chains.max(1);
+    let total_chain_runs = n_models * chains_per_model;
 
-    let progress_state = if show_progress {
+    for (graph, _) in &models {
+        graph.validate_shapes().map_err(|e| e.to_string())?;
+    }
+
+    let progress_state = if config.show_progress {
         Some(Arc::new(ProgressState::new(
-            n_models,
-            num_draws,
-            num_warmup,
+            total_chain_runs,
+            config.num_draws,
+            config.num_warmup,
             8, // approximate leapfrog for progress display
         )))
     } else {
@@ -297,35 +356,63 @@ pub fn batch_sample(
             .enumerate()
             .map(|(model_idx, (graph, obs_y))| {
                 let _ = obs_y; // data is already baked into the graph
-                let mut rng = ChaCha8Rng::seed_from_u64(seed + model_idx as u64);
                 let prog_ref = progress_state.as_deref();
+                let mut samples: Vec<Vec<f64>> = Vec::new();
+                let mut accept_rates = Vec::with_capacity(chains_per_model);
+                let mut step_sizes = Vec::with_capacity(chains_per_model);
+                let mut divergences = Vec::with_capacity(chains_per_model);
+                let mut transitions = Vec::with_capacity(chains_per_model);
 
-                let nuts_config = NutsConfig {
-                    step_size: 0.0,
-                    max_tree_depth: 8,
-                    num_draws,
-                    num_warmup,
-                };
+                for chain_idx in 0..chains_per_model {
+                    let seed = config
+                        .seed
+                        .wrapping_add((model_idx as u64) << 32)
+                        .wrapping_add(chain_idx as u64);
+                    let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
-                let chain = nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref);
+                    let chain = match config.sampler {
+                        SamplerType::Nuts => {
+                            let nuts_config = NutsConfig {
+                                step_size: config.step_size,
+                                max_tree_depth: config.max_tree_depth,
+                                num_draws: config.num_draws,
+                                num_warmup: config.num_warmup,
+                            };
+                            nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                        }
+                        SamplerType::Hmc => {
+                            let hmc_config = HmcConfig {
+                                step_size: config.step_size,
+                                num_leapfrog_steps: config.num_leapfrog_steps,
+                                num_draws: config.num_draws,
+                                num_warmup: config.num_warmup,
+                            };
+                            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                        }
+                    };
 
-                let transforms = &graph.param_transforms;
-                let samples: Vec<Vec<f64>> = chain
-                    .samples
-                    .iter()
-                    .map(|draw| {
+                    let transforms = &graph.param_transforms;
+                    samples.extend(chain.samples.iter().map(|draw| {
                         draw.iter()
                             .enumerate()
                             .map(|(i, &raw)| transforms[i].apply(raw))
                             .collect()
-                    })
-                    .collect();
+                    }));
+                    accept_rates.push(chain.accept_rate);
+                    step_sizes.push(chain.step_size);
+                    divergences.push(chain.divergences);
+                    transitions.push(chain.transitions);
+                }
 
                 BatchModelResult {
                     samples,
                     param_names: graph.param_names.clone(),
-                    accept_rate: chain.accept_rate,
-                    divergences: chain.divergences,
+                    num_chains: chains_per_model,
+                    num_draws: config.num_draws,
+                    accept_rates,
+                    step_sizes,
+                    divergences,
+                    transitions,
                 }
             })
             .collect()
@@ -338,7 +425,7 @@ pub fn batch_sample(
         h.join().ok();
     }
 
-    results
+    Ok(results)
 }
 
 #[cfg(test)]
@@ -353,5 +440,46 @@ mod tests {
 
         assert_eq!(one, 1);
         assert_eq!(two, 2);
+    }
+
+    #[test]
+    fn sample_result_exposes_transition_diagnostics() {
+        let result = SampleResult {
+            samples: vec![],
+            accept_rates: vec![0.8],
+            step_sizes: vec![0.1],
+            divergences: vec![1],
+            transitions: vec![vec![
+                TransitionStats {
+                    is_warmup: true,
+                    accepted: true,
+                    accept_prob: 0.9,
+                    energy_error: 0.2,
+                    divergent: false,
+                    step_size: 0.1,
+                    num_leapfrog_steps: 4,
+                    tree_depth: Some(2),
+                },
+                TransitionStats {
+                    is_warmup: false,
+                    accepted: false,
+                    accept_prob: 0.7,
+                    energy_error: -0.3,
+                    divergent: true,
+                    step_size: 0.1,
+                    num_leapfrog_steps: 4,
+                    tree_depth: Some(2),
+                },
+            ]],
+            param_names: vec!["x".to_string()],
+        };
+
+        let report = result.transition_diagnostics();
+        assert_eq!(report.total_transitions, 2);
+        assert_eq!(report.total_warmup_transitions, 1);
+        assert_eq!(report.total_divergences, 1);
+        assert_eq!(report.total_leapfrog_steps, 8);
+        assert_eq!(report.chains.len(), 1);
+        assert!(report.mean_accept_prob > 0.0);
     }
 }

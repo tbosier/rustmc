@@ -10,11 +10,11 @@
 
 use crate::autodiff::Evaluator;
 use crate::graph::Graph;
-use crate::hmc::ChainResult;
+use crate::hmc::{ChainResult, TransitionStats};
+use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 const MAX_DELTA_H: f64 = 1000.0;
 
@@ -47,13 +47,8 @@ struct PhasePoint {
 }
 
 impl PhasePoint {
-    fn energy(&self, inv_mass: &[f64]) -> f64 {
-        let ke: f64 = self
-            .p
-            .iter()
-            .zip(inv_mass.iter())
-            .map(|(&pi, &im)| 0.5 * pi * pi * im)
-            .sum();
+    fn energy(&self, mass: &MassMatrix, scratch: &mut [f64]) -> f64 {
+        let ke = mass.kinetic_energy(&self.p, scratch);
         -self.logp + ke
     }
 }
@@ -78,13 +73,13 @@ struct TreeResult {
     diverging: bool,
 }
 
-/// Run a single NUTS chain with windowed diagonal mass matrix adaptation.
+/// Run a single NUTS chain with windowed block-structured mass matrix adaptation.
 ///
 /// Warmup schedule (mirrors Stan's default):
 ///   Init buffer  (~75 draws or 15% of warmup, whichever is smaller):
 ///       step-size dual-averaging only, identity mass matrix.
 ///   Mass-matrix windows (doubling: 25 → 50 → 100 → 200 → …):
-///       At the end of each window the diagonal mass matrix is updated
+///       At the end of each window the block-structured mass matrix is updated
 ///       from Welford online variance estimates collected in that window.
 ///       Dual averaging and step size are reset after each update so the
 ///       sampler can re-converge with the new metric.
@@ -103,13 +98,15 @@ pub fn run_chain(
     let mut evaluator = Evaluator::new(graph);
     let q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut samples = Vec::with_capacity(config.num_draws);
+    let mut transitions = Vec::with_capacity(total_iters);
     let mut n_divergences = 0usize;
     let mut sum_accept_prob = 0.0f64;
     let mut total_iters_done = 0u64;
 
-    // Diagonal mass matrix (M⁻¹ diagonal and √M diagonal for momentum sampling).
-    let mut inv_mass_diag = vec![1.0f64; dim];
-    let mut mass_sqrt = vec![1.0f64; dim];
+    let mut mass = MassMatrix::from_graph(graph);
+    let mut mass_acc = MassMatrixAccumulator::from_graph(graph);
+    let mut scratch = vec![0.0f64; dim];
+    let mut w_count = 0usize;
 
     // --- Windowed warmup schedule (Stan defaults) ---
     // init_buffer: step size only, identity mass
@@ -123,16 +120,11 @@ pub fn run_chain(
     let mut next_window_end = (init_buffer + first_window).min(terminal_start);
     let mut window_size = first_window;
 
-    // Welford online variance accumulator for the current mass-matrix window.
-    let mut w_count = 0usize;
-    let mut w_mean = vec![0.0f64; dim];
-    let mut w_m2 = vec![0.0f64; dim]; // sum of squared deviations
-
     // Step-size initialization
     let mut step_size = if config.step_size > 0.0 {
         config.step_size
     } else {
-        find_initial_step_size(graph, &mut evaluator, &q, &inv_mass_diag, &mass_sqrt, dim, rng)
+        find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng)
     };
 
     // Dual averaging (target = 0.80 for NUTS, following Stan)
@@ -156,14 +148,11 @@ pub fn run_chain(
 
     for iter in 0..total_iters {
         let is_warmup = iter < config.num_warmup;
+        let step_size_used = step_size;
 
-        // Sample momentum from N(0, M) where M = diag(mass_sqrt²)
-        for i in 0..dim {
-            let z: f64 = StandardNormal.sample(rng);
-            current.p[i] = z * mass_sqrt[i];
-        }
+        mass.sample_momentum_into(rng, &mut current.p, &mut scratch);
 
-        let h0 = current.energy(&inv_mass_diag);
+        let h0 = current.energy(&mass, &mut scratch);
 
         // Build the NUTS tree
         let (proposal, tree_stats) = build_tree_iterative(
@@ -171,11 +160,12 @@ pub fn run_chain(
             &mut evaluator,
             &current,
             step_size,
-            &inv_mass_diag,
+            &mass,
             h0,
             config.max_tree_depth,
             dim,
             rng,
+            &mut scratch,
         );
 
         // Accept the NUTS proposal (multinomial weighting handles acceptance internally)
@@ -215,45 +205,31 @@ pub fn run_chain(
             // Mass-matrix estimation: collect samples in the current window
             let in_window = iter >= init_buffer && iter < terminal_start;
             if in_window {
-                welford_update(&current.q, &mut w_count, &mut w_mean, &mut w_m2);
+                mass_acc.update(&current.q);
+                w_count += 1;
+            }
 
-                // End of window: update mass matrix, reset adaptation
-                let window_done = (iter + 1 >= next_window_end) || (iter + 1 >= terminal_start);
-                if window_done && w_count > 3 {
-                    // Apply Welford variance estimate to mass matrix.
-                    // Stan-style regularisation: shrink toward 1 with weight 5/(n+5)
-                    // to prevent catastrophically large inv_mass from near-zero variance.
-                    let n = w_count as f64;
-                    for i in 0..dim {
-                        let var_hat = if w_count > 1 {
-                            w_m2[i] / (w_count - 1) as f64
-                        } else {
-                            1.0
-                        };
-                        let var = (n / (n + 5.0)) * var_hat + 1e-3 * (5.0 / (n + 5.0));
-                        inv_mass_diag[i] = 1.0 / var;
-                        mass_sqrt[i] = var.sqrt();
-                    }
+            // End of window: update mass matrix, reset adaptation
+            let window_done = (iter + 1 >= next_window_end) || (iter + 1 >= terminal_start);
+            if window_done && iter >= init_buffer && iter < terminal_start && w_count > 3 {
+                mass = mass_acc.finalize();
 
-                    // Keep the current step size — the dual averaging state
-                    // already has a reasonable estimate and re-running
-                    // find_initial_step_size causes a transient instability
-                    // (~20 extra divergences) while dual averaging re-converges.
-                    // Just update the dual averaging anchor and reset accumulators.
-                    da_mu = (10.0 * step_size).ln();
-                    log_eps_bar = step_size.ln();
-                    adapt_count = 0;
-                    h_bar = 0.0;
+                // Keep the current step size — the dual averaging state
+                // already has a reasonable estimate and re-running
+                // find_initial_step_size causes a transient instability
+                // while dual averaging re-converges.
+                da_mu = (10.0 * step_size).ln();
+                log_eps_bar = step_size.ln();
+                adapt_count = 0;
+                h_bar = 0.0;
 
-                    // Advance window (doubling schedule)
-                    window_size *= 2;
-                    next_window_end = (iter + 1 + window_size).min(terminal_start);
+                // Advance window (doubling schedule)
+                window_size *= 2;
+                next_window_end = (iter + 1 + window_size).min(terminal_start);
 
-                    // Reset Welford accumulator for next window
-                    w_count = 0;
-                    w_mean.iter_mut().for_each(|x| *x = 0.0);
-                    w_m2.iter_mut().for_each(|x| *x = 0.0);
-                }
+                // Reset accumulator for next window
+                mass_acc = MassMatrixAccumulator::from_graph(graph);
+                w_count = 0;
             }
         }
 
@@ -265,6 +241,17 @@ pub fn run_chain(
         if !is_warmup {
             samples.push(current.q.clone());
         }
+
+        transitions.push(TransitionStats {
+            is_warmup,
+            accepted: !tree_stats.diverging,
+            accept_prob: accept_stat,
+            energy_error: tree_stats.energy_error,
+            divergent: tree_stats.diverging,
+            step_size: step_size_used,
+            num_leapfrog_steps: tree_stats.n_leapfrog,
+            tree_depth: Some(tree_stats.tree_depth),
+        });
     }
 
     let accept_rate = if total_iters_done > 0 {
@@ -278,25 +265,16 @@ pub fn run_chain(
         accept_rate,
         step_size,
         divergences: n_divergences,
-    }
-}
-
-/// Welford online algorithm for computing variance incrementally.
-/// Numerically stable alternative to the two-pass variance formula.
-fn welford_update(x: &[f64], count: &mut usize, mean: &mut [f64], m2: &mut [f64]) {
-    *count += 1;
-    let n = *count as f64;
-    for i in 0..x.len() {
-        let delta = x[i] - mean[i];
-        mean[i] += delta / n;
-        let delta2 = x[i] - mean[i];
-        m2[i] += delta * delta2;
+        transitions,
     }
 }
 
 struct TreeStats {
     diverging: bool,
     mean_accept_prob: f64,
+    energy_error: f64,
+    tree_depth: usize,
+    n_leapfrog: usize,
 }
 
 /// Build the NUTS tree iteratively by doubling depth.
@@ -310,18 +288,19 @@ fn build_tree_iterative(
     evaluator: &mut Evaluator,
     initial: &PhasePoint,
     eps: f64,
-    inv_mass: &[f64],
+    mass: &MassMatrix,
     h0: f64,
     max_depth: usize,
     dim: usize,
     rng: &mut ChaCha8Rng,
+    scratch: &mut [f64],
 ) -> (PhasePoint, TreeStats) {
     let mut left = initial.clone();
     let mut right = initial.clone();
     let mut proposal = initial.clone();
     let mut log_sum_weight = 0.0f64; // log(exp(-H(initial))) normalized
     let mut depth = 0;
-    let mut _n_leapfrog_total = 0;
+    let mut n_leapfrog_total = 0;
     let mut sum_accept_stat = 0.0f64;
     let mut n_accept_stat = 0usize;
     let mut diverging = false;
@@ -331,16 +310,12 @@ fn build_tree_iterative(
         let direction: f64 = if rng.gen::<bool>() { 1.0 } else { -1.0 };
 
         let subtree = if direction > 0.0 {
-            build_subtree(
-                graph, evaluator, &right, eps, inv_mass, h0, depth, dim, rng,
-            )
+            build_subtree(graph, evaluator, &right, eps, mass, h0, depth, dim, rng, scratch)
         } else {
-            build_subtree(
-                graph, evaluator, &left, -eps, inv_mass, h0, depth, dim, rng,
-            )
+            build_subtree(graph, evaluator, &left, -eps, mass, h0, depth, dim, rng, scratch)
         };
 
-        _n_leapfrog_total += subtree.n_leapfrog;
+        n_leapfrog_total += subtree.n_leapfrog;
 
         if subtree.diverging {
             diverging = true;
@@ -374,7 +349,7 @@ fn build_tree_iterative(
         }
 
         // Check U-turn across the full tree
-        if check_uturn(&left, &right, inv_mass) {
+        if check_uturn(&left, &right, mass, scratch) {
             break;
         }
 
@@ -386,12 +361,16 @@ fn build_tree_iterative(
     } else {
         0.0
     };
+    let energy_error = proposal.energy(mass, scratch) - h0;
 
     (
         proposal,
         TreeStats {
             diverging,
             mean_accept_prob: mean_accept,
+            energy_error,
+            tree_depth: depth,
+            n_leapfrog: n_leapfrog_total,
         },
     )
 }
@@ -405,16 +384,17 @@ fn build_subtree(
     evaluator: &mut Evaluator,
     point: &PhasePoint,
     eps: f64,
-    inv_mass: &[f64],
+    mass: &MassMatrix,
     h0: f64,
     depth: usize,
     dim: usize,
     rng: &mut ChaCha8Rng,
+    scratch: &mut [f64],
 ) -> TreeResult {
     if depth == 0 {
         // Base case: single leapfrog step
-        let next = leapfrog(graph, evaluator, point, eps, inv_mass, dim);
-        let h_new = next.energy(inv_mass);
+        let next = leapfrog(graph, evaluator, point, eps, mass, dim, scratch);
+        let h_new = next.energy(mass, scratch);
         let delta_h = h_new - h0;
         let diverging = delta_h > MAX_DELTA_H || !delta_h.is_finite();
         let log_weight = if diverging { f64::NEG_INFINITY } else { -delta_h };
@@ -432,7 +412,18 @@ fn build_subtree(
     }
 
     // Build first half
-    let inner = build_subtree(graph, evaluator, point, eps, inv_mass, h0, depth - 1, dim, rng);
+    let inner = build_subtree(
+        graph,
+        evaluator,
+        point,
+        eps,
+        mass,
+        h0,
+        depth - 1,
+        dim,
+        rng,
+        scratch,
+    );
     if inner.diverging || inner.turning {
         return inner;
     }
@@ -440,7 +431,16 @@ fn build_subtree(
     // Build second half from the appropriate endpoint
     let start_point = if eps > 0.0 { &inner.right } else { &inner.left };
     let outer = build_subtree(
-        graph, evaluator, start_point, eps, inv_mass, h0, depth - 1, dim, rng,
+        graph,
+        evaluator,
+        start_point,
+        eps,
+        mass,
+        h0,
+        depth - 1,
+        dim,
+        rng,
+        scratch,
     );
 
     if outer.diverging {
@@ -473,7 +473,7 @@ fn build_subtree(
     };
 
     // Check U-turn on the merged subtree
-    let turning = outer.turning || check_uturn(&left, &right, inv_mass);
+    let turning = outer.turning || check_uturn(&left, &right, mass, scratch);
 
     TreeResult {
         left,
@@ -493,8 +493,9 @@ fn leapfrog(
     evaluator: &mut Evaluator,
     point: &PhasePoint,
     eps: f64,
-    inv_mass: &[f64],
+    mass: &MassMatrix,
     dim: usize,
+    scratch: &mut [f64],
 ) -> PhasePoint {
     let mut p_new = vec![0.0; dim];
     let mut q_new = vec![0.0; dim];
@@ -504,8 +505,9 @@ fn leapfrog(
         p_new[i] = point.p[i] + 0.5 * eps * point.grad[i];
     }
     // Full step position
+    mass.velocity_into(&p_new, &mut q_new, scratch);
     for i in 0..dim {
-        q_new[i] = point.q[i] + eps * inv_mass[i] * p_new[i];
+        q_new[i] = point.q[i] + eps * q_new[i];
     }
     // Evaluate gradient at new position
     evaluator.compute(graph, &q_new);
@@ -529,15 +531,13 @@ fn leapfrog(
 ///
 ///   (q_right - q_left) · (M⁻¹ p_left) < 0  OR
 ///   (q_right - q_left) · (M⁻¹ p_right) < 0
-fn check_uturn(left: &PhasePoint, right: &PhasePoint, inv_mass: &[f64]) -> bool {
-    let mut dot_left = 0.0f64;
-    let mut dot_right = 0.0f64;
-    for i in 0..left.q.len() {
-        let dq = right.q[i] - left.q[i];
-        dot_left += dq * (inv_mass[i] * left.p[i]);
-        dot_right += dq * (inv_mass[i] * right.p[i]);
-    }
-    dot_left < 0.0 || dot_right < 0.0
+fn check_uturn(
+    left: &PhasePoint,
+    right: &PhasePoint,
+    mass: &MassMatrix,
+    scratch: &mut [f64],
+) -> bool {
+    mass.uturn(&left.q, &left.p, &right.q, &right.p, scratch)
 }
 
 fn log_sum_exp(a: f64, b: f64) -> f64 {
@@ -553,24 +553,16 @@ fn find_initial_step_size(
     graph: &Graph,
     evaluator: &mut Evaluator,
     q: &[f64],
-    inv_mass_diag: &[f64],
-    mass_sqrt: &[f64],
-    dim: usize,
+    mass: &MassMatrix,
+    scratch: &mut [f64],
     rng: &mut ChaCha8Rng,
 ) -> f64 {
     evaluator.compute(graph, q);
     let logp0 = evaluator.total_logp;
     let grad0: Vec<f64> = evaluator.grad.clone();
-
-    let p0: Vec<f64> = (0..dim)
-        .map(|i| {
-            let z: f64 = StandardNormal.sample(rng);
-            z * mass_sqrt[i]
-        })
-        .collect();
-    let _ke0: f64 = (0..dim)
-        .map(|i| 0.5 * p0[i] * p0[i] * inv_mass_diag[i])
-        .sum();
+    let dim = q.len();
+    let mut p0 = vec![0.0; dim];
+    mass.sample_momentum_into(rng, &mut p0, scratch);
 
     let mut eps = 1.0;
 
@@ -581,9 +573,9 @@ fn find_initial_step_size(
         logp: logp0,
     };
 
-    let test = leapfrog(graph, evaluator, &initial_point, eps, inv_mass_diag, dim);
-    let h0 = initial_point.energy(inv_mass_diag);
-    let h1 = test.energy(inv_mass_diag);
+    let test = leapfrog(graph, evaluator, &initial_point, eps, mass, dim, scratch);
+    let h0 = initial_point.energy(mass, scratch);
+    let h1 = test.energy(mass, scratch);
     let log_ratio = h0 - h1;
 
     let direction = if log_ratio > (-0.5_f64).ln() {
@@ -593,8 +585,8 @@ fn find_initial_step_size(
     };
 
     for _ in 0..50 {
-        let t = leapfrog(graph, evaluator, &initial_point, eps, inv_mass_diag, dim);
-        let lr = h0 - t.energy(inv_mass_diag);
+        let t = leapfrog(graph, evaluator, &initial_point, eps, mass, dim, scratch);
+        let lr = h0 - t.energy(mass, scratch);
         if !lr.is_finite() {
             eps *= 0.5;
             break;

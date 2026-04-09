@@ -29,6 +29,7 @@ Demonstrates the full Bayesian workflow:
 
 import numpy as np
 import rustmc as rmc
+from hierarchical_templates import build_centered_normal_partial_pooling
 
 # ── 1. Simulate data ─────────────────────────────────────────────────────────
 
@@ -56,27 +57,14 @@ print()
 # ── 2. Build the hierarchical model ──────────────────────────────────────────
 
 builder = rmc.ModelBuilder(data=data)
-
-# Hyperpriors (global-level parameters)
-mu_global   = builder.normal_prior("mu_global",   mu=0.0, sigma=10.0)
-sigma_group = builder.half_normal_prior("sigma_group", sigma=5.0)
-
-# Group-level parameters: each mu_j ~ Normal(mu_global, sigma_group)
-# mu_global and sigma_group are ParamRef objects — rustmc resolves them
-# to graph nodes at sample time so gradients flow up to the hyperpriors.
-mu_j = [
-    builder.normal_prior(f"mu_{j}", mu=mu_global, sigma=sigma_group)
-    for j in range(J)
-]
-
-# One likelihood per group
-for j in range(J):
-    builder.normal_likelihood(
-        f"obs_{j}",
-        mu_expr=mu_j[j],
-        sigma=sigma_obs,
-        observed_key=f"y_{j}",
-    )
+template = build_centered_normal_partial_pooling(
+    builder,
+    observed_keys=[f"y_{j}" for j in range(J)],
+    sigma_obs=sigma_obs,
+)
+mu_global = template.mu_global
+sigma_group = template.sigma_group
+mu_j = template.group_params
 
 model = builder.build()
 
