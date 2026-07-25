@@ -2,6 +2,11 @@
 
 This document defines the validation stack rustmc needs before it can be treated as a production Bayesian engine.
 
+> **Status:** workstreams 1, 2 and 6 are now implemented. See
+> [`VALIDATION_RESULTS.md`](VALIDATION_RESULTS.md) for the measured results,
+> the tolerance methodology, the defects the suite uncovered, and what is still
+> uncovered. Workstreams 3 (benchmark regression) and 5 (packaging) remain open.
+
 ## What Exists Today
 
 - Core autodiff unit tests in `rust_core/src/autodiff.rs`
@@ -12,18 +17,34 @@ This document defines the validation stack rustmc needs before it can be treated
 
 ## What Is Missing
 
-- Statistical recovery tests for each supported model family
-- Calibration tests for prior predictive and posterior predictive behavior
+- ~~Statistical recovery tests for each supported model family~~ — done
+  (`rust_core/tests/{analytic_posterior,prior_recovery,likelihood_recovery,sbc}.rs`)
+- ~~Calibration tests for prior predictive and posterior predictive behavior~~ — done
+  (`rust_core/tests/sbc.rs`, `tests/test_statistical_predictive.py`)
 - Benchmark suites that track speed, ESS/s, divergences, and memory use over time
-- Python integration tests that exercise the actual wheel, not just Rust internals
+- ~~Python integration tests that exercise the actual wheel, not just Rust internals~~ —
+  partially done (`tests/test_statistical_*.py`); packaging-level tests still missing
 - Packaging and release validation for wheels, version sync, and import compatibility
-- Failure-mode tests for invalid data, incompatible shapes, thread configuration, and divergence-heavy models
+- ~~Failure-mode tests for invalid data, incompatible shapes, thread configuration,
+  and divergence-heavy models~~ — done (`rust_core/tests/numerical_stability.rs`,
+  `tests/test_statistical_engine_bugs.py`)
+- Statistical validation of `batch_sample` and of `compiled_model` artifact round-trips
 
 ## Priority Workstreams
 
-### 1. Statistical Recovery
+### 1. Statistical Recovery — IMPLEMENTED
 
 Goal: prove the sampler recovers known parameters on synthetic data.
+
+Implemented as analytic-posterior comparison (stronger than recovery: the
+posterior mean *and* sd are asserted against exact values), plus recovery for
+the families with no conjugate reference, plus simulation-based calibration.
+Results and tolerance derivations: `VALIDATION_RESULTS.md`.
+
+Note on acceptance criteria: "divergences remain bounded" cannot be evaluated
+against the number the engine reports, because it includes warmup divergences
+(DEFECT 3 in `VALIDATION_RESULTS.md`). The suite computes post-warmup
+divergences itself from `SampleResult::transitions`.
 
 Start with:
 
@@ -39,7 +60,7 @@ Acceptance criteria:
 - Divergences remain bounded on the reference problems
 - R-hat and ESS stay within explicit thresholds
 
-### 2. Calibration
+### 2. Calibration — IMPLEMENTED
 
 Goal: prove the posterior and predictive outputs are well-calibrated.
 
@@ -118,7 +139,7 @@ Acceptance criteria:
 - Version mismatches fail the release pipeline
 - Packaging artifacts are reproducible
 
-### 6. Failure Modes
+### 6. Failure Modes — IMPLEMENTED
 
 Goal: make bad inputs and unstable sampling behavior obvious.
 
@@ -138,9 +159,12 @@ Acceptance criteria:
 
 ## Recommended File Additions
 
-- `tests/` for integration and regression tests once Python-side test execution is wired up
+- ~~`tests/` for integration and regression tests once Python-side test execution is wired up~~ — added
 - `benchmarks/` or `scripts/` for repeatable benchmark entrypoints
 - `validation/` or `tests/fixtures/` for seeded datasets and golden outputs
+  (not needed so far: every dataset in the suite is generated from a seeded
+  deterministic RNG defined in `rust_core/tests/common/mod.rs`, so there are no
+  fixture files to drift)
 
 ## Current Code References
 
