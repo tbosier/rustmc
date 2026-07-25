@@ -19,6 +19,64 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test --workspace
 
+  python-source-install:
+    name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # Add macos-latest / windows-latest here once someone has verified
+        # the steps below on those platforms (see CONTRIBUTING.md).
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install maturin numpy pytest
+      - name: maturin develop (editable source install)
+        run: maturin develop --release --manifest-path python_bindings/Cargo.toml
+      - name: Import smoke test + end-to-end sampling test
+        run: python -m pytest tests/test_smoke.py -q
+
+  python-wheel-install:
+    name: Python wheel install (${{ matrix.python-version }}, ${{ matrix.os }})
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        # Add macos-latest / windows-latest here once someone has verified
+        # the steps below on those platforms (see CONTRIBUTING.md).
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install maturin
+      - name: Build wheel
+        run: maturin build --release --manifest-path python_bindings/Cargo.toml --out dist
+      - name: Create clean environment outside the checkout
+        run: python -m venv "${{ runner.temp }}/wheel-env"
+      - name: Install wheel + numpy into the clean environment
+        shell: bash
+        run: |
+          WHEEL=$(ls dist/rustmc-*.whl | head -1)
+          "${{ runner.temp }}/wheel-env/bin/pip" install "$WHEEL" numpy
+      - name: Copy verification script outside the checkout
+        run: cp scripts/verify_wheel_install.py "${{ runner.temp }}/verify_wheel_install.py"
+      - name: Import smoke test + end-to-end sampling test (installed wheel only)
+        working-directory: ${{ runner.temp }}
+        env:
+          RUSTMC_REQUIRE_SITE_PACKAGES: "1"
+        run: "${{ runner.temp }}/wheel-env/bin/python ${{ runner.temp }}/verify_wheel_install.py"
+
   version-check:
     name: Version matches tag
     needs: test

@@ -30,6 +30,12 @@ classifiers = [
 
 [project.optional-dependencies]
 viz = ["arviz", "matplotlib"]
+# NOTE: deliberately not using a [dependency-groups] (PEP 735) table here --
+# `maturin develop` auto-installs dependency groups via `pip install
+# --group`, which requires pip >=25.1. Older pip (as ships with several
+# actions/setup-python versions and plain `python -m venv`) errors out with
+# "no such option: --group". Keep dev/test deps as a normal extra instead.
+test = ["pytest>=7", "maturin>=1.0,<2.0", "numpy"]
 
 [project.urls]
 Repository = "https://github.com/tbosier/rustmc"
@@ -38,3 +44,15 @@ Repository = "https://github.com/tbosier/rustmc"
 manifest-path = "python_bindings/Cargo.toml"
 features = ["pyo3/extension-module"]
 include = ["LICENSE"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# `network` tests build a wheel with maturin and create a fresh venv; they
+# need network access and are deselected by default. Run them explicitly
+# with `pytest -m network` (see tests/test_packaging.py).
+addopts = "-m 'not network'"
+markers = [
+    "network: test builds a wheel and/or hits the network (deselected by default)",
+    "slow: test is slower than the rest of the suite",
+]
