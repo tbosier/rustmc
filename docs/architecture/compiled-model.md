@@ -79,30 +79,63 @@ variants must respect is: **reference data by slot index, never inline it.**
 
 ### 1.3 Measurements — what the rebuild actually costs
 
-Run with the harness in `docs/architecture/scratch/rebind_cost_bench.rs`
-(release build, this machine). "build" = `Graph` construction mirroring
-`compile_python_model`; "clone" = the extra `compiled.graph.clone()` that
-`batch_sample` performs.
+Produced in one run by `docs/architecture/scratch/rebind_cost_bench.rs` (release
+build, AMD Ryzen 9 5900X, 24 rayon threads). Copy it to
+`rust_core/examples/bench.rs` and `cargo run --release -p rustmc_core --example
+bench` to reproduce every figure below; no constants need editing.
 
-| shape | build/dataset | clone/dataset | one NUTS fit | build+clone as % of fit |
-|---|---|---|---|---|
-| n=2000, k=8, 200+200 draws | 67.6 µs | 66.7 µs | 64.7 ms | 0.21 % |
-| n=60, k=8, 200+200 draws | 3.2 µs | 3.2 µs | 2.85 ms | 0.22 % |
-| n=60, k=200, 50+50 draws | 61.9 µs | 54.5 µs | 155.7 ms | 0.07 % |
+- **build** — `Graph` construction mirroring `compile_python_model`. Serial.
+- **clone** — the extra `compiled.graph.clone()` at `lib.rs:2300-2303`. Serial.
+- **compute** — one `Evaluator::compute` (logp + gradient). The forward-pass
+  unit of work, and what prediction costs.
+- **fit1** — one dataset through `batch_sample`. Effectively single-threaded, so
+  it is directly comparable to the serial setup costs and is insensitive to
+  machine load. **This is the honest denominator.**
+- **fitN** — the whole batch through `batch_sample`, parallel over 24 threads.
+  What a user's wall clock looks like.
 
-`Evaluator::new` is 0.15–0.9 µs and is not a factor.
+| shape | build | clone | compute | fit1 | fitN/dataset | setup vs fit1 | setup vs fitN | rebuild ÷ compute |
+|---|---|---|---|---|---|---|---|---|
+| **wide-n** n=2000 k=8, 400 draws | 71.6 µs | 66.3 µs | 40.2 µs | 668 ms | 72.6 ms | **0.021 %** | 0.190 % | 3.43× |
+| **small** n=60 k=8, 400 draws | 5.3 µs | 6.5 µs | 6.9 µs | 36.4 ms | 3.38 ms | **0.032 %** | 0.349 % | 1.71× |
+| **wide-k** n=60 k=200, 100 draws | 104.8 µs | 99.3 µs | 17.9 µs | 2.55 s | 191.6 ms | **0.008 %** | 0.107 % | 11.41× |
+
+`Evaluator::new` is 0.45–0.74 µs and is not a factor. Measured parallel speedup
+is only 9–13× on 24 threads (memory-bandwidth bound), so `fit1` and
+`fitN/dataset` differ by an order of magnitude — which is exactly why the
+denominator has to be stated explicitly rather than left implicit.
+
+**Measurement caveats, stated because they cut against precision:**
+
+- The wide-n and small rows were taken on a quiet machine (load average 0.28 at
+  sweep start). By the time the sweep reached wide-k other worktrees had resumed
+  and load was ≈ 25, so wide-k's absolute times are inflated — its `build` came
+  out 104.8 µs here versus 61.8 µs on a quiet box. Ratios are much more stable
+  than absolutes: wide-k's rebuild÷compute is 11.41× here and 12.20× on the
+  contended sweep.
+- Contention inflates `fitN`, which makes the setup-overhead fraction look
+  *smaller*. The "setup vs fitN" column is therefore biased **in favour** of
+  this design's conclusion. The `fit1` column is single-threaded and is not, and
+  it is the one quoted as the headline.
+- A separate fully-contended sweep of all three shapes gave 0.472 % / 0.334 % /
+  0.062 % on "setup vs fitN", versus 0.190 % / 0.349 % / 0.107 % here. The
+  conclusion is stable across a ~3× swing in machine load, which is stronger
+  evidence than a single clean run would be.
 
 **Honest conclusion: rebuild-per-dataset is not a meaningful CPU cost for full
-NUTS fits.** Any design pitch that leads with "10,000 graph constructions are
-slow" is wrong, and the benchmark plan in §12 must not claim a win that isn't
-there. The three costs that *are* real:
+NUTS fits.** Setup is **0.008–0.032 %** of a serial fit and 0.11–0.35 % of
+parallel batch wall clock. Any design pitch that leads with "10,000 graph
+constructions are slow" is wrong, and the benchmark plan in §13 must not claim a
+win that isn't there. The three costs that *are* real:
 
-- **Forward-pass rebinding (prediction) is dominated by rebuild.** One
-  `Evaluator::compute` on the n=60, k=200 model is **8.7 µs**; rebuilding and
-  cloning the graph to get there is **116 µs — 13× the work being done.** Task 14
-  (prediction on new data) and `sample_prior_predictive` are pure
-  forward-pass workloads. Under the current architecture they are ~93 % overhead.
-  This is the sharpest quantitative argument for the split.
+- **Forward-pass rebinding (prediction) is dominated by rebuild.** Rebuild+clone
+  costs **1.7×–11.4× a single `Evaluator::compute`**, depending on shape — 11.4×
+  on wide-k (many parameters, few rows), 1.7× on small. Task 14 (prediction on
+  new data) and `sample_prior_predictive` are pure forward-pass workloads, so
+  under the current architecture **63–92 % of their runtime is graph
+  rebuilding**. This is the sharpest quantitative argument for the split, but
+  note it is a *range across shapes*, not a single multiple — an earlier draft
+  of this document generalised the wide-k figure to all shapes, which was wrong.
 
 - **Memory residency is a hard wall.** 10,000 datasets at n=2000, k=8 is 1.4 GiB
   of payload. Today that is held ~3× (Python NumPy + `data_map` + `Graph`,
@@ -156,7 +189,11 @@ Three types replace today's one.
 
 **The boundary rule, stated once:** *the compiled model holds everything that is
 the same for every dataset; the binding holds everything that is not; the
-`Op` payload is the join key.* Slot index `i` in `Op::Data(i)` is the same `i`
+`Op` payload is the join key.*
+
+> **Assumes OQ-3 = structural.** Placing `DataSchema` in the left-hand box is
+> the single assumption this diagram rests on. See §14 OQ-3 for the
+> recommendation and for what moves if it is decided the other way. Slot index `i` in `Op::Data(i)` is the same `i`
 that indexes `DataBinding::vectors`. `DataSchema` is the only thing that knows
 the user-facing name of slot `i`.
 
@@ -429,14 +466,21 @@ impl Evaluator {
     /// grad, param_node_ids, vec_slot_count. Depends only on the structure.
     pub fn for_structure(g: &Graph) -> Self;
 
-    /// Point this evaluator at a dataset. Grows vec_buf/adj_vec_buf if
-    /// `d.n_obs` exceeds current capacity; never shrinks. O(1) when the
-    /// buffers already fit, which after the first few datasets is always.
+    /// Point this evaluator at a dataset. See §4.3.3 for the retention policy.
+    /// O(1) when the buffers already fit, which after the first dataset is
+    /// almost always.
     pub fn rebind(&mut self, d: &DataBinding) -> Result<(), ShapeError> {
         let need = self.vec_slot_count * d.n_obs;
         if need > self.vec_buf.len() {
             self.vec_buf.resize(need, 0.0);
             self.adj_vec_buf.resize(need, 0.0);
+        } else if self.vec_buf.len() > RETAIN_LIMIT && need < self.vec_buf.len() / 2 {
+            // Released a large dataset; drop back to the retention cap.
+            let keep = need.max(RETAIN_LIMIT);
+            self.vec_buf.truncate(keep);
+            self.vec_buf.shrink_to_fit();
+            self.adj_vec_buf.truncate(keep);
+            self.adj_vec_buf.shrink_to_fit();
         }
         self.vec_len = d.n_obs;
         Ok(())
@@ -453,16 +497,69 @@ Two rules the implementer must not get wrong:
    `NodeKind::ComputedVec(byte_offset)` as they are today
    (`autodiff.rs:61-63`). Change `NodeKind::ComputedVec(usize)` to hold the
    **slot ordinal**, and compute `slot * vec_len + i` at access time. That is one
-   extra `imul` per vector element access. Measure it (§12, bench B4); if it
+   extra `imul` per vector element access. Measure it (§13, bench B4); if it
    regresses single-fit throughput by more than 2 %, fall back to recomputing
    the offset table inside `rebind` (an O(n_nodes) pass, ~ns, still amortised
    away). *Prefer the offset table if in doubt — it is strictly safer for
    throughput and `rebind` is not hot.*
 
-2. **Buffers grow but never shrink.** A worker that sees one 10⁶-row dataset
-   holds that buffer for the rest of the batch. Bound it: if
-   `need < self.vec_buf.len() / 4`, shrink to `need`. This caps waste at 4× and
-   costs one realloc on a large drop.
+2. **Buffer retention is bounded by an explicit cap, not by "never shrink".**
+   See §4.3.3 — the naive grow-only policy has an unacceptable worst case.
+
+#### 4.3.3 Buffer retention bound (raised in review)
+
+The concern: a rayon worker reusing one `Evaluator` via `map_init` ratchets its
+buffers up to the largest `n_obs` it happens to be handed, and a grow-only
+policy holds that for the rest of the batch. Worst case ≈ `n_workers × max_n`.
+
+**It is bounded — but the naive bound is not acceptable, so the policy needs to
+be explicit.** The important property does hold: buffer use is independent of
+the *number* of datasets. It does not grow with N, so a 10k-dataset batch costs
+no more than a 100-dataset batch of the same shapes. What it scales with is
+`n_workers × max_n_obs`:
+
+```
+bytes = n_workers × vec_slot_count × n_obs × 2 (fwd+adj) × 8
+```
+
+On this machine (24 workers) with 6 vector slots:
+
+| max n_obs | retained |
+|---|---|
+| 2,000 | 4.6 MB — fine |
+| 100,000 | 230 MB — borderline |
+| 1,000,000 | 2.3 GB — **not acceptable** |
+
+So one 10⁶-row outlier in an otherwise small batch can leave 2.3 GB pinned
+across workers for the remainder of the run. That is a real defect in the
+grow-only policy and it is worth fixing now, not after S2.
+
+**The distinction that resolves it: transient use is irreducible, retention is
+a policy choice.** A worker actively fitting a 10⁶-row dataset *must* have
+buffers that size — that is not optimisable. The only question is what it keeps
+between datasets. So:
+
+```rust
+/// Max f64s retained per buffer between datasets. Above this, buffers are
+/// sized to the dataset and released when a smaller one arrives.
+/// 1 << 17 = 131,072 f64 = 1 MiB per buffer.
+const RETAIN_LIMIT: usize = 1 << 17;
+```
+
+with the hysteresis in `rebind` above (shrink only when the next dataset needs
+less than half, so alternating large/small shapes cannot thrash the allocator).
+Steady-state retention becomes `n_workers × RETAIN_LIMIT × 2 × 8` = **50 MB at
+24 workers**, regardless of `max_n_obs` and regardless of N.
+
+Rejected alternative: presizing every worker to the batch's `max_n_obs` up
+front (all bindings are known before `sample_batch` starts, so it is available).
+It removes reallocation entirely, but it makes *every* worker pay the outlier's
+size *always*, which is strictly worse than grow-on-demand — under which only
+the workers that actually touch the big dataset ever allocate for it.
+
+Benchmark **B7** is extended to assert the bound: after a batch containing one
+10⁶-row dataset among 999 small ones, retained buffer bytes per worker must be
+≤ `RETAIN_LIMIT × 2 × 8`.
 
 ### 4.4 Threading model for `sample_batch`
 
@@ -491,6 +588,10 @@ at `sampler.rs:358` (a vestigial second data channel) is deleted.
 ---
 
 ## 5. Data binding lifecycle
+
+> **Assumes OQ-3 = structural.** If dimension names become per-binding, most of
+> `BindError` below is unenforceable — there is no fixed contract to validate a
+> dataset against. See §14 OQ-3.
 
 ```rust
 /// Whatever the caller hands us, before validation.
@@ -524,12 +625,14 @@ deterministic order. Ordering is fixed so error messages are reproducible:
    reported as `expected_from` in every subsequent mismatch, so the message
    reads *"'x' has length 200, expected 150 (from 'y')"*
 6. matrix `n_cols` vs. the declared vector-param span
-7. non-finite scan (NaN/±inf) — **on by default**, `O(n)`, ~0.2 ns/element;
-   at 10,000 × 16,000 elements that is ~30 ms for the whole batch, which is
-   noise against 10,000 fits. Opt out with `check_finite=False`.
+7. non-finite scan (NaN/±inf) — **on by default**, `O(n)`. *Unmeasured
+   estimate:* a linear `is_finite` scan should run around 0.2 ns/element, so
+   10,000 × 16,000 elements ≈ 30 ms for a whole batch — noise against 10,000
+   fits. Confirm with bench B11 before defaulting it on; opt out with
+   `check_finite=False`.
 
 Bind-time cost with shared inputs is ~10 pointer copies. Binding is therefore
-cheap enough to do lazily per work item, which is what makes streaming (§13,
+cheap enough to do lazily per work item, which is what makes streaming (§14,
 R4) possible later.
 
 **Extra keys are an error, not a warning.** A typo'd key that is silently
@@ -725,9 +828,12 @@ pub struct DataSchema { /* ... */ pub dims: Vec<DimDecl> }
 `dim_sizes: HashMap<String, usize>` with `n_obs()` kept as an accessor for the
 `"obs"` dim. Coordinate *labels* (`coords: HashMap<String, Vec<String>>`) attach
 to `DataBinding`, not the structure — labels are per-dataset (store 1 has
-different SKUs than store 2). **Assumption: dimension *names and count* are
-structural, dimension *sizes and labels* are per-binding.** If Task 6 needs
-per-dataset dimension *names*, this needs revisiting; flag as OQ-3.
+different SKUs than store 2).
+
+> **Assumes OQ-3 = structural**: dimension *names and count* are compile-time,
+> dimension *sizes and labels* are per-binding. Under the alternative this
+> extension point is redesigned rather than filled in. §14 OQ-3 carries the
+> recommendation, the argument, and the full blast radius.
 
 ### 9.2 Task 7 — richer expression graph
 
@@ -758,7 +864,7 @@ and `DataBinding.indices: Vec<Arc<[u32]>>`. `bind()` validates
 **`Fixed` works today; `FromBinding` does not.** A per-dataset group count means
 a per-dataset parameter-vector length, which breaks the assumption that
 `param_count`, `param_names`, and the mass matrix are structural. That is a real
-and separate piece of work (§13, OQ-4). **Recommendation: Task 8 ships
+and separate piece of work (§14, OQ-4). **Recommendation: Task 8 ships
 `Fixed` only** — "3,000 stores, each with the same 12 product categories" — and
 `FromBinding` is a follow-on. This design does not preclude it; it just does not
 solve it.
@@ -828,9 +934,12 @@ optional in that mode. This is the only place the schema is partially bound, and
 it is why `SlotKind::Observation` is a distinct kind rather than just another
 vector.
 
-Given §1.3 (one forward pass = 8.7 µs, one rebuild = 116 µs), this is where the
-design pays off most visibly: prediction on 10,000 new datasets goes from
-~93 % overhead to ~0 %.
+Given §1.3 (rebuild+clone costs 1.7×–11.4× a single `Evaluator::compute`,
+depending on shape), this is where the design pays off most visibly: prediction
+on 10,000 new datasets goes from 63–92 % rebuild overhead to ~0 %. The win is
+largest for many-parameter, few-row models and smallest for small ones — B5
+asserts the shape-independent version of the claim (per-dataset cost within
+1.2× of `compute` alone).
 
 `sample_prior_predictive` (`lib.rs:2344`) is rewritten on the same path and
 stops calling `compile_python_model`.
@@ -1030,9 +1139,11 @@ claim a fit-throughput win.**
 | **B2** | Peak RSS for the same, measured at the moment sampling starts | ≈ 3–4× payload | ≤ **1.1× payload**; with `shared={"X":X}` ≤ **payload/k + ε** |
 | **B3** | Shared design matrix, 10k datasets: resident bytes for X | 10,000 copies | **1 copy** (assert via pointer identity, not just RSS) |
 | **B4** | **Single-fit throughput guard.** ns/leapfrog for one n=2000 k=8 NUTS fit | current | **within ±2 %.** A regression here fails the PR — this is the load-bearing check on §4.3 |
-| **B5** | Prediction rebind: 10k forward passes over new data | rebuild+clone+compute = 125 µs/dataset | ≤ **12 µs/dataset** (≥ 10×) |
+| **B5** | Prediction rebind: 10k forward passes over new data | `build + clone + compute` per dataset | per-dataset cost **within 1.2× of `compute` alone**, i.e. the setup term is gone. Shape-independent restatement of §1.3's 1.7–11.4× — do not hard-code a single speedup multiple, it varies by shape |
 | **B6** | End-to-end `sample_batch` wall clock, 1k datasets, 1 chain, 500 draws | current `batch_sample` | **within ±3 %** — parity is the goal, not a win |
 | **B7** | Evaluator reuse: allocations per dataset in a batch (via a counting allocator) | 1 `Evaluator` per chain | **0** after the first dataset per worker |
+| **B7b** | Buffer retention bound (§4.3.3): 999 small datasets + one 10⁶-row outlier | unbounded ratchet | retained bytes/worker ≤ `RETAIN_LIMIT × 2 × 8`; no realloc thrash on alternating shapes |
+| **B11** | `check_finite` scan cost per element (§5 step 7 is currently an unmeasured estimate) | n/a | confirm ≲ 0.5 ns/element, else default it off |
 
 Correctness benchmarks — these gate the PR as hard as the timings:
 
@@ -1087,10 +1198,61 @@ in 0.9. *Recommendation: preserve, and accept the duplication — but this is a
 product call, not an engineering one.*
 
 **OQ-3 — Are dimension names structural or per-binding?**
-§9.1 assumes names+count are structural, sizes+labels per-binding. If Task 6
-needs per-dataset dimension *names*, `DataSchema` must move partly into
-`DataBinding` and §2's boundary shifts. **Whoever owns Task 6 should confirm
-this before S1 lands.**
+
+**Recommendation: structural.** Dimension *names and count* are fixed at compile
+time; dimension *sizes and coordinate labels* are per-binding. Stated as the
+options:
+
+- **(A) Structural** — `DataSchema` lives in the compiled model. A dataset may
+  size a dim however it likes and label it however it likes, but it may not
+  introduce or rename one.
+- **(B) Per-binding** — each dataset declares its own dims; `DataSchema` moves
+  (at least partly) into `DataBinding`.
+
+The argument for A is that B is not merely costlier, it is **incoherent with the
+premise of the task.** Compile-once means the model has a fixed input contract.
+Under B: `DataSchema::required_keys()` is undefined without a dataset in hand;
+`bind()` has nothing to validate against, so §5's entire error taxonomy
+collapses to "whatever this dict happens to contain"; the serialised artifact
+cannot declare its own interface, so `CompiledModel.from_json(...).schema` — the
+thing that makes the API self-documenting and makes a saved model inspectable —
+cannot exist. That is the same entanglement Task 5 exists to remove, reintroduced
+one level up: the model would once again be meaningless without its data, just
+at the metadata layer rather than the payload layer.
+
+And B is not needed for the variation people actually want. "3,000 stores, each
+with a different-length SKU list and different SKU labels" is served entirely by
+A: the dim *name* `"sku"` is shared and structural; its size and labels vary per
+store. The only case that genuinely forces B is a model whose dimensional
+structure differs per dataset — dataset 1 has a `"region"` dim, dataset 2 does
+not. But that is a *different model*, and the honest representation is a
+different `CompiledModel`. Supporting it inside one compiled model means the
+graph must differ per dataset, which is not compile-once/bind-many; it is
+compile-many wearing a batch API.
+
+**Asymmetry of the mistake.** Choosing A and later needing B is recoverable: add
+a per-binding dim override and demote `required_keys()` to a lower bound —
+ugly, but local. Choosing B and later finding A was sufficient means the
+compile-time input contract was given up permanently and cannot be recovered,
+because nothing in the artifact ever recorded it. A is the cheaper direction to
+be wrong in.
+
+**Blast radius if you choose B.** Sections that assume A, now marked inline with
+*"Assumes OQ-3 = structural"*:
+
+| § | what changes under B |
+|---|---|
+| §2 | the boundary rule itself — schema moves to the right-hand box |
+| §2.1 | `Graph.schema` field is removed |
+| §2.2 | `DataSchema` / `DataSlot.dim` move into `DataBinding` |
+| §3 | artifact loses `schema`; the v1→v2 rationale weakens |
+| §5 | bind lifecycle and most of `BindError` become unenforceable |
+| §9.1 | Task 6 extension point is redesigned rather than filled in |
+| §11 | `CompiledModel.schema` / `.describe()` disappear from the Python API |
+
+That is the spine of the document, which is why it is worth deciding before S1
+rather than during S4. It does **not** affect §4 (the Evaluator hot path) or §6–8
+(seeding, identity, partial failure), which are orthogonal.
 
 **OQ-4 — Does Task 8 need per-dataset group counts?**
 §9.3: `Fixed` (same group count for every dataset) works within this design;

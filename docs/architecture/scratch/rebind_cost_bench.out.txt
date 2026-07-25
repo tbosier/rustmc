@@ -1,0 +1,49 @@
+rayon threads = 24
+
+=== wide-n : n_obs=2000 n_cols=8 datasets=500 draws=200 warmup=200 ===
+payload/dataset  0.137 MiB   (total 68.7 MiB)
+phase              total      per-dataset
+build        35.777499ms         71.554µs
+clone        33.155093ms          66.31µs
+evalnew        226.025µs            452ns
+compute      20.085887ms         40.171µs
+fit1         667.89574ms      667.89574ms
+fitN        36.28530797s      72.570615ms
+--
+setup/dataset vs ONE serial fit  : 0.021 %   <-- headline
+setup total   vs parallel batch  : 0.190 %   (context; contention-sensitive)
+rebuild vs one compute()         : 3.43 x
+parallel speedup (fit1*n/fitN)   : 9.2 x
+(checksums: sink=4000 acc=-1008421.414 draws=100000)
+
+=== small : n_obs=60 n_cols=8 datasets=5000 draws=200 warmup=200 ===
+payload/dataset  0.004 MiB   (total 20.6 MiB)
+phase              total      per-dataset
+build        26.439017ms          5.287µs
+clone        32.622571ms          6.524µs
+evalnew       3.130384ms            626ns
+compute      34.537254ms          6.907µs
+fit1         36.437003ms      36.437003ms
+fitN       16.921046109s       3.384209ms
+--
+setup/dataset vs ONE serial fit  : 0.032 %   <-- headline
+setup total   vs parallel batch  : 0.349 %   (context; contention-sensitive)
+rebuild vs one compute()         : 1.71 x
+parallel speedup (fit1*n/fitN)   : 10.8 x
+(checksums: sink=40000 acc=-338381.126 draws=1000000)
+
+=== wide-k : n_obs=60 n_cols=200 datasets=2000 draws=50 warmup=50 ===
+payload/dataset  0.092 MiB   (total 184.0 MiB)
+phase              total      per-dataset
+build       209.602489ms        104.801µs
+clone       198.662872ms         99.331µs
+evalnew       1.484044ms            742ns
+compute      35.774064ms         17.887µs
+fit1        2.547732459s     2.547732459s
+fitN      383.160375761s     191.580187ms
+--
+setup/dataset vs ONE serial fit  : 0.008 %   <-- headline
+setup total   vs parallel batch  : 0.107 %   (context; contention-sensitive)
+rebuild vs one compute()         : 11.41 x
+parallel speedup (fit1*n/fitN)   : 13.3 x
+(checksums: sink=400000 acc=-5972279.399 draws=100000)
