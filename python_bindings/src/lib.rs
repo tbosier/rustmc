@@ -1,6 +1,7 @@
 use ndarray::{Array2, Array3};
 use numpy::{PyArrayMethods, PyUntypedArrayMethods};
 use numpy::{IntoPyArray, PyArray1, PyArray2};
+use pyo3::create_exception;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -14,8 +15,40 @@ use rustmc_core::distributions::{
     Uniform,
 };
 use rustmc_core::graph::{Graph, NodeId, ParamTransform};
+use rustmc_core::param_ref::{validate_param_references, ParamRefError, ParamReference};
 use rustmc_core::sampler::{self, SampleResult, SamplerConfig, SamplerType};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+create_exception!(
+    rustmc,
+    ParameterError,
+    PyValueError,
+    "Raised when a parameter reference in a model cannot be resolved.\n\n\
+     Subclasses ``ValueError`` for backwards compatibility."
+);
+
+/// Convert a core parameter-resolution failure into the Python exception.
+fn param_error(err: ParamRefError) -> PyErr {
+    ParameterError::new_err(err.to_string())
+}
+
+/// Monotonic id handed to each `ModelBuilder` so that a `ParamRef` produced by
+/// one model can never be silently consumed by another.
+static NEXT_MODEL_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_model_id() -> u64 {
+    NEXT_MODEL_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Error for a `ParamRef`/`Expr` that belongs to a different `ModelBuilder`.
+fn foreign_param_error(name: &str, context: &str) -> PyErr {
+    ParameterError::new_err(format!(
+        "parameter '{}' used in {} belongs to a different model. \
+         A ParamRef returned by one ModelBuilder cannot be used in another.",
+        name, context
+    ))
+}
 
 #[pyclass]
 #[derive(Debug, Clone)]
@@ -134,6 +167,8 @@ impl MuExpr {
 struct VectorParamRef {
     name: String,
     _n: usize,
+    /// Id of the `ModelBuilder` that created this reference.
+    owner: u64,
 }
 
 #[pymethods]
@@ -144,6 +179,55 @@ impl VectorParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
+        }
+    }
+}
+
+/// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
+fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
+    match (a, b) {
+        (Some(x), Some(y)) if x != y => Err(ParameterError::new_err(format!(
+            "expression mixes parameters from two different models \
+             (offending parameter: '{}'). Build the whole linear predictor \
+             from a single ModelBuilder.",
+            a_name
+        ))),
+        (Some(x), _) => Ok(Some(x)),
+        (None, other) => Ok(other),
+    }
+}
+
+/// First parameter name appearing in an expression, for error messages.
+fn first_param_name(expr: &MuExpr) -> String {
+    match expr {
+        MuExpr::Const(_) => "<constant>".to_string(),
+        MuExpr::Param(name) => name.clone(),
+        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
+            param_name.clone()
+        }
+        MuExpr::Add(a, b) => {
+            let left = first_param_name(a);
+            if left == "<constant>" {
+                first_param_name(b)
+            } else {
+                left
+            }
+        }
+    }
+}
+
+/// Collect every parameter name referenced by an expression tree.
+fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
+    match expr {
+        MuExpr::Const(_) => {}
+        MuExpr::Param(name) => out.push(name.clone()),
+        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
+            out.push(param_name.clone())
+        }
+        MuExpr::Add(a, b) => {
+            collect_expr_param_names(a, out);
+            collect_expr_param_names(b, out);
         }
     }
 }
@@ -151,6 +235,7 @@ impl VectorParamRef {
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
+    id: u64,
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
     param_names: Vec<String>,
@@ -162,12 +247,17 @@ struct ModelBuilder {
 #[derive(Debug, Clone)]
 struct ParamRef {
     name: String,
+    /// Id of the `ModelBuilder` that created this reference.
+    owner: u64,
 }
 
 #[pyclass]
 #[derive(Debug, Clone)]
 struct Expr {
     inner: MuExpr,
+    /// Id of the `ModelBuilder` whose parameters this expression uses, if any.
+    /// `None` for constant-only expressions.
+    owner: Option<u64>,
 }
 
 #[pymethods]
@@ -178,25 +268,33 @@ impl ParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
         }
     }
 
     fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_expr) = other.downcast::<Expr>() {
-            let rhs = other_expr.borrow().inner.clone();
+            let (rhs, rhs_owner) = {
+                let b = other_expr.borrow();
+                (b.inner.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(self.owner), rhs_owner, &self.name)?;
             Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(MuExpr::Param(self.name.clone())),
-                    Box::new(rhs),
-                ),
+                inner: MuExpr::Add(Box::new(MuExpr::Param(self.name.clone())), Box::new(rhs)),
+                owner,
             })
         } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let rhs_name = other_param.borrow().name.clone();
+            let (rhs_name, rhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(self.owner), Some(rhs_owner), &self.name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(MuExpr::Param(self.name.clone())),
                     Box::new(MuExpr::Param(rhs_name)),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
@@ -204,6 +302,7 @@ impl ParamRef {
                     Box::new(MuExpr::Param(self.name.clone())),
                     Box::new(MuExpr::Const(value)),
                 ),
+                owner: Some(self.owner),
             })
         } else {
             Err(PyValueError::new_err(
@@ -222,6 +321,7 @@ impl ParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
         }
     }
 }
@@ -230,24 +330,32 @@ impl ParamRef {
 impl Expr {
     fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_expr) = other.downcast::<Expr>() {
-            let rhs = other_expr.borrow().inner.clone();
+            let (rhs, rhs_owner) = {
+                let b = other_expr.borrow();
+                (b.inner.clone(), b.owner)
+            };
+            let owner = merge_owners(self.owner, rhs_owner, &first_param_name(&self.inner))?;
             Ok(Expr {
                 inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(rhs)),
+                owner,
             })
         } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let rhs_name = other_param.borrow().name.clone();
+            let (rhs_name, rhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(self.owner, Some(rhs_owner), &rhs_name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(self.inner.clone()),
                     Box::new(MuExpr::Param(rhs_name)),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(self.inner.clone()),
-                    Box::new(MuExpr::Const(value)),
-                ),
+                inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(MuExpr::Const(value))),
+                owner: self.owner,
             })
         } else {
             Err(PyValueError::new_err(
@@ -258,22 +366,217 @@ impl Expr {
 
     fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let lhs_name = other_param.borrow().name.clone();
+            let (lhs_name, lhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(lhs_owner), self.owner, &lhs_name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(MuExpr::Param(lhs_name)),
                     Box::new(self.inner.clone()),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(MuExpr::Const(value)),
-                    Box::new(self.inner.clone()),
-                ),
+                inner: MuExpr::Add(Box::new(MuExpr::Const(value)), Box::new(self.inner.clone())),
+                owner: self.owner,
             })
         } else {
             self.__add__(other)
+        }
+    }
+}
+
+/// Name a `PriorSpec` declares.
+fn prior_name(prior: &PriorSpec) -> &str {
+    match prior {
+        PriorSpec::Normal { name, .. }
+        | PriorSpec::HalfNormal { name, .. }
+        | PriorSpec::Exponential { name, .. }
+        | PriorSpec::LogNormal { name, .. }
+        | PriorSpec::StudentT { name, .. }
+        | PriorSpec::Uniform { name, .. }
+        | PriorSpec::Bernoulli { name, .. }
+        | PriorSpec::Poisson { name, .. }
+        | PriorSpec::Gamma { name, .. }
+        | PriorSpec::Beta { name, .. }
+        | PriorSpec::VectorNormal { name, .. } => name,
+    }
+}
+
+/// Hyperparameter references a `PriorSpec` makes, as `(role, name)` pairs.
+fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
+    let mut out = Vec::new();
+    fn push<'a>(out: &mut Vec<(&'static str, &'a str)>, role: &'static str, hp: &'a HyperParam) {
+        if let HyperParam::Param(name) = hp {
+            out.push((role, name.as_str()));
+        }
+    }
+    match prior {
+        PriorSpec::Normal { mu, sigma, .. } | PriorSpec::LogNormal { mu, sigma, .. } => {
+            push(&mut out, "mu", mu);
+            push(&mut out, "sigma", sigma);
+        }
+        PriorSpec::HalfNormal { sigma, .. } => push(&mut out, "sigma", sigma),
+        PriorSpec::Exponential { rate, .. } => push(&mut out, "rate", rate),
+        PriorSpec::StudentT { .. }
+        | PriorSpec::Uniform { .. }
+        | PriorSpec::Bernoulli { .. }
+        | PriorSpec::Poisson { .. }
+        | PriorSpec::Gamma { .. }
+        | PriorSpec::Beta { .. }
+        | PriorSpec::VectorNormal { .. } => {}
+    }
+    out
+}
+
+/// The ordered list of parameter names a model declares, plus the full set of
+/// references into it. This is the single source of truth for reference
+/// validation, shared by `ModelBuilder.build()` and `compile_python_model`.
+fn model_reference_set(
+    priors: &[PriorSpec],
+    likelihoods: &[LikelihoodSpec],
+) -> (Vec<String>, Vec<ParamReference>) {
+    let declared: Vec<String> = priors.iter().map(|p| prior_name(p).to_string()).collect();
+    let mut refs = Vec::new();
+
+    for (idx, prior) in priors.iter().enumerate() {
+        for (role, name) in prior_hyper_refs(prior) {
+            refs.push(ParamReference::ordered(
+                name,
+                format!("prior '{}' hyperparameter {}", prior_name(prior), role),
+                idx,
+            ));
+        }
+    }
+
+    for lik in likelihoods {
+        let mut names = Vec::new();
+        collect_expr_param_names(&lik.mu_expr, &mut names);
+        for name in names {
+            refs.push(ParamReference::unordered(
+                name,
+                format!("the linear predictor of likelihood '{}'", lik.name),
+            ));
+        }
+        if let Some(SigmaSpec::Param(name)) = &lik.sigma {
+            refs.push(ParamReference::unordered(
+                name.clone(),
+                format!("the scale parameter of likelihood '{}'", lik.name),
+            ));
+        }
+    }
+
+    (declared, refs)
+}
+
+/// Validate every parameter reference in a model up front, before any graph is
+/// built. Fails loudly on unknown names, out-of-order hyperparameters and
+/// duplicate declarations.
+fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec]) -> PyResult<()> {
+    let (declared, refs) = model_reference_set(priors, likelihoods);
+    validate_param_references(&declared, &refs).map_err(param_error)
+}
+
+impl ModelBuilder {
+    /// A reference to one of this model's parameters, tagged with the model id.
+    fn param_ref(&self, name: &str) -> ParamRef {
+        ParamRef {
+            name: name.to_string(),
+            owner: self.id,
+        }
+    }
+
+    /// Names declared so far, in declaration order.
+    fn declared_names(&self) -> Vec<String> {
+        self.priors.iter().map(|p| prior_name(p).to_string()).collect()
+    }
+
+    /// Parse a hyperparameter argument, rejecting references that belong to a
+    /// different model or that are not yet declared in this one.
+    fn hyper_arg(
+        &self,
+        obj: &Bound<'_, PyAny>,
+        arg_name: &str,
+        new_prior_name: &str,
+    ) -> PyResult<HyperParam> {
+        let hp = extract_hyper(obj, arg_name)?;
+        if let HyperParam::Param(ref name) = hp {
+            let context = format!("prior '{}' hyperparameter {}", new_prior_name, arg_name);
+            if let Ok(p) = obj.downcast::<ParamRef>() {
+                if p.borrow().owner != self.id {
+                    return Err(foreign_param_error(name, &context));
+                }
+            }
+            let declared = self.declared_names();
+            let position = declared.len();
+            validate_param_references(
+                &declared,
+                &[ParamReference::ordered(name.clone(), context, position)],
+            )
+            .map_err(param_error)?;
+        }
+        Ok(hp)
+    }
+
+    /// Parse a likelihood predictor argument (`Expr` or bare `ParamRef`),
+    /// rejecting references that belong to a different model.
+    fn likelihood_expr(
+        &self,
+        value: &Bound<'_, PyAny>,
+        arg_name: &str,
+        lik_name: &str,
+    ) -> PyResult<MuExpr> {
+        let (expr, owner) = if let Ok(e) = value.downcast::<Expr>() {
+            let b = e.borrow();
+            (b.inner.clone(), b.owner)
+        } else if let Ok(p) = value.downcast::<ParamRef>() {
+            let b = p.borrow();
+            (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+                arg_name
+            )));
+        };
+        let context = format!("the linear predictor of likelihood '{}'", lik_name);
+        self.check_owner(owner, &first_param_name(&expr), &context)?;
+        Ok(expr)
+    }
+
+    /// Parse a likelihood scale argument (float or `ParamRef`), rejecting
+    /// references that belong to a different model.
+    fn scale_spec(
+        &self,
+        value: &Bound<'_, PyAny>,
+        arg_name: &str,
+        lik_name: &str,
+    ) -> PyResult<SigmaSpec> {
+        if let Ok(v) = value.extract::<f64>() {
+            Ok(SigmaSpec::Const(v))
+        } else if let Ok(p) = value.downcast::<ParamRef>() {
+            let (name, owner) = {
+                let b = p.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let context = format!("the {} of likelihood '{}'", arg_name, lik_name);
+            self.check_owner(Some(owner), &name, &context)?;
+            Ok(SigmaSpec::Param(name))
+        } else {
+            Err(PyValueError::new_err(format!(
+                "{} must be a float or a ParamRef (e.g. from half_normal_prior)",
+                arg_name
+            )))
+        }
+    }
+
+    /// Reject a `ParamRef`/`Expr` produced by a different `ModelBuilder`.
+    fn check_owner(&self, owner: Option<u64>, name: &str, context: &str) -> PyResult<()> {
+        match owner {
+            Some(id) if id != self.id => Err(foreign_param_error(name, context)),
+            _ => Ok(()),
         }
     }
 }
@@ -288,6 +591,7 @@ impl ModelBuilder {
             None => (HashMap::new(), HashMap::new()),
         };
         Ok(Self {
+            id: next_model_id(),
             priors: Vec::new(),
             likelihoods: Vec::new(),
             param_names: Vec::new(),
@@ -303,15 +607,15 @@ impl ModelBuilder {
         mu: &Bound<'_, PyAny>,
         sigma: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let mu_hp = extract_hyper(mu, "mu")?;
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let mu_hp = self.hyper_arg(mu, "mu", name)?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::Normal {
             name: name.to_string(),
             mu: mu_hp,
             sigma: sigma_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef { name: name.to_string() })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, sigma))]
@@ -320,10 +624,10 @@ impl ModelBuilder {
         name: &str,
         sigma: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::HalfNormal { name: name.to_string(), sigma: sigma_hp });
         self.param_names.push(name.to_string());
-        Ok(ParamRef { name: name.to_string() })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, rate))]
@@ -332,13 +636,13 @@ impl ModelBuilder {
         name: &str,
         rate: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let rate_hp = extract_hyper(rate, "rate")?;
+        let rate_hp = self.hyper_arg(rate, "rate", name)?;
         self.priors.push(PriorSpec::Exponential {
             name: name.to_string(),
             rate: rate_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef { name: name.to_string() })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, mu, sigma))]
@@ -348,57 +652,57 @@ impl ModelBuilder {
         mu: &Bound<'_, PyAny>,
         sigma: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let mu_hp = extract_hyper(mu, "mu")?;
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let mu_hp = self.hyper_arg(mu, "mu", name)?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::LogNormal {
             name: name.to_string(),
             mu: mu_hp,
             sigma: sigma_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef { name: name.to_string() })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, nu, mu=0.0, sigma=1.0))]
     fn student_t_prior(&mut self, name: &str, nu: f64, mu: f64, sigma: f64) -> ParamRef {
         self.priors.push(PriorSpec::StudentT { name: name.to_string(), nu, mu, sigma });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, lower=0.0, upper=1.0))]
     fn uniform_prior(&mut self, name: &str, lower: f64, upper: f64) -> ParamRef {
         self.priors.push(PriorSpec::Uniform { name: name.to_string(), lower, upper });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, p=0.5))]
     fn bernoulli_prior(&mut self, name: &str, p: f64) -> ParamRef {
         self.priors.push(PriorSpec::Bernoulli { name: name.to_string(), p });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, lam))]
     fn poisson_prior(&mut self, name: &str, lam: f64) -> ParamRef {
         self.priors.push(PriorSpec::Poisson { name: name.to_string(), lam });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, alpha, beta))]
     fn gamma_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
         self.priors.push(PriorSpec::Gamma { name: name.to_string(), alpha, beta });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, alpha, beta))]
     fn beta_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
         self.priors.push(PriorSpec::Beta { name: name.to_string(), alpha, beta });
         self.param_names.push(name.to_string());
-        ParamRef { name: name.to_string() }
+        self.param_ref(name)
     }
 
     #[pyo3(signature = (name, n, mu=0.0, sigma=1.0))]
@@ -415,7 +719,11 @@ impl ModelBuilder {
             mu,
             sigma,
         });
-        VectorParamRef { name: name.to_string(), _n: n }
+        VectorParamRef {
+            name: name.to_string(),
+            _n: n,
+            owner: self.id,
+        }
     }
 
     #[pyo3(signature = (name, mu_expr, sigma, observed_key))]
@@ -426,26 +734,8 @@ impl ModelBuilder {
         sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let _ = name;
-        // Accept either an Expr or a bare ParamRef as mu_expr
-        let inner_expr = if let Ok(e) = mu_expr.downcast::<Expr>() {
-            e.borrow().inner.clone()
-        } else if let Ok(p) = mu_expr.downcast::<ParamRef>() {
-            MuExpr::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "mu_expr must be an Expr (e.g. beta * 'x') or a ParamRef",
-            ));
-        };
-        let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = sigma.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "sigma must be a float or a ParamRef (e.g. from half_normal_prior)",
-            ));
-        };
+        let inner_expr = self.likelihood_expr(mu_expr, "mu_expr", name)?;
+        let sigma_spec = self.scale_spec(sigma, "sigma", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -471,7 +761,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -497,7 +787,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -523,7 +813,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -550,16 +840,8 @@ impl ModelBuilder {
         sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(mu_expr, "mu_expr")?;
-        let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = sigma.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "sigma must be a float or a ParamRef",
-            ));
-        };
+        let inner_expr = self.likelihood_expr(mu_expr, "mu_expr", name)?;
+        let sigma_spec = self.scale_spec(sigma, "sigma", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -586,16 +868,8 @@ impl ModelBuilder {
         alpha: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
-        let alpha_spec = if let Ok(v) = alpha.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = alpha.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "alpha must be a float or a ParamRef",
-            ));
-        };
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
+        let alpha_spec = self.scale_spec(alpha, "alpha", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -614,13 +888,16 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn build(&self) -> ModelSpec {
-        ModelSpec {
+    /// Finalise the model. Validates every parameter reference up front so an
+    /// unresolvable name fails here rather than mid-sample.
+    fn build(&self) -> PyResult<ModelSpec> {
+        validate_model_references(&self.priors, &self.likelihoods)?;
+        Ok(ModelSpec {
             priors: self.priors.clone(),
             likelihoods: self.likelihoods.clone(),
             bound_data_1d: self.bound_data_1d.clone(),
             bound_data_2d: self.bound_data_2d.clone(),
-        }
+        })
     }
 }
 
@@ -713,19 +990,6 @@ fn validate_data_keys(
         )));
     }
     validate_expr_keys(expr, data_1d, data_2d)
-}
-
-fn parse_likelihood_expr(value: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<MuExpr> {
-    if let Ok(e) = value.downcast::<Expr>() {
-        Ok(e.borrow().inner.clone())
-    } else if let Ok(p) = value.downcast::<ParamRef>() {
-        Ok(MuExpr::Param(p.borrow().name.clone()))
-    } else {
-        Err(PyValueError::new_err(format!(
-            "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
-            arg_name
-        )))
-    }
 }
 
 fn validate_expr_keys(
@@ -987,27 +1251,38 @@ fn resolve_hyper(
 ) -> Result<NodeId, PyErr> {
     match hp {
         HyperParam::Const(v) => Ok(graph.add_constant(*v)),
-        HyperParam::Param(name) => {
-            value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "Hyperparameter '{}' not found. Declare it before the prior that references it.",
-                    name
-                ))
-            })
-        }
+        HyperParam::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
+            ParameterError::new_err(format!(
+                "hyperparameter '{}' has no value node. Declare it before the prior \
+                 that references it.",
+                name
+            ))
+        }),
     }
 }
 
+/// Resolve a `HyperParam` against already-computed parameter values.
+///
+/// `context` names the model location doing the referencing, so the error can
+/// say *which* prior or derived parameter is broken. There is deliberately no
+/// default value: a missing hyperparameter must never be silently replaced.
 fn resolve_hyper_value(
     hp: &HyperParam,
     values: &HashMap<String, f64>,
+    context: &str,
 ) -> Result<f64, PyErr> {
     match hp {
         HyperParam::Const(v) => Ok(*v),
         HyperParam::Param(name) => values.get(name).copied().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "Derived parameter depends on '{}' before it is available",
-                name
+            let mut available: Vec<&str> = values.keys().map(String::as_str).collect();
+            available.sort_unstable();
+            ParameterError::new_err(format!(
+                "parameter '{}' referenced by {} has no value yet. It must be \
+                 declared before the parameter that depends on it. \
+                 Available at this point: [{}]",
+                name,
+                context,
+                available.join(", ")
             ))
         }),
     }
@@ -1053,6 +1328,7 @@ fn build_likelihood_into_graph(
         data_map,
         matrix_map,
         vector_param_map,
+        value_node_map,
     )?;
     let linpred_node = if lik.mu_expr.is_scalar() {
         graph.scalar_broadcast(linpred_node)
@@ -1329,14 +1605,16 @@ fn resolve_sigma(
 ) -> Result<NodeId, PyErr> {
     match spec {
         SigmaSpec::Const(v) => Ok(graph.add_constant(*v)),
-        SigmaSpec::Param(name) => {
-            value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "sigma parameter '{}' not found. Did you declare it as a prior?",
-                    name
-                ))
-            })
-        }
+        SigmaSpec::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
+            let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
+            available.sort_unstable();
+            ParameterError::new_err(format!(
+                "scale parameter '{}' is not a scalar parameter of this model. \
+                 Scalar parameters: [{}]",
+                name,
+                available.join(", ")
+            ))
+        }),
     }
 }
 
@@ -1426,7 +1704,35 @@ fn collect_matvec_params(
     Ok(result)
 }
 
+/// Look up the post-transform value node for a scalar parameter.
+///
+/// Fails loudly — never substitutes a default — when the name is not a scalar
+/// parameter of this model.
+fn lookup_param_value_node(
+    name: &str,
+    value_node_map: &HashMap<String, NodeId>,
+    context: &str,
+) -> Result<NodeId, PyErr> {
+    value_node_map.get(name).copied().ok_or_else(|| {
+        let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
+        available.sort_unstable();
+        ParameterError::new_err(format!(
+            "parameter '{}' used in {} is not a scalar parameter of this model. \
+             Scalar parameters: [{}]",
+            name,
+            context,
+            available.join(", ")
+        ))
+    })
+}
+
 /// Compile a MuExpr tree into graph nodes.
+///
+/// Parameters are resolved through `value_node_map`, which holds the
+/// *post-transform* value node for every scalar parameter. Resolving via
+/// `Graph::node_by_name` instead would return the unconstrained raw node for
+/// any transformed prior (HalfNormal, Exponential, LogNormal, Uniform, Gamma,
+/// Beta), silently putting a log-scale value into the linear predictor.
 ///
 /// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
 /// this emits a single FusedLinearMu op instead of individual
@@ -1437,6 +1743,7 @@ fn build_mu_expr(
     data_map: &HashMap<String, Vec<f64>>,
     matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
     vector_param_map: &HashMap<String, (usize, usize)>,
+    value_node_map: &HashMap<String, NodeId>,
 ) -> Result<NodeId, PyErr> {
     // Fast path: fuse linear combinations into a single op
     if let Some((terms, intercept_name)) = try_extract_linear(expr) {
@@ -1444,9 +1751,7 @@ fn build_mu_expr(
         let mut data_indices = Vec::with_capacity(terms.len());
 
         for (param_name, data_key) in &terms {
-            let pn = graph
-                .node_by_name(param_name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            let pn = lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
             param_nodes.push(pn);
 
             let data_vec = data_map
@@ -1469,11 +1774,11 @@ fn build_mu_expr(
                     })?;
                 Some(graph.add_constant(value))
             }
-            Some(ref name) => Some(
-                graph
-                    .node_by_name(name)
-                    .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?,
-            ),
+            Some(ref name) => Some(lookup_param_value_node(
+                name,
+                value_node_map,
+                "the intercept of a linear predictor",
+            )?),
             None => None,
         };
 
@@ -1487,9 +1792,8 @@ fn build_mu_expr(
             param_name,
             data_key,
         } => {
-            let param_node = graph
-                .node_by_name(param_name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            let param_node =
+                lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
             let data_vec = data_map
                 .get(data_key)
                 .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
@@ -1497,12 +1801,7 @@ fn build_mu_expr(
             let data_node = graph.add_data(data_key, data_vec);
             Ok(graph.scalar_mul_data(param_node, data_node))
         }
-        MuExpr::Param(name) => {
-            let param_node = graph
-                .node_by_name(name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?;
-            Ok(param_node)
-        }
+        MuExpr::Param(name) => lookup_param_value_node(name, value_node_map, "a linear predictor"),
         MuExpr::MatVec { param_name, data_key } => {
             let &(param_start, n_params) = vector_param_map.get(param_name.as_str())
                 .ok_or_else(|| PyValueError::new_err(
@@ -1516,8 +1815,8 @@ fn build_mu_expr(
             Ok(graph.mat_vec_mul(matrix_idx, param_start, n_params, None))
         }
         MuExpr::Add(a, b) => {
-            let na = build_mu_expr(graph, a, data_map, matrix_map, vector_param_map)?;
-            let nb = build_mu_expr(graph, b, data_map, matrix_map, vector_param_map)?;
+            let na = build_mu_expr(graph, a, data_map, matrix_map, vector_param_map, value_node_map)?;
+            let nb = build_mu_expr(graph, b, data_map, matrix_map, vector_param_map, value_node_map)?;
             let a_scalar = a.is_scalar();
             let b_scalar = b.is_scalar();
             if a_scalar && !b_scalar {
@@ -1559,6 +1858,13 @@ fn compile_python_model(
     let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
     let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
     let mut display_params = Vec::new();
+
+    // Defence in depth: `ModelBuilder.build()` already validated these, but a
+    // `ModelSpec` can reach here by other routes (pickling, batch_sample).
+    // Validating before touching the graph guarantees an unresolvable reference
+    // never becomes a silently-defaulted value at sampling time.
+    validate_model_references(&model_spec.priors, &model_spec.likelihoods)?;
+
     let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, matrix_map)?;
 
     for prior in &model_spec.priors {
@@ -1614,8 +1920,9 @@ fn derive_display_draw(
                 mu,
                 sigma,
             } => {
-                let mu_v = resolve_hyper_value(mu, &values)?;
-                let sigma_v = resolve_hyper_value(sigma, &values)?;
+                let context = format!("non-centered parameter '{}'", name);
+                let mu_v = resolve_hyper_value(mu, &values, &context)?;
+                let sigma_v = resolve_hyper_value(sigma, &values, &context)?;
                 let value = mu_v + sigma_v * raw_draw[*raw_index];
                 values.insert(name.clone(), value);
                 value
@@ -2491,11 +2798,11 @@ fn sample_prior_raw(
     // Track post-transform values for HyperParam::Param resolution
     let mut sampled_values: HashMap<String, f64> = HashMap::new();
 
-    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>| -> f64 {
-        match hp {
-            HyperParam::Const(v) => *v,
-            HyperParam::Param(name) => *sv.get(name.as_str()).unwrap_or(&1.0),
-        }
+    // A hyperparameter that is not yet available is a broken model, not a
+    // reason to substitute 1.0: doing so returns plausible-but-wrong prior
+    // predictive draws with no warning.
+    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>, owner: &str| -> Result<f64, PyErr> {
+        resolve_hyper_value(hp, sv, &format!("prior '{}'", owner))
     };
 
     for prior in priors {
@@ -2503,20 +2810,20 @@ fn sample_prior_raw(
             PriorSpec::Normal { name, mu, sigma } => {
                 if should_auto_noncenter(prior, auto_vector_params) {
                     let z = NormalDist::new(0.0, 1.0).unwrap().sample(rng);
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
                     sampled_values.insert(name.clone(), mu_v + sigma_v * z);
                     raw.push(z);
                 } else {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?.abs().max(1e-12);
                     let x = NormalDist::new(mu_v, sigma_v).unwrap().sample(rng);
                     sampled_values.insert(name.clone(), x);
                     raw.push(x); // identity transform
                 }
             }
             PriorSpec::HalfNormal { name, sigma } => {
-                let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                let sigma_v = resolve(sigma, &sampled_values, name)?.abs().max(1e-12);
                 let z = NormalDist::new(0.0_f64, sigma_v).unwrap().sample(rng);
                 let x = z.abs().max(1e-12);
                 sampled_values.insert(name.clone(), x);
@@ -2524,7 +2831,7 @@ fn sample_prior_raw(
             }
             PriorSpec::Exponential { name, rate } => {
                 if let Some(&n) = auto_vector_params.get(name) {
-                    let rate_v = resolve(rate, &sampled_values).abs().max(1e-12);
+                    let rate_v = resolve(rate, &sampled_values, name)?.abs().max(1e-12);
                     for k in 0..n {
                         let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
                         let x = (-u.ln() / rate_v).max(1e-12);
@@ -2534,7 +2841,7 @@ fn sample_prior_raw(
                         raw.push(x.ln());
                     }
                 } else {
-                    let rate_v = resolve(rate, &sampled_values).abs().max(1e-12);
+                    let rate_v = resolve(rate, &sampled_values, name)?.abs().max(1e-12);
                     let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
                     let x = (-u.ln() / rate_v).max(1e-12);
                     sampled_values.insert(name.clone(), x);
@@ -2543,8 +2850,8 @@ fn sample_prior_raw(
             }
             PriorSpec::LogNormal { name, mu, sigma } => {
                 if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?.abs().max(1e-12);
                     let dist = NormalDist::new(mu_v, sigma_v).unwrap();
                     for k in 0..n {
                         let raw_draw = dist.sample(rng);
@@ -2554,8 +2861,8 @@ fn sample_prior_raw(
                         raw.push(raw_draw);
                     }
                 } else {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?.abs().max(1e-12);
                     let raw_draw = NormalDist::new(mu_v, sigma_v).unwrap().sample(rng);
                     let x = raw_draw.exp();
                     sampled_values.insert(name.clone(), x);
@@ -2623,6 +2930,7 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Expr>()?;
     m.add_class::<FitResult>()?;
     m.add_class::<BatchResult>()?;
+    m.add("ParameterError", m.py().get_type::<ParameterError>())?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;
     m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sample_prior_predictive, m)?)?;

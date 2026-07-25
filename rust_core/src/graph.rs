@@ -54,7 +54,6 @@ pub enum ObsFamily {
 /// Metadata for an observation term in the graph.
 #[derive(Debug, Clone)]
 pub struct ObservationHead {
-    pub name: String,
     pub family: ObsFamily,
     pub linpred: NodeId,
     pub aux: Option<NodeId>,
@@ -534,7 +533,6 @@ impl Graph {
                 } = &n.op
                 {
                     Some(ObservationHead {
-                        name: n.name.clone().unwrap_or_default(),
                         family: *family,
                         linpred: *linpred_vec,
                         aux: *aux,
