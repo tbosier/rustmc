@@ -4,10 +4,6 @@
 
 rustmc runs the entire sampling loop in compiled Rust - no Python in the inner loop. Chains are parallelized across threads via Rayon. The result is designed for fitting many independent Bayesian models in a single call.
 
-```
-10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.
-```
-
 ## Why rustmc?
 
 PyMC, Stan, and other Bayesian frameworks are built for general single-model workflows. That is useful for research, but it becomes expensive when you need to fit the same model structure to thousands of datasets - per-store demand models, per-SKU pricing models, per-patient dosing models.
@@ -24,20 +20,16 @@ rustmc is designed for that repeated-model setting. Its batch inference API runs
 
 ## Benchmarks
 
-**Single model** — 10 parameters, 100,000 observations, 8 chains, 2,000 draws:
-
-| Method | Time | Speedup |
-|--------|------|---------|
-| rustmc (NUTS) | 72s | **5.3x** |
-| PyMC (NUTS) | 383s | 1.0x |
-
-**Batch inference** — 10,000 independent 3-parameter models:
-
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| rustmc (batch NUTS) | 70s | 7ms | Yes (full posterior) |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+See the "Benchmark" section of the top-level [README](https://github.com/tbosier/rustmc#benchmark)
+for current, reproducible numbers with matched chains/warmup/draws/seed and
+R-hat/ESS/divergences reported alongside wall time. An earlier version of
+this page claimed "10,000 Bayesian demand models in 70 seconds" and a
+flat 5.3x PyMC speedup; neither was backed by a benchmark run that matched
+statistical protocol (chains, warmup, seed) between engines, and both have
+been retracted. Run `python examples/run_benchmarks.py` to reproduce the
+current numbers on your own hardware — do not restate old numbers from
+memory or extrapolate the small-model results to larger ones (rustmc
+loses to PyMC on the 500-parameter case in the README benchmark table).
 
 ## Install
 

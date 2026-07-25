@@ -4,7 +4,22 @@ Fit the same model structure across thousands of independent datasets in one cal
 
 ## Use Case
 
-You have 10,000 SKUs and want a demand model for each one. Sequential fitting with ARIMA takes ~160s. With Prophet, ~28 minutes. Neither gives full posterior uncertainty. rustmc fits all 10,000 Bayesian models in **70 seconds** with credible intervals included.
+You have many SKUs and want a demand model for each one. Sequential fitting
+with ARIMA or Prophet gets slow at that scale and neither gives full
+posterior uncertainty.
+
+**A note on the numbers below**: an earlier version of this page claimed
+"rustmc fits all 10,000 Bayesian models in 70 seconds" with a specific
+`N_MODELS = 10_000` code sample and output. That number was never
+produced by a benchmark run in this repo — the only reproducible batch
+benchmark, `examples/batch_10k_skus.py`, runs 100 SKUs (`N_SKUS = 100`),
+not 10,000, and reports rustmc vs. PyMC+nutpie with matched
+chains/warmup/draws/seed plus R-hat/ESS/divergences, not just wall time.
+See the README's "Benchmark" section and `benchmarks/results/` for actual
+numbers. The code pattern below is real and does scale to more models —
+`batch_sample` throughput is close to linear in model count on a given
+core count — but a 10,000-model wall time has not been measured here, so
+don't cite one until a run backs it.
 
 ## Code
 
@@ -13,10 +28,10 @@ import rustmc as rmc
 import numpy as np
 
 np.random.seed(0)
-N_MODELS = 10_000
+N_MODELS = 100  # scale this up; batch_sample throughput is close to linear in model count
 T = 52  # weeks per SKU
 
-# Simulate 10,000 time series
+# Simulate N_MODELS time series
 true_intercepts = np.random.normal(100, 20, N_MODELS)
 true_trends     = np.random.normal(0.5, 0.2, N_MODELS)
 noise_std       = 5.0
@@ -36,7 +51,7 @@ for i in range(N_MODELS):
 
     models.append((model, {"t": t, "y": y}))
 
-# Fit all 10,000 models
+# Fit all N_MODELS models
 results = rmc.batch_sample(models, chains=1, draws=500, warmup=300)
 
 # Inspect results
@@ -48,9 +63,12 @@ for i, r in enumerate(results[:5]):
 
 ## Output
 
-```
-Sampling 10000 models ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% | 70.3s
+The exact wall time depends on `N_MODELS`, core count, and `chains`; see
+`examples/batch_10k_skus.py` and the README benchmark section for an
+actual measured run (100 SKUs, 4 chains, matched against PyMC+nutpie).
+Per-SKU posterior output looks like:
 
+```
 SKU    0: intercept=100.42 ± 0.71  trend= 0.48 ± 0.02  (true: 99.8, 0.51)
 SKU    1: intercept= 82.11 ± 0.68  trend= 0.67 ± 0.02  (true: 81.6, 0.69)
 SKU    2: intercept=118.77 ± 0.74  trend= 0.31 ± 0.02  (true: 119.2, 0.29)
@@ -76,11 +94,9 @@ r.divergences_per_chain  # list[int]
 
 ## Comparison
 
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| **rustmc (batch NUTS)** | **70s** | **7ms** | **Yes (full posterior)** |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+See the README's "Benchmark" section for a reproducible rustmc vs.
+PyMC+nutpie vs. ARIMA vs. Prophet comparison with real measured numbers
+(100 SKUs), including divergences, R-hat, and ESS/s, not just wall time.
 
 ## Notes
 

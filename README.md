@@ -18,26 +18,86 @@ What sets rustmc apart is the execution model: it shares one compiled Rust core 
 
 PyMC and Stan are excellent general-purpose tools, but they are optimized around a broader single-model workflow. rustmc is optimized for the repeated-model setting where Python orchestration, per-model overhead, and deployment friction start to dominate.
 
-**10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
-
-Fitting those same 10,000 models sequentially with ARIMA takes ~160 seconds. With Prophet, ~28 minutes. Neither gives you credible intervals for free.
-
 ## Benchmark
 
-10 parameters, 100,000 observations, 8 chains, 2,000 draws:
+**These numbers replace an earlier, unverified set of claims** ("10,000
+Bayesian demand models in 70 seconds", "rustmc (NUTS) 72s / 5.3x speedup
+vs. PyMC (NUTS) 383s") that this repo could not reproduce. The earlier
+comparisons ran PyMC with an unspecified/default configuration, no fixed
+seed on the PyMC side, and — in the batch case — 4x less sampling work on
+the rustmc side (1 chain vs. PyMC's 4). See `examples/run_benchmarks.py`
+and `benchmarks/RESULTS_TEMPLATE.md` for the corrected, reproducible
+protocol: identical chains/warmup/draws/seed on every engine, phase-split
+timing, and R-hat/ESS/divergences reported alongside wall time.
 
-| Method | Time | Speedup |
-|--------|------|---------|
-| rustmc (NUTS) | 72s | 5.3x |
-| PyMC (NUTS) | 383s | 1.0x |
+Every number below is from an actual run in this repo's environment (AMD
+Ryzen 9 5900X, 24 logical CPUs, Linux, rustmc 0.8.0, PyMC 5.28.0, nutpie
+0.16.6) — run `python examples/run_benchmarks.py` to reproduce on your own
+hardware. Results will vary with core count and problem size; **do not
+extrapolate these to other model sizes** — see the 500-parameter result
+below, where rustmc loses.
 
-Batch inference, 10,000 independent 3-parameter models:
+**Simple regression** (`compare_with_pymc.py`) — 1 parameter, 10,000 obs, 4 chains, 500 warmup + 1000 draws, seed=42 on every engine:
 
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| rustmc (batch NUTS) | 70s | 7ms | Yes (full posterior) |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+| Engine | Time (s) | ESS_bulk | ESS/s | Max R-hat | Divergences |
+|---|---|---|---|---|---|
+| rustmc | 2.05 | 3998 | 1954 | 1.000 | 22 |
+| PyMC (default NUTS) | 13.68 | 1759 | 129 | 1.001 | 0 |
+| PyMC (nutpie) | 6.94 | 1726 | 249 | 1.002 | 0 |
+
+rustmc wins on ESS/s here, but note it also produced 22 divergences where
+both PyMC backends produced 0 on the identical model/data/seed — see
+"Known limitations" below.
+
+**High-dimensional regression** (`benchmark_vs_pymc.py`) — 500 parameters, 2,000 obs, 2 chains, 500 warmup + 500 draws, seed=42 on every engine, sigma fixed (not estimated) on every engine:
+
+| Engine | Time (s) | ESS_bulk | ESS/s | Max R-hat | Divergences |
+|---|---|---|---|---|---|
+| rustmc | 39.2 | 996 | 25.4 | 1.020 | 7 |
+| PyMC (default NUTS) | 18.7 | 1531 | 82.0 | 1.014 | 0 |
+| PyMC (nutpie) | 9.2 | 1476 | 161.0 | 1.011 | 0 |
+
+**rustmc is 3-6x slower than PyMC here, not faster.** This is the honest
+result for a 500-parameter `MatVecMul`-backed model once chains, warmup,
+draws, and seed are matched — the faer GEMV path does not currently
+outperform PyMC/nutpie's autodiff at this parameter count on this
+hardware. Do not read the small-model win above as evidence this holds at
+scale.
+
+**Many-chain regression** (`benchmark_multivariate.py`) — 10 parameters, 100,000 observations, 8 chains, 1000 warmup + 2000 draws, seed=42 on every engine, sigma fixed (not estimated) on every engine (an earlier version of this script ran PyMC with its unspecified default sampler and no explicit seed; both are fixed below and both PyMC backends are reported):
+
+| Engine | Time (s) | ESS_bulk | ESS/s | Max R-hat | Divergences |
+|---|---|---|---|---|---|
+| rustmc | 52.2 | 15998 | 307 | 1.000 | 67 |
+| PyMC (default NUTS) | 358.4 | 21098 | 58.9 | 1.001 | 0 |
+| PyMC (nutpie) | 78.1 | 21674 | 278 | 1.001 | 0 |
+
+Here rustmc is genuinely 5.2x faster than PyMC's default NUTS and roughly at parity
+(1.1x) with PyMC+nutpie — a real win on this many-chain, low-parameter-count workload.
+As above, rustmc's divergence count (67) is nonzero where both PyMC backends show 0 on
+the identical model/data/seed.
+
+**Batch inference** (`batch_10k_skus.py`) — 100 independent 3-parameter SKU models, 4 chains, 500 warmup + 1000 draws, seed=42 on every engine (an earlier version of this script mislabeled itself "10,000 SKUs" while actually running 100, and gave rustmc 1 chain vs. PyMC+nutpie's 4 — both are fixed below):
+
+| Engine | Time (s) | Max R-hat | Mean ESS | ESS/s (summed) | Divergences | Forecast MAE (SKU #42) |
+|---|---|---|---|---|---|---|
+| rustmc (batch NUTS) | 1.24 | 1.066 | 241 | 125,885 | 1317 | 5.52 |
+| PyMC + nutpie (100 sequential compiles) | 388.9 | 1.015 | 881 | 679 | 0 | 5.56 |
+
+rustmc is genuinely ~300x faster in wall time here because it amortizes one shared
+Rayon thread pool across all 400 chains with zero per-model compilation, while nutpie
+pays a full model compile for each of the 100 SKUs in sequence — this compile cost is
+the actual mechanism behind the speedup, not something mysterious, and it shrinks
+proportionally as the model count grows. But the max R-hat (1.066) is above the
+conventional 1.01 convergence threshold and rustmc logged 1317 divergences where nutpie
+logged 0 on the identical per-SKU model/data/seed — the speed advantage here comes with
+a real convergence-quality cost that a wall-time-only comparison would hide. There is no
+benchmark run in this repo (or elsewhere) supporting a 10,000-SKU wall-time claim; do not
+restate one.
+
+See `benchmarks/results/` for the full logs and environment/statistical-quality detail
+behind every table above, and `benchmarks/RESULTS_TEMPLATE.md` for the format used to
+record future runs.
 
 ## Quick start
 
@@ -88,7 +148,7 @@ beta           2.4575   0.0313     2.3982     2.5133       2638       2966   1.0
 Mean accept rate: 0.94  |  Divergences: 0
 ```
 
-### Batch inference (10,000 models)
+### Batch inference (many independent models)
 
 ```python
 import rustmc as rmc
@@ -256,7 +316,31 @@ The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`,
 - **Fixed graph traversal**: The same DAG is walked every time; there is no tracing or recompilation per model or per step.
 - **BLAS-level throughput for large parameter vectors**: `MatVecMul` calls faer's GEMV, which uses SIMD intrinsics and can optionally spawn Rayon threads for matrices above 100K elements. A 5,000-parameter vector prior that previously required 5,000 individual scalar multiply-add nodes in the graph is now a single op.
 
-JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and GPU support but adds per-model compilation and dispatch overhead. For many small, independent models (e.g. 10,000 SKUs), rustmc's "compile once, run fixed graph over contiguous buffers" approach often wins on CPU because there is no per-model JAX trace/compile and no Python in the inner loop. Nutpie (JAX-based) is faster than default PyMC for a single model; the batch example compares rustmc's batch NUTS against PyMC+nutpie run in a loop over the same number of models.
+JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and GPU support but adds per-model compilation and dispatch overhead. For many small, independent models, rustmc's "compile once, run fixed graph over contiguous buffers" approach can win on CPU because there is no per-model JAX trace/compile and no Python in the inner loop. See `examples/batch_10k_skus.py` and the Benchmark section above for the actual measured comparison against PyMC+nutpie run in a loop over the same number of models with matched chains/warmup/draws/seed — this is a real but narrower and smaller-scale result than "10,000 SKUs" might suggest; see the caveats in that section.
+
+## Known limitations
+
+These are observations from the benchmark runs above, not hand-wavy caveats:
+
+- **rustmc produced nonzero divergence counts in every benchmark in this suite** (22 on
+  a 1-parameter model, 7 on a 500-parameter model, 67 on a 10-parameter/100k-obs model,
+  1317 across 100 SKUs) where PyMC's default NUTS and nutpie backends produced **zero**
+  divergences on the identical model, data, and seed every time. On the 100-SKU batch
+  run, rustmc's max R-hat (1.066) also exceeded the conventional 1.01 threshold where
+  nutpie's did not (1.015). This is consistent enough across unrelated model shapes that
+  it looks like a real property of the current step-size/mass-matrix adaptation or
+  divergence-detection logic, not benchmark noise — worth investigating before trusting
+  rustmc's posteriors on a model where PyMC shows zero divergences and rustmc doesn't.
+- **rustmc is 3-6x slower than PyMC by ESS/s on a 500-parameter regression** (see
+  "High-dimensional regression" above). The faer-backed `MatVecMul` path does not
+  currently outperform PyMC/nutpie's autodiff at this parameter count on this hardware.
+  It wins clearly on low-parameter/many-chain and many-small-model workloads instead —
+  don't assume the "faer is faster for high-dimensional regression" framing elsewhere in
+  this README holds at 500+ parameters without re-benchmarking.
+- Benchmark numbers in this README are from one machine (see each table) and one run
+  each, not repeated trials with reported variance. Treat them as directional, and
+  reproduce with `python examples/run_benchmarks.py` before relying on them for a
+  procurement or architecture decision.
 
 ## Roadmap
 
@@ -264,7 +348,7 @@ Near term:
 
 - Expose compiled model artifacts as a first-class public workflow in Python and Rust.
 - Extend automatic non-centering beyond scalar hierarchical normals to grouped/vector random effects.
-- Add a benchmark regression harness for wall time, ESS/s, memory, and divergence budgets.
+- Investigate the divergence-count and R-hat gap vs. PyMC/nutpie noted in "Known limitations" above.
 - Expand the modeling layer with production helpers such as offsets, exposure terms, and panel/hierarchical templates.
 
 Medium term:

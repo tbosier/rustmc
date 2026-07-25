@@ -177,5 +177,5 @@ idata = fit.to_arviz(include_log_likelihood=True)
 
 - [Linear Regression example](examples/linear-regression.md) — full workflow with prior/posterior predictive checks
 - [Hierarchical Models](examples/hierarchical.md) — partial pooling across groups
-- [Batch Inference](examples/batch-inference.md) — fitting 10,000 models at once
+- [Batch Inference](examples/batch-inference.md) — fitting many independent models at once
 - [High-Dimensional Regression](examples/high-dimensional.md) — faer-backed `X @ beta`
