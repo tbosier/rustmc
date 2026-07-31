@@ -175,17 +175,19 @@ pub fn run_chain(
             current.logp = proposal.logp;
         }
 
-        if tree_stats.diverging {
-            n_divergences += 1;
-        }
-
         let accept_stat = tree_stats.mean_accept_prob;
-        sum_accept_prob += accept_stat;
-        total_iters_done += 1;
+        // Retain warmup telemetry, but report posterior-draw diagnostics only.
+        if !is_warmup {
+            if tree_stats.diverging {
+                n_divergences += 1;
+            }
+            sum_accept_prob += accept_stat;
+            total_iters_done += 1;
+        }
 
         if let Some(p) = progress {
             p.increment();
-            if tree_stats.diverging {
+            if !is_warmup && tree_stats.diverging {
                 p.add_divergence();
             }
         }
@@ -310,9 +312,13 @@ fn build_tree_iterative(
         let direction: f64 = if rng.gen::<bool>() { 1.0 } else { -1.0 };
 
         let subtree = if direction > 0.0 {
-            build_subtree(graph, evaluator, &right, eps, mass, h0, depth, dim, rng, scratch)
+            build_subtree(
+                graph, evaluator, &right, eps, mass, h0, depth, dim, rng, scratch,
+            )
         } else {
-            build_subtree(graph, evaluator, &left, -eps, mass, h0, depth, dim, rng, scratch)
+            build_subtree(
+                graph, evaluator, &left, -eps, mass, h0, depth, dim, rng, scratch,
+            )
         };
 
         n_leapfrog_total += subtree.n_leapfrog;
@@ -328,8 +334,7 @@ fn build_tree_iterative(
 
         // Multinomial combination: accept subtree's proposal with probability
         // exp(subtree.log_sum_weight - log_sum_weight)
-        let accept_prob =
-            (subtree.log_sum_weight - log_sum_weight).min(0.0).exp();
+        let accept_prob = (subtree.log_sum_weight - log_sum_weight).min(0.0).exp();
         if rng.gen::<f64>() < accept_prob {
             proposal = subtree.proposal;
         }
@@ -397,7 +402,11 @@ fn build_subtree(
         let h_new = next.energy(mass, scratch);
         let delta_h = h_new - h0;
         let diverging = delta_h > MAX_DELTA_H || !delta_h.is_finite();
-        let log_weight = if diverging { f64::NEG_INFINITY } else { -delta_h };
+        let log_weight = if diverging {
+            f64::NEG_INFINITY
+        } else {
+            -delta_h
+        };
 
         return TreeResult {
             left: next.clone(),
@@ -601,4 +610,50 @@ fn find_initial_step_size(
     }
 
     eps.clamp(1e-10, 1e3)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::Graph;
+    use rand::SeedableRng;
+
+    #[test]
+    fn nuts_chain_reports_posterior_only_diagnostics() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        graph.normal_logp(x, zero, one);
+        let config = NutsConfig {
+            step_size: 0.1,
+            max_tree_depth: 3,
+            num_draws: 3,
+            num_warmup: 2,
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(9);
+
+        let chain = run_chain(&graph, &config, &mut rng, None, None);
+        let posterior: Vec<_> = chain
+            .transitions
+            .iter()
+            .filter(|transition| !transition.is_warmup)
+            .collect();
+
+        assert_eq!(chain.samples.len(), 3);
+        assert_eq!(posterior.len(), 3);
+        assert_eq!(
+            chain.divergences,
+            posterior
+                .iter()
+                .filter(|transition| transition.divergent)
+                .count()
+        );
+        let expected_accept = posterior
+            .iter()
+            .map(|transition| transition.accept_prob)
+            .sum::<f64>()
+            / posterior.len() as f64;
+        assert_eq!(chain.accept_rate, expected_accept);
+    }
 }

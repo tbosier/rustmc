@@ -157,20 +157,28 @@ pub fn run_chain(
         let accept_prob = log_accept_ratio.min(0.0).exp();
         let energy_error = h_prop - h_current;
 
-        total += 1;
         let divergent = !log_accept_ratio.is_finite();
         let mut accepted_transition = false;
-        if divergent {
-            n_divergences += 1;
-        } else if rng.gen::<f64>().ln() < log_accept_ratio {
+        if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
-            accepted += 1;
             accepted_transition = true;
+        }
+
+        // Warmup transitions are retained in `transitions` for auditability,
+        // but must not affect posterior-sampling diagnostics.
+        if !is_warmup {
+            total += 1;
+            if divergent {
+                n_divergences += 1;
+            }
+            if accepted_transition {
+                accepted += 1;
+            }
         }
 
         if let Some(pbar) = progress {
             pbar.increment();
-            if divergent {
+            if !is_warmup && divergent {
                 pbar.add_divergence();
             }
         }
@@ -195,14 +203,8 @@ pub fn run_chain(
                 mass_acc.reset();
                 adapt_count = 0;
                 h_bar = 0.0;
-                let new_eps = find_initial_step_size(
-                    graph,
-                    &mut evaluator,
-                    &q,
-                    &mass,
-                    &mut scratch,
-                    rng,
-                );
+                let new_eps =
+                    find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng);
                 step_size = new_eps;
                 log_eps_bar = new_eps.ln();
             }
@@ -391,5 +393,23 @@ mod tests {
             .transitions
             .iter()
             .all(|t| t.accept_prob.is_finite() && t.energy_error.is_finite()));
+        let posterior_transitions: Vec<_> = chain
+            .transitions
+            .iter()
+            .filter(|transition| !transition.is_warmup)
+            .collect();
+        assert_eq!(
+            chain.divergences,
+            posterior_transitions
+                .iter()
+                .filter(|transition| transition.divergent)
+                .count()
+        );
+        let posterior_accept_rate = posterior_transitions
+            .iter()
+            .filter(|transition| transition.accepted)
+            .count() as f64
+            / posterior_transitions.len() as f64;
+        assert_eq!(chain.accept_rate, posterior_accept_rate);
     }
 }

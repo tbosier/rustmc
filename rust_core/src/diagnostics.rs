@@ -31,6 +31,9 @@ pub struct DiagnosticsReport {
 }
 
 /// Per-chain transition telemetry summary.
+///
+/// Divergence and acceptance fields describe posterior draws only. Energy and
+/// integrator-work fields summarize every retained transition, including warmup.
 #[derive(Debug, Clone)]
 pub struct ChainTransitionDiagnostics {
     pub chain_index: usize,
@@ -48,6 +51,9 @@ pub struct ChainTransitionDiagnostics {
 }
 
 /// Aggregated telemetry across all chains for one sampling run.
+///
+/// `total_divergences` and `mean_accept_prob` describe posterior draws only;
+/// energy and leapfrog fields summarize all retained transitions.
 #[derive(Debug, Clone)]
 pub struct TransitionDiagnosticsReport {
     pub chains: Vec<ChainTransitionDiagnostics>,
@@ -72,7 +78,15 @@ impl DiagnosticsReport {
         lines.push(String::new());
         lines.push(format!(
             "{:<12} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10}",
-            "Parameter", "mean", "std", "hdi_3%", "hdi_97%", "ess_bulk", "ess_tail", "r_hat", "mcse_mean"
+            "Parameter",
+            "mean",
+            "std",
+            "hdi_3%",
+            "hdi_97%",
+            "ess_bulk",
+            "ess_tail",
+            "r_hat",
+            "mcse_mean"
         ));
         lines.push("─".repeat(96));
 
@@ -89,7 +103,14 @@ impl DiagnosticsReport {
             };
             lines.push(format!(
                 "{:<12} {:>8.4} {:>8.4} {:>10.4} {:>10.4} {:>10} {:>10} {:>8.4} {:>10.6}",
-                p.name, p.mean, p.std, p.hdi_3, p.hdi_97, ess_bulk_s, ess_tail_s, p.r_hat,
+                p.name,
+                p.mean,
+                p.std,
+                p.hdi_3,
+                p.hdi_97,
+                ess_bulk_s,
+                ess_tail_s,
+                p.r_hat,
                 p.mcse_mean,
             ));
         }
@@ -106,13 +127,17 @@ impl DiagnosticsReport {
             avg_accept, self.divergences
         ));
 
-        let any_bad_rhat = self.params.iter().any(|p| p.r_hat > 1.05 || !p.r_hat.is_finite());
-        let any_low_ess = self.params.iter().any(|p| p.ess_bulk < 400.0 || p.ess_tail < 400.0);
+        let any_bad_rhat = self
+            .params
+            .iter()
+            .any(|p| p.r_hat > 1.05 || !p.r_hat.is_finite());
+        let any_low_ess = self
+            .params
+            .iter()
+            .any(|p| p.ess_bulk < 400.0 || p.ess_tail < 400.0);
 
         if any_bad_rhat {
-            lines.push(
-                "⚠  Some R-hat values > 1.05 — chains may not have converged.".to_string(),
-            );
+            lines.push("⚠  Some R-hat values > 1.05 — chains may not have converged.".to_string());
         }
         if any_low_ess {
             lines.push(
@@ -144,15 +169,7 @@ impl TransitionDiagnosticsReport {
         lines.push(String::new());
         lines.push(format!(
             "{:<6} {:>8} {:>8} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10}",
-            "chain",
-            "trans",
-            "warmup",
-            "div",
-            "acc",
-            "mean_acc",
-            "mean_dH",
-            "max|dH|",
-            "leapfrogs"
+            "chain", "trans", "warmup", "div", "acc", "mean_acc", "mean_dH", "max|dH|", "leapfrogs"
         ));
         lines.push("─".repeat(100));
 
@@ -255,10 +272,11 @@ pub fn compute_transition_diagnostics(
         let num_transitions = chain.len();
         let num_warmup_transitions = chain.iter().filter(|t| t.is_warmup).count();
         let num_draw_transitions = num_transitions.saturating_sub(num_warmup_transitions);
-        let divergences = chain.iter().filter(|t| t.divergent).count();
-        let accepted_transitions = chain.iter().filter(|t| t.accepted).count();
-        let mean_accept_prob = if num_transitions > 0 {
-            chain.iter().map(|t| t.accept_prob).sum::<f64>() / num_transitions as f64
+        let draws: Vec<&TransitionStats> = chain.iter().filter(|t| !t.is_warmup).collect();
+        let divergences = draws.iter().filter(|t| t.divergent).count();
+        let accepted_transitions = draws.iter().filter(|t| t.accepted).count();
+        let mean_accept_prob = if num_draw_transitions > 0 {
+            draws.iter().map(|t| t.accept_prob).sum::<f64>() / num_draw_transitions as f64
         } else {
             0.0
         };
@@ -284,7 +302,7 @@ pub fn compute_transition_diagnostics(
         total_draw_transitions += num_draw_transitions;
         total_divergences += divergences;
         total_leapfrog_steps += chain_leapfrog_steps;
-        sum_accept_prob += chain.iter().map(|t| t.accept_prob).sum::<f64>();
+        sum_accept_prob += draws.iter().map(|t| t.accept_prob).sum::<f64>();
         sum_energy_error += chain.iter().map(|t| t.energy_error).sum::<f64>();
         n_energy_error += num_transitions;
         max_abs_energy_error = max_abs_energy_error.max(chain_max_abs_energy_error);
@@ -305,8 +323,8 @@ pub fn compute_transition_diagnostics(
         });
     }
 
-    let mean_accept_prob = if total_transitions > 0 {
-        sum_accept_prob / total_transitions as f64
+    let mean_accept_prob = if total_draw_transitions > 0 {
+        sum_accept_prob / total_draw_transitions as f64
     } else {
         0.0
     };
@@ -423,11 +441,19 @@ fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
 
     let lower: Vec<Vec<f64>> = chains
         .iter()
-        .map(|c| c.iter().map(|&x| if x <= q05 { 1.0 } else { 0.0 }).collect())
+        .map(|c| {
+            c.iter()
+                .map(|&x| if x <= q05 { 1.0 } else { 0.0 })
+                .collect()
+        })
         .collect();
     let upper: Vec<Vec<f64>> = chains
         .iter()
-        .map(|c| c.iter().map(|&x| if x >= q95 { 1.0 } else { 0.0 }).collect())
+        .map(|c| {
+            c.iter()
+                .map(|&x| if x >= q95 { 1.0 } else { 0.0 })
+                .collect()
+        })
         .collect();
 
     let ess_lo = ess_raw(&lower);
@@ -609,7 +635,11 @@ mod tests {
         let chain1: Vec<f64> = (0..500).map(|i| 0.0 + (i as f64 * 0.001)).collect();
         let chain2: Vec<f64> = (0..500).map(|i| 100.0 + (i as f64 * 0.001)).collect();
         let rh = r_hat_chains(&[chain1, chain2]);
-        assert!(rh > 1.5, "R-hat should be large for diverged chains, got {}", rh);
+        assert!(
+            rh > 1.5,
+            "R-hat should be large for diverged chains, got {}",
+            rh
+        );
     }
 
     #[test]
@@ -634,7 +664,7 @@ mod tests {
                     accepted: true,
                     accept_prob: 0.9,
                     energy_error: 0.1,
-                    divergent: false,
+                    divergent: true,
                     step_size: 1.0,
                     num_leapfrog_steps: 5,
                     tree_depth: Some(2),
@@ -650,30 +680,53 @@ mod tests {
                     tree_depth: Some(3),
                 },
             ],
-            vec![
-                TransitionStats {
-                    is_warmup: false,
-                    accepted: true,
-                    accept_prob: 0.8,
-                    energy_error: 0.2,
-                    divergent: false,
-                    step_size: 0.5,
-                    num_leapfrog_steps: 6,
-                    tree_depth: None,
-                },
-            ],
+            vec![TransitionStats {
+                is_warmup: false,
+                accepted: true,
+                accept_prob: 0.8,
+                energy_error: 0.2,
+                divergent: false,
+                step_size: 0.5,
+                num_leapfrog_steps: 6,
+                tree_depth: None,
+            }],
         ];
 
         let report = compute_transition_diagnostics(&transitions);
         assert_eq!(report.total_transitions, 3);
         assert_eq!(report.total_warmup_transitions, 1);
         assert_eq!(report.total_draw_transitions, 2);
+        // Warmup telemetry remains in the input, but user-facing diagnostics
+        // describe the returned posterior draws only.
         assert_eq!(report.total_divergences, 1);
         assert_eq!(report.total_leapfrog_steps, 18);
         assert_eq!(report.chains.len(), 2);
         assert_eq!(report.chains[0].divergences, 1);
         assert_eq!(report.chains[1].max_tree_depth, None);
-        assert!(report.mean_accept_prob.is_finite());
+        assert_eq!(report.mean_accept_prob, 0.75);
         assert!(report.max_abs_energy_error >= 0.4);
+    }
+
+    #[test]
+    fn transition_diagnostics_keep_warmup_work_out_of_posterior_rates() {
+        let transitions = vec![vec![TransitionStats {
+            is_warmup: true,
+            accepted: true,
+            accept_prob: 0.9,
+            energy_error: 0.25,
+            divergent: true,
+            step_size: 0.5,
+            num_leapfrog_steps: 9,
+            tree_depth: Some(4),
+        }]];
+
+        let report = compute_transition_diagnostics(&transitions);
+        assert_eq!(report.total_divergences, 0);
+        assert_eq!(report.mean_accept_prob, 0.0);
+        assert_eq!(report.total_leapfrog_steps, 9);
+        assert_eq!(report.mean_energy_error, 0.25);
+        assert_eq!(report.chains[0].accepted_transitions, 0);
+        assert_eq!(report.chains[0].mean_step_size, 0.5);
+        assert_eq!(report.chains[0].max_tree_depth, Some(4));
     }
 }
