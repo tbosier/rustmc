@@ -14,6 +14,9 @@ tests; roadmap items must not be advertised as current features.
 - A standalone time-homogeneous linear Gaussian state-space API now provides Kalman
   filtering, smoothing, forecasting, and missing-observation handling with fixed system
   matrices. It is not yet integrated into `ModelBuilder` parameter inference.
+- A specialized Bayesian local-level API now estimates process and observation variances
+  with explicit inverse-gamma priors and multi-chain FFBS/Gibbs sampling, returning
+  parameter-integrated latent and observation forecast paths.
 
 ## Tier 1: Correctness and trust
 
@@ -47,11 +50,11 @@ tests; roadmap items must not be advertised as current features.
 - Integrate the existing collapsed linear-Gaussian filter into `ModelBuilder`, rather
   than sampling one latent variable per time step with NUTS.
 - Build a moments-free Kalman log-likelihood kernel with reusable workspace and
-  parameter sensitivities, then return parameter-integrated posterior predictive
-  intervals from a fitted state-space result.
-- Add parameter-estimation paths for local level, local linear trend, and stationary
-  AR(1); all three fixed-input constructors and conditional forecast intervals are now
-  available.
+  parameter sensitivities for gradient-based generic state-space inference; the
+  specialized local-level Gibbs path already returns parameter-integrated forecasts.
+- Add fitted parameter-estimation paths for local linear trend and stationary AR(1);
+  local level is now fitted through `BayesianLocalLevel`, and all three fixed-input
+  constructors retain conditional forecast intervals.
 - Extend the existing filtering/smoothing and forecast outputs with named coordinates.
 - Validate log likelihood and filtered moments against a small independent reference.
 - Multivariate/non-Gaussian state-space models remain later work.

@@ -1,4 +1,5 @@
 pub mod autodiff;
+pub mod bayesian_forecast;
 pub mod compiled_model;
 pub mod data;
 pub mod diagnostics;

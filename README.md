@@ -221,6 +221,14 @@ convenience constructors cover local-level, local-linear-trend, and stationary A
 models. Forecast results expose explicitly labeled pointwise conditional intervals,
 including 95% bounds.
 
+`BayesianLocalLevel` adds a focused fitted forecasting workflow. It uses multi-chain
+conjugate FFBS/Gibbs inference with explicit inverse-gamma variance priors and preserves
+posterior samples as `(chain, draw)`. Forecasts are coherent latent and observation
+paths shaped `(chain, draw, horizon)`. Observation intervals integrate variance-parameter,
+terminal-state, process, and observation uncertainty; latent-state credible intervals
+are available separately. This is currently an equally spaced scalar local-level model,
+not a generic fitted state-space family.
+
 ### Progress reporting
 
 Live progress bar rendered from Rust at 10 Hz using atomic counters, with no GIL involvement:

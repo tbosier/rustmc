@@ -10,6 +10,13 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal as NormalDist};
 use rustmc_core::autodiff::Evaluator;
+use rustmc_core::bayesian_forecast::{
+    fit_bayesian_local_level, BayesianForecastError as CoreBayesianForecastError,
+    BayesianLocalLevelConfig as CoreBayesianLocalLevelConfig,
+    InverseGammaPrior as CoreInverseGammaPrior, LocalLevelPosterior as CoreLocalLevelPosterior,
+    LocalLevelPosteriorDraw as CoreLocalLevelPosteriorDraw,
+    PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
+};
 use rustmc_core::data::{DataBinding as CoreDataBinding, DataInputs, MatrixBinding};
 use rustmc_core::diagnostics::inv_normal_cdf;
 use rustmc_core::distributions::{
@@ -2899,25 +2906,7 @@ impl FitResult {
             groups.set_item("posterior_predictive", ppc_reshaped)?;
         }
 
-        // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
-        // from one keyword per group to a single nested group dictionary.
-        // Keep both generations working because rustmc supports Python
-        // environments that still carry the widely deployed ArviZ 0.x API.
-        let arviz_version: String = az.getattr("__version__")?.extract()?;
-        let arviz_major = arviz_version
-            .split('.')
-            .next()
-            .and_then(|part| part.parse::<u64>().ok())
-            .ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "cannot determine the ArviZ API generation from version '{arviz_version}'"
-                ))
-            })?;
-        if arviz_major >= 1 {
-            az.call_method1("from_dict", (groups,))
-        } else {
-            az.call_method("from_dict", (), Some(&groups))
-        }
+        arviz_from_groups(&az, groups)
     }
 
     fn __repr__(&self) -> String {
@@ -3916,6 +3905,34 @@ fn state_space_error(error: CoreStateSpaceError) -> PyErr {
     StateSpaceError::new_err(error.to_string())
 }
 
+fn bayesian_forecast_error(error: CoreBayesianForecastError) -> PyErr {
+    StateSpaceError::new_err(error.to_string())
+}
+
+/// Call the version-native ArviZ dictionary converter.
+fn arviz_from_groups<'py>(
+    az: &Bound<'py, PyModule>,
+    groups: Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
+    // from one keyword per group to a single nested group dictionary.
+    let arviz_version: String = az.getattr("__version__")?.extract()?;
+    let arviz_major = arviz_version
+        .split('.')
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "cannot determine the ArviZ API generation from version '{arviz_version}'"
+            ))
+        })?;
+    if arviz_major >= 1 {
+        az.call_method1("from_dict", (groups,))
+    } else {
+        az.call_method("from_dict", (), Some(&groups))
+    }
+}
+
 fn state_space_matrix(name: &str, value: PyReadonlyArray2<'_, f64>) -> PyResult<(Vec<f64>, usize)> {
     let shape = value.shape();
     if shape[0] != shape[1] {
@@ -4249,6 +4266,420 @@ impl PyForecastResult {
     }
 }
 
+fn local_level_parameter_array<'py, F>(
+    py: Python<'py>,
+    posterior: &CoreLocalLevelPosterior,
+    value: F,
+) -> Bound<'py, PyArray2<f64>>
+where
+    F: Fn(&CoreLocalLevelPosteriorDraw) -> f64,
+{
+    let chains = posterior.chains.len();
+    let draws = posterior.chains.first().map_or(0, Vec::len);
+    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
+        value(&posterior.chains[chain][draw])
+    })
+    .into_pyarray(py)
+}
+
+fn local_level_path_array<'py>(
+    py: Python<'py>,
+    paths: &[Vec<Vec<f64>>],
+) -> Bound<'py, PyArray3<f64>> {
+    let chains = paths.len();
+    let draws = paths.first().map_or(0, Vec::len);
+    let horizon = paths
+        .first()
+        .and_then(|chain| chain.first())
+        .map_or(0, Vec::len);
+    Array3::from_shape_fn((chains, draws, horizon), |(chain, draw, step)| {
+        paths[chain][draw][step]
+    })
+    .into_pyarray(py)
+}
+
+/// Inverse-gamma prior for a variance, parameterized by shape and scale.
+/// The density is proportional to x^(-shape-1) exp(-scale/x).
+#[pyclass(name = "InverseGammaPrior", frozen)]
+#[derive(Clone, Copy)]
+struct PyInverseGammaPrior {
+    inner: CoreInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyInverseGammaPrior {
+    #[new]
+    fn new(shape: f64, scale: f64) -> PyResult<Self> {
+        Ok(Self {
+            inner: CoreInverseGammaPrior::new(shape, scale).map_err(bayesian_forecast_error)?,
+        })
+    }
+
+    #[getter]
+    fn shape(&self) -> f64 {
+        self.inner.shape
+    }
+
+    #[getter]
+    fn scale(&self) -> f64 {
+        self.inner.scale
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "InverseGammaPrior(shape={}, scale={})",
+            self.inner.shape, self.inner.scale
+        )
+    }
+}
+
+/// Bayesian scalar Gaussian local-level model fitted with conjugate
+/// forward-filtering/backward-sampling Gibbs updates.
+#[pyclass(name = "BayesianLocalLevel", frozen)]
+#[derive(Clone)]
+struct PyBayesianLocalLevel {
+    initial_mean: f64,
+    initial_variance: f64,
+    process_variance_prior: CoreInverseGammaPrior,
+    observation_variance_prior: CoreInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyBayesianLocalLevel {
+    #[new]
+    #[pyo3(signature = (process_variance_prior, observation_variance_prior, initial_mean=0.0, initial_variance=100.0))]
+    fn new(
+        process_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        observation_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        initial_mean: f64,
+        initial_variance: f64,
+    ) -> PyResult<Self> {
+        if !initial_mean.is_finite() {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: initial mean must be finite",
+            ));
+        }
+        if !initial_variance.is_finite() || initial_variance <= 0.0 {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: initial variance must be finite and strictly positive",
+            ));
+        }
+        Ok(Self {
+            initial_mean,
+            initial_variance,
+            process_variance_prior: process_variance_prior.inner,
+            observation_variance_prior: observation_variance_prior.inner,
+        })
+    }
+
+    #[getter]
+    fn initial_mean(&self) -> f64 {
+        self.initial_mean
+    }
+
+    #[getter]
+    fn initial_variance(&self) -> f64 {
+        self.initial_variance
+    }
+
+    #[getter]
+    fn process_variance_prior(&self) -> PyInverseGammaPrior {
+        PyInverseGammaPrior {
+            inner: self.process_variance_prior,
+        }
+    }
+
+    #[getter]
+    fn observation_variance_prior(&self) -> PyInverseGammaPrior {
+        PyInverseGammaPrior {
+            inner: self.observation_variance_prior,
+        }
+    }
+
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianLocalLevelFit> {
+        let observations = state_space_vector(observations);
+        let config = CoreBayesianLocalLevelConfig {
+            initial_mean: self.initial_mean,
+            initial_variance: self.initial_variance,
+            process_variance_prior: self.process_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        };
+        let posterior = py
+            .allow_threads(|| fit_bayesian_local_level(&observations, &config))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianLocalLevelFit {
+            posterior,
+            observations,
+            config,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianLocalLevel(initial_mean={}, initial_variance={}, process_variance_prior=({}, {}), observation_variance_prior=({}, {}))",
+            self.initial_mean,
+            self.initial_variance,
+            self.process_variance_prior.shape,
+            self.process_variance_prior.scale,
+            self.observation_variance_prior.shape,
+            self.observation_variance_prior.scale,
+        )
+    }
+}
+
+#[pyclass(name = "BayesianLocalLevelFit")]
+struct PyBayesianLocalLevelFit {
+    posterior: CoreLocalLevelPosterior,
+    observations: Vec<f64>,
+    config: CoreBayesianLocalLevelConfig,
+}
+
+#[pymethods]
+impl PyBayesianLocalLevelFit {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.posterior.chains.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.posterior.chains.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn observed_count(&self) -> usize {
+        self.observations
+            .iter()
+            .filter(|value| !value.is_nan())
+            .count()
+    }
+
+    #[getter]
+    fn time_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    #[getter]
+    fn warmup(&self) -> usize {
+        self.config.num_warmup
+    }
+
+    #[getter]
+    fn thin(&self) -> usize {
+        self.config.thinning
+    }
+
+    fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        samples.set_item(
+            "process_variance",
+            local_level_parameter_array(py, &self.posterior, |draw| draw.process_variance),
+        )?;
+        samples.set_item(
+            "observation_variance",
+            local_level_parameter_array(py, &self.posterior, |draw| draw.observation_variance),
+        )?;
+        samples.set_item(
+            "process_sd",
+            local_level_parameter_array(py, &self.posterior, |draw| draw.process_variance.sqrt()),
+        )?;
+        samples.set_item(
+            "observation_sd",
+            local_level_parameter_array(py, &self.posterior, |draw| {
+                draw.observation_variance.sqrt()
+            }),
+        )?;
+        samples.set_item(
+            "terminal_level",
+            local_level_parameter_array(py, &self.posterior, |draw| draw.terminal_level),
+        )?;
+        Ok(samples)
+    }
+
+    #[pyo3(signature = (steps, seed=43))]
+    fn forecast(
+        &self,
+        py: Python<'_>,
+        steps: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianForecastResult> {
+        let forecast = py
+            .allow_threads(|| self.posterior.forecast(steps, seed))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianForecastResult { inner: forecast })
+    }
+
+    /// Export parameter draws and the fitted observations to ArviZ.
+    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let az = py.import("arviz")?;
+        let groups = PyDict::new(py);
+        groups.set_item("posterior", self.get_samples_2d(py)?)?;
+        let observed = PyDict::new(py);
+        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
+        groups.set_item("observed_data", observed)?;
+        arviz_from_groups(&az, groups)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianLocalLevelFit(chains={}, draws={}, time_count={}, observed_count={})",
+            self.chains(),
+            self.draws(),
+            self.time_count(),
+            self.observed_count(),
+        )
+    }
+}
+
+#[pyclass(name = "BayesianForecastResult")]
+struct PyBayesianForecastResult {
+    inner: CorePosteriorPredictiveForecast,
+}
+
+#[pymethods]
+impl PyBayesianForecastResult {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.inner.observation_paths.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.inner.observation_paths.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn steps(&self) -> usize {
+        self.inner.horizon()
+    }
+
+    #[getter]
+    fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.state_paths)
+    }
+
+    #[getter]
+    fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.observation_paths)
+    }
+
+    #[getter]
+    fn state_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .state_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    #[getter]
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .observation_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    fn state_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .state_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    fn observation_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .observation_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    /// Equal-tailed pointwise posterior interval for the latent state.
+    #[pyo3(signature = (level=0.95))]
+    fn state_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .state_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    /// Equal-tailed pointwise posterior-predictive interval for observations.
+    #[pyo3(signature = (level=0.95))]
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .observation_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    #[getter]
+    fn uncertainty_kind(&self) -> &'static str {
+        "parameter_integrated_posterior_predictive"
+    }
+
+    #[getter]
+    fn interval_kind(&self) -> &'static str {
+        "pointwise_equal_tailed"
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianForecastResult(chains={}, draws={}, steps={})",
+            self.chains(),
+            self.draws(),
+            self.steps(),
+        )
+    }
+}
+
+fn validate_interval_level(level: f64) -> PyResult<()> {
+    if !level.is_finite() || level <= 0.0 || level >= 1.0 {
+        return Err(PyValueError::new_err(
+            "level must be finite and strictly between 0 and 1",
+        ));
+    }
+    Ok(())
+}
+
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -4266,6 +4697,10 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyKalmanFilterResult>()?;
     m.add_class::<PyKalmanSmootherResult>()?;
     m.add_class::<PyForecastResult>()?;
+    m.add_class::<PyInverseGammaPrior>()?;
+    m.add_class::<PyBayesianLocalLevel>()?;
+    m.add_class::<PyBayesianLocalLevelFit>()?;
+    m.add_class::<PyBayesianForecastResult>()?;
     m.add("ParameterError", m.py().get_type::<ParameterError>())?;
     m.add("StateSpaceError", m.py().get_type::<StateSpaceError>())?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;

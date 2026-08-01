@@ -151,9 +151,28 @@ forecast = ssm.forecast(y_with_optional_nan_values, steps=12)
 lower_95, upper_95 = forecast.interval(0.95)
 ```
 
-This standalone API does not yet estimate the variances or integrate a Kalman likelihood
-into `ModelBuilder`. The interval is conditional on the fixed variances: it includes
-state, process, and observation uncertainty, but not parameter uncertainty.
+This standalone API keeps the supplied variances fixed. Its interval includes state,
+process, and observation uncertainty, but not parameter uncertainty.
+
+For Bayesian local-level fitting and a parameter-integrated 95% forecast interval:
+
+```python
+bayesian = rmc.BayesianLocalLevel(
+    process_variance_prior=rmc.InverseGammaPrior(2.5, 0.3),
+    observation_variance_prior=rmc.InverseGammaPrior(2.5, 0.6),
+    initial_mean=0.0,
+    initial_variance=4.0,
+)
+fit = bayesian.fit(y_with_optional_nan_values, chains=4, draws=1000, warmup=500)
+forecast = fit.forecast(steps=12, seed=43)
+lower_95, upper_95 = forecast.interval(0.95)
+
+# Latent-state credible interval, excluding future observation noise:
+state_lower_95, state_upper_95 = forecast.state_interval(0.95)
+```
+
+The inverse-gamma priors are on variances and must be chosen for the units of your
+series; rustmc does not silently infer a universal scale.
 
 ### `FitResult` methods
 

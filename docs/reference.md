@@ -37,6 +37,58 @@ time-varying matrices, or integrate a Kalman likelihood into `ModelBuilder`.
 Filtering, smoothing, and forecasting release the Python GIL after converting the
 input NumPy array.
 
+## Bayesian local-level forecasting
+
+`BayesianLocalLevel` estimates the two unknown noise variances in the scalar model
+
+```text
+x[-1] ~ Normal(initial_mean, initial_variance)
+x[t] = x[t-1] + Normal(0, process_variance)
+y[t] = x[t] + Normal(0, observation_variance)
+```
+
+It uses joint forward-filtering/backward-sampling state draws and conjugate Gibbs
+updates for the variances, following the FFBS/data-augmentation approach described by
+[Frühwirth-Schnatter (1994)](https://doi.org/10.1111/j.1467-9892.1994.tb00184.x)
+and [Carter and Kohn (1994)](https://doi.org/10.1093/biomet/81.3.541).
+
+Priors are deliberately explicit because variance scales depend on the units of the
+series:
+
+```python
+model = rmc.BayesianLocalLevel(
+    process_variance_prior=rmc.InverseGammaPrior(shape=2.5, scale=0.3),
+    observation_variance_prior=rmc.InverseGammaPrior(shape=2.5, scale=0.6),
+    initial_mean=0.0,
+    initial_variance=4.0,
+)
+fit = model.fit(y, chains=4, draws=1000, warmup=500, seed=42)
+forecast = fit.forecast(steps=12, seed=43)
+
+predictive_lower, predictive_upper = forecast.interval(0.95)
+state_lower, state_upper = forecast.state_interval(0.95)
+```
+
+`InverseGammaPrior(shape, scale)` is a prior on a **variance**, with density
+proportional to `x^(-shape-1) exp(-scale/x)`. `fit.get_samples_2d()` returns both
+variance and standard-deviation draws plus the terminal latent level, all preserving
+`(chain, draw)` shape. `fit.to_arviz()` exports the parameters and observed series for
+convergence checks.
+
+`forecast.state_samples` and `forecast.observation_samples` have shape
+`(chain, draw, step)` and contain coherent paths. `state_interval()` is a pointwise
+equal-tailed latent-state posterior credible interval. `interval()` is a pointwise
+equal-tailed posterior-predictive interval for future observations. The latter
+integrates parameter uncertainty, terminal-state uncertainty, future process noise,
+and observation noise. It is not a simultaneous trajectory band.
+
+`NaN` retains a missing time step and infinities are rejected. Fitting requires at
+least two finite observations. This specialized model assumes equally spaced scalar
+Gaussian observations; local trend, AR(1), seasonality, covariates, and irregular
+timestamps are not yet part of the fitted Bayesian API. Gibbs output remains finite
+MCMC output, so inspect multiple-chain convergence and effective sample sizes rather
+than treating it as an analytic posterior.
+
 ## `ModelBuilder`
 
 ```python
