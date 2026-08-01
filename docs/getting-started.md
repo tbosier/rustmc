@@ -62,7 +62,7 @@ Mean accept rate: 0.94  |  Divergences: 0
 - **mean / std** — posterior mean and standard deviation
 - **hdi_3% / hdi_97%** — 94% highest density interval
 - **ess_bulk / ess_tail** — effective sample size; aim for > 400
-- **r_hat** — convergence diagnostic; values near 1.0 indicate convergence
+- **r_hat** — raw split-chain convergence diagnostic; values near 1.0 indicate convergence
 - **mcse_mean** — Monte Carlo standard error of the mean
 
 ## Core API
@@ -112,6 +112,48 @@ fit = rmc.sample(
     sampler="nuts",           # "nuts" (default) or "hmc"
 )
 ```
+
+### Compile once and bind many datasets
+
+When the model structure is repeated across datasets, compile it once and bind each
+payload separately:
+
+```python
+builder = rmc.ModelBuilder()
+beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
+builder.normal_likelihood("obs", beta * "x", sigma=1.0, observed_key="y")
+compiled = builder.compile()
+
+fit = compiled.sample({"x": x, "y": y}, chains=4, draws=1000)
+batch = compiled.sample_batch(
+    [{"y": store_a_y}, {"y": store_b_y}],
+    shared={"x": shared_x},
+    ids=["store-a", "store-b"],
+)
+```
+
+`compiled.bind(data)` validates the schema eagerly and returns a reusable `BoundModel`.
+Bindings may have different row counts, but matrix column counts and parameter shapes are
+part of the compiled structure.
+
+### Linear Gaussian state-space models
+
+For fixed-system filtering, smoothing, and forecasting:
+
+```python
+ssm = rmc.LinearGaussianStateSpace.local_level(
+    process_variance=0.2,
+    observation_variance=1.0,
+)
+filtered = ssm.filter(y_with_optional_nan_values)
+smoothed = ssm.smooth(y_with_optional_nan_values)
+forecast = ssm.forecast(y_with_optional_nan_values, steps=12)
+lower_95, upper_95 = forecast.interval(0.95)
+```
+
+This standalone API does not yet estimate the variances or integrate a Kalman likelihood
+into `ModelBuilder`. The interval is conditional on the fixed variances: it includes
+state, process, and observation uncertainty, but not parameter uncertainty.
 
 ### `FitResult` methods
 
@@ -177,5 +219,5 @@ idata = fit.to_arviz(include_log_likelihood=True)
 
 - [Linear Regression example](examples/linear-regression.md) — full workflow with prior/posterior predictive checks
 - [Hierarchical Models](examples/hierarchical.md) — partial pooling across groups
-- [Batch Inference](examples/batch-inference.md) — fitting 10,000 models at once
+- [Batch Inference](examples/batch-inference.md) — fitting many independent models at once
 - [High-Dimensional Regression](examples/high-dimensional.md) — faer-backed `X @ beta`

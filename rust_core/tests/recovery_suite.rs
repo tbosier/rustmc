@@ -1,18 +1,26 @@
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Bernoulli as BernoulliDist, Distribution, Normal as NormalDist, Poisson as PoissonDist};
-use rustmc_core::distributions::{HalfNormal, Normal};
+use rand_distr::{
+    Bernoulli as BernoulliDist, Distribution, Normal as NormalDist, Poisson as PoissonDist,
+};
 use rustmc_core::diagnostics::{DiagnosticsReport, ParamDiagnostics};
+use rustmc_core::distributions::{HalfNormal, Normal};
 use rustmc_core::graph::Graph;
 use rustmc_core::sampler::{sample as run_sample, SamplerConfig, SamplerType};
 
 const CHAIN_COUNT: usize = 4;
-const DEFAULT_DRAWS: usize = 150;
-const DEFAULT_WARMUP: usize = 150;
+const DEFAULT_DRAWS: usize = 600;
+const DEFAULT_WARMUP: usize = 600;
 const FUNNEL_DRAWS: usize = 250;
-const FUNNEL_WARMUP: usize = 250;
+const FUNNEL_WARMUP: usize = 1200;
 
-fn sample_graph(graph: Graph, seed: u64, draws: usize, warmup: usize, max_tree_depth: usize) -> rustmc_core::sampler::SampleResult {
+fn sample_graph(
+    graph: Graph,
+    seed: u64,
+    draws: usize,
+    warmup: usize,
+    max_tree_depth: usize,
+) -> rustmc_core::sampler::SampleResult {
     run_sample(
         graph,
         SamplerConfig {
@@ -47,7 +55,10 @@ fn assert_health(report: &DiagnosticsReport, max_rhat: f64, min_ess: f64, max_di
         max_divergences
     );
     assert!(
-        report.params.iter().all(|p| p.r_hat.is_finite() && p.r_hat < max_rhat),
+        report
+            .params
+            .iter()
+            .all(|p| p.r_hat.is_finite() && p.r_hat < max_rhat),
         "some r_hat values exceeded {max_rhat}: {:?}",
         report
             .params
@@ -56,7 +67,10 @@ fn assert_health(report: &DiagnosticsReport, max_rhat: f64, min_ess: f64, max_di
             .collect::<Vec<_>>()
     );
     assert!(
-        report.params.iter().all(|p| p.ess_bulk.is_finite() && p.ess_bulk >= min_ess),
+        report
+            .params
+            .iter()
+            .all(|p| p.ess_bulk.is_finite() && p.ess_bulk >= min_ess),
         "some ESS values fell below {min_ess}: {:?}",
         report
             .params
@@ -99,7 +113,12 @@ fn one_hot_columns(groups: &[usize], n_groups: usize) -> Vec<Vec<f64>> {
     cols
 }
 
-fn fused_linear_mu(graph: &mut Graph, params: &[rustmc_core::graph::NodeId], columns: &[Vec<f64>], intercept: Option<rustmc_core::graph::NodeId>) -> rustmc_core::graph::NodeId {
+fn fused_linear_mu(
+    graph: &mut Graph,
+    params: &[rustmc_core::graph::NodeId],
+    columns: &[Vec<f64>],
+    intercept: Option<rustmc_core::graph::NodeId>,
+) -> rustmc_core::graph::NodeId {
     let data_indices = columns
         .iter()
         .map(|col| graph.store_data_vec(col.clone()))
@@ -203,7 +222,7 @@ fn poisson_glm_recovers_rate_coefficients() {
         .iter()
         .map(|&xi| {
             let lam = (alpha_true + beta_true * xi).exp().max(1e-12);
-            PoissonDist::new(lam).unwrap().sample(&mut rng) as f64
+            PoissonDist::new(lam).unwrap().sample(&mut rng)
         })
         .collect();
 
@@ -256,8 +275,8 @@ fn ar1_style_regression_recovers_lag_coefficient() {
 #[test]
 fn ridge_regression_recovers_high_dimensional_coefficients() {
     let mut rng = ChaCha8Rng::seed_from_u64(66);
-    let n = 240;
-    let p = 8;
+    let n = 180;
+    let p = 6;
     let sigma_true = 0.5;
     let x_dist = NormalDist::new(0.0, 1.0).unwrap();
     let beta_dist = NormalDist::new(0.0, 0.8).unwrap();
@@ -271,21 +290,21 @@ fn ridge_regression_recovers_high_dimensional_coefficients() {
     }
     let beta_true: Vec<f64> = (0..p).map(|_| beta_dist.sample(&mut rng)).collect();
     let mut y = vec![0.0; n];
-    for i in 0..n {
+    for (i, observation) in y.iter_mut().enumerate().take(n) {
         let mut mu = 0.0;
         for j in 0..p {
             mu += x_cols[j][i] * beta_true[j];
         }
-        y[i] = mu + noise_dist.sample(&mut rng);
+        *observation = mu + noise_dist.sample(&mut rng);
     }
 
     let mut graph = Graph::new();
     let beta_start = graph.add_vector_params("beta", p);
     graph.vector_normal_logp(beta_start, p, 0.0, 1.0);
+    let x_cols_ref = &x_cols;
     let matrix_idx = graph.store_matrix(
-        x_cols
-            .iter()
-            .flat_map(|col| col.iter().copied())
+        (0..n)
+            .flat_map(|row| (0..p).map(move |col| x_cols_ref[col][row]))
             .collect(),
         n,
         p,
@@ -295,10 +314,10 @@ fn ridge_regression_recovers_high_dimensional_coefficients() {
     let sigma = graph.add_constant(sigma_true);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 106, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(graph, 106, 100, 100, 8);
     let report = result.diagnostics();
-    assert_health(&report, 1.12, 40.0, 80);
-    assert_vector_rmse(&report, "beta", &beta_true, 0.95);
+    assert_health(&report, 1.08, 40.0, 20);
+    assert_vector_rmse(&report, "beta", &beta_true, 0.20);
 }
 
 #[test]
@@ -319,12 +338,12 @@ fn partial_pooling_panel_recovers_group_effects() {
     let mut group_idx = Vec::with_capacity(n);
     let mut x = Vec::with_capacity(n);
     let mut y = Vec::with_capacity(n);
-    for g in 0..groups {
+    for (g, &alpha) in alpha_true.iter().enumerate().take(groups) {
         for _ in 0..per_group {
             let xi = x_dist.sample(&mut rng);
             x.push(xi);
             group_idx.push(g);
-            y.push(alpha_true[g] + beta_true * xi + noise_dist.sample(&mut rng));
+            y.push(alpha + beta_true * xi + noise_dist.sample(&mut rng));
         }
     }
     let group_cols = one_hot_columns(&group_idx, groups);
@@ -345,7 +364,7 @@ fn partial_pooling_panel_recovers_group_effects() {
     let obs_idx = graph.add_obs_data(y);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 107, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(graph, 107, 2000, 1000, 10);
     let report = result.diagnostics();
     assert_health(&report, 1.50, 20.0, 40);
     assert_scalar(&report, "mu_alpha", mu_alpha_true, 0.6);
@@ -371,13 +390,13 @@ fn hierarchical_poisson_recovers_partial_pooling_counts() {
     let mut group_idx = Vec::with_capacity(n);
     let mut x = Vec::with_capacity(n);
     let mut y = Vec::with_capacity(n);
-    for g in 0..groups {
+    for (g, &alpha) in alpha_true.iter().enumerate().take(groups) {
         for _ in 0..per_group {
             let xi = x_dist.sample(&mut rng);
             x.push(xi);
             group_idx.push(g);
-            let lam = (alpha_true[g] + beta_true * xi).exp().max(1e-12);
-            y.push(PoissonDist::new(lam).unwrap().sample(&mut rng) as f64);
+            let lam = (alpha + beta_true * xi).exp().max(1e-12);
+            y.push(PoissonDist::new(lam).unwrap().sample(&mut rng));
         }
     }
     let group_cols = one_hot_columns(&group_idx, groups);
@@ -411,7 +430,7 @@ fn eight_schools_centered_recovers_hyperparameters() {
     let mut rng = ChaCha8Rng::seed_from_u64(99);
     let mu_true = 5.0;
     let tau_true = 2.0;
-    let sigma = vec![2.0, 2.5, 3.0, 2.2, 2.8, 3.3, 2.1, 2.6];
+    let sigma = [2.0, 2.5, 3.0, 2.2, 2.8, 3.3, 2.1, 2.6];
     let theta_dist = NormalDist::new(mu_true, tau_true).unwrap();
     let theta_true: Vec<f64> = (0..8).map(|_| theta_dist.sample(&mut rng)).collect();
     let y: Vec<f64> = theta_true
@@ -430,7 +449,7 @@ fn eight_schools_centered_recovers_hyperparameters() {
         graph.normal_logp(yi, theta, si);
     }
 
-    let result = sample_graph(graph, 109, 200, 200, 10);
+    let result = sample_graph(graph, 109, 800, 800, 10);
     let report = result.diagnostics();
     assert_health(&report, 1.35, 10.0, 60);
     assert_scalar(&report, "mu", mu_true, 1.0);
@@ -443,7 +462,7 @@ fn eight_schools_noncentered_recovers_hyperparameters() {
     let mut rng = ChaCha8Rng::seed_from_u64(100);
     let mu_true = 5.0;
     let tau_true = 2.0;
-    let sigma = vec![2.0, 2.5, 3.0, 2.2, 2.8, 3.3, 2.1, 2.6];
+    let sigma = [2.0, 2.5, 3.0, 2.2, 2.8, 3.3, 2.1, 2.6];
     let theta_dist = NormalDist::new(mu_true, tau_true).unwrap();
     let theta_true: Vec<f64> = (0..8).map(|_| theta_dist.sample(&mut rng)).collect();
     let y: Vec<f64> = theta_true
@@ -464,7 +483,7 @@ fn eight_schools_noncentered_recovers_hyperparameters() {
         graph.normal_logp(yi, theta, si);
     }
 
-    let result = sample_graph(graph, 110, 200, 200, 10);
+    let result = sample_graph(graph, 110, 800, 800, 10);
     let report = result.diagnostics();
     assert_health(&report, 1.04, 60.0, 30);
     assert_scalar(&report, "mu", mu_true, 0.75);
@@ -472,7 +491,11 @@ fn eight_schools_noncentered_recovers_hyperparameters() {
     for i in 0..8 {
         let name = format!("z_{i}");
         let p = diag(&report, &name);
-        assert!(p.mean.abs() < 1.25, "{name} mean too far from zero: {}", p.mean);
+        assert!(
+            p.mean.abs() < 1.25,
+            "{name} mean too far from zero: {}",
+            p.mean
+        );
     }
 }
 

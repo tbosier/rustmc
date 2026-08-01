@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
+use crate::data::DataBinding;
+use crate::data::{DataSchema, DataSlot, SlotKind};
+
 /// Unique identifier for a node in the computation graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
@@ -104,19 +107,45 @@ pub enum Op {
         obs_data_idx: usize,
     },
     /// logp(x | sigma) for x >= 0; HalfNormal
-    HalfNormalLogP { x: NodeId, sigma: NodeId },
+    HalfNormalLogP {
+        x: NodeId,
+        sigma: NodeId,
+    },
     /// logp(x | nu, mu, sigma); StudentT
-    StudentTLogP { x: NodeId, nu: NodeId, mu: NodeId, sigma: NodeId },
+    StudentTLogP {
+        x: NodeId,
+        nu: NodeId,
+        mu: NodeId,
+        sigma: NodeId,
+    },
     /// logp(x | lower, upper); Uniform
-    UniformLogP { x: NodeId, lower: NodeId, upper: NodeId },
+    UniformLogP {
+        x: NodeId,
+        lower: NodeId,
+        upper: NodeId,
+    },
     /// logp(x | p); Bernoulli (x in {0, 1})
-    BernoulliLogP { x: NodeId, p: NodeId },
+    BernoulliLogP {
+        x: NodeId,
+        p: NodeId,
+    },
     /// logp(x | lam); Poisson
-    PoissonLogP { x: NodeId, lam: NodeId },
+    PoissonLogP {
+        x: NodeId,
+        lam: NodeId,
+    },
     /// logp(x | alpha, beta); Gamma
-    GammaLogP { x: NodeId, alpha: NodeId, beta: NodeId },
+    GammaLogP {
+        x: NodeId,
+        alpha: NodeId,
+        beta: NodeId,
+    },
     /// logp(x | alpha, beta); Beta
-    BetaLogP { x: NodeId, alpha: NodeId, beta: NodeId },
+    BetaLogP {
+        x: NodeId,
+        alpha: NodeId,
+        beta: NodeId,
+    },
     /// Fused linear combination: mu[i] = intercept + Σ_k params[k] * data[k][i]
     ///
     /// Replaces a chain of ScalarMulData + VectorAdd + ScalarBroadcastAdd with
@@ -212,6 +241,23 @@ impl ParamTransform {
             }
         }
     }
+
+    /// Derivative of the constrained value with respect to the raw value.
+    #[inline]
+    pub fn derivative(&self, raw: f64) -> f64 {
+        match self {
+            ParamTransform::Identity => 1.0,
+            ParamTransform::Exp => raw.exp(),
+            ParamTransform::Sigmoid => {
+                let s = 1.0 / (1.0 + (-raw).exp());
+                s * (1.0 - s)
+            }
+            ParamTransform::BoundedSigmoid { lower, upper } => {
+                let s = 1.0 / (1.0 + (-raw).exp());
+                (upper - lower) * s * (1.0 - s)
+            }
+        }
+    }
 }
 
 /// The computational graph representing a probabilistic model.
@@ -226,6 +272,8 @@ pub struct Graph {
     pub data_vectors: Vec<Vec<f64>>,
     pub obs_vectors: Vec<Vec<f64>>,
     pub data_matrices: Vec<MatrixData>,
+    /// Structural, user-facing contract for re-bindable dataset payloads.
+    pub schema: DataSchema,
     pub param_names: Vec<String>,
     pub param_transforms: Vec<ParamTransform>,
     pub param_spans: Vec<ParamSpan>,
@@ -241,6 +289,7 @@ impl Graph {
             data_vectors: Vec::new(),
             obs_vectors: Vec::new(),
             data_matrices: Vec::new(),
+            schema: DataSchema::default(),
             param_names: Vec::new(),
             param_transforms: Vec::new(),
             param_spans: Vec::new(),
@@ -278,12 +327,31 @@ impl Graph {
     pub fn add_data(&mut self, name: &str, values: Vec<f64>) -> NodeId {
         let idx = self.data_vectors.len();
         self.data_vectors.push(values);
+        self.schema.vectors.push(DataSlot {
+            key: name.to_string(),
+            kind: SlotKind::Vector,
+            dim: "obs".to_string(),
+        });
         self.add_node(Op::Data(idx), Some(name.to_string()))
     }
 
     pub fn add_obs_data(&mut self, values: Vec<f64>) -> usize {
         let idx = self.obs_vectors.len();
         self.obs_vectors.push(values);
+        idx
+    }
+
+    /// Store a named response vector and declare its structural schema slot.
+    pub fn add_named_obs_data(&mut self, key: &str, likelihood: &str, values: Vec<f64>) -> usize {
+        let idx = self.obs_vectors.len();
+        self.obs_vectors.push(values);
+        self.schema.observations.push(DataSlot {
+            key: key.to_string(),
+            kind: SlotKind::Observation {
+                likelihood: likelihood.to_string(),
+            },
+            dim: "obs".to_string(),
+        });
         idx
     }
 
@@ -376,11 +444,7 @@ impl Graph {
         node
     }
 
-    pub fn obs_logp_bernoulli_logit(
-        &mut self,
-        linpred_vec: NodeId,
-        obs_data_idx: usize,
-    ) -> NodeId {
+    pub fn obs_logp_bernoulli_logit(&mut self, linpred_vec: NodeId, obs_data_idx: usize) -> NodeId {
         let node = self.add_node(
             Op::ObsLogP {
                 family: ObsFamily::BernoulliLogit,
@@ -394,11 +458,7 @@ impl Graph {
         node
     }
 
-    pub fn obs_logp_poisson_log(
-        &mut self,
-        linpred_vec: NodeId,
-        obs_data_idx: usize,
-    ) -> NodeId {
+    pub fn obs_logp_poisson_log(&mut self, linpred_vec: NodeId, obs_data_idx: usize) -> NodeId {
         let node = self.add_node(
             Op::ObsLogP {
                 family: ObsFamily::PoissonLog,
@@ -412,11 +472,7 @@ impl Graph {
         node
     }
 
-    pub fn obs_logp_exponential_log(
-        &mut self,
-        linpred_vec: NodeId,
-        obs_data_idx: usize,
-    ) -> NodeId {
+    pub fn obs_logp_exponential_log(&mut self, linpred_vec: NodeId, obs_data_idx: usize) -> NodeId {
         let node = self.add_node(
             Op::ObsLogP {
                 family: ObsFamily::ExponentialLog,
@@ -570,6 +626,18 @@ impl Graph {
         idx
     }
 
+    /// Store a named predictor without creating an explicit data node.
+    pub fn store_named_data_vec(&mut self, key: &str, values: Vec<f64>) -> usize {
+        let idx = self.data_vectors.len();
+        self.data_vectors.push(values);
+        self.schema.vectors.push(DataSlot {
+            key: key.to_string(),
+            kind: SlotKind::Vector,
+            dim: "obs".to_string(),
+        });
+        idx
+    }
+
     pub fn fused_linear_mu(
         &mut self,
         param_nodes: Vec<NodeId>,
@@ -620,8 +688,59 @@ impl Graph {
     /// Store a row-major matrix and return its index in `data_matrices`.
     pub fn store_matrix(&mut self, data: Vec<f64>, n_rows: usize, n_cols: usize) -> usize {
         let idx = self.data_matrices.len();
-        self.data_matrices.push(MatrixData { data, n_rows, n_cols });
+        self.data_matrices.push(MatrixData {
+            data,
+            n_rows,
+            n_cols,
+        });
         idx
+    }
+
+    pub fn store_named_matrix(
+        &mut self,
+        key: &str,
+        data: Vec<f64>,
+        n_rows: usize,
+        n_cols: usize,
+    ) -> usize {
+        let idx = self.data_matrices.len();
+        self.data_matrices.push(MatrixData {
+            data,
+            n_rows,
+            n_cols,
+        });
+        self.schema.matrices.push(DataSlot {
+            key: key.to_string(),
+            kind: SlotKind::Matrix { n_cols },
+            dim: "obs".to_string(),
+        });
+        idx
+    }
+
+    /// Clone only the immutable structure and schema, dropping dataset payloads.
+    pub fn structure_only(&self) -> Self {
+        let mut graph = self.clone();
+        graph.data_vectors.clear();
+        graph.obs_vectors.clear();
+        graph.data_matrices.clear();
+        graph
+    }
+
+    /// Compatibility view for APIs that still consume a data-owning graph.
+    pub fn with_binding(&self, binding: &DataBinding) -> Self {
+        let mut graph = self.structure_only();
+        graph.data_vectors = binding.vectors.iter().map(|v| v.to_vec()).collect();
+        graph.obs_vectors = binding.observations.iter().map(|v| v.to_vec()).collect();
+        graph.data_matrices = binding
+            .matrices
+            .iter()
+            .map(|m| MatrixData {
+                data: m.data.to_vec(),
+                n_rows: m.n_rows,
+                n_cols: m.n_cols,
+            })
+            .collect();
+        graph
     }
 
     pub fn mat_vec_mul(
@@ -631,7 +750,15 @@ impl Graph {
         n_params: usize,
         intercept: Option<NodeId>,
     ) -> NodeId {
-        self.add_node(Op::MatVecMul { matrix_idx, param_start, n_params, intercept }, None)
+        self.add_node(
+            Op::MatVecMul {
+                matrix_idx,
+                param_start,
+                n_params,
+                intercept,
+            },
+            None,
+        )
     }
 
     pub fn vector_normal_logp(
@@ -641,7 +768,15 @@ impl Graph {
         mu: f64,
         sigma: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorNormalLogP { param_start, n_params, mu, sigma }, None);
+        let node = self.add_node(
+            Op::VectorNormalLogP {
+                param_start,
+                n_params,
+                mu,
+                sigma,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -652,7 +787,14 @@ impl Graph {
         n_params: usize,
         sigma: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorHalfNormalLogP { param_start, n_params, sigma }, None);
+        let node = self.add_node(
+            Op::VectorHalfNormalLogP {
+                param_start,
+                n_params,
+                sigma,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -665,7 +807,16 @@ impl Graph {
         mu: f64,
         sigma: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma }, None);
+        let node = self.add_node(
+            Op::VectorStudentTLogP {
+                param_start,
+                n_params,
+                nu,
+                mu,
+                sigma,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -677,7 +828,15 @@ impl Graph {
         alpha: f64,
         beta: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorGammaLogP { param_start, n_params, alpha, beta }, None);
+        let node = self.add_node(
+            Op::VectorGammaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -689,7 +848,15 @@ impl Graph {
         alpha: f64,
         beta: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorBetaLogP { param_start, n_params, alpha, beta }, None);
+        let node = self.add_node(
+            Op::VectorBetaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -701,7 +868,15 @@ impl Graph {
         lower: f64,
         upper: f64,
     ) -> NodeId {
-        let node = self.add_node(Op::VectorUniformLogP { param_start, n_params, lower, upper }, None);
+        let node = self.add_node(
+            Op::VectorUniformLogP {
+                param_start,
+                n_params,
+                lower,
+                upper,
+            },
+            None,
+        );
         self.logp_terms.push(node);
         node
     }
@@ -714,19 +889,20 @@ impl Graph {
     pub fn validate_shapes(&self) -> Result<usize, GraphShapeError> {
         let mut expected_len: Option<usize> = None;
 
-        let mut set_expected = |actual: usize, kind: &str, index: usize| -> Result<(), GraphShapeError> {
-            match expected_len {
-                None => {
-                    expected_len = Some(actual);
-                    Ok(())
+        let mut set_expected =
+            |actual: usize, kind: &str, index: usize| -> Result<(), GraphShapeError> {
+                match expected_len {
+                    None => {
+                        expected_len = Some(actual);
+                        Ok(())
+                    }
+                    Some(expected) if expected == actual => Ok(()),
+                    Some(expected) => Err(GraphShapeError::new(format!(
+                        "{} {} has length {}, expected {}",
+                        kind, index, actual, expected
+                    ))),
                 }
-                Some(expected) if expected == actual => Ok(()),
-                Some(expected) => Err(GraphShapeError::new(format!(
-                    "{} {} has length {}, expected {}",
-                    kind, index, actual, expected
-                ))),
-            }
-        };
+            };
 
         for (idx, data) in self.data_vectors.iter().enumerate() {
             set_expected(data.len(), "data vector", idx)?;

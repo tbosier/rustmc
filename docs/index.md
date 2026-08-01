@@ -4,10 +4,6 @@
 
 rustmc runs the entire sampling loop in compiled Rust - no Python in the inner loop. Chains are parallelized across threads via Rayon. The result is designed for fitting many independent Bayesian models in a single call.
 
-```
-10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.
-```
-
 ## Why rustmc?
 
 PyMC, Stan, and other Bayesian frameworks are built for general single-model workflows. That is useful for research, but it becomes expensive when you need to fit the same model structure to thousands of datasets - per-store demand models, per-SKU pricing models, per-patient dosing models.
@@ -24,20 +20,10 @@ rustmc is designed for that repeated-model setting. Its batch inference API runs
 
 ## Benchmarks
 
-**Single model** — 10 parameters, 100,000 observations, 8 chains, 2,000 draws:
-
-| Method | Time | Speedup |
-|--------|------|---------|
-| rustmc (NUTS) | 72s | **5.3x** |
-| PyMC (NUTS) | 383s | 1.0x |
-
-**Batch inference** — 10,000 independent 3-parameter models:
-
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| rustmc (batch NUTS) | 70s | 7ms | Yes (full posterior) |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+The repository provides matched-protocol benchmark drivers; run `python
+examples/run_benchmarks.py` on the hardware you care about. No numeric performance result
+is published without retained raw command output, environment details, and an exact
+revision. See the top-level README and `benchmarks/RESULTS_TEMPLATE.md` for the protocol.
 
 ## Install
 
@@ -85,13 +71,22 @@ Mean accept rate: 0.94  |  Divergences: 0
 
 **Predictive workflow:** prior predictive sampling, posterior predictive sampling, pointwise log-likelihood, and ArviZ export are implemented for the current likelihood families.
 
-**Diagnostics:** Split R-hat (Vehtari et al. 2021), bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
+**Diagnostics:** Raw split R-hat, rank-normalized bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
 
 **High-dimensional regression:** faer-backed `MatVecMul` op — `beta @ "X"` dispatches to a BLAS-level GEMV rather than N scalar graph nodes.
+
+**Compile once, bind many:** `ModelBuilder.compile()` returns an immutable
+`CompiledModel` whose validated bindings can have different row counts while sharing one
+graph structure.
+
+**Linear Gaussian state space:** `LinearGaussianStateSpace` provides fixed-system
+Kalman filtering, smoothing, missing-observation handling, and forecasting.
 
 ## What Is Still Missing
 
 - Vector-valued hierarchical models and richer automatic reparameterization support.
-- Compiled model artifacts and a Python-free deployment story in the public API.
-- Benchmark regression gates and packaging/release automation.
+- Portable serialization and prediction-on-new-data for the in-memory re-bindable
+  compiled model; the legacy JSON artifact remains data-owning.
+- Bayesian estimation of state-space parameters and Kalman-likelihood integration in
+  `ModelBuilder`; the standalone fixed-system API is implemented.
 - Higher-level production templates for repeated forecasting and panel workflows.

@@ -38,7 +38,9 @@ impl From<&SerializableObsFamily> for crate::graph::ObsFamily {
             SerializableObsFamily::PoissonLog => crate::graph::ObsFamily::PoissonLog,
             SerializableObsFamily::ExponentialLog => crate::graph::ObsFamily::ExponentialLog,
             SerializableObsFamily::LogNormal => crate::graph::ObsFamily::LogNormal,
-            SerializableObsFamily::NegativeBinomialLog => crate::graph::ObsFamily::NegativeBinomialLog,
+            SerializableObsFamily::NegativeBinomialLog => {
+                crate::graph::ObsFamily::NegativeBinomialLog
+            }
         }
     }
 }
@@ -57,12 +59,10 @@ impl From<&ParamTransform> for SerializableParamTransform {
             ParamTransform::Identity => Self::Identity,
             ParamTransform::Exp => Self::Exp,
             ParamTransform::Sigmoid => Self::Sigmoid,
-            ParamTransform::BoundedSigmoid { lower, upper } => {
-                Self::BoundedSigmoid {
-                    lower: *lower,
-                    upper: *upper,
-                }
-            }
+            ParamTransform::BoundedSigmoid { lower, upper } => Self::BoundedSigmoid {
+                lower: *lower,
+                upper: *upper,
+            },
         }
     }
 }
@@ -308,10 +308,7 @@ impl CompiledModelArtifact {
                     let step = match &node.op {
                         Op::Constant(value) => ModelStep::Constant { value: *value },
                         Op::Data(idx) => ModelStep::Data {
-                            name: node
-                                .name
-                                .clone()
-                                .unwrap_or_else(|| format!("data_{}", idx)),
+                            name: node.name.clone().unwrap_or_else(|| format!("data_{}", idx)),
                             values: graph.data_vectors[*idx].clone(),
                         },
                         Op::Add(lhs, rhs) => ModelStep::Add {
@@ -353,12 +350,10 @@ impl CompiledModelArtifact {
                             lhs: translate_ref(*lhs, &original_to_step_ref)?,
                             rhs: translate_ref(*rhs, &original_to_step_ref)?,
                         },
-                        Op::ScalarBroadcastAdd(scalar, vector) => {
-                            ModelStep::ScalarBroadcastAdd {
-                                scalar: translate_ref(*scalar, &original_to_step_ref)?,
-                                vector: translate_ref(*vector, &original_to_step_ref)?,
-                            }
-                        }
+                        Op::ScalarBroadcastAdd(scalar, vector) => ModelStep::ScalarBroadcastAdd {
+                            scalar: translate_ref(*scalar, &original_to_step_ref)?,
+                            vector: translate_ref(*vector, &original_to_step_ref)?,
+                        },
                         Op::ScalarBroadcast(scalar) => ModelStep::ScalarBroadcast {
                             scalar: translate_ref(*scalar, &original_to_step_ref)?,
                         },
@@ -421,13 +416,11 @@ impl CompiledModelArtifact {
                         } => {
                             let param_names = param_nodes
                                 .iter()
-                                .map(|nid| {
-                                    match graph.nodes[nid.0].op {
-                                        Op::Param(pidx) => Ok(graph.param_names[pidx].clone()),
-                                        _ => Err(ArtifactError::unsupported(
-                                            "FusedLinearMu contained a non-parameter node",
-                                        )),
-                                    }
+                                .map(|nid| match graph.nodes[nid.0].op {
+                                    Op::Param(pidx) => Ok(graph.param_names[pidx].clone()),
+                                    _ => Err(ArtifactError::unsupported(
+                                        "FusedLinearMu contained a non-parameter node",
+                                    )),
                                 })
                                 .collect::<Result<Vec<_>, _>>()?;
                             let term_data = data_indices
@@ -617,9 +610,7 @@ impl CompiledModelArtifact {
         let mut seen_names = HashSet::new();
         for block in &self.parameter_blocks {
             let name = match block {
-                ParameterBlock::Scalar { name, .. } | ParameterBlock::Vector { name, .. } => {
-                    name
-                }
+                ParameterBlock::Scalar { name, .. } | ParameterBlock::Vector { name, .. } => name,
             };
             if !seen_names.insert(name) {
                 return Err(ArtifactError::invalid(format!(
@@ -648,20 +639,15 @@ impl CompiledModelArtifact {
         let vector_names: HashSet<&str> = vector_lengths.keys().copied().collect();
 
         for (idx, step) in self.steps.iter().enumerate() {
-            validate_step(
-                step,
-                idx,
-                &scalar_names,
-                &vector_names,
-                &vector_lengths,
-            )?;
+            validate_step(step, idx, &scalar_names, &vector_names, &vector_lengths)?;
         }
 
         Ok(())
     }
 
     pub fn to_json_pretty(&self) -> Result<String, ArtifactError> {
-        serde_json::to_string_pretty(self).map_err(|err| ArtifactError::serialization(err.to_string()))
+        serde_json::to_string_pretty(self)
+            .map_err(|err| ArtifactError::serialization(err.to_string()))
     }
 
     pub fn from_json_str(input: &str) -> Result<Self, ArtifactError> {
@@ -775,10 +761,7 @@ impl Display for ArtifactError {
 
 impl Error for ArtifactError {}
 
-fn translate_ref(
-    node: NodeId,
-    map: &HashMap<usize, NodeRef>,
-) -> Result<NodeRef, ArtifactError> {
+fn translate_ref(node: NodeId, map: &HashMap<usize, NodeRef>) -> Result<NodeRef, ArtifactError> {
     map.get(&node.0)
         .cloned()
         .ok_or_else(|| ArtifactError::missing_node(node.0))
@@ -873,9 +856,7 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 match family {
                     SerializableObsFamily::Normal => {
                         let sigma = aux.as_ref().ok_or_else(|| {
-                            ArtifactError::invalid(
-                                "normal observation step is missing sigma",
-                            )
+                            ArtifactError::invalid("normal observation step is missing sigma")
                         })?;
                         graph.obs_logp_normal(
                             linpred,
@@ -909,9 +890,7 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                     }
                     SerializableObsFamily::LogNormal => {
                         let sigma = aux.as_ref().ok_or_else(|| {
-                            ArtifactError::invalid(
-                                "log-normal observation step is missing sigma",
-                            )
+                            ArtifactError::invalid("log-normal observation step is missing sigma")
                         })?;
                         graph.obs_logp_lognormal(
                             linpred,
@@ -1003,12 +982,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 n_cols,
                 intercept,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 let matrix_idx = graph.store_matrix(matrix.clone(), *n_rows, *n_cols);
                 graph.mat_vec_mul(
                     matrix_idx,
@@ -1026,12 +1009,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 mu,
                 sigma,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_normal_logp(param_start, *n_params, *mu, *sigma)
             }
             ModelStep::VectorHalfNormalLogP {
@@ -1039,12 +1026,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 n_params,
                 sigma,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_half_normal_logp(param_start, *n_params, *sigma)
             }
             ModelStep::VectorStudentTLogP {
@@ -1054,12 +1045,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 mu,
                 sigma,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_student_t_logp(param_start, *n_params, *nu, *mu, *sigma)
             }
             ModelStep::VectorGammaLogP {
@@ -1068,12 +1063,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 alpha,
                 beta,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_gamma_logp(param_start, *n_params, *alpha, *beta)
             }
             ModelStep::VectorBetaLogP {
@@ -1082,12 +1081,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 alpha,
                 beta,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_beta_logp(param_start, *n_params, *alpha, *beta)
             }
             ModelStep::VectorUniformLogP {
@@ -1096,12 +1099,16 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 lower,
                 upper,
             } => {
-                let param_start = vector_param_starts.get(param_name).copied().ok_or_else(|| {
-                    ArtifactError::missing_parameter(format!(
-                        "unknown vector parameter '{}'",
-                        param_name
-                    ))
-                })?;
+                let param_start =
+                    vector_param_starts
+                        .get(param_name)
+                        .copied()
+                        .ok_or_else(|| {
+                            ArtifactError::missing_parameter(format!(
+                                "unknown vector parameter '{}'",
+                                param_name
+                            ))
+                        })?;
                 graph.vector_uniform_logp(param_start, *n_params, *lower, *upper)
             }
         };
@@ -1454,7 +1461,11 @@ fn parse_vector_block(graph: &Graph, start_idx: usize) -> Option<(String, usize)
         len += 1;
     }
 
-    if len > 0 { Some((base, len)) } else { None }
+    if len > 0 {
+        Some((base, len))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

@@ -48,7 +48,36 @@ impl ProgressState {
     }
 
     pub fn finish(&self) {
-        self.done.store(true, Ordering::Relaxed);
+        self.done.store(true, Ordering::Release);
+    }
+}
+
+/// Owns a progress renderer and guarantees that it is stopped and joined.
+///
+/// In particular, this guard is dropped while unwinding if sampling panics,
+/// preventing a renderer thread from being left running indefinitely.
+pub struct ProgressGuard {
+    state: Arc<ProgressState>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ProgressGuard {
+    pub fn spawn(state: Arc<ProgressState>) -> Self {
+        let handle = spawn_progress_thread(Arc::clone(&state));
+        Self {
+            state,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for ProgressGuard {
+    fn drop(&mut self) {
+        self.state.finish();
+        if let Some(handle) = self.handle.take() {
+            handle.thread().unpark();
+            let _ = handle.join();
+        }
     }
 }
 
@@ -87,8 +116,16 @@ fn render_tty(state: &ProgressState, err: &mut impl Write) {
     let elapsed = state.start_time.elapsed().as_secs_f64();
     let is_done = state.done.load(Ordering::Relaxed);
 
-    let pct = if total > 0 { (completed * 100 / total).min(100) } else { 0 };
-    let speed = if elapsed > 0.1 { completed as f64 / elapsed } else { 0.0 };
+    let pct = if total > 0 {
+        (completed * 100 / total).min(100)
+    } else {
+        0
+    };
+    let speed = if elapsed > 0.1 {
+        completed as f64 / elapsed
+    } else {
+        0.0
+    };
     let remaining = if speed > 0.0 && completed < total {
         (total - completed) as f64 / speed
     } else {
@@ -97,7 +134,11 @@ fn render_tty(state: &ProgressState, err: &mut impl Write) {
 
     // Bar: 20 chars wide — keeps total line ≤ 79 chars for standard terminals.
     let bar_width = 20usize;
-    let filled = if total > 0 { (bar_width * completed).min(bar_width * total) / total } else { 0 };
+    let filled = if total > 0 {
+        (bar_width * completed).min(bar_width * total) / total
+    } else {
+        0
+    };
     let bar = format!("{}{}", "━".repeat(filled), "╌".repeat(bar_width - filled));
 
     if is_done {
@@ -137,8 +178,16 @@ fn render_plain(state: &ProgressState, err: &mut impl Write) {
     let elapsed = state.start_time.elapsed().as_secs_f64();
     let is_done = state.done.load(Ordering::Relaxed);
 
-    let pct = if total > 0 { (completed * 100 / total).min(100) } else { 0 };
-    let speed = if elapsed > 0.1 { completed as f64 / elapsed } else { 0.0 };
+    let pct = if total > 0 {
+        (completed * 100 / total).min(100)
+    } else {
+        0
+    };
+    let speed = if elapsed > 0.1 {
+        completed as f64 / elapsed
+    } else {
+        0.0
+    };
     let remaining = if speed > 0.0 && completed < total {
         (total - completed) as f64 / speed
     } else {
@@ -149,13 +198,21 @@ fn render_plain(state: &ProgressState, err: &mut impl Write) {
         let _ = writeln!(
             err,
             "Sampling done: {}/{} | {} div | elapsed {}",
-            completed, total, divs, fmt_time(elapsed),
+            completed,
+            total,
+            divs,
+            fmt_time(elapsed),
         );
     } else {
         let _ = writeln!(
             err,
             "Sampling: {}/{} ({}%) | {} div | {} | ~{} remaining",
-            completed, total, pct, divs, fmt_speed(speed), fmt_time(remaining),
+            completed,
+            total,
+            pct,
+            divs,
+            fmt_speed(speed),
+            fmt_time(remaining),
         );
     }
     let _ = err.flush();
@@ -170,22 +227,26 @@ pub fn spawn_progress_thread(state: Arc<ProgressState>) -> std::thread::JoinHand
         let mut last_plain_time = std::time::Instant::now();
         let mut err = std::io::stderr();
 
-        while !state.done.load(Ordering::Relaxed) {
+        while !state.done.load(Ordering::Acquire) {
             if is_tty {
                 render_tty(&state, &mut err);
-                std::thread::sleep(Duration::from_millis(100));
+                std::thread::park_timeout(Duration::from_millis(100));
             } else {
                 // For non-TTY: print every 10% progress or every 10 seconds.
                 let completed = state.completed.load(Ordering::Relaxed);
                 let total = state.total_iters;
-                let pct = if total > 0 { completed * 100 / total } else { 0 };
+                let pct = if total > 0 {
+                    completed * 100 / total
+                } else {
+                    0
+                };
                 let secs_since = last_plain_time.elapsed().as_secs_f64();
                 if pct >= last_plain_pct + 10 || secs_since >= 10.0 {
                     render_plain(&state, &mut err);
                     last_plain_pct = (pct / 10) * 10;
                     last_plain_time = std::time::Instant::now();
                 }
-                std::thread::sleep(Duration::from_millis(500));
+                std::thread::park_timeout(Duration::from_millis(500));
             }
         }
         // Final line
@@ -195,4 +256,25 @@ pub fn spawn_progress_thread(state: Arc<ProgressState>) -> std::thread::JoinHand
             render_plain(&state, &mut err);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn progress_guard_stops_and_releases_renderer_during_unwind() {
+        let state = Arc::new(ProgressState::new(1, 1, 0, 1));
+        let worker_state = Arc::clone(&state);
+
+        let result = catch_unwind(AssertUnwindSafe(move || {
+            let _guard = ProgressGuard::spawn(worker_state);
+            panic!("simulated sampler failure");
+        }));
+
+        assert!(result.is_err());
+        assert!(state.done.load(Ordering::Acquire));
+        assert_eq!(Arc::strong_count(&state), 1, "renderer was not joined");
+    }
 }

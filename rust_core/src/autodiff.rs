@@ -1,4 +1,5 @@
-use crate::graph::{Graph, GraphShapeError, NodeId, Op};
+use crate::data::DataBinding;
+use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -21,6 +22,7 @@ enum NodeKind {
 /// intermediates live in a single contiguous `vec_buf` / `adj_vec_buf`
 /// and are overwritten in place on each call.
 pub struct Evaluator {
+    binding: DataBinding,
     vec_len: usize,
     node_kind: Vec<NodeKind>,
     /// Scalar value per node (unused slots for vector/data nodes).
@@ -39,12 +41,50 @@ pub struct Evaluator {
     /// Map from param index to node id, for extracting gradients.
     /// `None` for vector params that have no `Op::Param` node (e.g. MatVecMul params).
     param_node_ids: Vec<Option<usize>>,
+    /// Reusable scratch space for constrained vector parameters and gradients.
+    param_scratch: Vec<f64>,
+}
+
+fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
+    let mut required_vectors = 0usize;
+    let mut required_observations = 0usize;
+    let mut required_matrices = 0usize;
+    for node in &graph.nodes {
+        match &node.op {
+            Op::Data(index) => required_vectors = required_vectors.max(*index + 1),
+            Op::ObsLogP { obs_data_idx, .. } => {
+                required_observations = required_observations.max(*obs_data_idx + 1)
+            }
+            Op::MatVecMul { matrix_idx, .. } => {
+                required_matrices = required_matrices.max(*matrix_idx + 1)
+            }
+            _ => {}
+        }
+    }
+    if binding.vectors.len() < required_vectors
+        || binding.observations.len() < required_observations
+        || binding.matrices.len() < required_matrices
+    {
+        return Err(GraphShapeError::new(
+            "binding does not provide every data slot referenced by graph",
+        ));
+    }
+    Ok(())
 }
 
 impl Evaluator {
     pub fn try_new(graph: &Graph) -> Result<Self, GraphShapeError> {
+        let binding =
+            DataBinding::from_graph(graph).map_err(|e| GraphShapeError::new(e.to_string()))?;
+        Self::try_with_binding(graph, binding)
+    }
+
+    /// Construct an evaluator for immutable structure plus a validated dataset.
+    pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
-        let vec_len = graph.validate_shapes()?;
+        let vec_len = binding.n_obs;
+
+        validate_binding_slots(graph, &binding)?;
 
         let mut node_kind = Vec::with_capacity(n);
         let mut vec_slot_count = 0usize;
@@ -75,6 +115,7 @@ impl Evaluator {
         }
 
         Ok(Self {
+            binding,
             vec_len,
             node_kind,
             scalars: vec![0.0; n],
@@ -84,6 +125,7 @@ impl Evaluator {
             grad: vec![0.0; graph.param_count],
             total_logp: 0.0,
             param_node_ids,
+            param_scratch: vec![0.0; graph.param_count],
         })
     }
 
@@ -91,12 +133,42 @@ impl Evaluator {
         Self::try_new(graph).expect("graph shape validation failed")
     }
 
+    pub fn with_binding(graph: &Graph, binding: DataBinding) -> Self {
+        Self::try_with_binding(graph, binding).expect("validated binding does not match structure")
+    }
+
+    /// Reuse allocations while changing only the dataset payload and row count.
+    pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
+        validate_binding_slots(graph, &binding)?;
+        self.vec_len = binding.n_obs;
+        let mut slot = 0usize;
+        for (kind, node) in self.node_kind.iter_mut().zip(&graph.nodes) {
+            if matches!(
+                node.op,
+                Op::ScalarMulData(_, _)
+                    | Op::VectorAdd(_, _)
+                    | Op::ScalarBroadcastAdd(_, _)
+                    | Op::ScalarBroadcast(_)
+                    | Op::FusedLinearMu { .. }
+                    | Op::MatVecMul { .. }
+            ) {
+                *kind = NodeKind::ComputedVec(slot * self.vec_len);
+                slot += 1;
+            }
+        }
+        let need = slot * self.vec_len;
+        self.vec_buf.resize(need, 0.0);
+        self.adj_vec_buf.resize(need, 0.0);
+        self.binding = binding;
+        Ok(())
+    }
+
     /// Read a vector element from either a Data node (graph reference) or
     /// a computed-vector node (vec_buf).
     #[inline(always)]
-    fn read_vec(&self, node_id: usize, i: usize, graph: &Graph) -> f64 {
+    fn read_vec(&self, node_id: usize, i: usize, _graph: &Graph) -> f64 {
         match self.node_kind[node_id] {
-            NodeKind::DataRef(di) => graph.data_vectors[di][i],
+            NodeKind::DataRef(di) => self.binding.vectors[di][i],
             NodeKind::ComputedVec(off) => self.vec_buf[off + i],
             NodeKind::Scalar => unreachable!(),
         }
@@ -114,7 +186,9 @@ impl Evaluator {
 
     /// Copy a full vector node into a Vec after `compute()`.
     pub fn vec_to_owned(&self, node: NodeId, graph: &Graph) -> Vec<f64> {
-        (0..self.vec_len).map(|i| self.read_vec(node.0, i, graph)).collect()
+        (0..self.vec_len)
+            .map(|i| self.read_vec(node.0, i, graph))
+            .collect()
     }
 
     /// Compute log-probability and its gradient. Results are stored in
@@ -194,17 +268,22 @@ impl Evaluator {
                     self.scalars[idx] = normal_logp_scalar(xv, mv, sv);
                 }
                 Op::HalfNormalLogP { x, sigma } => {
-                    self.scalars[idx] = half_normal_logp_scalar(self.scalars[x.0], self.scalars[sigma.0]);
+                    self.scalars[idx] =
+                        half_normal_logp_scalar(self.scalars[x.0], self.scalars[sigma.0]);
                 }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
                     self.scalars[idx] = student_t_logp_scalar(
-                        self.scalars[x.0], self.scalars[nu.0],
-                        self.scalars[mu.0], self.scalars[sigma.0],
+                        self.scalars[x.0],
+                        self.scalars[nu.0],
+                        self.scalars[mu.0],
+                        self.scalars[sigma.0],
                     );
                 }
                 Op::UniformLogP { x, lower, upper } => {
                     self.scalars[idx] = uniform_logp_scalar(
-                        self.scalars[x.0], self.scalars[lower.0], self.scalars[upper.0],
+                        self.scalars[x.0],
+                        self.scalars[lower.0],
+                        self.scalars[upper.0],
                     );
                 }
                 Op::BernoulliLogP { x, p } => {
@@ -215,12 +294,16 @@ impl Evaluator {
                 }
                 Op::GammaLogP { x, alpha, beta } => {
                     self.scalars[idx] = gamma_logp_scalar(
-                        self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
+                        self.scalars[x.0],
+                        self.scalars[alpha.0],
+                        self.scalars[beta.0],
                     );
                 }
                 Op::BetaLogP { x, alpha, beta } => {
                     self.scalars[idx] = beta_logp_scalar(
-                        self.scalars[x.0], self.scalars[alpha.0], self.scalars[beta.0],
+                        self.scalars[x.0],
+                        self.scalars[alpha.0],
+                        self.scalars[beta.0],
                     );
                 }
                 Op::ObsLogP {
@@ -229,7 +312,7 @@ impl Evaluator {
                     aux,
                     obs_data_idx,
                 } => {
-                    let obs = &graph.obs_vectors[*obs_data_idx];
+                    let obs = &self.binding.observations[*obs_data_idx];
                     match family {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
@@ -238,34 +321,34 @@ impl Evaluator {
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let n = obs.len() as f64;
                             let mut sum_sq = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i, graph);
-                                let d = obs[i] - m;
+                                let d = y - m;
                                 sum_sq += d * d;
                             }
                             self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
                         }
                         crate::graph::ObsFamily::BernoulliLogit => {
                             let mut sum = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += obs[i] * eta - softplus(eta);
+                                sum += y * eta - softplus(eta);
                             }
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::PoissonLog => {
                             let mut sum = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += obs[i] * eta - eta.exp() - ln_gamma(obs[i] + 1.0);
+                                sum += y * eta - eta.exp() - ln_gamma(y + 1.0);
                             }
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::ExponentialLog => {
                             let mut sum = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += eta - obs[i] * eta.exp();
+                                sum += eta - y * eta.exp();
                             }
                             self.scalars[idx] = sum;
                         }
@@ -275,8 +358,8 @@ impl Evaluator {
                             let s2 = sv * sv;
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let mut sum = 0.0f64;
-                            for i in 0..vl {
-                                let y = obs[i].max(1e-300);
+                            for (i, &observation) in obs.iter().take(vl).enumerate() {
+                                let y = observation.max(1e-300);
                                 let m = self.read_vec(linpred_vec.0, i, graph);
                                 let ly = y.ln();
                                 let d = ly - m;
@@ -288,13 +371,10 @@ impl Evaluator {
                             let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
                             let av = self.scalars[alpha_node.0];
                             let mut sum = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
                                 let mu = eta.exp();
-                                let y = obs[i];
-                                sum += ln_gamma(y + av)
-                                    - ln_gamma(av)
-                                    - ln_gamma(y + 1.0)
+                                sum += ln_gamma(y + av) - ln_gamma(av) - ln_gamma(y + 1.0)
                                     + av * (av.ln() - (av + mu).ln())
                                     + y * (eta - (av + mu).ln());
                             }
@@ -318,26 +398,47 @@ impl Evaluator {
                     }
                     for (k, &pn) in param_nodes.iter().enumerate() {
                         let beta = self.scalars[pn.0];
-                        let data = &graph.data_vectors[data_indices[k]];
+                        let data = &self.binding.vectors[data_indices[k]];
                         for i in 0..vl {
                             out[i] += beta * data[i];
                         }
                     }
                 }
-                Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
-                    use faer::{col, mat, linalg::matmul::matmul, Parallelism};
+                Op::MatVecMul {
+                    matrix_idx,
+                    param_start,
+                    n_params,
+                    intercept,
+                } => {
+                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
                     };
-                    let matrix = &graph.data_matrices[*matrix_idx];
+                    let matrix = &self.binding.matrices[*matrix_idx];
                     let base = intercept.map_or(0.0, |n| self.scalars[n.0]);
                     let out = &mut self.vec_buf[out_off..out_off + vl];
                     out.fill(base);
                     let x = mat::from_row_major_slice::<f64>(
-                        &matrix.data, matrix.n_rows, matrix.n_cols,
+                        &matrix.data,
+                        matrix.n_rows,
+                        matrix.n_cols,
                     );
-                    let beta_slice = &params[*param_start..*param_start + *n_params];
+                    let transforms =
+                        &graph.param_transforms[*param_start..*param_start + *n_params];
+                    let all_identity = transforms
+                        .iter()
+                        .all(|t| matches!(t, ParamTransform::Identity));
+                    let beta_slice = if all_identity {
+                        &params[*param_start..*param_start + *n_params]
+                    } else {
+                        let scratch =
+                            &mut self.param_scratch[*param_start..*param_start + *n_params];
+                        for k in 0..*n_params {
+                            scratch[k] = transforms[k].apply(params[param_start + k]);
+                        }
+                        scratch
+                    };
                     let beta_col = col::from_slice::<f64>(beta_slice);
                     let out_col = col::from_slice_mut::<f64>(out);
                     // Use Rayon threads for matrices large enough to amortise spawn cost.
@@ -346,9 +447,21 @@ impl Evaluator {
                     } else {
                         Parallelism::None
                     };
-                    matmul(out_col.as_2d_mut(), x, beta_col.as_2d(), Some(1.0), 1.0, par);
+                    matmul(
+                        out_col.as_2d_mut(),
+                        x,
+                        beta_col.as_2d(),
+                        Some(1.0),
+                        1.0,
+                        par,
+                    );
                 }
-                Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                Op::VectorNormalLogP {
+                    param_start,
+                    n_params,
+                    mu,
+                    sigma,
+                } => {
                     let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
                     let s2 = sigma * sigma;
                     let mut sum = 0.0f64;
@@ -359,7 +472,11 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
-                Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                Op::VectorHalfNormalLogP {
+                    param_start,
+                    n_params,
+                    sigma,
+                } => {
                     // Combined logp(exp(raw), sigma) + raw (Jacobian)
                     let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
                     let s2 = sigma * sigma;
@@ -371,8 +488,15 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
-                Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
-                    let log_norm = ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+                Op::VectorStudentTLogP {
+                    param_start,
+                    n_params,
+                    nu,
+                    mu,
+                    sigma,
+                } => {
+                    let log_norm = ln_gamma(0.5 * (nu + 1.0))
+                        - ln_gamma(0.5 * nu)
                         - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
@@ -382,7 +506,12 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
-                Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                Op::VectorGammaLogP {
+                    param_start,
+                    n_params,
+                    alpha,
+                    beta,
+                } => {
                     // Combined logp(exp(raw), alpha, beta) + raw (Jacobian = exp(raw), log = raw)
                     // = α·log(β) - lnΓ(α) + α·raw - β·exp(raw)
                     let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
@@ -393,7 +522,12 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
-                Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                Op::VectorBetaLogP {
+                    param_start,
+                    n_params,
+                    alpha,
+                    beta,
+                } => {
                     // s = sigmoid(raw), logp = lnΓ(α+β)-lnΓ(α)-lnΓ(β) + α·log(s) + β·log(1-s)
                     // Jacobian of sigmoid = s·(1-s), so log|J| = log(s) + log(1-s)
                     // Combined: lnΓ(α+β)-lnΓ(α)-lnΓ(β) + (α-1)·log(s) + (β-1)·log(1-s) + log(s) + log(1-s)
@@ -407,7 +541,11 @@ impl Evaluator {
                     }
                     self.scalars[idx] = sum;
                 }
-                Op::VectorUniformLogP { param_start, n_params, .. } => {
+                Op::VectorUniformLogP {
+                    param_start,
+                    n_params,
+                    ..
+                } => {
                     // s = sigmoid(raw), logp_uniform = -log(hi-lo) (const), Jacobian = s·(1-s)·(hi-lo)
                     // Combined: -log(hi-lo) + log(s·(1-s)·(hi-lo)) = log(s·(1-s)) = log(s) + log(1-s)
                     let mut sum = 0.0f64;
@@ -422,11 +560,7 @@ impl Evaluator {
         }
 
         // Total log-probability
-        self.total_logp = graph
-            .logp_terms
-            .iter()
-            .map(|id| self.scalars[id.0])
-            .sum();
+        self.total_logp = graph.logp_terms.iter().map(|id| self.scalars[id.0]).sum();
 
         // === Backward pass ===
         // Zero adjoint buffers and gradient
@@ -566,14 +700,15 @@ impl Evaluator {
                     // d/dmu
                     self.adj_scalars[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
                     // d/dsigma
-                    self.adj_scalars[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
+                    self.adj_scalars[sigma.0] +=
+                        a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
                     // d/dnu
-                    self.adj_scalars[nu.0] += a_s * (
-                        0.5 * digamma(0.5 * (nv + 1.0)) - 0.5 * digamma(0.5 * nv)
-                        - 0.5 / nv
-                        - 0.5 * (1.0 + z2 / nv).ln()
-                        + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom)
-                    );
+                    self.adj_scalars[nu.0] += a_s
+                        * (0.5 * digamma(0.5 * (nv + 1.0))
+                            - 0.5 * digamma(0.5 * nv)
+                            - 0.5 / nv
+                            - 0.5 * (1.0 + z2 / nv).ln()
+                            + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
                 }
                 Op::UniformLogP { x: _, lower, upper } => {
                     let lv = self.scalars[lower.0];
@@ -610,8 +745,10 @@ impl Evaluator {
                     let bv = self.scalars[beta.0];
                     if xv > 0.0 && xv < 1.0 {
                         self.adj_scalars[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
-                        self.adj_scalars[alpha.0] += a_s * (digamma(av + bv) - digamma(av) + xv.ln());
-                        self.adj_scalars[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
+                        self.adj_scalars[alpha.0] +=
+                            a_s * (digamma(av + bv) - digamma(av) + xv.ln());
+                        self.adj_scalars[beta.0] +=
+                            a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                     }
                 }
                 Op::ObsLogP {
@@ -620,7 +757,7 @@ impl Evaluator {
                     aux,
                     obs_data_idx,
                 } => {
-                    let obs = &graph.obs_vectors[*obs_data_idx];
+                    let obs = &self.binding.observations[*obs_data_idx];
                     match family {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
@@ -633,9 +770,9 @@ impl Evaluator {
                                 _ => None,
                             };
 
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i, graph);
-                                let diff = obs[i] - m;
+                                let diff = y - m;
                                 if let Some(off) = mu_off {
                                     self.adj_vec_buf[off + i] += a_s * diff / s2;
                                 }
@@ -648,9 +785,9 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let grad = obs[i] - sigmoid_stable(eta);
+                                let grad = y - sigmoid_stable(eta);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -661,9 +798,9 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let grad = obs[i] - eta.exp();
+                                let grad = y - eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -674,9 +811,9 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let grad = 1.0 - obs[i] * eta.exp();
+                                let grad = 1.0 - y * eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -691,8 +828,8 @@ impl Evaluator {
                                 _ => None,
                             };
                             let mut dsigma = 0.0f64;
-                            for i in 0..vl {
-                                let y = obs[i].max(1e-300);
+                            for (i, &observation) in obs.iter().take(vl).enumerate() {
+                                let y = observation.max(1e-300);
                                 let ly = y.ln();
                                 let m = self.read_vec(linpred_vec.0, i, graph);
                                 let d = ly - m;
@@ -711,19 +848,15 @@ impl Evaluator {
                                 _ => None,
                             };
                             let mut dalpha = 0.0f64;
-                            for i in 0..vl {
+                            for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
                                 let mu = eta.exp();
-                                let y = obs[i];
                                 let denom = av + mu;
                                 let deta = av * (y - mu) / denom;
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * deta;
                                 }
-                                dalpha += digamma(y + av)
-                                    - digamma(av)
-                                    + av.ln()
-                                    + 1.0
+                                dalpha += digamma(y + av) - digamma(av) + av.ln() + 1.0
                                     - denom.ln()
                                     - (y + av) / denom;
                             }
@@ -742,55 +875,103 @@ impl Evaluator {
                     };
                     let adj = &self.adj_vec_buf[out_off..out_off + vl];
                     for (k, &pn) in param_nodes.iter().enumerate() {
-                        let data = &graph.data_vectors[data_indices[k]];
+                        let data = &self.binding.vectors[data_indices[k]];
                         let mut ds = 0.0f64;
-                        for i in 0..vl {
-                            ds += adj[i] * data[i];
-                        }
+                        ds += adj
+                            .iter()
+                            .zip(data.iter())
+                            .take(vl)
+                            .map(|(a, d)| a * d)
+                            .sum::<f64>();
                         self.adj_scalars[pn.0] += ds;
                     }
                     if let Some(n) = intercept {
                         let mut ds = 0.0f64;
-                        for i in 0..vl {
-                            ds += adj[i];
-                        }
+                        ds += adj.iter().take(vl).sum::<f64>();
                         self.adj_scalars[n.0] += ds;
                     }
                 }
-                Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
-                    use faer::{col, mat, linalg::matmul::matmul, Parallelism};
+                Op::MatVecMul {
+                    matrix_idx,
+                    param_start,
+                    n_params,
+                    intercept,
+                } => {
+                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
                     };
-                    let matrix = &graph.data_matrices[*matrix_idx];
+                    let matrix = &self.binding.matrices[*matrix_idx];
                     let x = mat::from_row_major_slice::<f64>(
-                        &matrix.data, matrix.n_rows, matrix.n_cols,
+                        &matrix.data,
+                        matrix.n_rows,
+                        matrix.n_cols,
                     );
                     let adj_slice = &self.adj_vec_buf[out_off..out_off + vl];
                     let adj_col = col::from_slice::<f64>(adj_slice);
-                    let grad_slice = &mut self.grad[*param_start..*param_start + *n_params];
-                    let grad_col = col::from_slice_mut::<f64>(grad_slice);
+                    let transforms =
+                        &graph.param_transforms[*param_start..*param_start + *n_params];
+                    let all_identity = transforms
+                        .iter()
+                        .all(|t| matches!(t, ParamTransform::Identity));
                     let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
                         Parallelism::Rayon(0)
                     } else {
                         Parallelism::None
                     };
                     // grad += X^T @ adj
-                    matmul(grad_col.as_2d_mut(), x.transpose(), adj_col.as_2d(), Some(1.0), 1.0, par);
+                    if all_identity {
+                        let target = &mut self.grad[*param_start..*param_start + *n_params];
+                        let grad_col = col::from_slice_mut::<f64>(target);
+                        matmul(
+                            grad_col.as_2d_mut(),
+                            x.transpose(),
+                            adj_col.as_2d(),
+                            Some(1.0),
+                            1.0,
+                            par,
+                        );
+                    } else {
+                        let target =
+                            &mut self.param_scratch[*param_start..*param_start + *n_params];
+                        target.fill(0.0);
+                        let grad_col = col::from_slice_mut::<f64>(target);
+                        matmul(
+                            grad_col.as_2d_mut(),
+                            x.transpose(),
+                            adj_col.as_2d(),
+                            Some(1.0),
+                            1.0,
+                            par,
+                        );
+                        for k in 0..*n_params {
+                            self.grad[param_start + k] +=
+                                target[k] * transforms[k].derivative(params[param_start + k]);
+                        }
+                    }
                     if let Some(n) = intercept {
                         let ds: f64 = adj_slice.iter().sum();
                         self.adj_scalars[n.0] += ds;
                     }
                 }
-                Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+                Op::VectorNormalLogP {
+                    param_start,
+                    n_params,
+                    mu,
+                    sigma,
+                } => {
                     let s2 = sigma * sigma;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
                         self.grad[param_start + k] += a_s * (-(v - mu) / s2);
                     }
                 }
-                Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+                Op::VectorHalfNormalLogP {
+                    param_start,
+                    n_params,
+                    sigma,
+                } => {
                     let s2 = sigma * sigma;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
@@ -798,22 +979,39 @@ impl Evaluator {
                         self.grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
                     }
                 }
-                Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+                Op::VectorStudentTLogP {
+                    param_start,
+                    n_params,
+                    nu,
+                    mu,
+                    sigma,
+                } => {
                     for k in 0..*n_params {
                         let v = params[param_start + k];
                         let z = (v - mu) / sigma;
                         // d/dv = -(ν+1)·z / (σ·ν·(1 + z²/ν))
-                        self.grad[param_start + k] += a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                        self.grad[param_start + k] +=
+                            a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
                     }
                 }
-                Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+                Op::VectorGammaLogP {
+                    param_start,
+                    n_params,
+                    alpha,
+                    beta,
+                } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
                         // d/draw = α - β·exp(raw)
                         self.grad[param_start + k] += a_s * (alpha - beta * raw.exp());
                     }
                 }
-                Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+                Op::VectorBetaLogP {
+                    param_start,
+                    n_params,
+                    alpha,
+                    beta,
+                } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
                         let s = 1.0 / (1.0 + (-raw).exp());
@@ -821,7 +1019,11 @@ impl Evaluator {
                         self.grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
                     }
                 }
-                Op::VectorUniformLogP { param_start, n_params, .. } => {
+                Op::VectorUniformLogP {
+                    param_start,
+                    n_params,
+                    ..
+                } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
                         let s = 1.0 / (1.0 + (-raw).exp());
@@ -908,35 +1110,51 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             }
             Op::ScalarBroadcast(scalar) => {
                 let s = values[scalar.0].as_scalar();
-                let n = graph.obs_vectors.first()
+                let n = graph
+                    .obs_vectors
+                    .first()
                     .or_else(|| graph.data_vectors.first())
                     .map_or(0, |v| v.len());
                 Value::Vector(vec![s; n])
             }
-            Op::NormalLogP { x, mu, sigma } => {
-                Value::Scalar(normal_logp_scalar(values[x.0].as_scalar(), values[mu.0].as_scalar(), values[sigma.0].as_scalar()))
-            }
-            Op::HalfNormalLogP { x, sigma } => {
-                Value::Scalar(half_normal_logp_scalar(values[x.0].as_scalar(), values[sigma.0].as_scalar()))
-            }
-            Op::StudentTLogP { x, nu, mu, sigma } => {
-                Value::Scalar(student_t_logp_scalar(values[x.0].as_scalar(), values[nu.0].as_scalar(), values[mu.0].as_scalar(), values[sigma.0].as_scalar()))
-            }
-            Op::UniformLogP { x, lower, upper } => {
-                Value::Scalar(uniform_logp_scalar(values[x.0].as_scalar(), values[lower.0].as_scalar(), values[upper.0].as_scalar()))
-            }
-            Op::BernoulliLogP { x, p } => {
-                Value::Scalar(bernoulli_logp_scalar(values[x.0].as_scalar(), values[p.0].as_scalar()))
-            }
-            Op::PoissonLogP { x, lam } => {
-                Value::Scalar(poisson_logp_scalar(values[x.0].as_scalar(), values[lam.0].as_scalar()))
-            }
-            Op::GammaLogP { x, alpha, beta } => {
-                Value::Scalar(gamma_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
-            }
-            Op::BetaLogP { x, alpha, beta } => {
-                Value::Scalar(beta_logp_scalar(values[x.0].as_scalar(), values[alpha.0].as_scalar(), values[beta.0].as_scalar()))
-            }
+            Op::NormalLogP { x, mu, sigma } => Value::Scalar(normal_logp_scalar(
+                values[x.0].as_scalar(),
+                values[mu.0].as_scalar(),
+                values[sigma.0].as_scalar(),
+            )),
+            Op::HalfNormalLogP { x, sigma } => Value::Scalar(half_normal_logp_scalar(
+                values[x.0].as_scalar(),
+                values[sigma.0].as_scalar(),
+            )),
+            Op::StudentTLogP { x, nu, mu, sigma } => Value::Scalar(student_t_logp_scalar(
+                values[x.0].as_scalar(),
+                values[nu.0].as_scalar(),
+                values[mu.0].as_scalar(),
+                values[sigma.0].as_scalar(),
+            )),
+            Op::UniformLogP { x, lower, upper } => Value::Scalar(uniform_logp_scalar(
+                values[x.0].as_scalar(),
+                values[lower.0].as_scalar(),
+                values[upper.0].as_scalar(),
+            )),
+            Op::BernoulliLogP { x, p } => Value::Scalar(bernoulli_logp_scalar(
+                values[x.0].as_scalar(),
+                values[p.0].as_scalar(),
+            )),
+            Op::PoissonLogP { x, lam } => Value::Scalar(poisson_logp_scalar(
+                values[x.0].as_scalar(),
+                values[lam.0].as_scalar(),
+            )),
+            Op::GammaLogP { x, alpha, beta } => Value::Scalar(gamma_logp_scalar(
+                values[x.0].as_scalar(),
+                values[alpha.0].as_scalar(),
+                values[beta.0].as_scalar(),
+            )),
+            Op::BetaLogP { x, alpha, beta } => Value::Scalar(beta_logp_scalar(
+                values[x.0].as_scalar(),
+                values[alpha.0].as_scalar(),
+                values[beta.0].as_scalar(),
+            )),
             Op::ObsLogP {
                 family,
                 linpred_vec,
@@ -994,68 +1212,117 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 }
                 Value::Vector(result)
             }
-            Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+            Op::MatVecMul {
+                matrix_idx,
+                param_start,
+                n_params,
+                intercept,
+            } => {
                 let matrix = &graph.data_matrices[*matrix_idx];
                 let base = intercept.map_or(0.0, |n| values[n.0].as_scalar());
                 let mut result = vec![base; matrix.n_rows];
-                for i in 0..matrix.n_rows {
+                for (i, value) in result.iter_mut().enumerate().take(matrix.n_rows) {
                     for j in 0..*n_params {
-                        result[i] += matrix.data[i * matrix.n_cols + j] * params[param_start + j];
+                        *value += matrix.data[i * matrix.n_cols + j]
+                            * graph.param_transforms[param_start + j]
+                                .apply(params[param_start + j]);
                     }
                 }
                 Value::Vector(result)
             }
-            Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+            Op::VectorNormalLogP {
+                param_start,
+                n_params,
+                mu,
+                sigma,
+            } => {
                 let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
                 let s2 = sigma * sigma;
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let d = params[param_start + k] - mu;
-                    log_norm - 0.5 * d * d / s2
-                }).sum();
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let d = params[param_start + k] - mu;
+                        log_norm - 0.5 * d * d / s2
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
-            Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+            Op::VectorHalfNormalLogP {
+                param_start,
+                n_params,
+                sigma,
+            } => {
                 let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
                 let s2 = sigma * sigma;
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let raw = params[param_start + k];
-                    log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw
-                }).sum();
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let raw = params[param_start + k];
+                        log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
-            Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
-                let log_norm = ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+            Op::VectorStudentTLogP {
+                param_start,
+                n_params,
+                nu,
+                mu,
+                sigma,
+            } => {
+                let log_norm = ln_gamma(0.5 * (nu + 1.0))
+                    - ln_gamma(0.5 * nu)
                     - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let v = params[param_start + k];
-                    let z = (v - mu) / sigma;
-                    log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
-                }).sum();
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let v = params[param_start + k];
+                        let z = (v - mu) / sigma;
+                        log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
-            Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+            Op::VectorGammaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            } => {
                 let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let raw = params[param_start + k];
-                    log_norm + alpha * raw - beta * raw.exp()
-                }).sum();
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let raw = params[param_start + k];
+                        log_norm + alpha * raw - beta * raw.exp()
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
-            Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+            Op::VectorBetaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            } => {
                 let log_norm = ln_gamma(alpha + beta) - ln_gamma(*alpha) - ln_gamma(*beta);
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
-                }).sum();
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
-            Op::VectorUniformLogP { param_start, n_params, .. } => {
-                let sum: f64 = (0..*n_params).map(|k| {
-                    let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    s.ln() + (1.0 - s).ln()
-                }).sum();
+            Op::VectorUniformLogP {
+                param_start,
+                n_params,
+                ..
+            } => {
+                let sum: f64 = (0..*n_params)
+                    .map(|k| {
+                        let raw = params[param_start + k];
+                        let s = 1.0 / (1.0 + (-raw).exp());
+                        s.ln() + (1.0 - s).ln()
+                    })
+                    .sum();
                 Value::Scalar(sum)
             }
         };
@@ -1179,11 +1446,12 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 adj_scalar[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
                 adj_scalar[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
                 adj_scalar[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
-                adj_scalar[nu.0] += a_s * (
-                    0.5 * digamma(0.5 * (nv + 1.0)) - 0.5 * digamma(0.5 * nv)
-                    - 0.5 / nv - 0.5 * denom.ln()
-                    + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom)
-                );
+                adj_scalar[nu.0] += a_s
+                    * (0.5 * digamma(0.5 * (nv + 1.0))
+                        - 0.5 * digamma(0.5 * nv)
+                        - 0.5 / nv
+                        - 0.5 * denom.ln()
+                        + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
             }
             Op::UniformLogP { x: _, lower, upper } => {
                 let lv = values[lower.0].as_scalar();
@@ -1324,10 +1592,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                             .map(|(e, y)| {
                                 let mu = e.exp();
                                 let denom = av + mu;
-                                digamma(y + av)
-                                    - digamma(av)
-                                    + av.ln()
-                                    + 1.0
+                                digamma(y + av) - digamma(av) + av.ln() + 1.0
                                     - denom.ln()
                                     - (y + av) / denom
                             })
@@ -1352,57 +1617,97 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     }
                 }
             }
-            Op::MatVecMul { matrix_idx, param_start, n_params, intercept } => {
+            Op::MatVecMul {
+                matrix_idx,
+                param_start,
+                n_params,
+                intercept,
+            } => {
                 if let Some(ref uv) = adj_vector[idx].take() {
                     let matrix = &graph.data_matrices[*matrix_idx];
                     // grad[param_start + k] += sum_i X[i,k] * adj[i]
                     for k in 0..*n_params {
                         let mut ds = 0.0f64;
-                        for i in 0..matrix.n_rows {
-                            ds += uv[i] * matrix.data[i * matrix.n_cols + k];
-                        }
-                        grad[param_start + k] += ds;
+                        ds += uv
+                            .iter()
+                            .enumerate()
+                            .take(matrix.n_rows)
+                            .map(|(i, u)| u * matrix.data[i * matrix.n_cols + k])
+                            .sum::<f64>();
+                        grad[param_start + k] += ds
+                            * graph.param_transforms[param_start + k]
+                                .derivative(params[param_start + k]);
                     }
                     if let Some(n) = *intercept {
                         adj_scalar[n.0] += uv.iter().sum::<f64>();
                     }
                 }
             }
-            Op::VectorNormalLogP { param_start, n_params, mu, sigma } => {
+            Op::VectorNormalLogP {
+                param_start,
+                n_params,
+                mu,
+                sigma,
+            } => {
                 let s2 = sigma * sigma;
                 for k in 0..*n_params {
                     let v = params[param_start + k];
                     grad[param_start + k] += a_s * (-(v - mu) / s2);
                 }
             }
-            Op::VectorHalfNormalLogP { param_start, n_params, sigma } => {
+            Op::VectorHalfNormalLogP {
+                param_start,
+                n_params,
+                sigma,
+            } => {
                 let s2 = sigma * sigma;
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
                     grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
                 }
             }
-            Op::VectorStudentTLogP { param_start, n_params, nu, mu, sigma } => {
+            Op::VectorStudentTLogP {
+                param_start,
+                n_params,
+                nu,
+                mu,
+                sigma,
+            } => {
                 for k in 0..*n_params {
                     let v = params[param_start + k];
                     let z = (v - mu) / sigma;
-                    grad[param_start + k] += a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                    grad[param_start + k] +=
+                        a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
                 }
             }
-            Op::VectorGammaLogP { param_start, n_params, alpha, beta } => {
+            Op::VectorGammaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
                     grad[param_start + k] += a_s * (alpha - beta * raw.exp());
                 }
             }
-            Op::VectorBetaLogP { param_start, n_params, alpha, beta } => {
+            Op::VectorBetaLogP {
+                param_start,
+                n_params,
+                alpha,
+                beta,
+            } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
                     let s = 1.0 / (1.0 + (-raw).exp());
                     grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
                 }
             }
-            Op::VectorUniformLogP { param_start, n_params, .. } => {
+            Op::VectorUniformLogP {
+                param_start,
+                n_params,
+                ..
+            } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
                     let s = 1.0 / (1.0 + (-raw).exp());
@@ -1435,9 +1740,7 @@ fn merge_vec_adj(slot: &mut Option<Vec<f64>>, incoming: &[f64]) {
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     let diff = x - mu;
-    -0.5 * (diff * diff) / (sigma * sigma)
-        - sigma.ln()
-        - 0.5 * std::f64::consts::TAU.ln()
+    -0.5 * (diff * diff) / (sigma * sigma) - sigma.ln() - 0.5 * std::f64::consts::TAU.ln()
 }
 
 fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
@@ -1494,9 +1797,7 @@ fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f
         .zip(obs.iter())
         .map(|(e, y)| {
             let mu = e.exp();
-            ln_gamma(y + alpha)
-                - ln_gamma(alpha)
-                - ln_gamma(y + 1.0)
+            ln_gamma(y + alpha) - ln_gamma(alpha) - ln_gamma(y + 1.0)
                 + alpha * (alpha.ln() - (alpha + mu).ln())
                 + y * (e - (alpha + mu).ln())
         })
@@ -1512,7 +1813,8 @@ fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
 
 fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
     let z = (x - mu) / sigma;
-    ln_gamma(0.5 * (nu + 1.0)) - ln_gamma(0.5 * nu)
+    ln_gamma(0.5 * (nu + 1.0))
+        - ln_gamma(0.5 * nu)
         - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln()
         - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
 }
@@ -1619,9 +1921,7 @@ mod tests {
 
         let params = vec![1.5];
         let (logp, grad) = grad_logp(&g, &params);
-        assert!(
-            (logp - (-0.5 * 1.5_f64.powi(2) - 0.5 * std::f64::consts::TAU.ln())).abs() < 1e-10
-        );
+        assert!((logp - (-0.5 * 1.5_f64.powi(2) - 0.5 * std::f64::consts::TAU.ln())).abs() < 1e-10);
         assert!((grad[0] - (-1.5)).abs() < 1e-10);
     }
 
@@ -1642,8 +1942,8 @@ mod tests {
         let (_, grad) = grad_logp(&g, &params);
 
         let eps = 1e-6;
-        let num = (eval_logp(&g, &[params[0] + eps]) - eval_logp(&g, &[params[0] - eps]))
-            / (2.0 * eps);
+        let num =
+            (eval_logp(&g, &[params[0] + eps]) - eval_logp(&g, &[params[0] - eps])) / (2.0 * eps);
         assert!(
             (grad[0] - num).abs() < 1e-4,
             "analytic={}, numerical={}",
@@ -1729,13 +2029,13 @@ mod tests {
             eval.total_logp,
             logp_old
         );
-        for i in 0..3 {
+        for (i, &reference) in grad_old.iter().enumerate().take(3) {
             assert!(
-                (eval.grad[i] - grad_old[i]).abs() < 1e-10,
+                (eval.grad[i] - reference).abs() < 1e-10,
                 "grad[{}] mismatch: {} vs {}",
                 i,
                 eval.grad[i],
-                grad_old[i]
+                reference
             );
         }
     }
@@ -1752,7 +2052,10 @@ mod tests {
             assert!(
                 (grad[i] - num).abs() < tol,
                 "param {}: analytic={}, numerical={}, diff={}",
-                i, grad[i], num, (grad[i] - num).abs()
+                i,
+                grad[i],
+                num,
+                (grad[i] - num).abs()
             );
         }
     }
@@ -1887,13 +2190,16 @@ mod tests {
         assert!(
             (eval.total_logp - logp_ref).abs() < 1e-8,
             "logp mismatch: Evaluator={} grad_logp={}",
-            eval.total_logp, logp_ref
+            eval.total_logp,
+            logp_ref
         );
-        for i in 0..params.len() {
+        for (i, &reference) in grad_ref.iter().enumerate().take(params.len()) {
             assert!(
-                (eval.grad[i] - grad_ref[i]).abs() < 1e-8,
+                (eval.grad[i] - reference).abs() < 1e-8,
                 "grad[{}] mismatch: Evaluator={} grad_logp={}",
-                i, eval.grad[i], grad_ref[i]
+                i,
+                eval.grad[i],
+                reference
             );
         }
 
@@ -1911,8 +2217,56 @@ mod tests {
             assert!(
                 (eval.grad[i] - num).abs() < 1e-4,
                 "Evaluator grad[{}]: analytic={}, numerical={}",
-                i, eval.grad[i], num
+                i,
+                eval.grad[i],
+                num
             );
+        }
+    }
+
+    #[test]
+    fn test_mat_vec_mul_applies_constraint_and_chain_rule() {
+        use crate::graph::ParamTransform;
+
+        let transforms = [
+            ParamTransform::Identity,
+            ParamTransform::Exp,
+            ParamTransform::Sigmoid,
+            ParamTransform::BoundedSigmoid {
+                lower: -2.0,
+                upper: 3.0,
+            },
+        ];
+
+        for transform in transforms {
+            let mut g = Graph::new();
+            let start = g.add_vector_params_with_transform("beta", 2, transform.clone());
+            let matrix_idx = g.store_matrix(vec![1.0, 2.0, -0.5, 3.0, 4.0, -1.0], 3, 2);
+            let mu = g.mat_vec_mul(matrix_idx, start, 2, None);
+            let sigma = g.add_constant(1.3);
+            let obs_idx = g.add_obs_data(vec![0.5, -1.0, 2.0]);
+            g.normal_obs_logp(mu, sigma, obs_idx);
+
+            let params = vec![-0.4, 0.7];
+            full_finite_diff_check(&g, &params, 2e-5);
+
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &params);
+            let beta0 = transform.apply(params[0]);
+            let beta1 = transform.apply(params[1]);
+            let expected = [
+                beta0 + 2.0 * beta1,
+                -0.5 * beta0 + 3.0 * beta1,
+                4.0 * beta0 - beta1,
+            ];
+            for (i, expected_value) in expected.into_iter().enumerate() {
+                assert!(
+                    (evaluator.vec_elem(mu, i, &g) - expected_value).abs() < 1e-12,
+                    "transform {:?}, row {}",
+                    transform,
+                    i
+                );
+            }
         }
     }
 
@@ -1928,14 +2282,17 @@ mod tests {
         assert!(
             (eval.total_logp - logp_ref).abs() < 1e-8,
             "logp mismatch: Evaluator={} grad_logp={}",
-            eval.total_logp, logp_ref
+            eval.total_logp,
+            logp_ref
         );
         let eps = 1e-6;
         for i in 0..params.len() {
             assert!(
                 (eval.grad[i] - grad_ref[i]).abs() < 1e-8,
                 "grad[{}] mismatch: Evaluator={} grad_logp={}",
-                i, eval.grad[i], grad_ref[i]
+                i,
+                eval.grad[i],
+                grad_ref[i]
             );
             let mut p_plus = params.to_vec();
             let mut p_minus = params.to_vec();
@@ -1945,7 +2302,9 @@ mod tests {
             assert!(
                 (eval.grad[i] - num).abs() < tol,
                 "Evaluator grad[{}]: analytic={}, numerical={}",
-                i, eval.grad[i], num
+                i,
+                eval.grad[i],
+                num
             );
         }
     }
@@ -1994,7 +2353,14 @@ mod tests {
     fn test_vector_uniform_logp() {
         use crate::graph::ParamTransform;
         let mut g = Graph::new();
-        let param_start = g.add_vector_params_with_transform("x", 3, ParamTransform::BoundedSigmoid { lower: 0.0, upper: 1.0 });
+        let param_start = g.add_vector_params_with_transform(
+            "x",
+            3,
+            ParamTransform::BoundedSigmoid {
+                lower: 0.0,
+                upper: 1.0,
+            },
+        );
         g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);

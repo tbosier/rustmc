@@ -5,7 +5,6 @@ use crate::hmc::TransitionStats;
 /// All algorithms follow the definitions in:
 ///   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
 ///   An improved R-hat for assessing convergence of MCMC"
-
 /// Per-parameter diagnostic summary.
 #[derive(Debug, Clone)]
 pub struct ParamDiagnostics {
@@ -485,8 +484,8 @@ fn rank_normalize(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
             j += 1;
         }
         let avg_rank = (i + j + 1) as f64 / 2.0;
-        for k in i..j {
-            ranks[k] = avg_rank;
+        for rank in ranks.iter_mut().take(j).skip(i) {
+            *rank = avg_rank;
         }
         i = j;
     }
@@ -571,8 +570,11 @@ fn mean(data: &[f64]) -> f64 {
     data.iter().sum::<f64>() / data.len() as f64
 }
 
-/// Approximate inverse normal CDF (Beasley-Springer-Moro algorithm).
-fn inv_normal_cdf(p: f64) -> f64 {
+/// Approximate inverse standard-normal CDF (Acklam rational approximation).
+///
+/// This is also used to turn state-space forecast moments into Gaussian
+/// pointwise intervals without adding a second implementation.
+pub fn inv_normal_cdf(p: f64) -> f64 {
     if p <= 0.0 {
         return f64::NEG_INFINITY;
     }
@@ -580,25 +582,50 @@ fn inv_normal_cdf(p: f64) -> f64 {
         return f64::INFINITY;
     }
 
-    let t = if p < 0.5 {
-        (-2.0 * p.ln()).sqrt()
+    const A: [f64; 6] = [
+        -3.969_683_028_665_376e1,
+        2.209_460_984_245_205e2,
+        -2.759_285_104_469_687e2,
+        1.383_577_518_672_69e2,
+        -3.066_479_806_614_716e1,
+        2.506_628_277_459_239,
+    ];
+    const B: [f64; 5] = [
+        -5.447_609_879_822_406e1,
+        1.615_858_368_580_409e2,
+        -1.556_989_798_598_866e2,
+        6.680_131_188_771_972e1,
+        -1.328_068_155_288_572e1,
+    ];
+    const C: [f64; 6] = [
+        -7.784_894_002_430_293e-3,
+        -3.223_964_580_411_365e-1,
+        -2.400_758_277_161_838,
+        -2.549_732_539_343_734,
+        4.374_664_141_464_968,
+        2.938_163_982_698_783,
+    ];
+    const D: [f64; 4] = [
+        7.784_695_709_041_462e-3,
+        3.224_671_290_700_398e-1,
+        2.445_134_137_142_996,
+        3.754_408_661_907_416,
+    ];
+    const P_LOW: f64 = 0.02425;
+
+    if p < P_LOW {
+        let q = (-2.0 * p.ln()).sqrt();
+        (((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
+    } else if p <= 1.0 - P_LOW {
+        let q = p - 0.5;
+        let r = q * q;
+        (((((A[0] * r + A[1]) * r + A[2]) * r + A[3]) * r + A[4]) * r + A[5]) * q
+            / (((((B[0] * r + B[1]) * r + B[2]) * r + B[3]) * r + B[4]) * r + 1.0)
     } else {
-        (-2.0 * (1.0 - p).ln()).sqrt()
-    };
-
-    let c0 = 2.515517;
-    let c1 = 0.802853;
-    let c2 = 0.010328;
-    let d1 = 1.432788;
-    let d2 = 0.189269;
-    let d3 = 0.001308;
-
-    let val = t - (c0 + c1 * t + c2 * t * t) / (1.0 + d1 * t + d2 * t * t + d3 * t * t * t);
-
-    if p < 0.5 {
-        -val
-    } else {
-        val
+        let q = (-2.0 * (1.0 - p).ln()).sqrt();
+        -(((((C[0] * q + C[1]) * q + C[2]) * q + C[3]) * q + C[4]) * q + C[5])
+            / ((((D[0] * q + D[1]) * q + D[2]) * q + D[3]) * q + 1.0)
     }
 }
 
@@ -606,6 +633,14 @@ fn inv_normal_cdf(p: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::hmc::TransitionStats;
+
+    #[test]
+    fn inverse_normal_cdf_is_accurate_at_common_interval_levels() {
+        let z = inv_normal_cdf(0.975);
+        assert!((z - 1.959_963_984_540_054).abs() < 1e-8);
+        assert!((inv_normal_cdf(0.025) + z).abs() < 1e-10);
+        assert_eq!(inv_normal_cdf(0.5), 0.0);
+    }
 
     #[test]
     fn test_r_hat_converged() {

@@ -355,12 +355,16 @@ impl AccumulatorBlock {
 
     fn reset(&mut self) {
         match self {
-            Self::Scalar { count, mean, m2, .. } => {
+            Self::Scalar {
+                count, mean, m2, ..
+            } => {
                 *count = 0;
                 *mean = 0.0;
                 *m2 = 0.0;
             }
-            Self::Diagonal { count, mean, m2, .. } => {
+            Self::Diagonal {
+                count, mean, m2, ..
+            } => {
                 *count = 0;
                 mean.fill(0.0);
                 m2.fill(0.0);
@@ -440,11 +444,14 @@ impl AccumulatorBlock {
             Self::Scalar {
                 start, count, m2, ..
             } => {
-                let variance = regularize_variance(if *count > 1 {
-                    *m2 / (*count as f64 - 1.0)
-                } else {
-                    1.0
-                }, *count);
+                let variance = regularize_variance(
+                    if *count > 1 {
+                        *m2 / (*count as f64 - 1.0)
+                    } else {
+                        1.0
+                    },
+                    *count,
+                );
                 MassBlock {
                     start: *start,
                     len: 1,
@@ -455,20 +462,20 @@ impl AccumulatorBlock {
                 }
             }
             Self::Diagonal {
-                start,
-                count,
-                m2,
-                ..
+                start, count, m2, ..
             } => {
                 let len = m2.len();
                 let mut variances = vec![1.0; len];
                 let mut inv_variances = vec![1.0; len];
                 for i in 0..len {
-                    let variance = regularize_variance(if *count > 1 {
-                        m2[i] / (*count as f64 - 1.0)
-                    } else {
-                        1.0
-                    }, *count);
+                    let variance = regularize_variance(
+                        if *count > 1 {
+                            m2[i] / (*count as f64 - 1.0)
+                        } else {
+                            1.0
+                        },
+                        *count,
+                    );
                     variances[i] = variance;
                     inv_variances[i] = 1.0 / variance;
                 }
@@ -507,7 +514,8 @@ impl AccumulatorBlock {
                 } else {
                     0.0
                 };
-                let jitter = BASE_JITTER * (REGULARIZATION_WEIGHT / (*count as f64 + REGULARIZATION_WEIGHT));
+                let jitter =
+                    BASE_JITTER * (REGULARIZATION_WEIGHT / (*count as f64 + REGULARIZATION_WEIGHT));
                 for i in 0..*dim {
                     for j in 0..*dim {
                         cov[i * *dim + j] *= shrink;

@@ -1,10 +1,19 @@
 # Batch Inference
 
-Fit the same model structure across thousands of independent datasets in one call. rustmc runs all chains through a single Rayon thread pool — no Python overhead between models.
+Fit related independent models in one call. rustmc runs their chains through a shared
+Rayon thread pool, although each current batch entry still owns a concrete graph and
+dataset; compile-once/bind-many graph reuse is planned, not implemented.
 
 ## Use Case
 
-You have 10,000 SKUs and want a demand model for each one. Sequential fitting with ARIMA takes ~160s. With Prophet, ~28 minutes. Neither gives full posterior uncertainty. rustmc fits all 10,000 Bayesian models in **70 seconds** with credible intervals included.
+You have many SKUs and want a demand model for each one. Repeated per-series
+fits can become costly at that scale. Whether rustmc, ARIMA, or Prophet is
+faster depends on the model, configuration, data, and hardware; their default
+uncertainty outputs are also not directly comparable.
+
+The example uses 100 models so it remains practical to run locally. It is an API example,
+not a throughput claim. Scaling depends on model shape, draws, chains, and hardware; use
+the matched-protocol benchmark driver and retain raw output before publishing a result.
 
 ## Code
 
@@ -13,10 +22,10 @@ import rustmc as rmc
 import numpy as np
 
 np.random.seed(0)
-N_MODELS = 10_000
+N_MODELS = 100  # benchmark larger runs on your own model and hardware
 T = 52  # weeks per SKU
 
-# Simulate 10,000 time series
+# Simulate N_MODELS time series
 true_intercepts = np.random.normal(100, 20, N_MODELS)
 true_trends     = np.random.normal(0.5, 0.2, N_MODELS)
 noise_std       = 5.0
@@ -36,7 +45,7 @@ for i in range(N_MODELS):
 
     models.append((model, {"t": t, "y": y}))
 
-# Fit all 10,000 models
+# Fit all N_MODELS models
 results = rmc.batch_sample(models, chains=1, draws=500, warmup=300)
 
 # Inspect results
@@ -44,18 +53,6 @@ for i, r in enumerate(results[:5]):
     print(f"SKU {i:4d}: intercept={r.mean()['intercept']:7.2f} ± {r.std()['intercept']:.2f}  "
           f"trend={r.mean()['trend']:5.2f} ± {r.std()['trend']:.2f}  "
           f"(true: {true_intercepts[i]:.1f}, {true_trends[i]:.2f})")
-```
-
-## Output
-
-```
-Sampling 10000 models ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% | 70.3s
-
-SKU    0: intercept=100.42 ± 0.71  trend= 0.48 ± 0.02  (true: 99.8, 0.51)
-SKU    1: intercept= 82.11 ± 0.68  trend= 0.67 ± 0.02  (true: 81.6, 0.69)
-SKU    2: intercept=118.77 ± 0.74  trend= 0.31 ± 0.02  (true: 119.2, 0.29)
-SKU    3: intercept= 95.03 ± 0.70  trend= 0.52 ± 0.02  (true: 94.5, 0.54)
-SKU    4: intercept=107.65 ± 0.69  trend= 0.44 ± 0.02  (true: 108.1, 0.41)
 ```
 
 ## `BatchResult` API
@@ -76,16 +73,16 @@ r.divergences_per_chain  # list[int]
 
 ## Comparison
 
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| **rustmc (batch NUTS)** | **70s** | **7ms** | **Yes (full posterior)** |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+Use `examples/batch_10k_skus.py` for a matched rustmc/PyMC+nutpie comparison that reports
+divergences, R-hat, and ESS/s alongside wall time. Results are intentionally not checked
+in without their raw output and environment provenance.
 
 ## Notes
 
 - All models in a batch must use the same `draws` and `warmup` count.
 - Models can have completely different structures — each gets its own graph and data.
-- The thread pool is shared; adding more CPU cores reduces wall time proportionally.
+- The thread pool is shared across chains and models. Additional cores may reduce wall
+  time, but scaling depends on model size, batch size, memory bandwidth, and scheduling;
+  measure it on the target workload rather than assuming proportional speedup.
 - `chains=1` is the throughput-first setting. Increase `chains` when you want stronger convergence diagnostics per model.
 - `sampler="hmc"` is available in batch mode as a fixed-step fallback.

@@ -1,8 +1,9 @@
+use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
-use crate::progress::{self, ProgressState};
+use crate::progress::{ProgressGuard, ProgressState};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -160,7 +161,16 @@ where
 
 pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, String> {
     graph.validate_shapes().map_err(|e| e.to_string())?;
-    let graph = Arc::new(graph);
+    let binding = DataBinding::from_graph(&graph).map_err(|e| e.to_string())?;
+    sample_bound(Arc::new(graph.structure_only()), binding, config)
+}
+
+/// Sample one validated binding while sharing immutable model structure.
+pub fn sample_bound(
+    graph: Arc<Graph>,
+    binding: DataBinding,
+    config: SamplerConfig,
+) -> Result<SampleResult, String> {
     let param_names = graph.param_names.clone();
 
     // For progress bar, leapfrog count is approximate for NUTS
@@ -180,9 +190,9 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
         None
     };
 
-    let progress_handle = progress_state
+    let _progress_guard = progress_state
         .as_ref()
-        .map(|ps| progress::spawn_progress_thread(Arc::clone(ps)));
+        .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
 
     let chain_indices: Vec<usize> = (0..config.num_chains).collect();
 
@@ -201,7 +211,14 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                        nuts::run_chain_bound(
+                            &graph,
+                            binding.clone(),
+                            &nuts_config,
+                            &mut rng,
+                            None,
+                            prog_ref,
+                        )
                     }
                     SamplerType::Hmc => {
                         let hmc_config = HmcConfig {
@@ -210,19 +227,19 @@ pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, Strin
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                        hmc::run_chain_bound(
+                            &graph,
+                            binding.clone(),
+                            &hmc_config,
+                            &mut rng,
+                            None,
+                            prog_ref,
+                        )
                     }
                 }
             })
             .collect()
     });
-
-    if let Some(ps) = &progress_state {
-        ps.finish();
-    }
-    if let Some(h) = progress_handle {
-        h.join().ok();
-    }
 
     let transforms = &graph.param_transforms;
 
@@ -269,6 +286,62 @@ pub struct BatchModelResult {
     pub step_sizes: Vec<f64>,
     pub divergences: Vec<usize>,
     pub transitions: Vec<Vec<TransitionStats>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundBatchResult {
+    pub id: String,
+    pub index: usize,
+    pub result: BatchModelResult,
+}
+
+/// Fit many validated datasets against one Arc-shared structure. Results are
+/// collected in input order; IDs travel with their originating datasets.
+pub fn sample_batch_bound(
+    graph: Arc<Graph>,
+    bindings: Vec<DataBinding>,
+    config: BatchSampleConfig,
+) -> Result<Vec<BoundBatchResult>, String> {
+    let sampler_config = |seed| SamplerConfig {
+        sampler: config.sampler,
+        num_chains: config.num_chains.max(1),
+        num_draws: config.num_draws,
+        num_warmup: config.num_warmup,
+        step_size: config.step_size,
+        num_leapfrog_steps: config.num_leapfrog_steps,
+        max_tree_depth: config.max_tree_depth,
+        seed,
+        num_threads: 1,
+        show_progress: false,
+    };
+    let outcomes = with_thread_pool(0, || {
+        bindings
+            .into_par_iter()
+            .enumerate()
+            .map(|(index, binding)| {
+                let id = binding.id.clone();
+                let seed = config.seed.wrapping_add((index as u64) << 32);
+                sample_bound(Arc::clone(&graph), binding, sampler_config(seed)).map(|sample| {
+                    let samples = sample.samples.into_iter().flatten().collect();
+                    BoundBatchResult {
+                        id,
+                        index,
+                        result: BatchModelResult {
+                            samples,
+                            param_names: sample.param_names,
+                            num_chains: config.num_chains.max(1),
+                            num_draws: config.num_draws,
+                            accept_rates: sample.accept_rates,
+                            step_sizes: sample.step_sizes,
+                            divergences: sample.divergences,
+                            transitions: sample.transitions,
+                        },
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    });
+    outcomes.into_iter().collect()
 }
 
 impl BatchModelResult {
@@ -346,9 +419,9 @@ pub fn batch_sample(
         None
     };
 
-    let progress_handle = progress_state
+    let _progress_guard = progress_state
         .as_ref()
-        .map(|ps| progress::spawn_progress_thread(Arc::clone(ps)));
+        .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
 
     let results: Vec<BatchModelResult> = with_thread_pool(0, || {
         models
@@ -417,13 +490,6 @@ pub fn batch_sample(
             })
             .collect()
     });
-
-    if let Some(ps) = &progress_state {
-        ps.finish();
-    }
-    if let Some(h) = progress_handle {
-        h.join().ok();
-    }
 
     Ok(results)
 }

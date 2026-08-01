@@ -1,22 +1,21 @@
 //! No-U-Turn Sampler (NUTS) — Hoffman & Gelman (2014) with multinomial
 //! sampling (Betancourt 2017).
 //!
-//! This follows the same algorithm used by PyMC and Stan:
+//! This follows the core NUTS design used by PyMC and Stan:
 //!   - Iterative tree doubling (extend trajectory forward or backward)
-//!   - Generalized U-turn criterion on subtrees
+//!   - Endpoint-momentum U-turn checks on subtrees
 //!   - Multinomial candidate selection weighted by exp(-H)
 //!   - Divergence detection via energy error threshold
 //!   - Max tree depth cap (default 10)
 
 use crate::autodiff::Evaluator;
+use crate::data::DataBinding;
 use crate::graph::Graph;
-use crate::hmc::{ChainResult, TransitionStats};
+use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-
-const MAX_DELTA_H: f64 = 1000.0;
 
 #[derive(Debug, Clone)]
 pub struct NutsConfig {
@@ -63,14 +62,16 @@ struct TreeResult {
     proposal: PhasePoint,
     /// Log of the sum of weights (for multinomial combining).
     log_sum_weight: f64,
-    /// Depth of this subtree.
-    depth: usize,
     /// Number of leapfrog steps taken.
     n_leapfrog: usize,
     /// Whether a U-turn was detected inside this subtree.
     turning: bool,
     /// Whether a divergence was detected.
     diverging: bool,
+    /// Sum of the leafwise Metropolis acceptance probabilities.
+    sum_accept_prob: f64,
+    /// Number of leapfrog leaves contributing to `sum_accept_prob`.
+    n_accept_prob: usize,
 }
 
 /// Run a single NUTS chain with windowed block-structured mass matrix adaptation.
@@ -92,10 +93,23 @@ pub fn run_chain(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> ChainResult {
+    let binding = DataBinding::from_graph(graph).expect("graph data must have consistent shapes");
+    run_chain_bound(graph, binding, config, rng, init, progress)
+}
+
+/// Run a chain against a validated dataset without embedding it in `Graph`.
+pub fn run_chain_bound(
+    graph: &Graph,
+    binding: DataBinding,
+    config: &NutsConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
-    let mut evaluator = Evaluator::new(graph);
+    let mut evaluator = Evaluator::with_binding(graph, binding);
     let q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut samples = Vec::with_capacity(config.num_draws);
     let mut transitions = Vec::with_capacity(total_iters);
@@ -168,12 +182,10 @@ pub fn run_chain(
             &mut scratch,
         );
 
-        // Accept the NUTS proposal (multinomial weighting handles acceptance internally)
-        if !tree_stats.diverging {
-            current.q.copy_from_slice(&proposal.q);
-            current.grad.copy_from_slice(&proposal.grad);
-            current.logp = proposal.logp;
-        }
+        // Multinomial weighting handles candidate selection internally.  A
+        // divergence terminates trajectory construction, but does not
+        // invalidate a candidate selected from the valid trajectory prefix.
+        update_current(&mut current, &proposal);
 
         let accept_stat = tree_stats.mean_accept_prob;
         // Retain warmup telemetry, but report posterior-draw diagnostics only.
@@ -279,12 +291,20 @@ struct TreeStats {
     n_leapfrog: usize,
 }
 
+fn update_current(current: &mut PhasePoint, proposal: &PhasePoint) {
+    current.q.copy_from_slice(&proposal.q);
+    current.grad.copy_from_slice(&proposal.grad);
+    current.logp = proposal.logp;
+}
+
 /// Build the NUTS tree iteratively by doubling depth.
 ///
 /// At each depth j, the tree has 2^j leaves. We randomly choose to extend
 /// the trajectory forward (+ε) or backward (-ε). After extending, we check
-/// the generalized U-turn criterion across the full tree. If a U-turn is
+/// the endpoint-momentum U-turn criterion across the full tree. If a U-turn is
 /// detected or a divergence occurs, we stop and return the current candidate.
+// NUTS tree construction passes explicit state and reusable buffers on its hot path.
+#[allow(clippy::too_many_arguments)]
 fn build_tree_iterative(
     graph: &Graph,
     evaluator: &mut Evaluator,
@@ -323,6 +343,9 @@ fn build_tree_iterative(
 
         n_leapfrog_total += subtree.n_leapfrog;
 
+        sum_accept_stat += subtree.sum_accept_prob;
+        n_accept_stat += subtree.n_accept_prob;
+
         if subtree.diverging {
             diverging = true;
             break;
@@ -332,19 +355,16 @@ fn build_tree_iterative(
             break;
         }
 
-        // Multinomial combination: accept subtree's proposal with probability
-        // exp(subtree.log_sum_weight - log_sum_weight)
-        let accept_prob = (subtree.log_sum_weight - log_sum_weight).min(0.0).exp();
+        // Progressive multinomial sampling for a newly doubled subtree uses
+        // min(1, W_subtree / W_existing).  This differs deliberately from the
+        // normalized selection used while recursively merging equal-depth
+        // halves below.
+        let accept_prob = progressive_selection_prob(subtree.log_sum_weight, log_sum_weight);
         if rng.gen::<f64>() < accept_prob {
             proposal = subtree.proposal;
         }
 
         log_sum_weight = log_sum_exp(log_sum_weight, subtree.log_sum_weight);
-
-        // Compute per-leaf acceptance statistics for the subtree
-        let n_leaves = 1usize << subtree.depth;
-        sum_accept_stat += subtree.log_sum_weight.exp().min(n_leaves as f64);
-        n_accept_stat += n_leaves;
 
         // Update tree boundaries
         if direction > 0.0 {
@@ -384,6 +404,8 @@ fn build_tree_iterative(
 ///
 /// depth=0: take a single leapfrog step.
 /// depth=j: build two subtrees of depth j-1 and combine.
+// Recursive tree construction shares the same explicit sampler state and buffers.
+#[allow(clippy::too_many_arguments)]
 fn build_subtree(
     graph: &Graph,
     evaluator: &mut Evaluator,
@@ -402,6 +424,7 @@ fn build_subtree(
         let h_new = next.energy(mass, scratch);
         let delta_h = h_new - h0;
         let diverging = delta_h > MAX_DELTA_H || !delta_h.is_finite();
+        let accept_prob = acceptance_probability(delta_h);
         let log_weight = if diverging {
             f64::NEG_INFINITY
         } else {
@@ -413,10 +436,11 @@ fn build_subtree(
             right: next.clone(),
             proposal: next,
             log_sum_weight: log_weight,
-            depth: 0,
             n_leapfrog: 1,
             turning: false,
             diverging,
+            sum_accept_prob: accept_prob,
+            n_accept_prob: 1,
         };
     }
 
@@ -458,16 +482,17 @@ fn build_subtree(
             right: inner.right,
             proposal: inner.proposal,
             log_sum_weight: inner.log_sum_weight,
-            depth,
             n_leapfrog: inner.n_leapfrog + outer.n_leapfrog,
             turning: false,
             diverging: true,
+            sum_accept_prob: inner.sum_accept_prob + outer.sum_accept_prob,
+            n_accept_prob: inner.n_accept_prob + outer.n_accept_prob,
         };
     }
 
     // Combine proposals via multinomial weighting
     let log_sum = log_sum_exp(inner.log_sum_weight, outer.log_sum_weight);
-    let accept_outer = (outer.log_sum_weight - log_sum).exp();
+    let accept_outer = normalized_selection_prob(outer.log_sum_weight, log_sum);
     let proposal = if rng.gen::<f64>() < accept_outer {
         outer.proposal
     } else {
@@ -489,10 +514,11 @@ fn build_subtree(
         right,
         proposal,
         log_sum_weight: log_sum,
-        depth,
         n_leapfrog: inner.n_leapfrog + outer.n_leapfrog,
         turning,
         diverging: false,
+        sum_accept_prob: inner.sum_accept_prob + outer.sum_accept_prob,
+        n_accept_prob: inner.n_accept_prob + outer.n_accept_prob,
     }
 }
 
@@ -510,13 +536,18 @@ fn leapfrog(
     let mut q_new = vec![0.0; dim];
 
     // Half step momentum
-    for i in 0..dim {
-        p_new[i] = point.p[i] + 0.5 * eps * point.grad[i];
+    for ((momentum, &old_momentum), &gradient) in p_new
+        .iter_mut()
+        .zip(point.p.iter())
+        .zip(point.grad.iter())
+        .take(dim)
+    {
+        *momentum = old_momentum + 0.5 * eps * gradient;
     }
     // Full step position
     mass.velocity_into(&p_new, &mut q_new, scratch);
-    for i in 0..dim {
-        q_new[i] = point.q[i] + eps * q_new[i];
+    for (position, &old_position) in q_new.iter_mut().zip(point.q.iter()).take(dim) {
+        *position = old_position + eps * *position;
     }
     // Evaluate gradient at new position
     evaluator.compute(graph, &q_new);
@@ -535,7 +566,7 @@ fn leapfrog(
     }
 }
 
-/// Generalized U-turn check: the trajectory is turning if the momentum
+/// Endpoint-momentum U-turn check: the trajectory is turning if the momentum
 /// at either end would decrease the distance between the endpoints.
 ///
 ///   (q_right - q_left) · (M⁻¹ p_left) < 0  OR
@@ -555,6 +586,22 @@ fn log_sum_exp(a: f64, b: f64) -> f64 {
     }
     let max = a.max(b);
     max + ((a - max).exp() + (b - max).exp()).ln()
+}
+
+fn progressive_selection_prob(candidate_log_weight: f64, existing_log_weight: f64) -> f64 {
+    if candidate_log_weight == f64::NEG_INFINITY {
+        0.0
+    } else {
+        (candidate_log_weight - existing_log_weight).min(0.0).exp()
+    }
+}
+
+fn normalized_selection_prob(candidate_log_weight: f64, total_log_weight: f64) -> f64 {
+    if candidate_log_weight == f64::NEG_INFINITY {
+        0.0
+    } else {
+        (candidate_log_weight - total_log_weight).exp()
+    }
 }
 
 /// Find initial step size — same algorithm as hmc.rs.
@@ -655,5 +702,132 @@ mod tests {
             .sum::<f64>()
             / posterior.len() as f64;
         assert_eq!(chain.accept_rate, expected_accept);
+    }
+
+    #[test]
+    fn subtree_acceptance_stat_is_leafwise_not_a_weight_sum() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        graph.normal_logp(x, zero, one);
+        let mass = MassMatrix::from_graph(&graph);
+        let mut found_clipped_leaf = false;
+        for q in [-2.0, -1.0, 0.5, 1.0, 2.0] {
+            for p in [-2.0, -0.5, 0.5, 2.0] {
+                for eps in [0.25, 0.5, 1.0] {
+                    let mut evaluator = Evaluator::new(&graph);
+                    evaluator.compute(&graph, &[q]);
+                    let initial = PhasePoint {
+                        q: vec![q],
+                        p: vec![p],
+                        grad: evaluator.grad.clone(),
+                        logp: evaluator.total_logp,
+                    };
+                    let mut scratch = vec![0.0];
+                    let h0 = initial.energy(&mass, &mut scratch);
+                    let mut rng = ChaCha8Rng::seed_from_u64(11);
+                    let tree = build_subtree(
+                        &graph,
+                        &mut evaluator,
+                        &initial,
+                        eps,
+                        &mass,
+                        h0,
+                        1,
+                        1,
+                        &mut rng,
+                        &mut scratch,
+                    );
+                    assert_eq!(tree.n_accept_prob, 2);
+                    assert!(tree.sum_accept_prob >= 0.0 && tree.sum_accept_prob <= 2.0);
+                    if (tree.sum_accept_prob - tree.log_sum_weight.exp()).abs() > 1e-6 {
+                        found_clipped_leaf = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            found_clipped_leaf,
+            "negative control: some weight sums must differ from clipped leafwise acceptance"
+        );
+    }
+
+    #[test]
+    fn nuts_leaf_non_finite_energy_errors_have_zero_acceptance_probability() {
+        assert_eq!(acceptance_probability(f64::INFINITY), 0.0);
+        assert_eq!(acceptance_probability(f64::NEG_INFINITY), 0.0);
+        assert_eq!(acceptance_probability(f64::NAN), 0.0);
+
+        assert_eq!(acceptance_probability(0.0), 1.0);
+        assert_eq!(acceptance_probability(-1.0), 1.0);
+        assert!((acceptance_probability(1.0) - (-1.0_f64).exp()).abs() < 1e-15);
+    }
+
+    #[test]
+    fn progressive_and_recursive_selection_use_distinct_denominators() {
+        let existing = 0.0_f64;
+        let candidate = 0.0_f64;
+        let combined = log_sum_exp(existing, candidate);
+        assert_eq!(progressive_selection_prob(candidate, existing), 1.0);
+        assert_eq!(normalized_selection_prob(candidate, combined), 0.5);
+
+        assert_eq!(progressive_selection_prob(f64::NEG_INFINITY, existing), 0.0);
+        assert_eq!(normalized_selection_prob(f64::NEG_INFINITY, combined), 0.0);
+
+        let lighter = -(2.0_f64).ln();
+        assert_eq!(progressive_selection_prob(lighter, existing), 0.5);
+        let normalized = normalized_selection_prob(lighter, log_sum_exp(existing, lighter));
+        assert!((normalized - 1.0 / 3.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn late_divergent_suffix_retains_seeded_valid_prefix_proposal() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let y = graph.add_param("y");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        let narrow = graph.add_constant(0.1);
+        graph.normal_logp(x, zero, narrow);
+        graph.normal_logp(y, zero, one);
+        let mass = MassMatrix::from_graph(&graph);
+        let mut evaluator = Evaluator::new(&graph);
+        evaluator.compute(&graph, &[0.0, 0.0]);
+        let mut current = PhasePoint {
+            q: vec![0.0, 0.0],
+            p: vec![0.01, 1.0],
+            grad: evaluator.grad.clone(),
+            logp: evaluator.total_logp,
+        };
+        let initial_q = current.q.clone();
+        let mut scratch = vec![0.0; 2];
+        let h0 = current.energy(&mass, &mut scratch);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+
+        let (proposal, stats) = build_tree_iterative(
+            &graph,
+            &mut evaluator,
+            &current,
+            0.5,
+            &mass,
+            h0,
+            8,
+            2,
+            &mut rng,
+            &mut scratch,
+        );
+
+        assert!(stats.diverging);
+        assert_eq!(
+            stats.n_leapfrog, 3,
+            "divergence must occur after a valid leaf"
+        );
+        assert_ne!(proposal.q, initial_q, "valid prefix proposal was discarded");
+        assert!(proposal.q.iter().all(|value| value.is_finite()));
+
+        update_current(&mut current, &proposal);
+        assert_eq!(current.q, proposal.q);
+        assert_ne!(current.q, initial_q);
     }
 }

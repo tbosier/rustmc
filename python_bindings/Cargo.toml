@@ -3,7 +3,6 @@ name = "rustmc"
 version = "0.8.0"
 edition = "2021"
 license = "MIT"
-license-file = "../LICENSE"
 
 [lib]
 name = "rustmc"
@@ -11,7 +10,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 rustmc_core = { path = "../rust_core" }
-pyo3 = { version = "0.25", features = ["extension-module"] }
+pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
 numpy = "0.25"
 ndarray = "0.16"
 rand = "0.8"

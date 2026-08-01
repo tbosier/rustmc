@@ -1,49 +1,60 @@
-Production Bayesian engine plan
-Ordered by impact, with workstreams that can run in parallel.
+# Production Bayesian engine plan
 
-## Tier 1: Telemetry and trust
-
-- Preserve exact sampler events per transition: accept prob, divergence flag, energy error, tree depth, leapfrog count, and termination reason.
-- Export structured diagnostics instead of only formatted summaries: per-chain stats, per-transition stats, and per-parameter summaries.
-- Add log-likelihood export at the observation level so LOO/WAIC and posterior predictive workflows can be implemented cleanly.
-- Replace stringly sampler errors with a structured error type that the Python binding can surface unchanged.
-
-## Tier 2: Model artifact and runtime
-
-- Introduce a compiled model artifact that stores the graph, parameter metadata, transforms, observed-data schema, and likelihood metadata.
-- Make the runtime able to load that artifact without rebuilding the Python-side model DSL.
-- Add a Rust-native public API for loading a compiled model and running inference directly from Rust.
-- Make serialization/versioning explicit so artifacts fail fast on schema mismatch.
-
-## Tier 3: Model surface
-
-### First implementation slice
-- Generalize the likelihood API so it can express a linear predictor plus a family-specific link function.
-- Land Bernoulli-logit regression first. It is the smallest production GLM wedge and covers binary classification, conversion, and event models.
-- Land Poisson-log regression second, with exposure/offset support for rate models.
-- Add Student-t regression third, as the robust continuous baseline for outlier-heavy data.
-- Add Negative Binomial after Poisson, since it is the natural overdispersed count extension.
-- Add non-centered hierarchical templates and vector-valued random effects after the core families are in place.
-- Add reusable helpers for common production patterns: trend/seasonality, group intercepts, varying slopes, and noise hierarchies.
-- Keep the DSL small and opinionated; do not add arbitrary custom likelihoods until the built-in families are stable and covered by tests.
-
-## Tier 4: Validation and operations
-
-- Add statistical recovery tests and calibration tests for each supported model family.
-- Add benchmark suites for single-model ESS/s, batch throughput, and memory use.
-- Add packaging/release checks for Python wheels, Rust crates, and compiled-model compatibility.
-- Add failure-mode tests for divergences, low ESS, invalid data schemas, and incompatible artifacts.
+This file describes unfinished work. Implemented behavior belongs in the README and
+tests; roadmap items must not be advertised as current features.
 
 ## Current state
 
-- The hot path is already in Rust, with zero-allocation autodiff and parallel chain execution.
-- Sampler outputs currently expose aggregate samples, acceptance rates, step sizes, and divergence counts.
-- Diagnostics are summary-level only today; there is no per-transition telemetry or log-likelihood export yet.
-- The Python DSL is narrow but usable for repeated linear/Normal models.
+- Sampling and autodiff run in Rust; graphs are shared read-only across chains.
+- Legacy `sample()` and `batch_sample()` still create data-owning graphs, while
+  `ModelBuilder.compile()` exposes an in-memory compile-once/bind-many path backed by an
+  immutable structure and validated `DataBinding` payloads.
+- The re-bindable compiled model is not serializable yet; the existing JSON artifact is
+  a separate legacy, data-owning format.
+- A standalone time-homogeneous linear Gaussian state-space API now provides Kalman
+  filtering, smoothing, forecasting, and missing-observation handling with fixed system
+  matrices. It is not yet integrated into `ModelBuilder` parameter inference.
+
+## Tier 1: Correctness and trust
+
+- Keep exact post-warmup sampler events and export divergence flags, acceptance
+  statistics, energy error, tree depth, leapfrog count, and termination reason.
+- Maintain seeded analytic/recovery tests for every transform and likelihood.
+- Keep wheel-level Python smoke tests and honest benchmark protocols in CI/docs.
+
+## Tier 2: Compile once, bind many
+
+- Extend the foundational `DataSchema`/`DataBinding` split with named dimensions,
+  coordinates, and richer shape constraints.
+- Keep the immutable graph-template boundary and remove remaining data-owning legacy
+  paths only when compatibility shims can preserve current results.
+- Benchmark compile, bind, and sample phases separately before publishing reuse claims.
+- Add artifact serialization/versioning only after in-memory rebinding is correct.
+
+## Tier 3: State-space time series
+
+- Integrate the existing collapsed linear-Gaussian filter into `ModelBuilder`, rather
+  than sampling one latent variable per time step with NUTS.
+- Add parameter-estimation paths for local level, local linear trend, and stationary
+  AR(1); all three fixed-input constructors and conditional forecast intervals are now
+  available.
+- Extend the existing filtering/smoothing and forecast outputs with named coordinates.
+- Validate log likelihood and filtered moments against a small independent reference.
+- Multivariate/non-Gaussian state-space models remain later work.
+
+## Tier 4: Modeling surface and operations
+
+- Add named dimensions, group indexing, offsets/exposure, vector hierarchical blocks,
+  and prediction on newly bound data.
+- Add a slot-only Rust artifact/runtime API without silently migrating the legacy
+  data-owning artifact.
+- Keep Python context-manager syntax optional; do not conflate it with reusable
+  compiled artifacts or data binding.
+- Track wall time, ESS/s, memory, and divergences; never publish extrapolated results.
 
 ## Code references
 
-- Sampler state and current result surface: `rust_core/src/sampler.rs`
+- Sampler state and result surface: `rust_core/src/sampler.rs`
 - NUTS adaptation and termination behavior: `rust_core/src/nuts.rs`
 - Diagnostics summary layer: `rust_core/src/diagnostics.rs`
 - Python API surface and predictive helpers: `python_bindings/src/lib.rs`

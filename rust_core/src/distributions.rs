@@ -90,10 +90,8 @@ impl Uniform {
     /// Samples raw on (-∞, +∞), transforms via x = lower + (upper-lower) * sigmoid(raw).
     /// Jacobian: log|dx/draw| = log((upper-lower) * sigmoid(raw) * (1-sigmoid(raw)))
     pub fn prior(graph: &mut Graph, name: &str, lower: f64, upper: f64) -> NodeId {
-        let raw = graph.add_param_with_transform(
-            name,
-            ParamTransform::BoundedSigmoid { lower, upper },
-        );
+        let raw =
+            graph.add_param_with_transform(name, ParamTransform::BoundedSigmoid { lower, upper });
         let sig = graph.sigmoid(raw);
         let range = upper - lower;
         let range_node = graph.add_constant(range);

@@ -1,9 +1,20 @@
 use crate::autodiff::Evaluator;
+use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
+
+pub(crate) const MAX_DELTA_H: f64 = 1000.0;
+
+pub(crate) fn acceptance_probability(energy_error: f64) -> f64 {
+    if !energy_error.is_finite() {
+        0.0
+    } else {
+        (-energy_error).min(0.0).exp()
+    }
+}
 
 /// Per-transition sampler telemetry shared by HMC and NUTS.
 ///
@@ -65,10 +76,23 @@ pub fn run_chain(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> ChainResult {
+    let binding = DataBinding::from_graph(graph).expect("graph data must have consistent shapes");
+    run_chain_bound(graph, binding, config, rng, init, progress)
+}
+
+/// Run a chain against a validated dataset without embedding it in `Graph`.
+pub fn run_chain_bound(
+    graph: &Graph,
+    binding: DataBinding,
+    config: &HmcConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
-    let mut evaluator = Evaluator::new(graph);
+    let mut evaluator = Evaluator::with_binding(graph, binding);
     let mut q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut q_prop = vec![0.0; dim];
     let mut p = vec![0.0; dim];
@@ -154,10 +178,10 @@ pub fn run_chain(
         let h_current = -logp_current + ke_current;
         let h_prop = -logp_prop + ke_prop;
         let log_accept_ratio = h_current - h_prop;
-        let accept_prob = log_accept_ratio.min(0.0).exp();
         let energy_error = h_prop - h_current;
+        let accept_prob = acceptance_probability(energy_error);
 
-        let divergent = !log_accept_ratio.is_finite();
+        let divergent = energy_error > MAX_DELTA_H || !energy_error.is_finite();
         let mut accepted_transition = false;
         if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
@@ -324,6 +348,8 @@ fn find_initial_step_size(
 }
 
 /// Compute the log acceptance ratio for a single leapfrog step at step size `eps`.
+// This hot-path helper keeps its work buffers explicit to avoid per-step allocation.
+#[allow(clippy::too_many_arguments)]
 fn one_step_log_ratio(
     graph: &Graph,
     evaluator: &mut Evaluator,
@@ -347,12 +373,12 @@ fn one_step_log_ratio(
     for i in 0..dim {
         q1[i] = q[i] + eps * velocity[i];
     }
-    evaluator.compute(graph, &q1);
-    for i in 0..dim {
-        p1[i] += 0.5 * eps * evaluator.grad[i];
+    evaluator.compute(graph, q1);
+    for (momentum, &gradient) in p1.iter_mut().zip(evaluator.grad.iter()).take(dim) {
+        *momentum += 0.5 * eps * gradient;
     }
     let logp1 = evaluator.total_logp;
-    let ke1 = mass.kinetic_energy(&p1, scratch);
+    let ke1 = mass.kinetic_energy(p1, scratch);
     (logp1 - ke1) - (logp0 - ke0)
 }
 
@@ -411,5 +437,53 @@ mod tests {
             .count() as f64
             / posterior_transitions.len() as f64;
         assert_eq!(chain.accept_rate, posterior_accept_rate);
+    }
+
+    #[test]
+    fn hmc_flags_large_finite_energy_errors_as_divergent() {
+        let graph = simple_gaussian_graph();
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let unstable = run_chain(
+            &graph,
+            &HmcConfig {
+                step_size: 10.0,
+                num_leapfrog_steps: 2,
+                num_draws: 1,
+                num_warmup: 0,
+            },
+            &mut rng,
+            None,
+            None,
+        );
+        assert!(unstable.transitions[0].energy_error.is_finite());
+        assert!(unstable.transitions[0].energy_error > MAX_DELTA_H);
+        assert!(unstable.transitions[0].divergent);
+        assert_eq!(unstable.transitions[0].accept_prob, 0.0);
+
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let stable = run_chain(
+            &graph,
+            &HmcConfig {
+                step_size: 0.1,
+                num_leapfrog_steps: 2,
+                num_draws: 1,
+                num_warmup: 0,
+            },
+            &mut rng,
+            None,
+            None,
+        );
+        assert!(!stable.transitions[0].divergent);
+    }
+
+    #[test]
+    fn hmc_non_finite_energy_errors_have_zero_acceptance_probability() {
+        assert_eq!(acceptance_probability(f64::INFINITY), 0.0);
+        assert_eq!(acceptance_probability(f64::NEG_INFINITY), 0.0);
+        assert_eq!(acceptance_probability(f64::NAN), 0.0);
+
+        assert_eq!(acceptance_probability(0.0), 1.0);
+        assert_eq!(acceptance_probability(-1.0), 1.0);
+        assert!((acceptance_probability(1.0) - (-1.0_f64).exp()).abs() < 1e-15);
     }
 }

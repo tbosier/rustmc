@@ -1,31 +1,47 @@
 """
-rustmc vs PyMC + nutpie — 500-parameter linear regression benchmark
+rustmc vs PyMC — 500-parameter linear regression, matched protocol
 ===================================================================
-Same model, same data, same draws/warmup/chains.
-Reports wall time, iterations/s, and (most importantly) ESS/s.
+Same model, same data, same draws/warmup/chains/seed on every engine.
+Reports phase-separated timing (build / sample+compile / postprocess),
+ESS/s, max R-hat, divergences, and posterior RMSE against the known
+simulated beta — not wall time alone.
+
+Fairness notes:
+  - sigma=1.0 is the true simulated noise, fixed (not estimated) on every
+    engine — same parameter count (intercept + 500 betas) everywhere.
+  - PyMC is run with both its own default NUTS and the nutpie backend, so
+    the comparison isn't quietly picking whichever PyMC config wins.
+  - chains=1 and seed=42 on every engine.
 """
 import time
 import warnings
 import logging
 import numpy as np
 
+from bench_common import PhaseTimer, print_environment, peak_rss_mb
+
 # ── Config ────────────────────────────────────────────────────────────────
 N_OBS    = 2_000
 N_PARAMS = 500
 DRAWS    = 500
 WARMUP   = 500
-CHAINS   = 1
+CHAINS   = 2  # >=2 chains so split R-hat is defined on both sides
 SEED     = 42
+TRUE_SIGMA = 1.0
 
 # ── Data ──────────────────────────────────────────────────────────────────
-np.random.seed(SEED)
-true_beta  = np.random.randn(N_PARAMS) * 0.1
-X          = np.random.randn(N_OBS, N_PARAMS)
-y          = X @ true_beta + np.random.randn(N_OBS) * 1.0
+rng = np.random.default_rng(SEED)
+true_beta  = rng.standard_normal(N_PARAMS) * 0.1
+X          = rng.standard_normal((N_OBS, N_PARAMS))
+y          = X @ true_beta + rng.standard_normal(N_OBS) * TRUE_SIGMA
 
-print(f"Model : {N_OBS:,} obs, {N_PARAMS:,} params")
-print(f"Run   : {WARMUP} warmup + {DRAWS} draws, {CHAINS} chain(s)")
+print(f"Model : {N_OBS:,} obs, {N_PARAMS:,} params, true sigma={TRUE_SIGMA} (fixed on both sides)")
+print(f"Run   : {WARMUP} warmup + {DRAWS} draws, {CHAINS} chain(s), seed={SEED}")
 print()
+print_environment()
+print()
+
+results = []
 
 # ── rustmc ────────────────────────────────────────────────────────────────
 print("=" * 50)
@@ -34,92 +50,114 @@ print("=" * 50)
 
 import rustmc as rmc
 
-builder   = rmc.ModelBuilder(data={"X": X, "y": y})
-intercept = builder.normal_prior("intercept", mu=0.0, sigma=10.0)
-beta      = builder.vector_normal_prior("beta", n=N_PARAMS, mu=0.0, sigma=1.0)
-builder.normal_likelihood("obs",
-    mu_expr=intercept + beta @ "X",
-    sigma=1.0,
-    observed_key="y")
-model = builder.build()
+pt = PhaseTimer()
+with pt.phase("build"):
+    builder   = rmc.ModelBuilder(data={"X": X, "y": y})
+    intercept = builder.normal_prior("intercept", mu=0.0, sigma=10.0)
+    beta      = builder.vector_normal_prior("beta", n=N_PARAMS, mu=0.0, sigma=1.0)
+    builder.normal_likelihood("obs",
+        mu_expr=intercept + beta @ "X",
+        sigma=TRUE_SIGMA,
+        observed_key="y")
+    model = builder.build()
 
-t0 = time.perf_counter()
-rmc_result = rmc.sample(model,
-                        draws=DRAWS, warmup=WARMUP,
-                        chains=CHAINS, seed=SEED,
-                        show_progress=True)
-rmc_time = time.perf_counter() - t0
+with pt.phase("compile+sample"):
+    rmc_result = rmc.sample(model,
+                            draws=DRAWS, warmup=WARMUP,
+                            chains=CHAINS, seed=SEED,
+                            show_progress=False)
 
-# ESS: average ess_bulk across all beta params
-rmc_diag  = rmc_result.diagnostics()
-# diagnostics() returns a list of dicts; filter to beta params
-rmc_beta_ess = np.mean([
-    d["ess_bulk"] for d in rmc_diag
-    if d["name"].startswith("beta[")
-])
+with pt.phase("postprocess"):
+    rmc_diag = rmc_result.diagnostics()
+    rmc_beta_ess = np.mean([d["ess_bulk"] for d in rmc_diag if d["name"].startswith("beta[")])
+    rmc_max_rhat = max(d["r_hat"] for d in rmc_diag)
+    beta_means = np.array([d["mean"] for d in rmc_diag if d["name"].startswith("beta[")])
+    rmc_rmse = float(np.sqrt(np.mean((beta_means - true_beta) ** 2)))
 
-print(f"  Wall time   : {rmc_time:.2f}s")
-print(f"  Iters/s     : {(DRAWS + WARMUP) / rmc_time:.1f}")
+rmc_divs = sum(rmc_result.divergences())
+pt.report()
 print(f"  Accept rate : {rmc_result.accept_rates()[0]:.3f}")
-print(f"  Divergences : {sum(rmc_result.divergences())}")
+print(f"  Divergences : {rmc_divs}")
 print(f"  Beta ESS    : {rmc_beta_ess:.0f}  (mean across {N_PARAMS} params)")
-print(f"  ESS/s       : {rmc_beta_ess / rmc_time:.1f}")
+print(f"  Max R-hat   : {rmc_max_rhat:.4f}")
+print(f"  ESS/s       : {rmc_beta_ess / pt.total:.1f}")
+print(f"  Beta RMSE   : {rmc_rmse:.4f}  (vs. known true beta)")
+print(f"  Peak RSS    : {peak_rss_mb():.0f} MB")
+results.append(("rustmc", pt.total, rmc_beta_ess, rmc_max_rhat, rmc_divs, rmc_rmse))
 
-# ── PyMC + nutpie ─────────────────────────────────────────────────────────
-print()
-print("=" * 50)
-print("PyMC + nutpie")
-print("=" * 50)
-
+# ── PyMC ──────────────────────────────────────────────────────────────────
 logging.getLogger("pymc").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 
 import pymc as pm
 import arviz as az
 
-with pm.Model() as pymc_model:
-    pm_intercept = pm.Normal("intercept", mu=0.0, sigma=10.0)
-    pm_beta      = pm.Normal("beta", mu=0.0, sigma=1.0, shape=N_PARAMS)
-    mu           = pm_intercept + pm.math.dot(X, pm_beta)
-    pm.Normal("obs", mu=mu, sigma=1.0, observed=y)
 
-    t0 = time.perf_counter()
-    trace = pm.sample(
-        draws=DRAWS,
-        tune=WARMUP,
-        chains=CHAINS,
-        nuts_sampler="nutpie",
-        progressbar=True,
-        random_seed=SEED,
-    )
-    pymc_time = time.perf_counter() - t0
+def run_pymc(nuts_sampler: str):
+    pt = PhaseTimer()
+    with pt.phase("build"):
+        with pm.Model() as pymc_model:
+            pm_intercept = pm.Normal("intercept", mu=0.0, sigma=10.0)
+            pm_beta      = pm.Normal("beta", mu=0.0, sigma=1.0, shape=N_PARAMS)
+            mu           = pm_intercept + pm.math.dot(X, pm_beta)
+            pm.Normal("obs", mu=mu, sigma=TRUE_SIGMA, observed=y)
 
-pymc_beta_ess = float(az.ess(trace)["beta"].values.mean())
-pymc_divs     = int(trace.sample_stats["diverging"].values.sum())
-# nutpie uses mean_tree_accept; fallback to acceptance_rate for other samplers
-accept_key = "mean_tree_accept" if "mean_tree_accept" in trace.sample_stats else "acceptance_rate"
-pymc_accept   = float(trace.sample_stats[accept_key].values.mean())
+    with pt.phase("compile+sample"):
+        with pymc_model:
+            trace = pm.sample(
+                draws=DRAWS,
+                tune=WARMUP,
+                chains=CHAINS,
+                nuts_sampler=nuts_sampler,
+                progressbar=False,
+                random_seed=SEED,
+            )
 
-print(f"  Wall time   : {pymc_time:.2f}s")
-print(f"  Iters/s     : {(DRAWS + WARMUP) / pymc_time:.1f}")
-print(f"  Accept rate : {pymc_accept:.3f}")
-print(f"  Divergences : {pymc_divs}")
-print(f"  Beta ESS    : {pymc_beta_ess:.0f}  (mean across {N_PARAMS} params)")
-print(f"  ESS/s       : {pymc_beta_ess / pymc_time:.1f}")
+    with pt.phase("postprocess"):
+        beta_ess = az.ess(trace)["beta"].values
+        beta_rhat = az.rhat(trace)["beta"].values
+        pymc_beta_ess = float(beta_ess.mean())
+        pymc_max_rhat = float(beta_rhat.max())
+        beta_means = trace.posterior["beta"].values.reshape(-1, N_PARAMS).mean(axis=0)
+        pymc_rmse = float(np.sqrt(np.mean((beta_means - true_beta) ** 2)))
+
+    divs = int(trace.sample_stats["diverging"].values.sum())
+
+    print()
+    print("=" * 50)
+    print(f"PyMC ({nuts_sampler})")
+    print("=" * 50)
+    pt.report()
+    print(f"  Divergences : {divs}")
+    print(f"  Beta ESS    : {pymc_beta_ess:.0f}  (mean across {N_PARAMS} params)")
+    print(f"  Max R-hat   : {pymc_max_rhat:.4f}")
+    print(f"  ESS/s       : {pymc_beta_ess / pt.total:.1f}")
+    print(f"  Beta RMSE   : {pymc_rmse:.4f}  (vs. known true beta)")
+    print(f"  Peak RSS    : {peak_rss_mb():.0f} MB (parent process; PyMC may fork workers)")
+    return (f"PyMC ({nuts_sampler})", pt.total, pymc_beta_ess, pymc_max_rhat, divs, pymc_rmse)
+
+
+for backend in ("pymc", "nutpie"):
+    try:
+        results.append(run_pymc(backend))
+    except ImportError as e:
+        print(f"\nPyMC backend '{backend}' unavailable — skipping: {e}")
+    except Exception as e:
+        print(f"\nPyMC backend '{backend}' failed — skipping: {e}")
 
 # ── Summary ───────────────────────────────────────────────────────────────
 print()
 print("=" * 50)
 print("Summary")
 print("=" * 50)
-print(f"{'':20s}  {'rustmc':>10}  {'PyMC+nutpie':>12}")
-print(f"{'Wall time (s)':20s}  {rmc_time:>10.2f}  {pymc_time:>12.2f}")
-print(f"{'Iters/s':20s}  {(DRAWS+WARMUP)/rmc_time:>10.1f}  {(DRAWS+WARMUP)/pymc_time:>12.1f}")
-print(f"{'Beta ESS':20s}  {rmc_beta_ess:>10.0f}  {pymc_beta_ess:>12.0f}")
-print(f"{'ESS/s':20s}  {rmc_beta_ess/rmc_time:>10.1f}  {pymc_beta_ess/pymc_time:>12.1f}")
+print(f"{'Engine':<16}{'Time(s)':>10}{'BetaESS':>10}{'ESS/s':>10}{'MaxR-hat':>10}{'Divs':>7}{'BetaRMSE':>10}")
+for name, t, ess, rhat, divs, rmse in results:
+    print(f"{name:<16}{t:>10.2f}{ess:>10.0f}{ess/t:>10.1f}{rhat:>10.4f}{divs:>7}{rmse:>10.4f}")
 
-speedup = (rmc_beta_ess / rmc_time) / (pymc_beta_ess / pymc_time)
-if speedup >= 1:
-    print(f"\nrustmc is {speedup:.2f}x faster by ESS/s")
-else:
-    print(f"\nPyMC+nutpie is {1/speedup:.2f}x faster by ESS/s")
+if len(results) > 1:
+    base = results[0]
+    for other in results[1:]:
+        speedup = (base[2] / base[1]) / (other[2] / other[1])
+        direction = "faster" if speedup >= 1 else "slower"
+        factor = speedup if speedup >= 1 else 1 / speedup
+        print(f"\n{base[0]} is {factor:.2f}x {direction} than {other[0]} by ESS/s")

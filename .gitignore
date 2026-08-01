@@ -3,3 +3,7 @@ target*
 .env*
 .codex*
 /*site*
+__pycache__/
+*.pyc
+/dist/
+.pytest_cache/

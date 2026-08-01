@@ -8,15 +8,20 @@ This document defines the validation stack rustmc needs before it can be treated
 - Diagnostics unit tests in `rust_core/src/diagnostics.rs`
 - A sampler regression test in `rust_core/src/sampler.rs`
 - End-to-end examples for linear regression, hierarchical models, ArviZ export, batch inference, and large linear models in `examples/`
-- User-facing workflow docs and benchmark claims in `README.md` and `docs/`
+- User-facing workflow docs and benchmark protocol in `README.md` and `docs/`
+- A seeded Rust recovery suite in `rust_core/tests/recovery_suite.rs`
+- Python import/API/end-to-end smoke tests in `tests/test_smoke.py`
+- Clean-wheel metadata/install checks in `tests/test_packaging.py`
+- Reproducible benchmark drivers in `examples/run_benchmarks.py` and a provenance/raw
+  output checklist in `benchmarks/RESULTS_TEMPLATE.md`
 
 ## What Is Missing
 
-- Statistical recovery tests for each supported model family
+- Statistical recovery tests for every supported model family
 - Calibration tests for prior predictive and posterior predictive behavior
-- Benchmark suites that track speed, ESS/s, divergences, and memory use over time
-- Python integration tests that exercise the actual wheel, not just Rust internals
-- Packaging and release validation for wheels, version sync, and import compatibility
+- Automated benchmark regression thresholds (the harness records speed, ESS/s,
+  divergences, and memory, but CI does not enforce performance budgets)
+- Broader wheel-level integration coverage for predictive and optional ArviZ paths
 - Failure-mode tests for invalid data, incompatible shapes, thread configuration, and divergence-heavy models
 
 ## Priority Workstreams
@@ -56,7 +61,7 @@ Acceptance criteria:
 - Calibration does not regress across releases
 - Failure cases are easy to diagnose from the returned summaries
 
-### 3. Benchmark Regression
+### 3. Benchmark Regression — HARNESS IMPLEMENTED
 
 Goal: make the performance claims reproducible and trackable.
 
@@ -81,7 +86,7 @@ Acceptance criteria:
 - Regression thresholds are defined, not just narrative claims
 - Results can be compared against previous releases
 
-### 4. Python Integration
+### 4. Python Integration — SMOKE COVERAGE IMPLEMENTED
 
 Goal: validate the packaged Python API as users actually consume it.
 
@@ -101,7 +106,7 @@ Acceptance criteria:
 - API behavior matches the docs
 - Optional dependencies fail cleanly with actionable errors
 
-### 5. Packaging and Release
+### 5. Packaging and Release — CLEAN-WHEEL CI IMPLEMENTED
 
 Goal: prevent broken releases from shipping.
 
@@ -138,8 +143,8 @@ Acceptance criteria:
 
 ## Recommended File Additions
 
-- `tests/` for integration and regression tests once Python-side test execution is wired up
-- `benchmarks/` or `scripts/` for repeatable benchmark entrypoints
+- `tests/` contains Python integration and packaging tests
+- `benchmarks/` and `examples/run_benchmarks.py` contain the repeatable benchmark harness
 - `validation/` or `tests/fixtures/` for seeded datasets and golden outputs
 
 ## Current Code References

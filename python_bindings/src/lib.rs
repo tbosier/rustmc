@@ -1,6 +1,7 @@
 use ndarray::{Array2, Array3};
-use numpy::{IntoPyArray, PyArray1, PyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use numpy::{PyArrayMethods, PyUntypedArrayMethods};
+use pyo3::create_exception;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -9,13 +10,66 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal as NormalDist};
 use rustmc_core::autodiff::Evaluator;
+use rustmc_core::data::{DataBinding as CoreDataBinding, DataInputs, MatrixBinding};
+use rustmc_core::diagnostics::inv_normal_cdf;
 use rustmc_core::distributions::{
     Bernoulli, BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Poisson, StudentT,
     Uniform,
 };
 use rustmc_core::graph::{Graph, NodeId, ParamTransform};
+use rustmc_core::param_ref::{validate_param_references, ParamRefError, ParamReference};
 use rustmc_core::sampler::{self, SampleResult, SamplerConfig, SamplerType};
+use rustmc_core::state_space::{
+    ForecastResult as CoreForecastResult, KalmanFilterResult as CoreKalmanFilterResult,
+    KalmanSmootherResult as CoreKalmanSmootherResult,
+    LinearGaussianStateSpace as CoreLinearGaussianStateSpace,
+    StateSpaceError as CoreStateSpaceError,
+};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+type Data1d = HashMap<String, Vec<f64>>;
+type Data2d = HashMap<String, (Vec<f64>, usize, usize)>;
+type LinearTerms = Vec<(String, String)>;
+type PyIntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
+
+create_exception!(
+    rustmc,
+    ParameterError,
+    PyValueError,
+    "Raised when a parameter reference in a model cannot be resolved.\n\n\
+     Subclasses ``ValueError`` for backwards compatibility."
+);
+
+create_exception!(
+    rustmc,
+    StateSpaceError,
+    PyValueError,
+    "Raised when state-space inputs or numerical updates are invalid."
+);
+
+/// Convert a core parameter-resolution failure into the Python exception.
+fn param_error(err: ParamRefError) -> PyErr {
+    ParameterError::new_err(err.to_string())
+}
+
+/// Monotonic id handed to each `ModelBuilder` so that a `ParamRef` produced by
+/// one model can never be silently consumed by another.
+static NEXT_MODEL_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_model_id() -> u64 {
+    NEXT_MODEL_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Error for a `ParamRef`/`Expr` that belongs to a different `ModelBuilder`.
+fn foreign_param_error(name: &str, context: &str) -> PyErr {
+    ParameterError::new_err(format!(
+        "parameter '{}' used in {} belongs to a different model. \
+         A ParamRef returned by one ModelBuilder cannot be used in another.",
+        name, context
+    ))
+}
 
 #[pyclass]
 #[derive(Debug, Clone)]
@@ -46,6 +100,180 @@ struct CompiledPythonModel {
     likelihood_names: Vec<String>,
     display_params: Vec<DisplayParamSpec>,
     auto_vector_params: HashMap<String, usize>,
+}
+
+#[pyclass(name = "BoundModel")]
+#[derive(Clone)]
+struct PyBoundModel {
+    structure: Arc<Graph>,
+    binding: CoreDataBinding,
+}
+
+#[pyclass(name = "CompiledModel")]
+#[derive(Clone)]
+struct PyCompiledModel {
+    structure: Arc<Graph>,
+    likelihood_names: Vec<String>,
+    display_params: Vec<DisplayParamSpec>,
+    default_data_1d: Data1d,
+    default_data_2d: Data2d,
+}
+
+fn core_binding_from_maps(
+    schema: &rustmc_core::DataSchema,
+    data_1d: &Data1d,
+    data_2d: &Data2d,
+    id: String,
+    strict: bool,
+    check_finite: bool,
+) -> PyResult<CoreDataBinding> {
+    let inputs = data_inputs_from_maps(data_1d, data_2d);
+    CoreDataBinding::bind(schema, inputs, id, strict, check_finite)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}
+
+fn data_inputs_from_maps(data_1d: &Data1d, data_2d: &Data2d) -> DataInputs {
+    DataInputs {
+        vectors: data_1d
+            .iter()
+            .map(|(key, values)| (key.clone(), Arc::<[f64]>::from(values.clone())))
+            .collect(),
+        matrices: data_2d
+            .iter()
+            .map(|(key, (values, n_rows, n_cols))| {
+                (
+                    key.clone(),
+                    MatrixBinding {
+                        data: Arc::from(values.clone()),
+                        n_rows: *n_rows,
+                        n_cols: *n_cols,
+                    },
+                )
+            })
+            .collect(),
+    }
+}
+
+impl PyCompiledModel {
+    fn bind_any(
+        &self,
+        value: &Bound<'_, PyAny>,
+        id: String,
+        shared: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<CoreDataBinding> {
+        if let Ok(bound) = value.downcast::<PyBoundModel>() {
+            let bound = bound.borrow();
+            if !Arc::ptr_eq(&bound.structure, &self.structure) {
+                return Err(PyValueError::new_err(
+                    "BoundModel belongs to a different CompiledModel",
+                ));
+            }
+            let mut binding = bound.binding.clone();
+            binding.id = id;
+            return Ok(binding);
+        }
+        let dict = value.downcast::<PyDict>().map_err(|_| {
+            PyValueError::new_err("data must be a dict or BoundModel from this compiled model")
+        })?;
+        let mut one_d = self.default_data_1d.clone();
+        let mut two_d = self.default_data_2d.clone();
+        let mut shared_keys = std::collections::HashSet::new();
+        if let Some(shared) = shared {
+            let (shared_1d, shared_2d) = parse_data_dict(shared)?;
+            shared_keys.extend(shared_1d.keys().cloned());
+            shared_keys.extend(shared_2d.keys().cloned());
+            merge_data_overrides(&mut one_d, &mut two_d, shared_1d, shared_2d);
+        }
+        let (extra_1d, extra_2d) = parse_data_dict(dict)?;
+        for key in extra_1d.keys().chain(extra_2d.keys()) {
+            if shared_keys.contains(key) {
+                return Err(PyValueError::new_err(format!(
+                    "data key '{}' appears in both shared and per-dataset inputs",
+                    key
+                )));
+            }
+        }
+        merge_data_overrides(&mut one_d, &mut two_d, extra_1d, extra_2d);
+        core_binding_from_maps(&self.structure.schema, &one_d, &two_d, id, true, true)
+    }
+}
+
+#[pymethods]
+impl PyBoundModel {
+    #[getter]
+    fn id(&self) -> &str {
+        &self.binding.id
+    }
+
+    #[getter]
+    fn n_obs(&self) -> usize {
+        self.binding.n_obs
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
+}
+
+fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
+    let mut one_d = spec.bound_data_1d.clone();
+    let mut two_d = spec.bound_data_2d.clone();
+    let vector_sizes: HashMap<&str, usize> = spec
+        .priors
+        .iter()
+        .filter_map(|prior| match prior {
+            PriorSpec::VectorNormal { name, n, .. } => Some((name.as_str(), *n)),
+            _ => None,
+        })
+        .collect();
+    fn visit(
+        expr: &MuExpr,
+        one_d: &mut Data1d,
+        two_d: &mut Data2d,
+        vector_sizes: &HashMap<&str, usize>,
+    ) -> PyResult<()> {
+        match expr {
+            MuExpr::ParamTimesData { data_key, .. } => {
+                one_d.entry(data_key.clone()).or_insert_with(|| vec![1.0]);
+            }
+            MuExpr::MatVec {
+                param_name,
+                data_key,
+            } => {
+                if !two_d.contains_key(data_key) {
+                    let n_cols = vector_sizes.get(param_name.as_str()).copied().ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "cannot compile matrix '{}' without bound data: declare '{}' with vector_normal_prior so its column count is structural",
+                            data_key, param_name
+                        ))
+                    })?;
+                    two_d.insert(data_key.clone(), (vec![1.0; n_cols], 1, n_cols));
+                }
+            }
+            MuExpr::Add(a, b) => {
+                visit(a, one_d, two_d, vector_sizes)?;
+                visit(b, one_d, two_d, vector_sizes)?;
+            }
+            MuExpr::Const(_) | MuExpr::Param(_) => {}
+        }
+        Ok(())
+    }
+    for likelihood in &spec.likelihoods {
+        visit(&likelihood.mu_expr, &mut one_d, &mut two_d, &vector_sizes)?;
+        one_d
+            .entry(likelihood.observed_key.clone())
+            .or_insert_with(|| vec![1.0]);
+    }
+    Ok((one_d, two_d))
 }
 
 /// A hyperparameter value: either a scalar constant or a reference to another
@@ -176,6 +404,8 @@ impl MuExpr {
 struct VectorParamRef {
     name: String,
     _n: usize,
+    /// Id of the `ModelBuilder` that created this reference.
+    owner: u64,
 }
 
 #[pymethods]
@@ -186,6 +416,55 @@ impl VectorParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
+        }
+    }
+}
+
+/// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
+fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
+    match (a, b) {
+        (Some(x), Some(y)) if x != y => Err(ParameterError::new_err(format!(
+            "expression mixes parameters from two different models \
+             (offending parameter: '{}'). Build the whole linear predictor \
+             from a single ModelBuilder.",
+            a_name
+        ))),
+        (Some(x), _) => Ok(Some(x)),
+        (None, other) => Ok(other),
+    }
+}
+
+/// First parameter name appearing in an expression, for error messages.
+fn first_param_name(expr: &MuExpr) -> String {
+    match expr {
+        MuExpr::Const(_) => "<constant>".to_string(),
+        MuExpr::Param(name) => name.clone(),
+        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
+            param_name.clone()
+        }
+        MuExpr::Add(a, b) => {
+            let left = first_param_name(a);
+            if left == "<constant>" {
+                first_param_name(b)
+            } else {
+                left
+            }
+        }
+    }
+}
+
+/// Collect every parameter name referenced by an expression tree.
+fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
+    match expr {
+        MuExpr::Const(_) => {}
+        MuExpr::Param(name) => out.push(name.clone()),
+        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
+            out.push(param_name.clone())
+        }
+        MuExpr::Add(a, b) => {
+            collect_expr_param_names(a, out);
+            collect_expr_param_names(b, out);
         }
     }
 }
@@ -193,6 +472,7 @@ impl VectorParamRef {
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
+    id: u64,
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
     param_names: Vec<String>,
@@ -204,12 +484,17 @@ struct ModelBuilder {
 #[derive(Debug, Clone)]
 struct ParamRef {
     name: String,
+    /// Id of the `ModelBuilder` that created this reference.
+    owner: u64,
 }
 
 #[pyclass]
 #[derive(Debug, Clone)]
 struct Expr {
     inner: MuExpr,
+    /// Id of the `ModelBuilder` whose parameters this expression uses, if any.
+    /// `None` for constant-only expressions.
+    owner: Option<u64>,
 }
 
 #[pymethods]
@@ -220,22 +505,33 @@ impl ParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
         }
     }
 
     fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_expr) = other.downcast::<Expr>() {
-            let rhs = other_expr.borrow().inner.clone();
+            let (rhs, rhs_owner) = {
+                let b = other_expr.borrow();
+                (b.inner.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(self.owner), rhs_owner, &self.name)?;
             Ok(Expr {
                 inner: MuExpr::Add(Box::new(MuExpr::Param(self.name.clone())), Box::new(rhs)),
+                owner,
             })
         } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let rhs_name = other_param.borrow().name.clone();
+            let (rhs_name, rhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(self.owner), Some(rhs_owner), &self.name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(MuExpr::Param(self.name.clone())),
                     Box::new(MuExpr::Param(rhs_name)),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
@@ -243,6 +539,7 @@ impl ParamRef {
                     Box::new(MuExpr::Param(self.name.clone())),
                     Box::new(MuExpr::Const(value)),
                 ),
+                owner: Some(self.owner),
             })
         } else {
             Err(PyValueError::new_err(
@@ -261,6 +558,7 @@ impl ParamRef {
                 param_name: self.name.clone(),
                 data_key: data_key.to_string(),
             },
+            owner: Some(self.owner),
         }
     }
 }
@@ -269,21 +567,32 @@ impl ParamRef {
 impl Expr {
     fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_expr) = other.downcast::<Expr>() {
-            let rhs = other_expr.borrow().inner.clone();
+            let (rhs, rhs_owner) = {
+                let b = other_expr.borrow();
+                (b.inner.clone(), b.owner)
+            };
+            let owner = merge_owners(self.owner, rhs_owner, &first_param_name(&self.inner))?;
             Ok(Expr {
                 inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(rhs)),
+                owner,
             })
         } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let rhs_name = other_param.borrow().name.clone();
+            let (rhs_name, rhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(self.owner, Some(rhs_owner), &rhs_name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(self.inner.clone()),
                     Box::new(MuExpr::Param(rhs_name)),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
                 inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(MuExpr::Const(value))),
+                owner: self.owner,
             })
         } else {
             Err(PyValueError::new_err(
@@ -294,19 +603,232 @@ impl Expr {
 
     fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
         if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let lhs_name = other_param.borrow().name.clone();
+            let (lhs_name, lhs_owner) = {
+                let b = other_param.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let owner = merge_owners(Some(lhs_owner), self.owner, &lhs_name)?;
             Ok(Expr {
                 inner: MuExpr::Add(
                     Box::new(MuExpr::Param(lhs_name)),
                     Box::new(self.inner.clone()),
                 ),
+                owner,
             })
         } else if let Ok(value) = other.extract::<f64>() {
             Ok(Expr {
                 inner: MuExpr::Add(Box::new(MuExpr::Const(value)), Box::new(self.inner.clone())),
+                owner: self.owner,
             })
         } else {
             self.__add__(other)
+        }
+    }
+}
+
+/// Name a `PriorSpec` declares.
+fn prior_name(prior: &PriorSpec) -> &str {
+    match prior {
+        PriorSpec::Normal { name, .. }
+        | PriorSpec::HalfNormal { name, .. }
+        | PriorSpec::Exponential { name, .. }
+        | PriorSpec::LogNormal { name, .. }
+        | PriorSpec::StudentT { name, .. }
+        | PriorSpec::Uniform { name, .. }
+        | PriorSpec::Bernoulli { name, .. }
+        | PriorSpec::Poisson { name, .. }
+        | PriorSpec::Gamma { name, .. }
+        | PriorSpec::Beta { name, .. }
+        | PriorSpec::VectorNormal { name, .. } => name,
+    }
+}
+
+/// Hyperparameter references a `PriorSpec` makes, as `(role, name)` pairs.
+fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
+    let mut out = Vec::new();
+    fn push<'a>(out: &mut Vec<(&'static str, &'a str)>, role: &'static str, hp: &'a HyperParam) {
+        if let HyperParam::Param(name) = hp {
+            out.push((role, name.as_str()));
+        }
+    }
+    match prior {
+        PriorSpec::Normal { mu, sigma, .. } | PriorSpec::LogNormal { mu, sigma, .. } => {
+            push(&mut out, "mu", mu);
+            push(&mut out, "sigma", sigma);
+        }
+        PriorSpec::HalfNormal { sigma, .. } => push(&mut out, "sigma", sigma),
+        PriorSpec::Exponential { rate, .. } => push(&mut out, "rate", rate),
+        PriorSpec::StudentT { .. }
+        | PriorSpec::Uniform { .. }
+        | PriorSpec::Bernoulli { .. }
+        | PriorSpec::Poisson { .. }
+        | PriorSpec::Gamma { .. }
+        | PriorSpec::Beta { .. }
+        | PriorSpec::VectorNormal { .. } => {}
+    }
+    out
+}
+
+/// The ordered list of parameter names a model declares, plus the full set of
+/// references into it. This is the single source of truth for reference
+/// validation, shared by `ModelBuilder.build()` and `compile_python_model`.
+fn model_reference_set(
+    priors: &[PriorSpec],
+    likelihoods: &[LikelihoodSpec],
+) -> (Vec<String>, Vec<ParamReference>) {
+    let declared: Vec<String> = priors.iter().map(|p| prior_name(p).to_string()).collect();
+    let mut refs = Vec::new();
+
+    for (idx, prior) in priors.iter().enumerate() {
+        for (role, name) in prior_hyper_refs(prior) {
+            refs.push(ParamReference::ordered(
+                name,
+                format!("prior '{}' hyperparameter {}", prior_name(prior), role),
+                idx,
+            ));
+        }
+    }
+
+    for lik in likelihoods {
+        let mut names = Vec::new();
+        collect_expr_param_names(&lik.mu_expr, &mut names);
+        for name in names {
+            refs.push(ParamReference::unordered(
+                name,
+                format!("the linear predictor of likelihood '{}'", lik.name),
+            ));
+        }
+        if let Some(SigmaSpec::Param(name)) = &lik.sigma {
+            refs.push(ParamReference::unordered(
+                name.clone(),
+                format!("the scale parameter of likelihood '{}'", lik.name),
+            ));
+        }
+    }
+
+    (declared, refs)
+}
+
+/// Validate every parameter reference in a model up front, before any graph is
+/// built. Fails loudly on unknown names, out-of-order hyperparameters and
+/// duplicate declarations.
+fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec]) -> PyResult<()> {
+    let (declared, refs) = model_reference_set(priors, likelihoods);
+    validate_param_references(&declared, &refs).map_err(param_error)
+}
+
+impl ModelBuilder {
+    /// A reference to one of this model's parameters, tagged with the model id.
+    fn param_ref(&self, name: &str) -> ParamRef {
+        ParamRef {
+            name: name.to_string(),
+            owner: self.id,
+        }
+    }
+
+    /// Names declared so far, in declaration order.
+    fn declared_names(&self) -> Vec<String> {
+        self.priors
+            .iter()
+            .map(|p| prior_name(p).to_string())
+            .collect()
+    }
+
+    /// Parse a hyperparameter argument, rejecting references that belong to a
+    /// different model or that are not yet declared in this one.
+    fn hyper_arg(
+        &self,
+        obj: &Bound<'_, PyAny>,
+        arg_name: &str,
+        new_prior_name: &str,
+    ) -> PyResult<HyperParam> {
+        let hp = extract_hyper(obj, arg_name)?;
+        if let HyperParam::Const(value) = &hp {
+            if !value.is_finite() {
+                return Err(PyValueError::new_err(format!(
+                    "{} must be finite",
+                    arg_name
+                )));
+            }
+            if matches!(arg_name, "sigma" | "rate") && *value <= 0.0 {
+                return Err(PyValueError::new_err(format!("{} must be > 0", arg_name)));
+            }
+        }
+        if let HyperParam::Param(ref name) = hp {
+            let context = format!("prior '{}' hyperparameter {}", new_prior_name, arg_name);
+            if let Ok(p) = obj.downcast::<ParamRef>() {
+                if p.borrow().owner != self.id {
+                    return Err(foreign_param_error(name, &context));
+                }
+            }
+            let declared = self.declared_names();
+            let position = declared.len();
+            validate_param_references(
+                &declared,
+                &[ParamReference::ordered(name.clone(), context, position)],
+            )
+            .map_err(param_error)?;
+        }
+        Ok(hp)
+    }
+
+    /// Parse a likelihood predictor argument (`Expr` or bare `ParamRef`),
+    /// rejecting references that belong to a different model.
+    fn likelihood_expr(
+        &self,
+        value: &Bound<'_, PyAny>,
+        arg_name: &str,
+        lik_name: &str,
+    ) -> PyResult<MuExpr> {
+        let (expr, owner) = if let Ok(e) = value.downcast::<Expr>() {
+            let b = e.borrow();
+            (b.inner.clone(), b.owner)
+        } else if let Ok(p) = value.downcast::<ParamRef>() {
+            let b = p.borrow();
+            (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else {
+            return Err(PyValueError::new_err(format!(
+                "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+                arg_name
+            )));
+        };
+        let context = format!("the linear predictor of likelihood '{}'", lik_name);
+        self.check_owner(owner, &first_param_name(&expr), &context)?;
+        Ok(expr)
+    }
+
+    /// Parse a likelihood scale argument (float or `ParamRef`), rejecting
+    /// references that belong to a different model.
+    fn scale_spec(
+        &self,
+        value: &Bound<'_, PyAny>,
+        arg_name: &str,
+        lik_name: &str,
+    ) -> PyResult<SigmaSpec> {
+        if let Ok(v) = value.extract::<f64>() {
+            validate_positive_finite(arg_name, v)?;
+            Ok(SigmaSpec::Const(v))
+        } else if let Ok(p) = value.downcast::<ParamRef>() {
+            let (name, owner) = {
+                let b = p.borrow();
+                (b.name.clone(), b.owner)
+            };
+            let context = format!("the {} of likelihood '{}'", arg_name, lik_name);
+            self.check_owner(Some(owner), &name, &context)?;
+            Ok(SigmaSpec::Param(name))
+        } else {
+            Err(PyValueError::new_err(format!(
+                "{} must be a float or a ParamRef (e.g. from half_normal_prior)",
+                arg_name
+            )))
+        }
+    }
+
+    /// Reject a `ParamRef`/`Expr` produced by a different `ModelBuilder`.
+    fn check_owner(&self, owner: Option<u64>, name: &str, context: &str) -> PyResult<()> {
+        match owner {
+            Some(id) if id != self.id => Err(foreign_param_error(name, context)),
+            _ => Ok(()),
         }
     }
 }
@@ -321,12 +843,28 @@ impl ModelBuilder {
             None => (HashMap::new(), HashMap::new()),
         };
         Ok(Self {
+            id: next_model_id(),
             priors: Vec::new(),
             likelihoods: Vec::new(),
             param_names: Vec::new(),
             bound_data_1d,
             bound_data_2d,
         })
+    }
+
+    /// Support scoped model construction without changing builder semantics.
+    /// No ambient builder is installed and exceptions are never suppressed.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
     }
 
     #[pyo3(signature = (name, mu, sigma))]
@@ -336,43 +874,37 @@ impl ModelBuilder {
         mu: &Bound<'_, PyAny>,
         sigma: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let mu_hp = extract_hyper(mu, "mu")?;
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let mu_hp = self.hyper_arg(mu, "mu", name)?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::Normal {
             name: name.to_string(),
             mu: mu_hp,
             sigma: sigma_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef {
-            name: name.to_string(),
-        })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, sigma))]
     fn half_normal_prior(&mut self, name: &str, sigma: &Bound<'_, PyAny>) -> PyResult<ParamRef> {
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::HalfNormal {
             name: name.to_string(),
             sigma: sigma_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef {
-            name: name.to_string(),
-        })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, rate))]
     fn exponential_prior(&mut self, name: &str, rate: &Bound<'_, PyAny>) -> PyResult<ParamRef> {
-        let rate_hp = extract_hyper(rate, "rate")?;
+        let rate_hp = self.hyper_arg(rate, "rate", name)?;
         self.priors.push(PriorSpec::Exponential {
             name: name.to_string(),
             rate: rate_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef {
-            name: name.to_string(),
-        })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, mu, sigma))]
@@ -382,21 +914,22 @@ impl ModelBuilder {
         mu: &Bound<'_, PyAny>,
         sigma: &Bound<'_, PyAny>,
     ) -> PyResult<ParamRef> {
-        let mu_hp = extract_hyper(mu, "mu")?;
-        let sigma_hp = extract_hyper(sigma, "sigma")?;
+        let mu_hp = self.hyper_arg(mu, "mu", name)?;
+        let sigma_hp = self.hyper_arg(sigma, "sigma", name)?;
         self.priors.push(PriorSpec::LogNormal {
             name: name.to_string(),
             mu: mu_hp,
             sigma: sigma_hp,
         });
         self.param_names.push(name.to_string());
-        Ok(ParamRef {
-            name: name.to_string(),
-        })
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, nu, mu=0.0, sigma=1.0))]
-    fn student_t_prior(&mut self, name: &str, nu: f64, mu: f64, sigma: f64) -> ParamRef {
+    fn student_t_prior(&mut self, name: &str, nu: f64, mu: f64, sigma: f64) -> PyResult<ParamRef> {
+        validate_positive_finite("nu", nu)?;
+        validate_finite("mu", mu)?;
+        validate_positive_finite("sigma", sigma)?;
         self.priors.push(PriorSpec::StudentT {
             name: name.to_string(),
             nu,
@@ -404,86 +937,100 @@ impl ModelBuilder {
             sigma,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, lower=0.0, upper=1.0))]
-    fn uniform_prior(&mut self, name: &str, lower: f64, upper: f64) -> ParamRef {
+    fn uniform_prior(&mut self, name: &str, lower: f64, upper: f64) -> PyResult<ParamRef> {
+        validate_finite("lower", lower)?;
+        validate_finite("upper", upper)?;
+        if lower >= upper {
+            return Err(PyValueError::new_err("lower must be less than upper"));
+        }
         self.priors.push(PriorSpec::Uniform {
             name: name.to_string(),
             lower,
             upper,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, p=0.5))]
-    fn bernoulli_prior(&mut self, name: &str, p: f64) -> ParamRef {
+    fn bernoulli_prior(&mut self, name: &str, p: f64) -> PyResult<ParamRef> {
+        validate_finite("p", p)?;
+        if !(0.0..=1.0).contains(&p) {
+            return Err(PyValueError::new_err("p must be between 0 and 1"));
+        }
         self.priors.push(PriorSpec::Bernoulli {
             name: name.to_string(),
             p,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, lam))]
-    fn poisson_prior(&mut self, name: &str, lam: f64) -> ParamRef {
+    fn poisson_prior(&mut self, name: &str, lam: f64) -> PyResult<ParamRef> {
+        validate_positive_finite("lam", lam)?;
         self.priors.push(PriorSpec::Poisson {
             name: name.to_string(),
             lam,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, alpha, beta))]
-    fn gamma_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
+    fn gamma_prior(&mut self, name: &str, alpha: f64, beta: f64) -> PyResult<ParamRef> {
+        validate_positive_finite("alpha", alpha)?;
+        validate_positive_finite("beta", beta)?;
         self.priors.push(PriorSpec::Gamma {
             name: name.to_string(),
             alpha,
             beta,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, alpha, beta))]
-    fn beta_prior(&mut self, name: &str, alpha: f64, beta: f64) -> ParamRef {
+    fn beta_prior(&mut self, name: &str, alpha: f64, beta: f64) -> PyResult<ParamRef> {
+        validate_positive_finite("alpha", alpha)?;
+        validate_positive_finite("beta", beta)?;
         self.priors.push(PriorSpec::Beta {
             name: name.to_string(),
             alpha,
             beta,
         });
         self.param_names.push(name.to_string());
-        ParamRef {
-            name: name.to_string(),
-        }
+        Ok(self.param_ref(name))
     }
 
     #[pyo3(signature = (name, n, mu=0.0, sigma=1.0))]
-    fn vector_normal_prior(&mut self, name: &str, n: usize, mu: f64, sigma: f64) -> VectorParamRef {
+    fn vector_normal_prior(
+        &mut self,
+        name: &str,
+        n: usize,
+        mu: f64,
+        sigma: f64,
+    ) -> PyResult<VectorParamRef> {
+        if n == 0 {
+            return Err(PyValueError::new_err("n must be >= 1"));
+        }
+        validate_finite("mu", mu)?;
+        validate_positive_finite("sigma", sigma)?;
         self.priors.push(PriorSpec::VectorNormal {
             name: name.to_string(),
             n,
             mu,
             sigma,
         });
-        VectorParamRef {
+        Ok(VectorParamRef {
             name: name.to_string(),
             _n: n,
-        }
+            owner: self.id,
+        })
     }
 
     #[pyo3(signature = (name, mu_expr, sigma, observed_key))]
@@ -494,26 +1041,8 @@ impl ModelBuilder {
         sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let _ = name;
-        // Accept either an Expr or a bare ParamRef as mu_expr
-        let inner_expr = if let Ok(e) = mu_expr.downcast::<Expr>() {
-            e.borrow().inner.clone()
-        } else if let Ok(p) = mu_expr.downcast::<ParamRef>() {
-            MuExpr::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "mu_expr must be an Expr (e.g. beta * 'x') or a ParamRef",
-            ));
-        };
-        let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = sigma.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err(
-                "sigma must be a float or a ParamRef (e.g. from half_normal_prior)",
-            ));
-        };
+        let inner_expr = self.likelihood_expr(mu_expr, "mu_expr", name)?;
+        let sigma_spec = self.scale_spec(sigma, "sigma", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -539,7 +1068,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -565,7 +1094,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -591,7 +1120,7 @@ impl ModelBuilder {
         eta_expr: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -618,14 +1147,8 @@ impl ModelBuilder {
         sigma: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(mu_expr, "mu_expr")?;
-        let sigma_spec = if let Ok(v) = sigma.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = sigma.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err("sigma must be a float or a ParamRef"));
-        };
+        let inner_expr = self.likelihood_expr(mu_expr, "mu_expr", name)?;
+        let sigma_spec = self.scale_spec(sigma, "sigma", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -652,14 +1175,8 @@ impl ModelBuilder {
         alpha: &Bound<'_, PyAny>,
         observed_key: &str,
     ) -> PyResult<()> {
-        let inner_expr = parse_likelihood_expr(eta_expr, "eta_expr")?;
-        let alpha_spec = if let Ok(v) = alpha.extract::<f64>() {
-            SigmaSpec::Const(v)
-        } else if let Ok(p) = alpha.downcast::<ParamRef>() {
-            SigmaSpec::Param(p.borrow().name.clone())
-        } else {
-            return Err(PyValueError::new_err("alpha must be a float or a ParamRef"));
-        };
+        let inner_expr = self.likelihood_expr(eta_expr, "eta_expr", name)?;
+        let alpha_spec = self.scale_spec(alpha, "alpha", name)?;
         if !self.bound_data_1d.is_empty() || !self.bound_data_2d.is_empty() {
             validate_data_keys(
                 &inner_expr,
@@ -678,23 +1195,37 @@ impl ModelBuilder {
         Ok(())
     }
 
-    fn build(&self) -> ModelSpec {
-        ModelSpec {
+    /// Finalise the model. Validates every parameter reference up front so an
+    /// unresolvable name fails here rather than mid-sample.
+    fn build(&self) -> PyResult<ModelSpec> {
+        validate_model_references(&self.priors, &self.likelihoods)?;
+        Ok(ModelSpec {
             priors: self.priors.clone(),
             likelihoods: self.likelihoods.clone(),
             bound_data_1d: self.bound_data_1d.clone(),
             bound_data_2d: self.bound_data_2d.clone(),
-        }
+        })
+    }
+
+    /// Compile immutable model structure once. Dataset payloads supplied here
+    /// are used only to establish structural matrix widths and as bind defaults.
+    fn compile(&self) -> PyResult<PyCompiledModel> {
+        let spec = self.build()?;
+        let (template_1d, template_2d) = template_data_for_spec(&spec)?;
+        validate_bound_vector_lengths(&template_1d, &template_2d)?;
+        let compiled = compile_python_model(&spec, &template_1d, &template_2d)?;
+        Ok(PyCompiledModel {
+            structure: Arc::new(compiled.graph.structure_only()),
+            likelihood_names: compiled.likelihood_names,
+            display_params: compiled.display_params,
+            default_data_1d: self.bound_data_1d.clone(),
+            default_data_2d: self.bound_data_2d.clone(),
+        })
     }
 }
 
 /// Extract numpy arrays from a Python dict into typed Rust maps.
-fn parse_data_dict(
-    data: &Bound<'_, PyDict>,
-) -> PyResult<(
-    HashMap<String, Vec<f64>>,
-    HashMap<String, (Vec<f64>, usize, usize)>,
-)> {
+fn parse_data_dict(data: &Bound<'_, PyDict>) -> PyResult<(Data1d, Data2d)> {
     let mut data_1d = HashMap::new();
     let mut data_2d = HashMap::new();
     for (key, value) in data.iter() {
@@ -702,14 +1233,72 @@ fn parse_data_dict(
         if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
             let shape = arr.shape().to_vec();
             let slice = unsafe { arr.as_slice()? };
+            ensure_finite_data(&key_str, slice)?;
             data_2d.insert(key_str, (slice.to_vec(), shape[0], shape[1]));
         } else {
             let arr: &Bound<'_, PyArray1<f64>> = value.downcast()?;
             let vec: Vec<f64> = unsafe { arr.as_slice()?.to_vec() };
+            ensure_finite_data(&key_str, &vec)?;
             data_1d.insert(key_str, vec);
         }
     }
     Ok((data_1d, data_2d))
+}
+
+fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
+    if values.is_empty() {
+        return Err(PyValueError::new_err(format!(
+            "data key '{}' must contain at least one value",
+            key
+        )));
+    }
+    if let Some((index, value)) = values
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        return Err(PyValueError::new_err(format!(
+            "data key '{}' contains non-finite value {} at flat index {}",
+            key, value, index
+        )));
+    }
+    Ok(())
+}
+
+fn validate_finite(name: &str, value: f64) -> PyResult<()> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!("{} must be finite", name)))
+    }
+}
+
+fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
+    validate_finite(name, value)?;
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(PyValueError::new_err(format!("{} must be > 0", name)))
+    }
+}
+
+/// Merge call-site data over bound data while ensuring a key has exactly one
+/// dimensional kind. A 1-D override removes a stale 2-D binding and vice versa.
+fn merge_data_overrides(
+    data_1d: &mut HashMap<String, Vec<f64>>,
+    data_2d: &mut HashMap<String, (Vec<f64>, usize, usize)>,
+    extra_1d: HashMap<String, Vec<f64>>,
+    extra_2d: HashMap<String, (Vec<f64>, usize, usize)>,
+) {
+    for (key, value) in extra_1d {
+        data_2d.remove(&key);
+        data_1d.insert(key, value);
+    }
+    for (key, value) in extra_2d {
+        data_1d.remove(&key);
+        data_2d.insert(key, value);
+    }
 }
 
 /// Validate that all bound vector-like inputs share the same length.
@@ -777,19 +1366,6 @@ fn validate_data_keys(
         )));
     }
     validate_expr_keys(expr, data_1d, data_2d)
-}
-
-fn parse_likelihood_expr(value: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<MuExpr> {
-    if let Ok(e) = value.downcast::<Expr>() {
-        Ok(e.borrow().inner.clone())
-    } else if let Ok(p) = value.downcast::<ParamRef>() {
-        Ok(MuExpr::Param(p.borrow().name.clone()))
-    } else {
-        Err(PyValueError::new_err(format!(
-            "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
-            arg_name
-        )))
-    }
 }
 
 fn validate_expr_keys(
@@ -962,9 +1538,9 @@ fn pointwise_log_likelihood_for_draw(
                 let s2 = sigma * sigma;
                 let obs = &graph.obs_vectors[head.obs_data_idx];
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
                     let mu = evaluator.vec_elem(head.linpred, i, graph);
-                    let diff = obs[i] - mu;
+                    let diff = observation - mu;
                     vals.push(log_norm - 0.5 * diff * diff / s2);
                 }
                 vals
@@ -972,19 +1548,21 @@ fn pointwise_log_likelihood_for_draw(
             rustmc_core::graph::ObsFamily::BernoulliLogit => {
                 let obs = &graph.obs_vectors[head.obs_data_idx];
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    vals.push(obs[i] * eta - softplus(eta));
+                    vals.push(observation * eta - softplus(eta));
                 }
                 vals
             }
             rustmc_core::graph::ObsFamily::PoissonLog => {
                 let obs = &graph.obs_vectors[head.obs_data_idx];
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
                     vals.push(
-                        obs[i] * eta - eta.exp() - rustmc_core::autodiff::ln_gamma(obs[i] + 1.0),
+                        observation * eta
+                            - eta.exp()
+                            - rustmc_core::autodiff::ln_gamma(observation + 1.0),
                     );
                 }
                 vals
@@ -992,9 +1570,9 @@ fn pointwise_log_likelihood_for_draw(
             rustmc_core::graph::ObsFamily::ExponentialLog => {
                 let obs = &graph.obs_vectors[head.obs_data_idx];
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    vals.push(eta - obs[i] * eta.exp());
+                    vals.push(eta - observation * eta.exp());
                 }
                 vals
             }
@@ -1005,9 +1583,9 @@ fn pointwise_log_likelihood_for_draw(
                 let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
                 let s2 = sigma * sigma;
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
                     let mu = evaluator.vec_elem(head.linpred, i, graph);
-                    let y = obs[i].max(1e-300);
+                    let y = observation.max(1e-300);
                     let ly = y.ln();
                     let diff = ly - mu;
                     vals.push(log_norm - ly - 0.5 * diff * diff / s2);
@@ -1021,10 +1599,9 @@ fn pointwise_log_likelihood_for_draw(
                     .expect("NegativeBinomial observation head requires alpha");
                 let alpha = evaluator.scalar_at(alpha_node).abs().max(1e-12);
                 let mut vals = Vec::with_capacity(head.n_obs);
-                for i in 0..head.n_obs {
+                for (i, &y) in obs.iter().enumerate().take(head.n_obs) {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
                     let mu = eta.exp();
-                    let y = obs[i];
                     vals.push(
                         rustmc_core::autodiff::ln_gamma(y + alpha)
                             - rustmc_core::autodiff::ln_gamma(alpha)
@@ -1065,21 +1642,37 @@ fn resolve_hyper(
     match hp {
         HyperParam::Const(v) => Ok(graph.add_constant(*v)),
         HyperParam::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "Hyperparameter '{}' not found. Declare it before the prior that references it.",
+            ParameterError::new_err(format!(
+                "hyperparameter '{}' has no value node. Declare it before the prior \
+                 that references it.",
                 name
             ))
         }),
     }
 }
 
-fn resolve_hyper_value(hp: &HyperParam, values: &HashMap<String, f64>) -> Result<f64, PyErr> {
+/// Resolve a `HyperParam` against already-computed parameter values.
+///
+/// `context` names the model location doing the referencing, so the error can
+/// say *which* prior or derived parameter is broken. There is deliberately no
+/// default value: a missing hyperparameter must never be silently replaced.
+fn resolve_hyper_value(
+    hp: &HyperParam,
+    values: &HashMap<String, f64>,
+    context: &str,
+) -> Result<f64, PyErr> {
     match hp {
         HyperParam::Const(v) => Ok(*v),
         HyperParam::Param(name) => values.get(name).copied().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "Derived parameter depends on '{}' before it is available",
-                name
+            let mut available: Vec<&str> = values.keys().map(String::as_str).collect();
+            available.sort_unstable();
+            ParameterError::new_err(format!(
+                "parameter '{}' referenced by {} has no value yet. It must be \
+                 declared before the parameter that depends on it. \
+                 Available at this point: [{}]",
+                name,
+                context,
+                available.join(", ")
             ))
         }),
     }
@@ -1116,7 +1709,14 @@ fn build_likelihood_into_graph(
     vector_param_map: &HashMap<String, (usize, usize)>,
     value_node_map: &HashMap<String, NodeId>,
 ) -> PyResult<()> {
-    let linpred_node = build_mu_expr(graph, &lik.mu_expr, data_map, matrix_map, vector_param_map)?;
+    let linpred_node = build_mu_expr(
+        graph,
+        &lik.mu_expr,
+        data_map,
+        matrix_map,
+        vector_param_map,
+        value_node_map,
+    )?;
     let linpred_node = if lik.mu_expr.is_scalar() {
         graph.scalar_broadcast(linpred_node)
     } else {
@@ -1129,7 +1729,7 @@ fn build_likelihood_into_graph(
             PyValueError::new_err(format!("Missing observed data key: {}", lik.observed_key))
         })?
         .clone();
-    let obs_idx = graph.add_obs_data(obs_vec.clone());
+    let obs_idx = graph.add_named_obs_data(&lik.observed_key, &lik.name, obs_vec.clone());
 
     match lik.family {
         LikelihoodFamily::Normal => {
@@ -1410,9 +2010,13 @@ fn resolve_sigma(
     match spec {
         SigmaSpec::Const(v) => Ok(graph.add_constant(*v)),
         SigmaSpec::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "sigma parameter '{}' not found. Did you declare it as a prior?",
-                name
+            let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
+            available.sort_unstable();
+            ParameterError::new_err(format!(
+                "scale parameter '{}' is not a scalar parameter of this model. \
+                 Scalar parameters: [{}]",
+                name,
+                available.join(", ")
             ))
         }),
     }
@@ -1420,7 +2024,7 @@ fn resolve_sigma(
 
 /// Try to decompose a MuExpr tree into a flat linear combination:
 /// ([(param_name, data_key), ...], optional_intercept_param_name)
-fn try_extract_linear(expr: &MuExpr) -> Option<(Vec<(String, String)>, Option<String>)> {
+fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<String>)> {
     let mut terms = Vec::new();
     let mut intercept: Option<String> = None;
 
@@ -1506,7 +2110,35 @@ fn collect_matvec_params(
     Ok(result)
 }
 
+/// Look up the post-transform value node for a scalar parameter.
+///
+/// Fails loudly — never substitutes a default — when the name is not a scalar
+/// parameter of this model.
+fn lookup_param_value_node(
+    name: &str,
+    value_node_map: &HashMap<String, NodeId>,
+    context: &str,
+) -> Result<NodeId, PyErr> {
+    value_node_map.get(name).copied().ok_or_else(|| {
+        let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
+        available.sort_unstable();
+        ParameterError::new_err(format!(
+            "parameter '{}' used in {} is not a scalar parameter of this model. \
+             Scalar parameters: [{}]",
+            name,
+            context,
+            available.join(", ")
+        ))
+    })
+}
+
 /// Compile a MuExpr tree into graph nodes.
+///
+/// Parameters are resolved through `value_node_map`, which holds the
+/// *post-transform* value node for every scalar parameter. Resolving via
+/// `Graph::node_by_name` instead would return the unconstrained raw node for
+/// any transformed prior (HalfNormal, Exponential, LogNormal, Uniform, Gamma,
+/// Beta), silently putting a log-scale value into the linear predictor.
 ///
 /// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
 /// this emits a single FusedLinearMu op instead of individual
@@ -1517,6 +2149,7 @@ fn build_mu_expr(
     data_map: &HashMap<String, Vec<f64>>,
     matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
     vector_param_map: &HashMap<String, (usize, usize)>,
+    value_node_map: &HashMap<String, NodeId>,
 ) -> Result<NodeId, PyErr> {
     // Fast path: fuse linear combinations into a single op
     if let Some((terms, intercept_name)) = try_extract_linear(expr) {
@@ -1524,16 +2157,14 @@ fn build_mu_expr(
         let mut data_indices = Vec::with_capacity(terms.len());
 
         for (param_name, data_key) in &terms {
-            let pn = graph
-                .node_by_name(param_name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            let pn = lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
             param_nodes.push(pn);
 
             let data_vec = data_map
                 .get(data_key)
                 .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
                 .clone();
-            data_indices.push(graph.store_data_vec(data_vec));
+            data_indices.push(graph.store_named_data_vec(data_key, data_vec));
         }
 
         let intercept_node = match intercept_name {
@@ -1549,11 +2180,11 @@ fn build_mu_expr(
                     })?;
                 Some(graph.add_constant(value))
             }
-            Some(ref name) => Some(
-                graph
-                    .node_by_name(name)
-                    .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?,
-            ),
+            Some(ref name) => Some(lookup_param_value_node(
+                name,
+                value_node_map,
+                "the intercept of a linear predictor",
+            )?),
             None => None,
         };
 
@@ -1567,9 +2198,8 @@ fn build_mu_expr(
             param_name,
             data_key,
         } => {
-            let param_node = graph
-                .node_by_name(param_name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", param_name)))?;
+            let param_node =
+                lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
             let data_vec = data_map
                 .get(data_key)
                 .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
@@ -1577,12 +2207,7 @@ fn build_mu_expr(
             let data_node = graph.add_data(data_key, data_vec);
             Ok(graph.scalar_mul_data(param_node, data_node))
         }
-        MuExpr::Param(name) => {
-            let param_node = graph
-                .node_by_name(name)
-                .ok_or_else(|| PyValueError::new_err(format!("Unknown param: {}", name)))?;
-            Ok(param_node)
-        }
+        MuExpr::Param(name) => lookup_param_value_node(name, value_node_map, "a linear predictor"),
         MuExpr::MatVec {
             param_name,
             data_key,
@@ -1597,12 +2222,26 @@ fn build_mu_expr(
             let (data, n_rows, n_cols) = matrix_map.get(data_key.as_str()).ok_or_else(|| {
                 PyValueError::new_err(format!("Missing matrix key '{}' in data dict", data_key))
             })?;
-            let matrix_idx = graph.store_matrix(data.clone(), *n_rows, *n_cols);
+            let matrix_idx = graph.store_named_matrix(data_key, data.clone(), *n_rows, *n_cols);
             Ok(graph.mat_vec_mul(matrix_idx, param_start, n_params, None))
         }
         MuExpr::Add(a, b) => {
-            let na = build_mu_expr(graph, a, data_map, matrix_map, vector_param_map)?;
-            let nb = build_mu_expr(graph, b, data_map, matrix_map, vector_param_map)?;
+            let na = build_mu_expr(
+                graph,
+                a,
+                data_map,
+                matrix_map,
+                vector_param_map,
+                value_node_map,
+            )?;
+            let nb = build_mu_expr(
+                graph,
+                b,
+                data_map,
+                matrix_map,
+                vector_param_map,
+                value_node_map,
+            )?;
             let a_scalar = a.is_scalar();
             let b_scalar = b.is_scalar();
             if a_scalar && !b_scalar {
@@ -1644,6 +2283,13 @@ fn compile_python_model(
     let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
     let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
     let mut display_params = Vec::new();
+
+    // Defence in depth: `ModelBuilder.build()` already validated these, but a
+    // `ModelSpec` can reach here by other routes (pickling, batch_sample).
+    // Validating before touching the graph guarantees an unresolvable reference
+    // never becomes a silently-defaulted value at sampling time.
+    validate_model_references(&model_spec.priors, &model_spec.likelihoods)?;
+
     let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, matrix_map)?;
 
     for prior in &model_spec.priors {
@@ -1700,8 +2346,9 @@ fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> PyResult
                 mu,
                 sigma,
             } => {
-                let mu_v = resolve_hyper_value(mu, &values)?;
-                let sigma_v = resolve_hyper_value(sigma, &values)?;
+                let context = format!("non-centered parameter '{}'", name);
+                let mu_v = resolve_hyper_value(mu, &values, &context)?;
+                let sigma_v = resolve_hyper_value(sigma, &values, &context)?;
                 let value = mu_v + sigma_v * raw_draw[*raw_index];
                 values.insert(name.clone(), value);
                 value
@@ -1768,6 +2415,39 @@ fn derive_display_batch_result(
         divergences: raw_result.divergences.clone(),
         transitions: raw_result.transitions.clone(),
     })
+}
+
+fn validate_sample_config(
+    chains: usize,
+    draws: usize,
+    warmup: usize,
+    step_size: f64,
+    max_tree_depth: usize,
+    num_leapfrog_steps: usize,
+) -> PyResult<()> {
+    if chains == 0 {
+        return Err(PyValueError::new_err("chains must be >= 1"));
+    }
+    if draws == 0 {
+        return Err(PyValueError::new_err("draws must be >= 1"));
+    }
+    if warmup == 0 {
+        return Err(PyValueError::new_err("warmup must be >= 1"));
+    }
+    if !step_size.is_finite() || step_size < 0.0 {
+        return Err(PyValueError::new_err(
+            "step_size must be finite and >= 0 (0 enables adaptation)",
+        ));
+    }
+    if !(1..=63).contains(&max_tree_depth) {
+        return Err(PyValueError::new_err(
+            "max_tree_depth must be between 1 and 63",
+        ));
+    }
+    if num_leapfrog_steps == 0 {
+        return Err(PyValueError::new_err("num_leapfrog_steps must be >= 1"));
+    }
+    Ok(())
 }
 
 fn validate_transition_chain_count(
@@ -1947,9 +2627,13 @@ impl FitResult {
             for (li, head) in heads.iter().enumerate() {
                 match head.family {
                     rustmc_core::graph::ObsFamily::Normal => {
-                        let sigma_node = head.aux.expect("Normal observation head requires sigma");
+                        let sigma_node = head.aux.ok_or_else(|| {
+                            PyValueError::new_err("Normal observation head is missing sigma")
+                        })?;
                         let sigma = evaluator.scalar_at(sigma_node);
-                        let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+                        validate_positive_finite("likelihood sigma", sigma)?;
+                        let noise_dist = NormalDist::new(0.0_f64, sigma)
+                            .map_err(|e| PyValueError::new_err(e.to_string()))?;
                         for i in 0..head.n_obs {
                             let mu = evaluator.vec_elem(head.linpred, i, &self.graph);
                             preds[li].push(mu + noise_dist.sample(&mut rng));
@@ -1965,9 +2649,11 @@ impl FitResult {
                     rustmc_core::graph::ObsFamily::PoissonLog => {
                         for i in 0..head.n_obs {
                             let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let lam = eta.exp().max(1e-12);
-                            let draw =
-                                rand_distr::Poisson::new(lam).unwrap().sample(&mut rng) as f64;
+                            let lam = eta.exp();
+                            validate_positive_finite("Poisson posterior predictive rate", lam)?;
+                            let draw = rand_distr::Poisson::new(lam)
+                                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                                .sample(&mut rng);
                             preds[li].push(draw);
                         }
                     }
@@ -1980,30 +2666,37 @@ impl FitResult {
                         }
                     }
                     rustmc_core::graph::ObsFamily::LogNormal => {
-                        let sigma_node =
-                            head.aux.expect("LogNormal observation head requires sigma");
-                        let sigma = evaluator.scalar_at(sigma_node).abs().max(1e-12);
-                        let noise_dist = NormalDist::new(0.0_f64, sigma).unwrap();
+                        let sigma_node = head.aux.ok_or_else(|| {
+                            PyValueError::new_err("LogNormal observation head is missing sigma")
+                        })?;
+                        let sigma = evaluator.scalar_at(sigma_node);
+                        validate_positive_finite("likelihood sigma", sigma)?;
+                        let noise_dist = NormalDist::new(0.0_f64, sigma)
+                            .map_err(|e| PyValueError::new_err(e.to_string()))?;
                         for i in 0..head.n_obs {
                             let mu = evaluator.vec_elem(head.linpred, i, &self.graph);
                             preds[li].push((mu + noise_dist.sample(&mut rng)).exp());
                         }
                     }
                     rustmc_core::graph::ObsFamily::NegativeBinomialLog => {
-                        let alpha_node = head
-                            .aux
-                            .expect("NegativeBinomial observation head requires alpha");
-                        let alpha = evaluator.scalar_at(alpha_node).abs().max(1e-12);
+                        let alpha_node = head.aux.ok_or_else(|| {
+                            PyValueError::new_err(
+                                "NegativeBinomial observation head is missing alpha",
+                            )
+                        })?;
+                        let alpha = evaluator.scalar_at(alpha_node);
+                        validate_positive_finite("negative-binomial alpha", alpha)?;
                         for i in 0..head.n_obs {
                             let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let mu = eta.exp().max(1e-12);
-                            let gamma_scale = (mu / alpha).max(1e-12);
+                            let mu = eta.exp();
+                            validate_positive_finite("negative-binomial mean", mu)?;
+                            let gamma_scale = mu / alpha;
                             let lambda = rand_distr::Gamma::new(alpha, gamma_scale)
-                                .unwrap()
+                                .map_err(|e| PyValueError::new_err(e.to_string()))?
                                 .sample(&mut rng);
-                            let draw = rand_distr::Poisson::new(lambda.max(1e-12))
-                                .unwrap()
-                                .sample(&mut rng) as f64;
+                            let draw = rand_distr::Poisson::new(lambda)
+                                .map_err(|e| PyValueError::new_err(e.to_string()))?
+                                .sample(&mut rng);
                             preds[li].push(draw);
                         }
                     }
@@ -2173,27 +2866,6 @@ impl FitResult {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::validate_transition_chain_count;
-
-    #[test]
-    fn transition_chain_count_matches_samples() {
-        assert!(validate_transition_chain_count(2, 2).is_ok());
-    }
-
-    #[test]
-    fn transition_chain_count_rejects_missing_and_extra_chains() {
-        let missing_error = validate_transition_chain_count(1, 2).unwrap_err();
-        assert!(missing_error.contains("1 chains"));
-        assert!(missing_error.contains("2 chains"));
-
-        let extra_error = validate_transition_chain_count(3, 2).unwrap_err();
-        assert!(extra_error.contains("3 chains"));
-        assert!(extra_error.contains("2 chains"));
-    }
-}
-
 #[pyfunction]
 #[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
@@ -2212,6 +2884,14 @@ fn sample(
     num_leapfrog_steps: usize,
     show_progress: bool,
 ) -> PyResult<FitResult> {
+    validate_sample_config(
+        chains,
+        draws,
+        warmup,
+        step_size,
+        max_tree_depth,
+        num_leapfrog_steps,
+    )?;
     // Start from data bound at build time, then let call-site data override/extend.
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
@@ -2219,8 +2899,7 @@ fn sample(
 
     if let Some(data_dict) = data {
         let (extra_1d, extra_2d) = parse_data_dict(data_dict)?;
-        data_map.extend(extra_1d);
-        matrix_map.extend(extra_2d);
+        merge_data_overrides(&mut data_map, &mut matrix_map, extra_1d, extra_2d);
     }
 
     validate_bound_vector_lengths(&data_map, &matrix_map)?;
@@ -2273,7 +2952,263 @@ fn sample(
 }
 
 /// Result for a single model in a batch run.
+#[pymethods]
+impl PyCompiledModel {
+    #[getter]
+    fn param_names(&self) -> Vec<String> {
+        self.structure.param_names.clone()
+    }
+
+    #[getter]
+    fn required_keys(&self) -> Vec<String> {
+        self.structure
+            .schema
+            .required_keys()
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// Stable for this process and useful for verifying Arc structure sharing.
+    #[getter]
+    fn structure_id(&self) -> usize {
+        Arc::as_ptr(&self.structure) as usize
+    }
+
+    #[pyo3(signature = (data, id="0", strict=true, check_finite=true))]
+    fn bind(
+        &self,
+        data: &Bound<'_, PyDict>,
+        id: &str,
+        strict: bool,
+        check_finite: bool,
+    ) -> PyResult<PyBoundModel> {
+        let mut one_d = self.default_data_1d.clone();
+        let mut two_d = self.default_data_2d.clone();
+        let (extra_1d, extra_2d) = parse_data_dict(data)?;
+        merge_data_overrides(&mut one_d, &mut two_d, extra_1d, extra_2d);
+        Ok(PyBoundModel {
+            structure: Arc::clone(&self.structure),
+            binding: core_binding_from_maps(
+                &self.structure.schema,
+                &one_d,
+                &two_d,
+                id.to_string(),
+                strict,
+                check_finite,
+            )?,
+        })
+    }
+
+    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn sample(
+        &self,
+        py: Python<'_>,
+        data: &Bound<'_, PyAny>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        seed: u64,
+        threads: usize,
+        step_size: f64,
+        sampler: &str,
+        max_tree_depth: usize,
+        num_leapfrog_steps: usize,
+        show_progress: bool,
+    ) -> PyResult<FitResult> {
+        validate_sample_config(
+            chains,
+            draws,
+            warmup,
+            step_size,
+            max_tree_depth,
+            num_leapfrog_steps,
+        )?;
+        let binding = self.bind_any(data, "0".to_string(), None)?;
+        let sampler_type = parse_sampler_type(sampler)?;
+        let config = SamplerConfig {
+            sampler: sampler_type,
+            num_chains: chains,
+            num_draws: draws,
+            num_warmup: warmup,
+            step_size,
+            num_leapfrog_steps,
+            max_tree_depth,
+            seed,
+            num_threads: threads,
+            show_progress,
+        };
+        let hydrated_graph = self.structure.with_binding(&binding);
+        let result = py
+            .allow_threads(|| sampler::sample_bound(Arc::clone(&self.structure), binding, config))
+            .map_err(PyValueError::new_err)?;
+        let display_result = derive_display_sample_result(&result, &self.display_params)?;
+        Ok(FitResult {
+            raw_result: result,
+            display_result,
+            graph: hydrated_graph,
+            likelihood_names: self.likelihood_names.clone(),
+        })
+    }
+
+    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+    #[allow(clippy::too_many_arguments)]
+    fn sample_batch(
+        &self,
+        py: Python<'_>,
+        datasets: Vec<Bound<'_, PyAny>>,
+        ids: Option<Vec<String>>,
+        shared: Option<&Bound<'_, PyDict>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        seed: u64,
+        sampler: &str,
+        step_size: f64,
+        max_tree_depth: usize,
+        num_leapfrog_steps: usize,
+        show_progress: bool,
+    ) -> PyResult<PyBatchFit> {
+        validate_sample_config(
+            chains,
+            draws,
+            warmup,
+            step_size,
+            max_tree_depth,
+            num_leapfrog_steps,
+        )?;
+        let ids = ids.unwrap_or_else(|| (0..datasets.len()).map(|i| i.to_string()).collect());
+        if ids.len() != datasets.len() {
+            return Err(PyValueError::new_err(
+                "ids length must equal datasets length",
+            ));
+        }
+        let mut unique = std::collections::HashSet::new();
+        if ids.iter().any(|id| !unique.insert(id)) {
+            return Err(PyValueError::new_err("dataset ids must be unique"));
+        }
+        // Convert defaults/shared payloads once. Cloning this map only clones
+        // Arc handles, so a shared design matrix remains one allocation.
+        let mut base_1d = self.default_data_1d.clone();
+        let mut base_2d = self.default_data_2d.clone();
+        let mut shared_keys = std::collections::HashSet::new();
+        if let Some(shared) = shared {
+            let (shared_1d, shared_2d) = parse_data_dict(shared)?;
+            shared_keys.extend(shared_1d.keys().cloned());
+            shared_keys.extend(shared_2d.keys().cloned());
+            merge_data_overrides(&mut base_1d, &mut base_2d, shared_1d, shared_2d);
+        }
+        let base_inputs = data_inputs_from_maps(&base_1d, &base_2d);
+        let bindings = datasets
+            .iter()
+            .zip(&ids)
+            .map(|(data, id)| {
+                if let Ok(bound) = data.downcast::<PyBoundModel>() {
+                    let bound = bound.borrow();
+                    if !Arc::ptr_eq(&bound.structure, &self.structure) {
+                        return Err(PyValueError::new_err(
+                            "BoundModel belongs to a different CompiledModel",
+                        ));
+                    }
+                    let mut binding = bound.binding.clone();
+                    binding.id = id.clone();
+                    return Ok(binding);
+                }
+                let dict = data.downcast::<PyDict>().map_err(|_| {
+                    PyValueError::new_err("datasets must contain dicts or BoundModel objects")
+                })?;
+                let (extra_1d, extra_2d) = parse_data_dict(dict)?;
+                if let Some(key) = extra_1d
+                    .keys()
+                    .chain(extra_2d.keys())
+                    .find(|key| shared_keys.contains(*key))
+                {
+                    return Err(PyValueError::new_err(format!(
+                        "data key '{}' appears in both shared and per-dataset inputs",
+                        key
+                    )));
+                }
+                let mut inputs = base_inputs.clone();
+                for (key, values) in extra_1d {
+                    inputs.matrices.remove(&key);
+                    inputs.vectors.insert(key, Arc::from(values));
+                }
+                for (key, (values, n_rows, n_cols)) in extra_2d {
+                    inputs.vectors.remove(&key);
+                    inputs.matrices.insert(
+                        key,
+                        MatrixBinding {
+                            data: Arc::from(values),
+                            n_rows,
+                            n_cols,
+                        },
+                    );
+                }
+                CoreDataBinding::bind(&self.structure.schema, inputs, id.clone(), true, true)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let config = sampler::BatchSampleConfig {
+            sampler: parse_sampler_type(sampler)?,
+            num_chains: chains,
+            num_draws: draws,
+            num_warmup: warmup,
+            step_size,
+            num_leapfrog_steps,
+            max_tree_depth,
+            seed,
+            show_progress,
+        };
+        let raw = py
+            .allow_threads(|| {
+                sampler::sample_batch_bound(Arc::clone(&self.structure), bindings, config)
+            })
+            .map_err(PyValueError::new_err)?;
+        let mut results = Vec::with_capacity(raw.len());
+        for item in raw {
+            results.push(BatchResult {
+                inner: derive_display_batch_result(&item.result, &self.display_params)?,
+            });
+        }
+        Ok(PyBatchFit { ids, results })
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "CompiledModel(params={}, required_keys={:?})",
+            self.structure.param_count,
+            self.required_keys()
+        )
+    }
+}
+
+fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
+    match sampler {
+        "nuts" | "NUTS" => Ok(SamplerType::Nuts),
+        "hmc" | "HMC" => Ok(SamplerType::Hmc),
+        _ => Err(PyValueError::new_err(format!(
+            "Unknown sampler '{}'. Use 'nuts' or 'hmc'.",
+            sampler
+        ))),
+    }
+}
+
 #[pyclass]
+#[derive(Clone)]
 struct BatchResult {
     inner: sampler::BatchModelResult,
 }
@@ -2373,6 +3308,50 @@ impl BatchResult {
     }
 }
 
+#[pyclass(name = "BatchFit")]
+struct PyBatchFit {
+    ids: Vec<String>,
+    results: Vec<BatchResult>,
+}
+
+#[pymethods]
+impl PyBatchFit {
+    #[getter]
+    fn ids(&self) -> Vec<String> {
+        self.ids.clone()
+    }
+
+    fn __len__(&self) -> usize {
+        self.results.len()
+    }
+
+    fn __getitem__(&self, py: Python<'_>, index: usize) -> PyResult<Py<BatchResult>> {
+        let result = self
+            .results
+            .get(index)
+            .cloned()
+            .ok_or_else(|| PyValueError::new_err("batch index out of range"))?;
+        Py::new(py, result)
+    }
+
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    fn __exit__(
+        &self,
+        _exc_type: &Bound<'_, PyAny>,
+        _exc_value: &Bound<'_, PyAny>,
+        _traceback: &Bound<'_, PyAny>,
+    ) -> bool {
+        false
+    }
+
+    fn __repr__(&self) -> String {
+        format!("BatchFit({} datasets, 0 failed)", self.results.len())
+    }
+}
+
 /// Run thousands of independent models in parallel through Rayon.
 ///
 /// Each entry in `models` is a (ModelSpec, data_dict) pair. By default each gets
@@ -2380,6 +3359,8 @@ impl BatchResult {
 /// multiple chains or fixed-step HMC when reliability matters more.
 #[pyfunction]
 #[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+// The Python API intentionally exposes each sampler option as a named argument.
+#[allow(clippy::too_many_arguments)]
 fn batch_sample(
     py: Python<'_>,
     models: Vec<(Bound<'_, ModelSpec>, Bound<'_, PyDict>)>,
@@ -2393,9 +3374,14 @@ fn batch_sample(
     num_leapfrog_steps: usize,
     show_progress: bool,
 ) -> PyResult<Vec<BatchResult>> {
-    if chains == 0 {
-        return Err(PyValueError::new_err("chains must be >= 1"));
-    }
+    validate_sample_config(
+        chains,
+        draws,
+        warmup,
+        step_size,
+        max_tree_depth,
+        num_leapfrog_steps,
+    )?;
 
     let mut compiled_models = Vec::with_capacity(models.len());
 
@@ -2406,8 +3392,7 @@ fn batch_sample(
         let mut data_map: HashMap<String, Vec<f64>> = spec.bound_data_1d.clone();
         let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = spec.bound_data_2d.clone();
         let (extra_1d, extra_2d) = parse_data_dict(data_bound)?;
-        data_map.extend(extra_1d);
-        matrix_map.extend(extra_2d);
+        merge_data_overrides(&mut data_map, &mut matrix_map, extra_1d, extra_2d);
 
         validate_bound_vector_lengths(&data_map, &matrix_map)?;
 
@@ -2488,14 +3473,16 @@ fn sample_prior_predictive<'py>(
     n_samples: usize,
     seed: u64,
 ) -> PyResult<Bound<'py, PyDict>> {
+    if n_samples == 0 {
+        return Err(PyValueError::new_err("n_samples must be >= 1"));
+    }
     // ── Build data maps ───────────────────────────────────────────────────────
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
         model_spec.bound_data_2d.clone();
     if let Some(d) = data {
         let (e1, e2) = parse_data_dict(d)?;
-        data_map.extend(e1);
-        matrix_map.extend(e2);
+        merge_data_overrides(&mut data_map, &mut matrix_map, e1, e2);
     }
 
     validate_bound_vector_lengths(&data_map, &matrix_map)?;
@@ -2520,6 +3507,13 @@ fn sample_prior_predictive<'py>(
     for _ in 0..n_samples {
         // Sample raw parameters from priors (in declaration order)
         let raw = sample_prior_raw(&model_spec.priors, &compiled.auto_vector_params, &mut rng)?;
+        if raw.len() != graph.param_count {
+            return Err(PyValueError::new_err(format!(
+                "prior sampler produced {} raw values, but the compiled model requires {}",
+                raw.len(),
+                graph.param_count
+            )));
+        }
         let constrained_raw: Vec<f64> = raw
             .iter()
             .enumerate()
@@ -2535,9 +3529,13 @@ fn sample_prior_predictive<'py>(
         for (li, head) in heads.iter().enumerate() {
             match head.family {
                 rustmc_core::graph::ObsFamily::Normal => {
-                    let sigma_node = head.aux.expect("Normal observation head requires sigma");
+                    let sigma_node = head.aux.ok_or_else(|| {
+                        PyValueError::new_err("Normal observation head is missing sigma")
+                    })?;
                     let sigma = evaluator.scalar_at(sigma_node);
-                    let noise_dist = NormalDist::new(0.0_f64, sigma.abs().max(1e-12)).unwrap();
+                    validate_positive_finite("likelihood sigma", sigma)?;
+                    let noise_dist = NormalDist::new(0.0_f64, sigma)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     for i in 0..head.n_obs {
                         let mu = evaluator.vec_elem(head.linpred, i, &graph);
                         preds[li].push(mu + noise_dist.sample(&mut rng));
@@ -2553,8 +3551,11 @@ fn sample_prior_predictive<'py>(
                 rustmc_core::graph::ObsFamily::PoissonLog => {
                     for i in 0..head.n_obs {
                         let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let lam = eta.exp().max(1e-12);
-                        let draw = rand_distr::Poisson::new(lam).unwrap().sample(&mut rng) as f64;
+                        let lam = eta.exp();
+                        validate_positive_finite("Poisson prior predictive rate", lam)?;
+                        let draw = rand_distr::Poisson::new(lam)
+                            .map_err(|e| PyValueError::new_err(e.to_string()))?
+                            .sample(&mut rng);
                         preds[li].push(draw);
                     }
                 }
@@ -2567,29 +3568,35 @@ fn sample_prior_predictive<'py>(
                     }
                 }
                 rustmc_core::graph::ObsFamily::LogNormal => {
-                    let sigma_node = head.aux.expect("LogNormal observation head requires sigma");
-                    let sigma = evaluator.scalar_at(sigma_node).abs().max(1e-12);
-                    let noise_dist = NormalDist::new(0.0_f64, sigma).unwrap();
+                    let sigma_node = head.aux.ok_or_else(|| {
+                        PyValueError::new_err("LogNormal observation head is missing sigma")
+                    })?;
+                    let sigma = evaluator.scalar_at(sigma_node);
+                    validate_positive_finite("likelihood sigma", sigma)?;
+                    let noise_dist = NormalDist::new(0.0_f64, sigma)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     for i in 0..head.n_obs {
                         let mu = evaluator.vec_elem(head.linpred, i, &graph);
                         preds[li].push((mu + noise_dist.sample(&mut rng)).exp());
                     }
                 }
                 rustmc_core::graph::ObsFamily::NegativeBinomialLog => {
-                    let alpha_node = head
-                        .aux
-                        .expect("NegativeBinomial observation head requires alpha");
-                    let alpha = evaluator.scalar_at(alpha_node).abs().max(1e-12);
+                    let alpha_node = head.aux.ok_or_else(|| {
+                        PyValueError::new_err("NegativeBinomial observation head is missing alpha")
+                    })?;
+                    let alpha = evaluator.scalar_at(alpha_node);
+                    validate_positive_finite("negative-binomial alpha", alpha)?;
                     for i in 0..head.n_obs {
                         let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let mu = eta.exp().max(1e-12);
-                        let gamma_scale = (mu / alpha).max(1e-12);
+                        let mu = eta.exp();
+                        validate_positive_finite("negative-binomial mean", mu)?;
+                        let gamma_scale = mu / alpha;
                         let lambda = rand_distr::Gamma::new(alpha, gamma_scale)
-                            .unwrap()
+                            .map_err(|e| PyValueError::new_err(e.to_string()))?
                             .sample(&mut rng);
-                        let draw = rand_distr::Poisson::new(lambda.max(1e-12))
-                            .unwrap()
-                            .sample(&mut rng) as f64;
+                        let draw = rand_distr::Poisson::new(lambda)
+                            .map_err(|e| PyValueError::new_err(e.to_string()))?
+                            .sample(&mut rng);
                         preds[li].push(draw);
                     }
                 }
@@ -2624,7 +3631,7 @@ fn sample_prior_raw(
     rng: &mut ChaCha8Rng,
 ) -> Result<Vec<f64>, PyErr> {
     use rand_distr::{
-        Beta, Gamma as GammaDist, Poisson as PoissonDist, StudentT as StudentTDist,
+        Beta, Gamma as GammaDist, Poisson as PoissonDist, StandardNormal, StudentT as StudentTDist,
         Uniform as UniformDist,
     };
 
@@ -2632,40 +3639,65 @@ fn sample_prior_raw(
     // Track post-transform values for HyperParam::Param resolution
     let mut sampled_values: HashMap<String, f64> = HashMap::new();
 
-    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>| -> f64 {
-        match hp {
-            HyperParam::Const(v) => *v,
-            HyperParam::Param(name) => *sv.get(name.as_str()).unwrap_or(&1.0),
-        }
+    // A hyperparameter that is not yet available is a broken model, not a
+    // reason to substitute 1.0: doing so returns plausible-but-wrong prior
+    // predictive draws with no warning.
+    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>, owner: &str| -> Result<f64, PyErr> {
+        resolve_hyper_value(hp, sv, &format!("prior '{}'", owner))
     };
 
     for prior in priors {
         match prior {
             PriorSpec::Normal { name, mu, sigma } => {
-                if should_auto_noncenter(prior, auto_vector_params) {
-                    let z = NormalDist::new(0.0, 1.0).unwrap().sample(rng);
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values);
+                if let Some(&n) = auto_vector_params.get(name) {
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
+                    validate_positive_finite("sigma", sigma_v)?;
+                    let dist = NormalDist::new(mu_v, sigma_v)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                    for k in 0..n {
+                        let x = dist.sample(rng);
+                        if k == 0 {
+                            sampled_values.insert(name.clone(), x);
+                        }
+                        raw.push(x);
+                    }
+                } else if should_auto_noncenter(prior, auto_vector_params) {
+                    let z: f64 = StandardNormal.sample(rng);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
+                    validate_positive_finite("sigma", sigma_v)?;
                     sampled_values.insert(name.clone(), mu_v + sigma_v * z);
                     raw.push(z);
                 } else {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
-                    let x = NormalDist::new(mu_v, sigma_v).unwrap().sample(rng);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
+                    validate_positive_finite("sigma", sigma_v)?;
+                    let x = NormalDist::new(mu_v, sigma_v)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?
+                        .sample(rng);
                     sampled_values.insert(name.clone(), x);
                     raw.push(x); // identity transform
                 }
             }
             PriorSpec::HalfNormal { name, sigma } => {
-                let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
-                let z = NormalDist::new(0.0_f64, sigma_v).unwrap().sample(rng);
-                let x = z.abs().max(1e-12);
-                sampled_values.insert(name.clone(), x);
-                raw.push(x.ln()); // Exp transform: raw = log(x)
+                let sigma_v = resolve(sigma, &sampled_values, name)?;
+                validate_positive_finite("sigma", sigma_v)?;
+                let dist = NormalDist::new(0.0_f64, sigma_v)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let x = dist.sample(rng).abs().max(1e-12);
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), x);
+                    }
+                    raw.push(x.ln()); // Exp transform: raw = log(x)
+                }
             }
             PriorSpec::Exponential { name, rate } => {
                 if let Some(&n) = auto_vector_params.get(name) {
-                    let rate_v = resolve(rate, &sampled_values).abs().max(1e-12);
+                    let rate_v = resolve(rate, &sampled_values, name)?;
+                    validate_positive_finite("rate", rate_v)?;
                     for k in 0..n {
                         let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
                         let x = (-u.ln() / rate_v).max(1e-12);
@@ -2675,7 +3707,8 @@ fn sample_prior_raw(
                         raw.push(x.ln());
                     }
                 } else {
-                    let rate_v = resolve(rate, &sampled_values).abs().max(1e-12);
+                    let rate_v = resolve(rate, &sampled_values, name)?;
+                    validate_positive_finite("rate", rate_v)?;
                     let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
                     let x = (-u.ln() / rate_v).max(1e-12);
                     sampled_values.insert(name.clone(), x);
@@ -2684,9 +3717,11 @@ fn sample_prior_raw(
             }
             PriorSpec::LogNormal { name, mu, sigma } => {
                 if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
-                    let dist = NormalDist::new(mu_v, sigma_v).unwrap();
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
+                    validate_positive_finite("sigma", sigma_v)?;
+                    let dist = NormalDist::new(mu_v, sigma_v)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
                     for k in 0..n {
                         let raw_draw = dist.sample(rng);
                         if k == 0 {
@@ -2695,9 +3730,12 @@ fn sample_prior_raw(
                         raw.push(raw_draw);
                     }
                 } else {
-                    let mu_v = resolve(mu, &sampled_values);
-                    let sigma_v = resolve(sigma, &sampled_values).abs().max(1e-12);
-                    let raw_draw = NormalDist::new(mu_v, sigma_v).unwrap().sample(rng);
+                    let mu_v = resolve(mu, &sampled_values, name)?;
+                    let sigma_v = resolve(sigma, &sampled_values, name)?;
+                    validate_positive_finite("sigma", sigma_v)?;
+                    let raw_draw = NormalDist::new(mu_v, sigma_v)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?
+                        .sample(rng);
                     let x = raw_draw.exp();
                     sampled_values.insert(name.clone(), x);
                     raw.push(raw_draw);
@@ -2709,30 +3747,52 @@ fn sample_prior_raw(
                 mu,
                 sigma,
             } => {
-                let t = StudentTDist::new(*nu).unwrap().sample(rng);
-                let x = mu + sigma * t;
-                sampled_values.insert(name.clone(), x);
-                raw.push(x);
+                let dist =
+                    StudentTDist::new(*nu).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let x = mu + sigma * dist.sample(rng);
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), x);
+                    }
+                    raw.push(x);
+                }
             }
             PriorSpec::Uniform { name, lower, upper } => {
-                let x = UniformDist::new(*lower, *upper).sample(rng);
-                sampled_values.insert(name.clone(), x);
-                // BoundedSigmoid transform: raw = logit((x - lower) / (upper - lower))
-                let p = ((x - lower) / (upper - lower)).clamp(1e-12, 1.0 - 1e-12);
-                raw.push((p / (1.0 - p)).ln());
+                let dist = UniformDist::new(*lower, *upper);
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let x = dist.sample(rng);
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), x);
+                    }
+                    let p = ((x - lower) / (upper - lower)).clamp(1e-12, 1.0 - 1e-12);
+                    raw.push((p / (1.0 - p)).ln());
+                }
             }
             PriorSpec::Gamma { name, alpha, beta } => {
-                let x = GammaDist::new(*alpha, 1.0 / beta).unwrap().sample(rng);
-                let x = x.max(1e-12);
-                sampled_values.insert(name.clone(), x);
-                raw.push(x.ln()); // Exp transform
+                let dist = GammaDist::new(*alpha, 1.0 / beta)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let x = dist.sample(rng).max(1e-12);
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), x);
+                    }
+                    raw.push(x.ln()); // Exp transform
+                }
             }
             PriorSpec::Beta { name, alpha, beta } => {
-                let x = Beta::new(*alpha, *beta).unwrap().sample(rng);
-                let x = x.clamp(1e-12, 1.0 - 1e-12);
-                sampled_values.insert(name.clone(), x);
-                // Sigmoid transform: raw = logit(x)
-                raw.push((x / (1.0 - x)).ln());
+                let dist =
+                    Beta::new(*alpha, *beta).map_err(|e| PyValueError::new_err(e.to_string()))?;
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let x = dist.sample(rng).clamp(1e-12, 1.0 - 1e-12);
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), x);
+                    }
+                    raw.push((x / (1.0 - x)).ln());
+                }
             }
             PriorSpec::Bernoulli { name, p } => {
                 let x: f64 = if rng.gen::<f64>() < *p { 1.0 } else { 0.0 };
@@ -2742,12 +3802,13 @@ fn sample_prior_raw(
             PriorSpec::Poisson { name, lam } => {
                 let x = PoissonDist::new(*lam)
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
-                    .sample(rng) as f64;
+                    .sample(rng);
                 sampled_values.insert(name.clone(), x);
                 raw.push(x);
             }
             PriorSpec::VectorNormal { name, n, mu, sigma } => {
-                let dist = NormalDist::new(*mu, sigma.abs().max(1e-12)).unwrap();
+                let dist = NormalDist::new(*mu, *sigma)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 for k in 0..*n {
                     let x = dist.sample(rng);
                     // Store only the first component for HyperParam resolution (rare case)
@@ -2762,6 +3823,341 @@ fn sample_prior_raw(
     Ok(raw)
 }
 
+fn state_space_error(error: CoreStateSpaceError) -> PyErr {
+    StateSpaceError::new_err(error.to_string())
+}
+
+fn state_space_matrix(name: &str, value: PyReadonlyArray2<'_, f64>) -> PyResult<(Vec<f64>, usize)> {
+    let shape = value.shape();
+    if shape[0] != shape[1] {
+        return Err(StateSpaceError::new_err(format!(
+            "invalid dimension: {name} must be a square matrix"
+        )));
+    }
+    Ok((value.as_array().iter().copied().collect(), shape[0]))
+}
+
+fn state_space_vector(value: PyReadonlyArray1<'_, f64>) -> Vec<f64> {
+    value.as_array().iter().copied().collect()
+}
+
+fn state_means_array<'py>(
+    py: Python<'py>,
+    values: &[Vec<f64>],
+    dimension: usize,
+) -> Bound<'py, PyArray2<f64>> {
+    Array2::from_shape_fn((values.len(), dimension), |(time, state)| {
+        values[time][state]
+    })
+    .into_pyarray(py)
+}
+
+fn state_covariances_array<'py>(
+    py: Python<'py>,
+    values: &[Vec<f64>],
+    dimension: usize,
+) -> Bound<'py, PyArray3<f64>> {
+    Array3::from_shape_fn(
+        (values.len(), dimension, dimension),
+        |(time, row, column)| values[time][row * dimension + column],
+    )
+    .into_pyarray(py)
+}
+
+/// A time-homogeneous linear Gaussian state-space model with scalar observations.
+#[pyclass(name = "LinearGaussianStateSpace")]
+#[derive(Clone)]
+struct PyLinearGaussianStateSpace {
+    inner: CoreLinearGaussianStateSpace,
+}
+
+#[pymethods]
+impl PyLinearGaussianStateSpace {
+    #[new]
+    #[pyo3(signature = (transition, observation, process_covariance, observation_variance, initial_mean, initial_covariance))]
+    fn new(
+        transition: PyReadonlyArray2<'_, f64>,
+        observation: PyReadonlyArray1<'_, f64>,
+        process_covariance: PyReadonlyArray2<'_, f64>,
+        observation_variance: f64,
+        initial_mean: PyReadonlyArray1<'_, f64>,
+        initial_covariance: PyReadonlyArray2<'_, f64>,
+    ) -> PyResult<Self> {
+        let (transition, dimension) = state_space_matrix("transition", transition)?;
+        let (process_covariance, process_dimension) =
+            state_space_matrix("process_covariance", process_covariance)?;
+        let (initial_covariance, initial_dimension) =
+            state_space_matrix("initial_covariance", initial_covariance)?;
+        if process_dimension != dimension || initial_dimension != dimension {
+            return Err(StateSpaceError::new_err(
+                "invalid dimension: covariance matrices must match the transition matrix",
+            ));
+        }
+        Ok(Self {
+            inner: CoreLinearGaussianStateSpace::new(
+                dimension,
+                transition,
+                state_space_vector(observation),
+                process_covariance,
+                observation_variance,
+                state_space_vector(initial_mean),
+                initial_covariance,
+            )
+            .map_err(state_space_error)?,
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (process_variance, observation_variance, initial_mean=0.0, initial_variance=1.0))]
+    fn local_level(
+        process_variance: f64,
+        observation_variance: f64,
+        initial_mean: f64,
+        initial_variance: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: CoreLinearGaussianStateSpace::local_level(
+                process_variance,
+                observation_variance,
+                initial_mean,
+                initial_variance,
+            )
+            .map_err(state_space_error)?,
+        })
+    }
+
+    #[staticmethod]
+    #[pyo3(signature = (level_variance, trend_variance, observation_variance, initial_level=0.0, initial_trend=0.0, initial_level_variance=1.0, initial_trend_variance=1.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn local_linear_trend(
+        level_variance: f64,
+        trend_variance: f64,
+        observation_variance: f64,
+        initial_level: f64,
+        initial_trend: f64,
+        initial_level_variance: f64,
+        initial_trend_variance: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: CoreLinearGaussianStateSpace::local_linear_trend(
+                level_variance,
+                trend_variance,
+                observation_variance,
+                initial_level,
+                initial_trend,
+                initial_level_variance,
+                initial_trend_variance,
+            )
+            .map_err(state_space_error)?,
+        })
+    }
+
+    /// Construct a zero-mean stationary AR(1) latent process observed with
+    /// independent Gaussian noise.
+    #[staticmethod]
+    fn stationary_ar1(
+        coefficient: f64,
+        process_variance: f64,
+        observation_variance: f64,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            inner: CoreLinearGaussianStateSpace::stationary_ar1(
+                coefficient,
+                process_variance,
+                observation_variance,
+            )
+            .map_err(state_space_error)?,
+        })
+    }
+
+    #[getter]
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
+
+    fn filter(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<PyKalmanFilterResult> {
+        let observations = state_space_vector(observations);
+        let result = py
+            .allow_threads(|| self.inner.filter(&observations))
+            .map_err(state_space_error)?;
+        Ok(PyKalmanFilterResult::new(result, self.inner.dimension()))
+    }
+
+    fn smooth(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+    ) -> PyResult<PyKalmanSmootherResult> {
+        let observations = state_space_vector(observations);
+        let result = py
+            .allow_threads(|| self.inner.smooth(&observations))
+            .map_err(state_space_error)?;
+        Ok(PyKalmanSmootherResult::new(result, self.inner.dimension()))
+    }
+
+    fn forecast(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+        steps: usize,
+    ) -> PyResult<PyForecastResult> {
+        let observations = state_space_vector(observations);
+        let result = py
+            .allow_threads(|| self.inner.forecast(&observations, steps))
+            .map_err(state_space_error)?;
+        Ok(PyForecastResult::new(result, self.inner.dimension()))
+    }
+}
+
+#[pyclass(name = "KalmanFilterResult")]
+struct PyKalmanFilterResult {
+    inner: CoreKalmanFilterResult,
+    dimension: usize,
+}
+
+impl PyKalmanFilterResult {
+    fn new(inner: CoreKalmanFilterResult, dimension: usize) -> Self {
+        Self { inner, dimension }
+    }
+}
+
+#[pymethods]
+impl PyKalmanFilterResult {
+    #[getter]
+    fn log_likelihood(&self) -> f64 {
+        self.inner.log_likelihood
+    }
+
+    #[getter]
+    fn predicted_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        state_means_array(py, &self.inner.predicted_means, self.dimension)
+    }
+
+    #[getter]
+    fn predicted_covariances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        state_covariances_array(py, &self.inner.predicted_covariances, self.dimension)
+    }
+
+    #[getter]
+    fn filtered_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        state_means_array(py, &self.inner.filtered_means, self.dimension)
+    }
+
+    #[getter]
+    fn filtered_covariances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        state_covariances_array(py, &self.inner.filtered_covariances, self.dimension)
+    }
+}
+
+#[pyclass(name = "KalmanSmootherResult")]
+struct PyKalmanSmootherResult {
+    inner: CoreKalmanSmootherResult,
+    dimension: usize,
+}
+
+impl PyKalmanSmootherResult {
+    fn new(inner: CoreKalmanSmootherResult, dimension: usize) -> Self {
+        Self { inner, dimension }
+    }
+}
+
+#[pymethods]
+impl PyKalmanSmootherResult {
+    #[getter]
+    fn log_likelihood(&self) -> f64 {
+        self.inner.filter.log_likelihood
+    }
+
+    #[getter]
+    fn filtered_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        state_means_array(py, &self.inner.filter.filtered_means, self.dimension)
+    }
+
+    #[getter]
+    fn filtered_covariances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        state_covariances_array(py, &self.inner.filter.filtered_covariances, self.dimension)
+    }
+
+    #[getter]
+    fn smoothed_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        state_means_array(py, &self.inner.smoothed_means, self.dimension)
+    }
+
+    #[getter]
+    fn smoothed_covariances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        state_covariances_array(py, &self.inner.smoothed_covariances, self.dimension)
+    }
+}
+
+#[pyclass(name = "ForecastResult")]
+struct PyForecastResult {
+    inner: CoreForecastResult,
+    dimension: usize,
+}
+
+impl PyForecastResult {
+    fn new(inner: CoreForecastResult, dimension: usize) -> Self {
+        Self { inner, dimension }
+    }
+}
+
+#[pymethods]
+impl PyForecastResult {
+    #[getter]
+    fn state_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        state_means_array(py, &self.inner.state_means, self.dimension)
+    }
+
+    #[getter]
+    fn state_covariances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        state_covariances_array(py, &self.inner.state_covariances, self.dimension)
+    }
+
+    #[getter]
+    fn observation_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.observation_means.clone().into_pyarray(py)
+    }
+
+    #[getter]
+    fn observation_variances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner.observation_variances.clone().into_pyarray(py)
+    }
+
+    /// Pointwise Gaussian predictive interval conditional on the fixed model
+    /// parameters. This does not include parameter-estimation uncertainty.
+    #[pyo3(signature = (level=0.95))]
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
+            return Err(PyValueError::new_err(
+                "level must be finite and strictly between 0 and 1",
+            ));
+        }
+        let critical = inv_normal_cdf(0.5 + level / 2.0);
+        let mut lower = Vec::with_capacity(self.inner.observation_means.len());
+        let mut upper = Vec::with_capacity(self.inner.observation_means.len());
+        for (&mean, &variance) in self
+            .inner
+            .observation_means
+            .iter()
+            .zip(&self.inner.observation_variances)
+        {
+            let half_width = critical * variance.sqrt();
+            lower.push(mean - half_width);
+            upper.push(mean + half_width);
+        }
+        Ok((lower.into_pyarray(py), upper.into_pyarray(py)))
+    }
+
+    #[getter]
+    fn uncertainty_kind(&self) -> &'static str {
+        "conditional_fixed_parameters"
+    }
+}
+
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<ModelBuilder>()?;
@@ -2771,6 +4167,15 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Expr>()?;
     m.add_class::<FitResult>()?;
     m.add_class::<BatchResult>()?;
+    m.add_class::<PyCompiledModel>()?;
+    m.add_class::<PyBoundModel>()?;
+    m.add_class::<PyBatchFit>()?;
+    m.add_class::<PyLinearGaussianStateSpace>()?;
+    m.add_class::<PyKalmanFilterResult>()?;
+    m.add_class::<PyKalmanSmootherResult>()?;
+    m.add_class::<PyForecastResult>()?;
+    m.add("ParameterError", m.py().get_type::<ParameterError>())?;
+    m.add("StateSpaceError", m.py().get_type::<StateSpaceError>())?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;
     m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sample_prior_predictive, m)?)?;

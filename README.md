@@ -14,30 +14,21 @@ rustmc is built for production workloads where the same model structure is fit r
 
 It is a strong fit for repeated Bayesian regression, forecasting, and hierarchical workflows on CPU. It is not yet a full arbitrary-PPL replacement for PyMC or Stan.
 
-What sets rustmc apart is the execution model: it shares one compiled Rust core across chains and across many independent models, so throughput stays high when the same structure is applied to thousands of datasets.
+What sets rustmc apart today is a Rust-native sampling loop, a shared Rayon pool for chains and batches, and an in-memory compile-once/bind-many path. Use `ModelBuilder.compile()` for graph reuse; the legacy `batch_sample()` entry point still builds concrete data-owning graphs.
 
 PyMC and Stan are excellent general-purpose tools, but they are optimized around a broader single-model workflow. rustmc is optimized for the repeated-model setting where Python orchestration, per-model overhead, and deployment friction start to dominate.
 
-**10,000 Bayesian demand models in 70 seconds, with full posterior uncertainty.**
-
-Fitting those same 10,000 models sequentially with ARIMA takes ~160 seconds. With Prophet, ~28 minutes. Neither gives you credible intervals for free.
-
 ## Benchmark
 
-10 parameters, 100,000 observations, 8 chains, 2,000 draws:
+The repository includes benchmark drivers for small, high-dimensional, many-chain, and
+batch regression workloads. Run `python examples/run_benchmarks.py` to collect results
+on your hardware. The drivers match chains, warmup, draws, and seeds across engines and
+report statistical-quality metrics alongside wall time.
 
-| Method | Time | Speedup |
-|--------|------|---------|
-| rustmc (NUTS) | 72s | 5.3x |
-| PyMC (NUTS) | 383s | 1.0x |
-
-Batch inference, 10,000 independent 3-parameter models:
-
-| Method | Total time | Per model | Uncertainty |
-|--------|-----------|-----------|-------------|
-| rustmc (batch NUTS) | 70s | 7ms | Yes (full posterior) |
-| ARIMA (sequential) | 160s | 16ms | No |
-| Prophet (sequential) | 28min | 170ms | Partial |
+No numeric result is published here because the repository does not retain the raw
+command output needed to audit one. Before adding a claim, retain the environment, exact
+revision, commands, and unedited raw output; use `benchmarks/RESULTS_TEMPLATE.md` as the
+checklist. Do not extrapolate batch throughput or a single workload to other model sizes.
 
 ## Quick start
 
@@ -88,7 +79,7 @@ beta           2.4575   0.0313     2.3982     2.5133       2638       2966   1.0
 Mean accept rate: 0.94  |  Divergences: 0
 ```
 
-### Batch inference (10,000 models)
+### Batch inference (many independent models)
 
 ```python
 import rustmc as rmc
@@ -147,7 +138,7 @@ The builder supports scalar hierarchical priors today. For `normal_prior`, both 
 
 ### Sampling
 
-- NUTS (No-U-Turn Sampler) with multinomial candidate selection, generalized U-turn criterion, and divergence detection. Follows Hoffman and Gelman (2014) and Betancourt (2017).
+- NUTS (No-U-Turn Sampler) with multinomial candidate selection, endpoint-momentum U-turn checks, and divergence detection. Follows Hoffman and Gelman (2014) and Betancourt (2017).
 - HMC with fixed leapfrog steps, available as a fallback via `sampler="hmc"`.
 - Block-structured mass matrix adaptation with 3-phase warmup (step-size only, mass matrix estimation, final step-size tuning).
 - Auto step-size initialization via binary search.
@@ -188,14 +179,16 @@ All GLM-style families use the same expression surface: bare parameters, `beta *
 
 - Computational graph with reverse-mode automatic differentiation.
 - Fused linear combination op for regression models. Replaces N separate multiply-add passes with a single cache-friendly loop over the data.
-- Zero-allocation evaluator. All vector intermediates are pre-allocated in a flat buffer and reused across gradient evaluations. No heap allocation in the sampling loop.
+- Reusable evaluator buffers. Vector intermediates are pre-allocated in a flat buffer
+  and reused across gradient evaluations. This is scoped to the evaluator; other sampler
+  operations may allocate.
 - faer-backed matrix-vector multiply (`MatVecMul`). When a `normal_prior` parameter is used with `@` (e.g. `beta @ "X"`), rustmc automatically promotes it to a contiguous vector parameter block and dispatches the multiply to faer's GEMV routine. This replaces thousands of individual scalar multiply-add graph ops with a single BLAS-level call. Rayon threads are used for matrices above 100K elements. Explicit `vector_normal_prior` is also available for manual control.
 - Vectorized Normal prior (`VectorNormalLogP`). A single graph op evaluates the log-probability of an entire parameter vector under `Normal(mu, sigma)`, replacing one graph node per parameter with a single tight loop. Gradients for all vector parameters accumulate directly into the gradient buffer in one backward pass.
 - 2-D NumPy arrays in the data dict are automatically detected and stored as row-major matrices for use with `MatVecMul`.
 
 ### Diagnostics
 
-- Split R-hat with rank normalization (Vehtari et al. 2021).
+- Raw split R-hat, plus rank-normalized bulk and tail ESS.
 - Bulk and tail effective sample size (ESS).
 - Monte Carlo standard error (MCSE).
 - 94% highest density interval.
@@ -212,6 +205,22 @@ Available via `fit.summary()` for a formatted table or `fit.diagnostics()` for p
 - `FitResult.log_likelihood()` returns pointwise log-likelihood arrays with shape `(chain, draw, obs)`.
 - `FitResult.to_arviz()` exports posterior, sample stats, posterior predictive, and pointwise log-likelihood for downstream ArviZ/LOO/WAIC workflows.
 
+### Compile once, bind many
+
+`ModelBuilder.compile()` returns an immutable `CompiledModel`. Its validated `bind()`,
+`sample()`, and `sample_batch()` paths reuse one shared graph structure across datasets
+with different row counts and preserve caller-supplied dataset IDs. The legacy
+`sample()` and `batch_sample()` entry points remain available.
+
+### Linear Gaussian state space
+
+`LinearGaussianStateSpace` provides a time-homogeneous Kalman filter,
+Rauch--Tung--Striebel smoother, and forecast API for arbitrary latent-state dimension
+and scalar observations. `NaN` observations are handled as prediction-only steps;
+convenience constructors cover local-level, local-linear-trend, and stationary AR(1)
+models. Forecast results expose explicitly labeled pointwise conditional intervals,
+including 95% bounds.
+
 ### Progress reporting
 
 Live progress bar rendered from Rust at 10 Hz using atomic counters, with no GIL involvement:
@@ -227,7 +236,7 @@ Python (orchestration only)
   |
   v  GIL released
 Rust Core
-  +-- Graph         Computational DAG, nodes, ops, data + matrix storage
+  +-- Graph         Computational DAG, nodes, ops, and structural data schema
   +-- Autodiff      Forward evaluation + reverse-mode gradient
   +-- Distributions  Scalar priors, GLM likelihood families, automatic transforms
   +-- NUTS          Multinomial tree-building, U-turn detection
@@ -248,27 +257,49 @@ Design principles:
 
 ### Data structures (Rust vs JAX)
 
-The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`, parameters and gradients are `Vec<f64>`, and the autodiff evaluator uses contiguous `vec_buf` / `adj_vec_buf` (flat `Vec<f64>`) for all vector intermediates. For high-dimensional parameter vectors, data matrices are stored row-major as `Vec<f64>` inside the graph and handed to faer's `matmul` kernel as zero-copy views. `ndarray` appears only in the Python bindings for converting incoming 2-D NumPy arrays; it is not present in the inner loop. Benefits of this layout:
+The hot path uses plain Rust types only: the graph is `Vec<Node>` and `Vec<Op>`, parameters and gradients are `Vec<f64>`, and the autodiff evaluator uses contiguous `vec_buf` / `adj_vec_buf` (flat `Vec<f64>`) for all vector intermediates. For high-dimensional parameter vectors, data matrices are stored row-major in the active data binding and handed to faer's `matmul` kernel as zero-copy views. Legacy graphs may still own these buffers. `ndarray` appears only in the Python bindings for converting incoming 2-D NumPy arrays; it is not present in the inner loop. Benefits of this layout:
 
 - **Cache-friendly**: One pass over the graph touches sequential memory; vector slots are in a single allocation.
-- **Zero allocation in the loop**: Buffers are allocated once per chain and reused for every gradient evaluation.
+- **Evaluator buffer reuse**: Value and adjoint buffers are allocated once per evaluator
+  and reused for gradient evaluations; other sampler operations may allocate.
 - **No Python or FFI in the inner loop**: The entire NUTS/HMC step runs in Rust; Python is only used to build the model and consume results.
 - **Fixed graph traversal**: The same DAG is walked every time; there is no tracing or recompilation per model or per step.
 - **BLAS-level throughput for large parameter vectors**: `MatVecMul` calls faer's GEMV, which uses SIMD intrinsics and can optionally spawn Rayon threads for matrices above 100K elements. A 5,000-parameter vector prior that previously required 5,000 individual scalar multiply-add nodes in the graph is now a single op.
 
-JAX, by contrast, traces Python and compiles to XLA. That gives flexibility and GPU support but adds per-model compilation and dispatch overhead. For many small, independent models (e.g. 10,000 SKUs), rustmc's "compile once, run fixed graph over contiguous buffers" approach often wins on CPU because there is no per-model JAX trace/compile and no Python in the inner loop. Nutpie (JAX-based) is faster than default PyMC for a single model; the batch example compares rustmc's batch NUTS against PyMC+nutpie run in a loop over the same number of models.
+JAX, by contrast, traces Python and compiles to XLA. rustmc walks a fixed Rust graph during sampling, so there is no Python or FFI in the inner loop. The `CompiledModel` API can reuse one immutable structure across validated dataset bindings; the legacy `sample()` and `batch_sample()` shims retain their data-owning behavior. `examples/batch_10k_skus.py` provides a benchmark driver; do not generalize an unrecorded run into a throughput result.
+
+## Known limitations
+
+- **Compiled artifacts are not yet portable.** In-memory compile/bind reuse is
+  implemented, but the legacy JSON artifact still owns data and there is no slot-only
+  serialized format yet.
+- **State-space parameters are fixed inputs.** Filtering, smoothing, missing-value
+  updates, and forecasting are implemented for time-homogeneous linear Gaussian models,
+  but they are not yet a likelihood inside `ModelBuilder` and do not estimate system
+  matrices.
+- **Builder context-manager syntax is only lifecycle sugar.** `ModelBuilder` supports
+  `with`, returning itself and never suppressing exceptions. The architectural "context"
+  in compile/bind design means a model/data binding context; `with ModelBuilder()` does
+  not provide compiled-artifact reuse.
+
+- No audited numeric performance baseline is checked in. Run and retain the benchmark
+  protocol before making performance, convergence, or cross-engine quality claims.
 
 ## Roadmap
 
 Near term:
 
-- Expose compiled model artifacts as a first-class public workflow in Python and Rust.
+- Finish the compiled-model path with portable slot-only artifacts, partial-failure
+  batches, and prediction on new bindings.
 - Extend automatic non-centering beyond scalar hierarchical normals to grouped/vector random effects.
-- Add a benchmark regression harness for wall time, ESS/s, memory, and divergence budgets.
+- Rerun the comparison suite after diagnostic fixes and investigate any remaining
+  post-warmup divergence or R-hat gap vs. PyMC/nutpie.
 - Expand the modeling layer with production helpers such as offsets, exposure terms, and panel/hierarchical templates.
 
 Medium term:
 
+- Integrate the existing collapsed linear-Gaussian filter as a `ModelBuilder` likelihood,
+  add an explicit stationary AR(1) constructor, and estimate system parameters.
 - MAP estimation (L-BFGS)
 - Laplace approximation
 - Sparse indicator variable support

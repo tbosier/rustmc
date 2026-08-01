@@ -1,34 +1,52 @@
 """
-rustmc — 10,000 SKUs in seconds
-================================
+rustmc — batch SKU demand forecasting benchmark
+=================================================
 
-Fit independent Bayesian demand models for 10,000 SKUs using batch inference.
+Fit independent Bayesian demand models for N_SKUS SKUs using batch inference.
 Each SKU gets a 3-parameter model (intercept + trend + seasonality) fit on
 52 weeks of synthetic sales data.
 
 Then pick one random SKU and compare the 4-week-ahead forecast (with 95%
 credible interval) against Prophet and ARIMA.
 
-This demonstrates a capability that doesn't exist in Python-first Bayesian
-frameworks: thousands of independent posterior inferences in parallel,
-using a single Rayon thread pool, with zero Python in the inner loop.
+Corrected from an earlier version of this script (see
+benchmarks/RESULTS_TEMPLATE.md / PR description for the audit):
+  - The docstring and README previously said "10,000 SKUs"; N_SKUS below
+    is actually 100. There is no benchmark run backing a 10,000-SKU claim
+    in this repo — do not restate it until one exists. A larger run is a
+    configuration change, but runtime need not scale linearly because scheduling,
+    memory, and model costs vary; its numbers must be measured, not extrapolated.
+  - rustmc's batch_sample previously defaulted to chains=1 while the
+    PyMC+nutpie loop explicitly used chains=4 — 4x less sampling work on
+    the rustmc side while only wall time (not ESS or R-hat) was reported.
+    rustmc now also uses chains=4 so both engines solve the same amount
+    of work and R-hat is defined on both sides.
+  - Both engines now report divergences, max R-hat, and mean ESS_bulk
+    across all (SKU x parameter) posteriors, not just forecast MAE.
+
+This measures many independent posterior inferences using a shared Rayon
+thread pool, with zero Python in rustmc's sampling inner loop. The current
+batch API still builds one data-owning graph per SKU; it is not a
+compile-once/bind-many API.
 
 Rust data structures (for comparison with JAX):
     The rustmc core uses plain Rust data structures, not a separate array
     library in the hot path. The graph is Vec<Node> and Vec<Op>; parameters
     and gradients are Vec<f64>; the autodiff evaluator uses contiguous
     vec_buf/adj_vec_buf (flat Vec<f64>) for all vector intermediates. That
-    gives cache-friendly layout, no heap allocations in the sampling loop,
+    gives cache-friendly evaluator layout and reusable gradient buffers,
     and no Python/FFI in the inner loop. JAX traces Python and compiles
-    XLA; rustmc compiles once to native code and runs fixed graph traversal
-    over contiguous buffers, which tends to be faster for many small,
-    independent models and avoids JAX dispatch/compilation overhead per model.
+    XLA; rustmc runs a fixed native graph traversal over contiguous buffers
+    during each sampler evaluation. Whether that wins depends on workload;
+    the benchmark reports measured timing and sampling quality together.
 """
 
 import time
 import numpy as np
 
-# ─── Generate 10,000 SKU time series ────────────────────────────────
+from bench_common import PhaseTimer, print_environment, peak_rss_mb
+
+# ─── Generate N_SKUS time series ────────────────────────────────────
 
 N_SKUS = 100
 TRAIN_WEEKS = 44
@@ -57,49 +75,81 @@ for i in range(N_SKUS):
     )
 
 print(f"Generated {N_SKUS:,} SKU time series ({TRAIN_WEEKS} train + {FORECAST_WEEKS} forecast weeks)")
+print()
+print_environment()
+
+# Matched sampling protocol used by BOTH rustmc and PyMC+nutpie below.
+CHAINS = 4
+DRAWS = 1000
+WARMUP = 500
+SEED = 42
 
 # ─── Build rustmc batch models ──────────────────────────────────────
 
 import rustmc as rmc
 
-print("\nBuilding models...")
-t_build_start = time.time()
+pt = PhaseTimer()
 
 t_train = t_norm[:TRAIN_WEEKS]
 sin_train = sin_t[:TRAIN_WEEKS]
 cos_train = cos_t[:TRAIN_WEEKS]
 
-models = []
-for i in range(N_SKUS):
-    data = {
-        "t": t_train,
-        "sin_t": sin_train,
-        "y": all_series[i, :TRAIN_WEEKS],
-    }
-    builder = rmc.ModelBuilder(data=data)
-    intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
-    trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
-    seas = builder.normal_prior("seasonality", mu=0.0, sigma=50.0)
+with pt.phase("build"):
+    models = []
+    for i in range(N_SKUS):
+        data = {
+            "t": t_train,
+            "sin_t": sin_train,
+            "y": all_series[i, :TRAIN_WEEKS],
+        }
+        builder = rmc.ModelBuilder(data=data)
+        intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
+        trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
+        seas = builder.normal_prior("seasonality", mu=0.0, sigma=50.0)
 
-    mu_expr = intercept + trend * "t" + seas * "sin_t"
-    builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=true_noise[i], observed_key="y")
-    model = builder.build()
-    models.append((model, {}))#
+        mu_expr = intercept + trend * "t" + seas * "sin_t"
+        builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=true_noise[i], observed_key="y")
+        model = builder.build()
+        models.append((model, {}))
 
-build_time = time.time() - t_build_start
-print(f"Models built in {build_time:.2f}s")
+print(f"Models built in {pt.phases['build']:.2f}s")
 
 # ─── Batch sample ───────────────────────────────────────────────────
+# NOTE: an earlier version of this script called rmc.batch_sample() without
+# `chains=`, which defaults to chains=1, while the PyMC+nutpie loop below
+# explicitly used chains=4 — 4x less sampling work on the rustmc side.
+# chains=CHAINS matches nutpie's chain count so both engines do the same
+# amount of work and R-hat is defined (needs >=2 chains) on both sides.
+print(f"\nSampling {N_SKUS:,} models (NUTS, {CHAINS} chains, "
+      f"{WARMUP} warmup + {DRAWS} draws each)...")
+with pt.phase("compile+sample"):
+    results = rmc.batch_sample(models, chains=CHAINS, draws=DRAWS, warmup=WARMUP, seed=SEED)
+rustmc_time = pt.phases["compile+sample"]
 
-print(f"\nSampling {N_SKUS:,} models (NUTS, 300 warmup + 500 draws each)...")
-start = time.time()
-results = rmc.batch_sample(models, draws=1000, warmup=500, seed=42)
-rustmc_time = time.time() - start
+with pt.phase("postprocess"):
+    total_divs = sum(r.divergences for r in results)
+    avg_accept = np.mean([r.accept_rate for r in results])
+    # Aggregate both engines with ArviZ's estimators, computed directly from
+    # their raw (chain, draw) arrays, so this comparison does not mix rustmc's
+    # built-in raw split R-hat with ArviZ's rank-normalized R-hat.
+    import arviz as az
+    rhats, esses = [], []
+    for r in results:
+        samples2d = r.get_samples_2d()
+        for name, arr in samples2d.items():
+            rhats.append(float(az.rhat(arr)))
+            esses.append(float(az.ess(arr)))
+    rustmc_max_rhat = float(np.max(rhats))
+    rustmc_mean_ess = float(np.mean(esses))
+    rustmc_ess_per_sec = float(np.sum(esses)) / rustmc_time
 
-total_divs = sum(r.divergences for r in results)
-avg_accept = np.mean([r.accept_rate for r in results])
 print(f"Done in {rustmc_time:.2f}s  ({N_SKUS / rustmc_time:.0f} models/s)")
 print(f"Avg accept rate: {avg_accept:.2f}  |  Total divergences: {total_divs}")
+print(f"Max R-hat (all SKUs x params): {rustmc_max_rhat:.4f}  |  "
+      f"Mean ESS_bulk: {rustmc_mean_ess:.0f}  |  ESS/s (summed across all "
+      f"SKUs x params): {rustmc_ess_per_sec:.1f}")
+pt.report("rustmc phases")
+print(f"Peak RSS: {peak_rss_mb():.0f} MB")
 
 # ─── PyMC + nutpie (same workload, for comparison) ───────────────────
 
@@ -108,8 +158,12 @@ nutpie_results = []  # list of (idata or None) per SKU; we keep TARGET for forec
 try:
     import pymc as pm
     import nutpie
+    import arviz as az
 
-    print(f"\nSampling {N_SKUS:,} models with PyMC + nutpie (NUTS, 500 tune + 1000 draws, 4 chains)...")
+    print(f"\nSampling {N_SKUS:,} models with PyMC + nutpie (NUTS, {CHAINS} chains, "
+          f"{WARMUP} tune + {DRAWS} draws)...")
+    nutpie_rhats, nutpie_esses = [], []
+    nutpie_divs_total = 0
     t0 = time.time()
     for i in range(N_SKUS):
         with pm.Model() as model:
@@ -121,15 +175,27 @@ try:
             compiled = nutpie.compile_pymc_model(model)
             idata = nutpie.sample(
                 compiled,
-                draws=1000,
-                tune=500,
-                chains=4,
-                seed=42,
-                cores=4,
+                draws=DRAWS,
+                tune=WARMUP,
+                chains=CHAINS,
+                seed=SEED,
+                cores=CHAINS,
+                progress_bar=False,
             )
         nutpie_results.append(idata)
+        nutpie_divs_total += int(idata.sample_stats["diverging"].values.sum())
+        for name in ("intercept", "trend", "seasonality"):
+            nutpie_rhats.append(float(az.rhat(idata)[name].values))
+            nutpie_esses.append(float(az.ess(idata)[name].values))
     nutpie_time = time.time() - t0
+    nutpie_max_rhat = float(np.max(nutpie_rhats))
+    nutpie_mean_ess = float(np.mean(nutpie_esses))
+    nutpie_ess_per_sec = float(np.sum(nutpie_esses)) / nutpie_time
     print(f"PyMC+nutpie done in {nutpie_time:.2f}s  ({N_SKUS / nutpie_time:.0f} models/s)")
+    print(f"Total divergences: {nutpie_divs_total}  |  "
+          f"Max R-hat (all SKUs x params): {nutpie_max_rhat:.4f}  |  "
+          f"Mean ESS_bulk: {nutpie_mean_ess:.0f}  |  ESS/s (summed across all "
+          f"SKUs x params): {nutpie_ess_per_sec:.1f}")
 except ImportError as e:
     print(f"\nPyMC or nutpie not installed — skipping: {e}")
 except Exception as e:
@@ -265,6 +331,17 @@ print(f"{'rustmc (batch NUTS)':<28} {rustmc_mae:>8.2f} {rustmc_time:>11.2f}s {f'
 if nutpie_time is not None:
     nm = nutpie_mae if nutpie_mae is not None else 0.0
     print(f"{'PyMC + nutpie (batch NUTS)':<28} {nm:>8.2f} {nutpie_time:>11.2f}s {f'{N_SKUS} models':>22}")
+
+print(f"\n{'Method':<28} {'MaxR-hat':>10} {'MeanESS':>10} {'ESS/s':>10} {'Divergences':>13}")
+print("─" * 72)
+print(f"{'rustmc (batch NUTS)':<28} {rustmc_max_rhat:>10.4f} {rustmc_mean_ess:>10.0f} "
+      f"{rustmc_ess_per_sec:>10.1f} {total_divs:>13}")
+if nutpie_time is not None:
+    print(f"{'PyMC + nutpie (batch NUTS)':<28} {nutpie_max_rhat:>10.4f} {nutpie_mean_ess:>10.0f} "
+          f"{nutpie_ess_per_sec:>10.1f} {nutpie_divs_total:>13}")
+print("(both engines: same chains/warmup/draws/seed per SKU and the same ArviZ "
+      "diagnostic estimators; MAE above is a point-forecast metric, "
+      "not a substitute for these posterior-quality diagnostics.)")
 if arima_mae is not None:
     est_arima_total = arima_time * N_SKUS
     print(f"{'ARIMA(1,1,1)':<28} {arima_mae:>8.2f} {arima_time:>11.3f}s {f'×{N_SKUS:,}={est_arima_total:.0f}s':>22}")

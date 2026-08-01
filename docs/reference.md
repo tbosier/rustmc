@@ -1,5 +1,38 @@
 # API Reference
 
+## Linear Gaussian state-space models
+
+`LinearGaussianStateSpace` implements a time-homogeneous Kalman filter and
+Rauch--Tung--Striebel smoother for an arbitrary-dimensional latent state and a
+single scalar observation per time point. Arrays use the conventional model
+
+```text
+x[t] = transition @ x[t-1] + process noise
+y[t] = observation @ x[t] + observation noise
+```
+
+Construct a general model with NumPy arrays, or use the `local_level()`,
+`local_linear_trend()`, and zero-mean `stationary_ar1()` constructors. `filter(y)` returns predicted and filtered
+state means/covariances plus the observed-data log likelihood; `smooth(y)` adds
+smoothed state moments; and `forecast(y, steps)` returns future latent-state and
+observation means/variances. A `NaN` observation is treated as missing and
+causes a prediction-only step; infinities are rejected.
+
+`forecast.interval(level=0.95)` returns lower and upper pointwise Gaussian
+predictive bounds. Its `uncertainty_kind` is `"conditional_fixed_parameters"`:
+the interval includes filtered-state, future-process, and observation noise, but
+does not include uncertainty about the supplied system parameters. It is therefore
+a conditional predictive interval, not yet a parameter-integrated Bayesian credible
+interval.
+
+This first state-space API assumes fixed, time-invariant system matrices,
+Gaussian noise, and univariate observations. Covariance matrices and scalar
+noise variances must be strictly positive definite/positive. It does not yet
+estimate system parameters, support multivariate observations, accept
+time-varying matrices, or integrate a Kalman likelihood into `ModelBuilder`.
+Filtering, smoothing, and forecasting release the Python GIL after converting the
+input NumPy array.
+
 ## `ModelBuilder`
 
 ```python
@@ -69,6 +102,57 @@ model = builder.build()
 ```
 
 Returns a `ModelSpec`, the opaque handle passed to the sampling and predictive APIs.
+
+### `compile()`
+
+```python
+compiled = builder.compile()
+```
+
+Returns a `CompiledModel` containing immutable graph structure and a `DataSchema`, without
+concrete observation payloads. Matrix column counts and parameter shapes are structural;
+the observation row count belongs to each binding.
+
+## `CompiledModel`
+
+| Member | Description |
+|--------|-------------|
+| `param_names` | Structural parameter names |
+| `required_keys` | Predictor, response, and matrix keys required by the schema |
+| `structure_id` | Process-local identity useful for checking structure reuse |
+| `bind(data, id="0", strict=True, check_finite=True)` | Validate data and return a `BoundModel` |
+| `sample(data_or_binding, **sampler_options)` | Sample one validated dataset and return `FitResult` |
+| `sample_batch(datasets, ids=None, shared=None, **sampler_options)` | Sample many datasets and return `BatchFit` in input order |
+
+`BoundModel` exposes `id` and `n_obs` and can be reused only with the `CompiledModel`
+that created it. In `sample_batch()`, keys supplied through `shared` are converted once
+and cannot be shadowed by a per-dataset dictionary. Dataset IDs must be unique and match
+the number of datasets.
+
+`BatchFit.ids` preserves caller order; `len(batch_fit)` returns the dataset count and
+`batch_fit[i]` returns a `BatchResult`. This foundational batch path currently fails fast
+on binding or sampling errors; partial-failure collection is future work.
+
+### Context-manager contract
+
+`ModelBuilder`, `CompiledModel`, `BoundModel`, and `BatchFit` may be used with
+`with` when lexical scoping improves readability:
+
+```python
+with rmc.ModelBuilder() as builder:
+    beta = builder.normal_prior("beta", 0.0, 1.0)
+    builder.normal_likelihood("obs", beta * "x", 1.0, "y")
+
+with builder.compile() as compiled:
+    with compiled.bind(data, id="store-17") as bound:
+        fit = compiled.sample(bound)
+```
+
+Entering returns the same object and exiting propagates exceptions. No object is
+closed or invalidated, so the builder, compiled model, binding, and batch result
+remain usable afterward. There is no ambient or thread-local current model:
+model declarations must always be called on the intended builder. Context syntax
+does not compile a builder or bind data automatically.
 
 ## `rmc.sample()`
 
