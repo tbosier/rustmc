@@ -444,13 +444,11 @@ fn regression_row(observations: &[f64], time: usize, order: usize) -> Vec<f64> {
 }
 
 fn validate_symmetric(matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> {
-    for row in 0..matrix.len() {
-        for column in 0..row {
-            let scale = matrix[row][column]
-                .abs()
-                .max(matrix[column][row].abs())
-                .max(1.0);
-            if (matrix[row][column] - matrix[column][row]).abs() > 1e-12 * scale {
+    for (row_index, row) in matrix.iter().enumerate() {
+        for (column_index, &value) in row.iter().take(row_index).enumerate() {
+            let transposed = matrix[column_index][row_index];
+            let scale = value.abs().max(transposed.abs()).max(1.0);
+            if (value - transposed).abs() > 1e-12 * scale {
                 return Err(invalid_configuration(
                     "coefficient prior precision must be symmetric",
                 ));
@@ -465,10 +463,12 @@ fn cholesky(matrix: &[Vec<f64>], name: &str) -> Result<Vec<Vec<f64>>, BayesianFo
     let mut lower = vec![vec![0.0; dimension]; dimension];
     for row in 0..dimension {
         for column in 0..=row {
-            let mut value = matrix[row][column];
-            for inner in 0..column {
-                value -= lower[row][inner] * lower[column][inner];
-            }
+            let correction = lower[row][..column]
+                .iter()
+                .zip(&lower[column][..column])
+                .map(|(row_value, column_value)| row_value * column_value)
+                .sum::<f64>();
+            let value = matrix[row][column] - correction;
             if row == column {
                 if !value.is_finite() || value <= 0.0 {
                     return Err(invalid_configuration(format!(
