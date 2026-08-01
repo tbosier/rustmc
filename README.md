@@ -221,13 +221,28 @@ convenience constructors cover local-level, local-linear-trend, and stationary A
 models. Forecast results expose explicitly labeled pointwise conditional intervals,
 including 95% bounds.
 
-`BayesianLocalLevel` adds a focused fitted forecasting workflow. It uses multi-chain
-conjugate FFBS/Gibbs inference with explicit inverse-gamma variance priors and preserves
-posterior samples as `(chain, draw)`. Forecasts are coherent latent and observation
-paths shaped `(chain, draw, horizon)`. Observation intervals integrate variance-parameter,
-terminal-state, process, and observation uncertainty; latent-state credible intervals
-are available separately. This is currently an equally spaced scalar local-level model,
-not a generic fitted state-space family.
+The fitted Bayesian forecasting surface now includes three complementary models:
+
+- `BayesianLocalLevel` for a stochastic latent level.
+- `BayesianLocalLinearTrend` for stochastic latent level and slope.
+- `BayesianAutoRegression(order=p)` (also available as `BayesianAR`) for a directly
+  observed Gaussian AR(p) with any caller-selected positive lag order.
+
+The structural models use multi-chain FFBS/Gibbs inference with explicit inverse-gamma
+variance priors. AR(p) uses exact independent Normal-Inverse-Gamma posterior draws and
+therefore has no artificial warmup phase. All preserve chain/draw provenance and produce
+coherent recursive paths shaped `(chain, draw, horizon)`. Observation intervals integrate
+parameter, terminal-history/state, and future innovation uncertainty; structural models
+also expose separate latent level/slope credible intervals. These are equally spaced,
+univariate Gaussian models rather than a generic fitted dynamic linear model.
+
+Fit and forecast chains run in the shared Rayon pool. Stable per-chain seed derivation and
+indexed collection make seeded results bitwise identical across tested thread counts.
+
+Executable forecasting walkthroughs live in `examples/state_space_forecasting.py`,
+`examples/custom_state_space_forecasting.py`, `examples/bayesian_local_level_forecasting.py`,
+`examples/bayesian_local_linear_trend_forecasting.py`, and
+`examples/bayesian_ar_forecasting.py`.
 
 ### Progress reporting
 

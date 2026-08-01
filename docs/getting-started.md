@@ -174,6 +174,48 @@ state_lower_95, state_upper_95 = forecast.state_interval(0.95)
 The inverse-gamma priors are on variances and must be chosen for the units of your
 series; rustmc does not silently infer a universal scale.
 
+For a fitted stochastic level and slope:
+
+```python
+trend = rmc.BayesianLocalLinearTrend(
+    level_variance_prior=rmc.InverseGammaPrior(3.0, 0.2),
+    slope_variance_prior=rmc.InverseGammaPrior(3.0, 0.02),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 0.8),
+    initial_level=0.0,
+    initial_slope=0.0,
+    initial_level_variance=4.0,
+    initial_slope_variance=1.0,
+)
+trend_fit = trend.fit(y_with_optional_nan_values, chains=4, draws=1000, warmup=500)
+trend_forecast = trend_fit.forecast(steps=12, seed=43)
+observation_lower, observation_upper = trend_forecast.interval(0.95)
+level_lower, level_upper = trend_forecast.level_interval(0.95)
+slope_lower, slope_upper = trend_forecast.slope_interval(0.95)
+```
+
+For a directly observed AR(p), choose any positive order and give an explicit
+Normal-Inverse-Gamma prior. Coefficients are ordered as
+`[intercept, lag_1, ..., lag_p]`:
+
+```python
+order = 3
+prior = rmc.NormalInverseGammaPrior(
+    coefficient_mean=np.zeros(order + 1),
+    coefficient_precision=np.eye(order + 1) * 0.1,
+    variance_shape=2.5,
+    variance_scale=0.2,
+)
+ar = rmc.BayesianAutoRegression(order=order, prior=prior)
+ar_fit = ar.fit(y_without_missing_values, chains=4, draws=1000, seed=42)
+ar_forecast = ar_fit.forecast(steps=12, seed=43)
+lower, upper = ar_forecast.interval(0.95)
+```
+
+AR(p) draws are exact conjugate posterior draws, so `fit()` has no warmup or thinning
+arguments. The likelihood conditions on the first `p` observations, missing values are
+currently rejected, and coefficient draws are not silently clipped to the stationary
+region.
+
 ### `FitResult` methods
 
 ```python

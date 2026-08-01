@@ -10,12 +10,25 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Normal as NormalDist};
 use rustmc_core::autodiff::Evaluator;
+use rustmc_core::bayesian_ar::{
+    fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
+    BayesianArForecast as CoreBayesianArForecast, BayesianArPosterior as CoreBayesianArPosterior,
+    BayesianArPosteriorDraw as CoreBayesianArPosteriorDraw,
+    NormalInverseGammaPrior as CoreNormalInverseGammaPrior,
+};
 use rustmc_core::bayesian_forecast::{
     fit_bayesian_local_level, BayesianForecastError as CoreBayesianForecastError,
     BayesianLocalLevelConfig as CoreBayesianLocalLevelConfig,
     InverseGammaPrior as CoreInverseGammaPrior, LocalLevelPosterior as CoreLocalLevelPosterior,
     LocalLevelPosteriorDraw as CoreLocalLevelPosteriorDraw,
     PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
+};
+use rustmc_core::bayesian_trend::{
+    fit_bayesian_local_linear_trend,
+    BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
+    LocalLinearTrendPosterior as CoreLocalLinearTrendPosterior,
+    LocalLinearTrendPosteriorDraw as CoreLocalLinearTrendPosteriorDraw,
+    TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
 use rustmc_core::data::{DataBinding as CoreDataBinding, DataInputs, MatrixBinding};
 use rustmc_core::diagnostics::inv_normal_cdf;
@@ -4671,6 +4684,856 @@ impl PyBayesianForecastResult {
     }
 }
 
+fn trend_parameter_array<'py, F>(
+    py: Python<'py>,
+    posterior: &CoreLocalLinearTrendPosterior,
+    value: F,
+) -> Bound<'py, PyArray2<f64>>
+where
+    F: Fn(&CoreLocalLinearTrendPosteriorDraw) -> f64,
+{
+    let chains = posterior.chains.len();
+    let draws = posterior.chains.first().map_or(0, Vec::len);
+    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
+        value(&posterior.chains[chain][draw])
+    })
+    .into_pyarray(py)
+}
+
+/// Bayesian local-linear-trend model with stochastic level and slope.
+#[pyclass(name = "BayesianLocalLinearTrend", frozen)]
+#[derive(Clone)]
+struct PyBayesianLocalLinearTrend {
+    initial_mean: [f64; 2],
+    initial_covariance: [f64; 4],
+    level_variance_prior: CoreInverseGammaPrior,
+    slope_variance_prior: CoreInverseGammaPrior,
+    observation_variance_prior: CoreInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyBayesianLocalLinearTrend {
+    #[new]
+    #[pyo3(signature = (
+        level_variance_prior,
+        slope_variance_prior,
+        observation_variance_prior,
+        initial_level=0.0,
+        initial_slope=0.0,
+        initial_level_variance=100.0,
+        initial_slope_variance=10.0,
+        initial_level_slope_covariance=0.0
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        level_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        slope_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        observation_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        initial_level: f64,
+        initial_slope: f64,
+        initial_level_variance: f64,
+        initial_slope_variance: f64,
+        initial_level_slope_covariance: f64,
+    ) -> PyResult<Self> {
+        if !initial_level.is_finite() || !initial_slope.is_finite() {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: initial level and slope must be finite",
+            ));
+        }
+        if !initial_level_variance.is_finite()
+            || initial_level_variance <= 0.0
+            || !initial_slope_variance.is_finite()
+            || initial_slope_variance <= 0.0
+            || !initial_level_slope_covariance.is_finite()
+        {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: initial variances must be finite and positive and covariance must be finite",
+            ));
+        }
+        let level_scale = initial_level_variance.sqrt();
+        let scaled_covariance = initial_level_slope_covariance / level_scale;
+        let slope_remainder = initial_slope_variance - scaled_covariance * scaled_covariance;
+        if !slope_remainder.is_finite() || slope_remainder <= 0.0 {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: initial state covariance must be positive definite",
+            ));
+        }
+        Ok(Self {
+            initial_mean: [initial_level, initial_slope],
+            initial_covariance: [
+                initial_level_variance,
+                initial_level_slope_covariance,
+                initial_level_slope_covariance,
+                initial_slope_variance,
+            ],
+            level_variance_prior: level_variance_prior.inner,
+            slope_variance_prior: slope_variance_prior.inner,
+            observation_variance_prior: observation_variance_prior.inner,
+        })
+    }
+
+    #[getter]
+    fn initial_level(&self) -> f64 {
+        self.initial_mean[0]
+    }
+
+    #[getter]
+    fn initial_slope(&self) -> f64 {
+        self.initial_mean[1]
+    }
+
+    #[getter]
+    fn initial_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        Array2::from_shape_fn((2, 2), |(row, column)| {
+            self.initial_covariance[row * 2 + column]
+        })
+        .into_pyarray(py)
+    }
+
+    #[getter]
+    fn level_variance_prior(&self) -> PyInverseGammaPrior {
+        PyInverseGammaPrior {
+            inner: self.level_variance_prior,
+        }
+    }
+
+    #[getter]
+    fn slope_variance_prior(&self) -> PyInverseGammaPrior {
+        PyInverseGammaPrior {
+            inner: self.slope_variance_prior,
+        }
+    }
+
+    #[getter]
+    fn observation_variance_prior(&self) -> PyInverseGammaPrior {
+        PyInverseGammaPrior {
+            inner: self.observation_variance_prior,
+        }
+    }
+
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianLocalLinearTrendFit> {
+        let observations = state_space_vector(observations);
+        let config = CoreBayesianLocalLinearTrendConfig {
+            initial_mean: self.initial_mean,
+            initial_covariance: self.initial_covariance,
+            level_variance_prior: self.level_variance_prior,
+            slope_variance_prior: self.slope_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        };
+        let posterior = py
+            .allow_threads(|| fit_bayesian_local_linear_trend(&observations, &config))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianLocalLinearTrendFit {
+            posterior,
+            observations,
+            config,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianLocalLinearTrend(initial_level={}, initial_slope={})",
+            self.initial_mean[0], self.initial_mean[1],
+        )
+    }
+}
+
+#[pyclass(name = "BayesianLocalLinearTrendFit")]
+struct PyBayesianLocalLinearTrendFit {
+    posterior: CoreLocalLinearTrendPosterior,
+    observations: Vec<f64>,
+    config: CoreBayesianLocalLinearTrendConfig,
+}
+
+#[pymethods]
+impl PyBayesianLocalLinearTrendFit {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.posterior.chains.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.posterior.chains.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn time_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    #[getter]
+    fn observed_count(&self) -> usize {
+        self.observations
+            .iter()
+            .filter(|value| !value.is_nan())
+            .count()
+    }
+
+    #[getter]
+    fn warmup(&self) -> usize {
+        self.config.num_warmup
+    }
+
+    #[getter]
+    fn thin(&self) -> usize {
+        self.config.thinning
+    }
+
+    fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        for (name, values) in [
+            (
+                "level_variance",
+                trend_parameter_array(py, &self.posterior, |draw| draw.level_variance),
+            ),
+            (
+                "slope_variance",
+                trend_parameter_array(py, &self.posterior, |draw| draw.slope_variance),
+            ),
+            (
+                "observation_variance",
+                trend_parameter_array(py, &self.posterior, |draw| draw.observation_variance),
+            ),
+            (
+                "level_sd",
+                trend_parameter_array(py, &self.posterior, |draw| draw.level_variance.sqrt()),
+            ),
+            (
+                "slope_sd",
+                trend_parameter_array(py, &self.posterior, |draw| draw.slope_variance.sqrt()),
+            ),
+            (
+                "observation_sd",
+                trend_parameter_array(py, &self.posterior, |draw| draw.observation_variance.sqrt()),
+            ),
+            (
+                "terminal_level",
+                trend_parameter_array(py, &self.posterior, |draw| draw.terminal_level),
+            ),
+            (
+                "terminal_slope",
+                trend_parameter_array(py, &self.posterior, |draw| draw.terminal_slope),
+            ),
+        ] {
+            samples.set_item(name, values)?;
+        }
+        Ok(samples)
+    }
+
+    #[pyo3(signature = (steps, seed=43))]
+    fn forecast(
+        &self,
+        py: Python<'_>,
+        steps: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianTrendForecast> {
+        let forecast = py
+            .allow_threads(|| self.posterior.forecast(steps, seed))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianTrendForecast { inner: forecast })
+    }
+
+    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let az = py.import("arviz")?;
+        let groups = PyDict::new(py);
+        groups.set_item("posterior", self.get_samples_2d(py)?)?;
+        let observed = PyDict::new(py);
+        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
+        groups.set_item("observed_data", observed)?;
+        arviz_from_groups(&az, groups)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianLocalLinearTrendFit(chains={}, draws={}, time_count={}, observed_count={})",
+            self.chains(),
+            self.draws(),
+            self.time_count(),
+            self.observed_count(),
+        )
+    }
+}
+
+#[pyclass(name = "BayesianTrendForecast")]
+struct PyBayesianTrendForecast {
+    inner: CoreTrendPosteriorPredictiveForecast,
+}
+
+#[pymethods]
+impl PyBayesianTrendForecast {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.inner.observation_paths.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.inner.observation_paths.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn steps(&self) -> usize {
+        self.inner.horizon()
+    }
+
+    #[getter]
+    fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.level_paths)
+    }
+
+    #[getter]
+    fn slope_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.slope_paths)
+    }
+
+    #[getter]
+    fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.observation_paths)
+    }
+
+    #[getter]
+    fn level_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .level_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    #[getter]
+    fn slope_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .slope_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    #[getter]
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .observation_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    fn level_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .level_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    fn slope_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .slope_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    fn observation_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .observation_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    #[pyo3(signature = (level=0.95))]
+    fn level_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .level_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    #[pyo3(signature = (level=0.95))]
+    fn slope_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .slope_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    #[pyo3(signature = (level=0.95))]
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .observation_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    #[getter]
+    fn uncertainty_kind(&self) -> &'static str {
+        "parameter_integrated_posterior_predictive"
+    }
+
+    #[getter]
+    fn interval_kind(&self) -> &'static str {
+        "pointwise_equal_tailed"
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianTrendForecast(chains={}, draws={}, steps={})",
+            self.chains(),
+            self.draws(),
+            self.steps(),
+        )
+    }
+}
+
+fn ar_parameter_array<'py, F>(
+    py: Python<'py>,
+    posterior: &CoreBayesianArPosterior,
+    value: F,
+) -> Bound<'py, PyArray2<f64>>
+where
+    F: Fn(&CoreBayesianArPosteriorDraw) -> f64,
+{
+    let chains = posterior.chains.len();
+    let draws = posterior.chains.first().map_or(0, Vec::len);
+    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
+        value(&posterior.chains[chain][draw])
+    })
+    .into_pyarray(py)
+}
+
+fn ar_coefficient_array<'py>(
+    py: Python<'py>,
+    posterior: &CoreBayesianArPosterior,
+) -> Bound<'py, PyArray3<f64>> {
+    let chains = posterior.chains.len();
+    let draws = posterior.chains.first().map_or(0, Vec::len);
+    let coefficient_count = posterior.order + 1;
+    Array3::from_shape_fn(
+        (chains, draws, coefficient_count),
+        |(chain, draw, coefficient)| posterior.chains[chain][draw].coefficients[coefficient],
+    )
+    .into_pyarray(py)
+}
+
+/// Conjugate prior for a Gaussian autoregression.
+///
+/// If beta contains ``[intercept, lag_1, ..., lag_p]``, then
+/// ``beta | sigma2 ~ Normal(mean, sigma2 * precision^-1)`` and
+/// ``sigma2 ~ InverseGamma(variance_shape, variance_scale)``.
+#[pyclass(name = "NormalInverseGammaPrior", frozen)]
+#[derive(Clone)]
+struct PyNormalInverseGammaPrior {
+    inner: CoreNormalInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyNormalInverseGammaPrior {
+    #[new]
+    fn new(
+        coefficient_mean: PyReadonlyArray1<'_, f64>,
+        coefficient_precision: PyReadonlyArray2<'_, f64>,
+        variance_shape: f64,
+        variance_scale: f64,
+    ) -> PyResult<Self> {
+        let mean = coefficient_mean.as_array().to_vec();
+        let precision = coefficient_precision
+            .as_array()
+            .outer_iter()
+            .map(|row| row.to_vec())
+            .collect();
+        Ok(Self {
+            inner: CoreNormalInverseGammaPrior::new(
+                mean,
+                precision,
+                variance_shape,
+                variance_scale,
+            )
+            .map_err(bayesian_forecast_error)?,
+        })
+    }
+
+    #[getter]
+    fn coefficient_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        PyArray1::from_vec(py, self.inner.coefficient_mean.clone())
+    }
+
+    #[getter]
+    fn coefficient_precision<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let dimension = self.inner.coefficient_mean.len();
+        Array2::from_shape_fn((dimension, dimension), |(row, column)| {
+            self.inner.coefficient_precision[row][column]
+        })
+        .into_pyarray(py)
+    }
+
+    #[getter]
+    fn variance_shape(&self) -> f64 {
+        self.inner.variance_shape
+    }
+
+    #[getter]
+    fn variance_scale(&self) -> f64 {
+        self.inner.variance_scale
+    }
+
+    #[getter]
+    fn coefficient_count(&self) -> usize {
+        self.inner.coefficient_mean.len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "NormalInverseGammaPrior(coefficient_count={}, variance_shape={}, variance_scale={})",
+            self.coefficient_count(),
+            self.inner.variance_shape,
+            self.inner.variance_scale,
+        )
+    }
+}
+
+/// Directly observed Gaussian Bayesian AR(p) model.
+///
+/// This is distinct from ``LinearGaussianStateSpace.stationary_ar1``: the
+/// latter is a latent AR(1) observed with separate measurement noise.
+#[pyclass(name = "BayesianAutoRegression", frozen)]
+#[derive(Clone)]
+struct PyBayesianAutoRegression {
+    order: usize,
+    prior: CoreNormalInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyBayesianAutoRegression {
+    #[new]
+    fn new(order: usize, prior: PyRef<'_, PyNormalInverseGammaPrior>) -> PyResult<Self> {
+        if order == 0 {
+            return Err(StateSpaceError::new_err(
+                "invalid configuration: AR order must be at least one",
+            ));
+        }
+        let expected = order.checked_add(1).ok_or_else(|| {
+            StateSpaceError::new_err(
+                "invalid configuration: AR order is too large to represent its coefficients",
+            )
+        })?;
+        if prior.inner.coefficient_mean.len() != expected {
+            return Err(StateSpaceError::new_err(format!(
+                "invalid configuration: AR({order}) requires {expected} coefficient prior entries (intercept plus {order} lags)"
+            )));
+        }
+        Ok(Self {
+            order,
+            prior: prior.inner.clone(),
+        })
+    }
+
+    #[getter]
+    fn order(&self) -> usize {
+        self.order
+    }
+
+    #[getter]
+    fn prior(&self) -> PyNormalInverseGammaPrior {
+        PyNormalInverseGammaPrior {
+            inner: self.prior.clone(),
+        }
+    }
+
+    #[pyo3(signature = (observations, chains=4, draws=1000, seed=42))]
+    fn fit(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+        chains: usize,
+        draws: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianArFit> {
+        let observations = state_space_vector(observations);
+        let config = CoreBayesianArConfig {
+            order: self.order,
+            prior: self.prior.clone(),
+            num_chains: chains,
+            num_draws: draws,
+            seed,
+        };
+        let posterior = py
+            .allow_threads(|| fit_bayesian_ar(&observations, &config))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianArFit {
+            posterior,
+            observations,
+            config,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianAutoRegression(order={}, coefficient_count={})",
+            self.order,
+            self.prior.coefficient_mean.len(),
+        )
+    }
+}
+
+#[pyclass(name = "BayesianARFit")]
+struct PyBayesianArFit {
+    posterior: CoreBayesianArPosterior,
+    observations: Vec<f64>,
+    config: CoreBayesianArConfig,
+}
+
+#[pymethods]
+impl PyBayesianArFit {
+    #[getter]
+    fn order(&self) -> usize {
+        self.posterior.order
+    }
+
+    #[getter]
+    fn chains(&self) -> usize {
+        self.posterior.chains.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.posterior.chains.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn time_count(&self) -> usize {
+        self.observations.len()
+    }
+
+    #[getter]
+    fn regression_count(&self) -> usize {
+        self.observations.len() - self.posterior.order
+    }
+
+    #[getter]
+    fn seed(&self) -> u64 {
+        self.config.seed
+    }
+
+    fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        samples.set_item("coefficient", ar_coefficient_array(py, &self.posterior))?;
+        samples.set_item(
+            "innovation_variance",
+            ar_parameter_array(py, &self.posterior, |draw| draw.innovation_variance),
+        )?;
+        samples.set_item(
+            "innovation_sd",
+            ar_parameter_array(py, &self.posterior, |draw| draw.innovation_variance.sqrt()),
+        )?;
+        Ok(samples)
+    }
+
+    #[pyo3(signature = (steps, seed=43))]
+    fn forecast(&self, py: Python<'_>, steps: usize, seed: u64) -> PyResult<PyBayesianArForecast> {
+        let forecast = py
+            .allow_threads(|| self.posterior.forecast(steps, seed))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianArForecast { inner: forecast })
+    }
+
+    /// Export coefficient and innovation-variance draws to ArviZ.
+    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let az = py.import("arviz")?;
+        let groups = PyDict::new(py);
+        groups.set_item("posterior", self.get_samples(py)?)?;
+        let observed = PyDict::new(py);
+        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
+        groups.set_item("observed_data", observed)?;
+        arviz_from_groups(&az, groups)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianARFit(order={}, chains={}, draws={}, time_count={})",
+            self.order(),
+            self.chains(),
+            self.draws(),
+            self.time_count(),
+        )
+    }
+}
+
+#[pyclass(name = "BayesianARForecast")]
+struct PyBayesianArForecast {
+    inner: CoreBayesianArForecast,
+}
+
+#[pymethods]
+impl PyBayesianArForecast {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.inner.observation_paths.len()
+    }
+
+    #[getter]
+    fn draws(&self) -> usize {
+        self.inner.observation_paths.first().map_or(0, Vec::len)
+    }
+
+    #[getter]
+    fn steps(&self) -> usize {
+        self.inner.horizon()
+    }
+
+    #[getter]
+    fn conditional_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.conditional_mean_paths)
+    }
+
+    #[getter]
+    fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.observation_paths)
+    }
+
+    #[getter]
+    fn conditional_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .conditional_mean_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    #[getter]
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .observation_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    fn conditional_mean_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .conditional_mean_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    fn observation_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        let quantiles = self
+            .inner
+            .observation_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?;
+        Ok(quantiles[0].values.clone().into_pyarray(py))
+    }
+
+    /// Pointwise equal-tailed interval for the recursive conditional mean.
+    #[pyo3(signature = (level=0.95))]
+    fn conditional_mean_interval<'py>(
+        &self,
+        py: Python<'py>,
+        level: f64,
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .conditional_mean_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    /// Pointwise equal-tailed posterior-predictive interval for future observations.
+    #[pyo3(signature = (level=0.95))]
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        validate_interval_level(level)?;
+        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+        let quantiles = self
+            .inner
+            .observation_quantiles(&probabilities)
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            quantiles[0].values.clone().into_pyarray(py),
+            quantiles[1].values.clone().into_pyarray(py),
+        ))
+    }
+
+    #[getter]
+    fn uncertainty_kind(&self) -> &'static str {
+        "parameter_integrated_posterior_predictive"
+    }
+
+    #[getter]
+    fn interval_kind(&self) -> &'static str {
+        "pointwise_equal_tailed"
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianARForecast(chains={}, draws={}, steps={})",
+            self.chains(),
+            self.draws(),
+            self.steps(),
+        )
+    }
+}
+
 fn validate_interval_level(level: f64) -> PyResult<()> {
     if !level.is_finite() || level <= 0.0 || level >= 1.0 {
         return Err(PyValueError::new_err(
@@ -4701,6 +5564,14 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBayesianLocalLevel>()?;
     m.add_class::<PyBayesianLocalLevelFit>()?;
     m.add_class::<PyBayesianForecastResult>()?;
+    m.add_class::<PyBayesianLocalLinearTrend>()?;
+    m.add_class::<PyBayesianLocalLinearTrendFit>()?;
+    m.add_class::<PyBayesianTrendForecast>()?;
+    m.add_class::<PyNormalInverseGammaPrior>()?;
+    m.add_class::<PyBayesianAutoRegression>()?;
+    m.add("BayesianAR", m.getattr("BayesianAutoRegression")?)?;
+    m.add_class::<PyBayesianArFit>()?;
+    m.add_class::<PyBayesianArForecast>()?;
     m.add("ParameterError", m.py().get_type::<ParameterError>())?;
     m.add("StateSpaceError", m.py().get_type::<StateSpaceError>())?;
     m.add_function(wrap_pyfunction!(sample, m)?)?;

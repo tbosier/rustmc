@@ -82,11 +82,16 @@ graph structure.
 **Linear Gaussian state space:** `LinearGaussianStateSpace` provides fixed-system
 Kalman filtering, smoothing, missing-observation handling, and forecasting.
 
+**Bayesian forecasting:** fitted local-level and local-linear-trend structural models
+provide FFBS/Gibbs posterior prediction, while `BayesianAutoRegression(order=p)` supports
+directly observed Gaussian AR(p) at any positive lag order. All return coherent paths and
+parameter-integrated pointwise intervals.
+
 ## What Is Still Missing
 
 - Vector-valued hierarchical models and richer automatic reparameterization support.
 - Portable serialization and prediction-on-new-data for the in-memory re-bindable
   compiled model; the legacy JSON artifact remains data-owning.
-- Bayesian estimation of state-space parameters and Kalman-likelihood integration in
-  `ModelBuilder`; the standalone fixed-system API is implemented.
+- Generic Bayesian state-space estimation and collapsed Kalman-likelihood integration in
+  `ModelBuilder`; specialized local level, local trend, and direct AR(p) are implemented.
 - Higher-level production templates for repeated forecasting and panel workflows.

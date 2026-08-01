@@ -84,10 +84,96 @@ and observation noise. It is not a simultaneous trajectory band.
 
 `NaN` retains a missing time step and infinities are rejected. Fitting requires at
 least two finite observations. This specialized model assumes equally spaced scalar
-Gaussian observations; local trend, AR(1), seasonality, covariates, and irregular
-timestamps are not yet part of the fitted Bayesian API. Gibbs output remains finite
+Gaussian observations; seasonality, covariates, and irregular timestamps are not part
+of this model. Gibbs output remains finite
 MCMC output, so inspect multiple-chain convergence and effective sample sizes rather
 than treating it as an analytic posterior.
+
+## Bayesian local-linear-trend forecasting
+
+`BayesianLocalLinearTrend` fits the two-state structural model
+
+```text
+[level[-1], slope[-1]] ~ Normal(initial_mean, initial_covariance)
+level[t] = level[t-1] + slope[t-1] + Normal(0, level_variance)
+slope[t] = slope[t-1] + Normal(0, slope_variance)
+y[t] = level[t] + Normal(0, observation_variance)
+```
+
+All three variance priors are explicit. The initial covariance is configured with level
+variance, slope variance, and an optional level/slope covariance and must be strictly
+positive definite.
+
+```python
+model = rmc.BayesianLocalLinearTrend(
+    level_variance_prior=rmc.InverseGammaPrior(3.0, 0.24),
+    slope_variance_prior=rmc.InverseGammaPrior(3.0, 0.04),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 0.70),
+    initial_level=0.0,
+    initial_slope=0.0,
+    initial_level_variance=4.0,
+    initial_slope_variance=1.0,
+)
+fit = model.fit(y, chains=4, draws=1000, warmup=500, thin=1, seed=42)
+forecast = fit.forecast(steps=12, seed=43)
+predictive_lower, predictive_upper = forecast.interval(0.95)
+level_lower, level_upper = forecast.level_interval(0.95)
+slope_lower, slope_upper = forecast.slope_interval(0.95)
+```
+
+Level, slope, and observation samples each have shape `(chain, draw, step)` and belong
+to the same coherent paths. `interval()` is the observation posterior-predictive
+interval; `level_interval()` and `slope_interval()` summarize the latent states. The
+process innovations are independent (diagonal process covariance). `NaN` retains a
+scheduled missing time point. Variance components can be weakly identified near zero,
+so inspect multi-chain convergence.
+
+## Bayesian autoregression AR(p)
+
+`BayesianAutoRegression(order=p)` and its shorter alias `BayesianAR` fit any positive
+caller-selected order under the conditional Gaussian likelihood
+
+```text
+y[t] = intercept + phi[1] y[t-1] + ... + phi[p] y[t-p] + epsilon[t]
+epsilon[t] ~ Normal(0, innovation_variance)
+```
+
+The explicit conjugate prior is
+
+```text
+innovation_variance ~ InverseGamma(variance_shape, variance_scale)
+coefficients | innovation_variance
+    ~ Normal(coefficient_mean, innovation_variance * coefficient_precision^-1)
+```
+
+Coefficients are always `[intercept, lag_1, ..., lag_p]`.
+
+```python
+order = 3
+prior = rmc.NormalInverseGammaPrior(
+    coefficient_mean=np.zeros(order + 1),
+    coefficient_precision=np.eye(order + 1) * 0.05,
+    variance_shape=2.5,
+    variance_scale=0.2,
+)
+model = rmc.BayesianAutoRegression(order=order, prior=prior)
+fit = model.fit(y, chains=4, draws=1000, seed=42)
+forecast = fit.forecast(steps=12, seed=43)
+lower, upper = forecast.interval(0.95)
+```
+
+This is a directly observed AR(p), distinct from the latent
+`LinearGaussianStateSpace.stationary_ar1()` model with separate process and measurement
+noise. The conjugate posterior draws are independent, so there is no warmup or thinning.
+`fit.get_samples()` returns `coefficient` with shape `(chain, draw, p + 1)` and innovation
+variance/standard deviation with shape `(chain, draw)`. Forecast observation and recursive
+conditional-mean paths have shape `(chain, draw, step)`.
+
+The likelihood conditions on the first `p` observations. Input must be complete, finite,
+equally spaced, and longer than `p`. Coefficient draws are not restricted to the
+stationary region and are never silently clipped; explosive recursive draws return a
+numerical error. `interval()` is a pointwise equal-tailed posterior-predictive interval,
+not a simultaneous path band.
 
 ## `ModelBuilder`
 

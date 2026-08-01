@@ -13,12 +13,18 @@
 //! in squared observation units, so there is deliberately no universal
 //! default. Missing observations may be represented by `NaN`; their time
 //! positions are retained, while infinities are rejected.
+//!
+//! Independent chains execute on the active Rayon pool (or its global pool),
+//! while indexed collection preserves deterministic chain ordering.
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
+use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
+
+type LocalLevelChainPaths = (Vec<Vec<f64>>, Vec<Vec<f64>>);
 
 /// Inverse-gamma prior parameterized by shape and scale.
 ///
@@ -143,40 +149,50 @@ impl LocalLevelPosterior {
             ));
         }
 
-        let mut state_paths = Vec::with_capacity(self.chains.len());
-        let mut observation_paths = Vec::with_capacity(self.chains.len());
-        for (chain_index, posterior_chain) in self.chains.iter().enumerate() {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, chain_index));
-            let mut chain_state_paths = Vec::with_capacity(posterior_chain.len());
-            let mut chain_observation_paths = Vec::with_capacity(posterior_chain.len());
-            for draw in posterior_chain {
-                validate_positive_variance("process", draw.process_variance)?;
-                validate_positive_variance("observation", draw.observation_variance)?;
-                if !draw.terminal_level.is_finite() {
-                    return Err(BayesianForecastError::NumericalFailure(
-                        "posterior terminal level is not finite".into(),
-                    ));
-                }
-
-                let process_sd = draw.process_variance.sqrt();
-                let observation_sd = draw.observation_variance.sqrt();
-                let mut level = draw.terminal_level;
-                let mut state_path = Vec::with_capacity(horizon);
-                let mut observation_path = Vec::with_capacity(horizon);
-                for _ in 0..horizon {
-                    level += standard_normal(&mut rng) * process_sd;
-                    let observation = level + standard_normal(&mut rng) * observation_sd;
-                    if !level.is_finite() || !observation.is_finite() {
+        let chain_paths: Vec<LocalLevelChainPaths> = self
+            .chains
+            .par_iter()
+            .enumerate()
+            .map(|(chain_index, posterior_chain)| {
+                let mut rng =
+                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain_index, FORECAST_SEED_DOMAIN));
+                let mut chain_state_paths = Vec::with_capacity(posterior_chain.len());
+                let mut chain_observation_paths = Vec::with_capacity(posterior_chain.len());
+                for draw in posterior_chain {
+                    validate_positive_variance("process", draw.process_variance)?;
+                    validate_positive_variance("observation", draw.observation_variance)?;
+                    if !draw.terminal_level.is_finite() {
                         return Err(BayesianForecastError::NumericalFailure(
-                            "posterior predictive simulation overflowed".into(),
+                            "posterior terminal level is not finite".into(),
                         ));
                     }
-                    state_path.push(level);
-                    observation_path.push(observation);
+
+                    let process_sd = draw.process_variance.sqrt();
+                    let observation_sd = draw.observation_variance.sqrt();
+                    let mut level = draw.terminal_level;
+                    let mut state_path = Vec::with_capacity(horizon);
+                    let mut observation_path = Vec::with_capacity(horizon);
+                    for _ in 0..horizon {
+                        level += standard_normal(&mut rng) * process_sd;
+                        let observation = level + standard_normal(&mut rng) * observation_sd;
+                        if !level.is_finite() || !observation.is_finite() {
+                            return Err(BayesianForecastError::NumericalFailure(
+                                "posterior predictive simulation overflowed".into(),
+                            ));
+                        }
+                        state_path.push(level);
+                        observation_path.push(observation);
+                    }
+                    chain_state_paths.push(state_path);
+                    chain_observation_paths.push(observation_path);
                 }
-                chain_state_paths.push(state_path);
-                chain_observation_paths.push(observation_path);
-            }
+                Ok((chain_state_paths, chain_observation_paths))
+            })
+            .collect::<Result<_, BayesianForecastError>>()?;
+
+        let mut state_paths = Vec::with_capacity(chain_paths.len());
+        let mut observation_paths = Vec::with_capacity(chain_paths.len());
+        for (chain_state_paths, chain_observation_paths) in chain_paths {
             state_paths.push(chain_state_paths);
             observation_paths.push(chain_observation_paths);
         }
@@ -264,65 +280,68 @@ pub fn fit_bayesian_local_level(
 
     let total_iterations = config.num_warmup + config.num_draws * config.thinning;
     let observed_count = observations.iter().filter(|value| !value.is_nan()).count();
-    let mut chains = Vec::with_capacity(config.num_chains);
-    for chain_index in 0..config.num_chains {
-        let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index));
-        let mut process_variance = config.process_variance_prior.mode();
-        let mut observation_variance = config.observation_variance_prior.mode();
-        let mut posterior_draws = Vec::with_capacity(config.num_draws);
+    let chains = (0..config.num_chains)
+        .into_par_iter()
+        .map(|chain_index| {
+            let mut rng =
+                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index, FIT_SEED_DOMAIN));
+            let mut process_variance = config.process_variance_prior.mode();
+            let mut observation_variance = config.observation_variance_prior.mode();
+            let mut posterior_draws = Vec::with_capacity(config.num_draws);
 
-        for iteration in 0..total_iterations {
-            // Includes x[-1] followed by x[0] through x[T - 1].
-            let levels = sample_levels_ffbs(
-                observations,
-                config.initial_mean,
-                config.initial_variance,
-                process_variance,
-                observation_variance,
-                &mut rng,
-            )?;
-
-            let process_sum_sq: f64 = levels
-                .windows(2)
-                .map(|pair| {
-                    let difference = pair[1] - pair[0];
-                    difference * difference
-                })
-                .sum();
-            process_variance = sample_inverse_gamma(
-                config.process_variance_prior.shape + observations.len() as f64 / 2.0,
-                config.process_variance_prior.scale + process_sum_sq / 2.0,
-                &mut rng,
-            )?;
-
-            let observation_sum_sq: f64 = observations
-                .iter()
-                .zip(&levels[1..])
-                .filter(|(observation, _)| !observation.is_nan())
-                .map(|(observation, level)| {
-                    let residual = observation - level;
-                    residual * residual
-                })
-                .sum();
-            observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
-                &mut rng,
-            )?;
-
-            if iteration >= config.num_warmup
-                && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-            {
-                posterior_draws.push(LocalLevelPosteriorDraw {
+            for iteration in 0..total_iterations {
+                // Includes x[-1] followed by x[0] through x[T - 1].
+                let levels = sample_levels_ffbs(
+                    observations,
+                    config.initial_mean,
+                    config.initial_variance,
                     process_variance,
                     observation_variance,
-                    terminal_level: *levels.last().expect("observations are non-empty"),
-                });
+                    &mut rng,
+                )?;
+
+                let process_sum_sq: f64 = levels
+                    .windows(2)
+                    .map(|pair| {
+                        let difference = pair[1] - pair[0];
+                        difference * difference
+                    })
+                    .sum();
+                process_variance = sample_inverse_gamma(
+                    config.process_variance_prior.shape + observations.len() as f64 / 2.0,
+                    config.process_variance_prior.scale + process_sum_sq / 2.0,
+                    &mut rng,
+                )?;
+
+                let observation_sum_sq: f64 = observations
+                    .iter()
+                    .zip(&levels[1..])
+                    .filter(|(observation, _)| !observation.is_nan())
+                    .map(|(observation, level)| {
+                        let residual = observation - level;
+                        residual * residual
+                    })
+                    .sum();
+                observation_variance = sample_inverse_gamma(
+                    config.observation_variance_prior.shape + observed_count as f64 / 2.0,
+                    config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+                    &mut rng,
+                )?;
+
+                if iteration >= config.num_warmup
+                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
+                {
+                    posterior_draws.push(LocalLevelPosteriorDraw {
+                        process_variance,
+                        observation_variance,
+                        terminal_level: *levels.last().expect("observations are non-empty"),
+                    });
+                }
             }
-        }
-        debug_assert_eq!(posterior_draws.len(), config.num_draws);
-        chains.push(posterior_draws);
-    }
+            debug_assert_eq!(posterior_draws.len(), config.num_draws);
+            Ok(posterior_draws)
+        })
+        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
 
     Ok(LocalLevelPosterior { chains })
 }
@@ -453,9 +472,14 @@ fn validate_positive_variance(name: &str, variance: f64) -> Result<(), BayesianF
     Ok(())
 }
 
-fn chain_seed(seed: u64, chain_index: usize) -> u64 {
+const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
+const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
+
+fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
     // SplitMix64 finalizer gives each chain a stable, well-separated stream.
-    let mut value = seed.wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
+    let mut value = seed
+        .wrapping_add(domain)
+        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
     value ^ (value >> 31)
@@ -553,6 +577,14 @@ fn interpolated_quantile(ordered: &[f64], probability: f64) -> f64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        assert_ne!(
+            chain_seed(42, 0, FIT_SEED_DOMAIN),
+            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
+        );
+    }
+
     fn compact_config(seed: u64) -> BayesianLocalLevelConfig {
         BayesianLocalLevelConfig {
             initial_mean: 0.0,
@@ -571,6 +603,28 @@ mod tests {
             thinning: 1,
             seed,
         }
+    }
+
+    #[test]
+    fn fit_and_forecast_are_bitwise_identical_across_rayon_pool_sizes() {
+        let observations = [0.2, -0.1, f64::NAN, 0.4, 0.3, 0.6];
+        let config = compact_config(18);
+        let run = || {
+            let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
+            let forecast = posterior.forecast(5, 19).unwrap();
+            (posterior, forecast)
+        };
+        let single_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .unwrap()
+            .install(run);
+        let multi_thread = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .unwrap()
+            .install(run);
+        assert_eq!(single_thread, multi_thread);
     }
 
     #[test]

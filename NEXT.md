@@ -17,6 +17,10 @@ tests; roadmap items must not be advertised as current features.
 - A specialized Bayesian local-level API now estimates process and observation variances
   with explicit inverse-gamma priors and multi-chain FFBS/Gibbs sampling, returning
   parameter-integrated latent and observation forecast paths.
+- A Bayesian local-linear-trend API now fits stochastic level, slope, and observation
+  variance with two-state FFBS/Gibbs and returns coherent level/slope/observation paths.
+- A directly observed Bayesian AR(p) API now supports any positive caller-selected lag
+  order with exact Normal-Inverse-Gamma posterior draws and recursive predictive paths.
 
 ## Tier 1: Correctness and trust
 
@@ -52,9 +56,11 @@ tests; roadmap items must not be advertised as current features.
 - Build a moments-free Kalman log-likelihood kernel with reusable workspace and
   parameter sensitivities for gradient-based generic state-space inference; the
   specialized local-level Gibbs path already returns parameter-integrated forecasts.
-- Add fitted parameter-estimation paths for local linear trend and stationary AR(1);
-  local level is now fitted through `BayesianLocalLevel`, and all three fixed-input
-  constructors retain conditional forecast intervals.
+- Add a fitted noisy-latent stationary AR family over the generic state-space kernel;
+  directly observed AR(p), local level, and local linear trend now have specialized
+  fitted Bayesian paths, while all fixed-input constructors retain conditional intervals.
+- Unify fitted forecasting results, named lag/time coordinates, pointwise likelihood,
+  posterior-predictive ArviZ groups, and forecasting-specific diagnostics/calibration.
 - Extend the existing filtering/smoothing and forecast outputs with named coordinates.
 - Validate log likelihood and filtered moments against a small independent reference.
 - Multivariate/non-Gaussian state-space models remain later work.
