@@ -17,8 +17,14 @@ jobs:
         with:
           python-version: "3.11"
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Install docs dependencies
-        run: pip install mkdocs-material jupyter nbconvert rustmc arviz matplotlib
+        # Install the checked-out package, not the latest PyPI release, so
+        # executable notebooks always validate the API being documented.
+        # The notebooks use ArviZ 0.x plotting names; ArviZ 1.x export
+        # compatibility is exercised separately by the Python 3.12 CI job.
+        run: python -m pip install . mkdocs-material jupyter nbconvert "arviz>=0.20,<1" matplotlib
 
       - name: Convert notebooks to markdown
         run: |

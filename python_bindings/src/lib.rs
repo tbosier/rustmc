@@ -2784,11 +2784,12 @@ impl FitResult {
         Ok(dict)
     }
 
-    /// Convert to an ArviZ InferenceData object.
+    /// Convert to ArviZ's version-native inference container.
     ///
     /// Requires ArviZ: `pip install arviz`
     ///
-    /// Returns an `arviz.InferenceData` with:
+    /// Returns an `arviz.InferenceData` on ArviZ 0.x or an `xarray.DataTree`
+    /// on ArviZ 1.x, with:
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
     ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
     ///   - `observed_data`         — the fitted response vector for each likelihood
@@ -2849,9 +2850,9 @@ impl FitResult {
         sample_stats.set_item("diverging", diverging_arr.into_pyarray(py))?;
 
         // ── posterior predictive (optional) ──────────────────────────────
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("posterior", posterior)?;
-        kwargs.set_item("sample_stats", sample_stats)?;
+        let groups = PyDict::new(py);
+        groups.set_item("posterior", posterior)?;
+        groups.set_item("sample_stats", sample_stats)?;
 
         if !self.likelihood_names.is_empty() {
             let heads = self.graph.observation_heads();
@@ -2875,12 +2876,12 @@ impl FitResult {
                     })?;
                 observed_data.set_item(name, PyArray1::from_vec(py, observed.clone()))?;
             }
-            kwargs.set_item("observed_data", observed_data)?;
+            groups.set_item("observed_data", observed_data)?;
         }
 
         if include_log_likelihood && !self.likelihood_names.is_empty() {
             let log_likelihood = self.log_likelihood(py)?;
-            kwargs.set_item("log_likelihood", log_likelihood)?;
+            groups.set_item("log_likelihood", log_likelihood)?;
         }
 
         if include_ppc && !self.likelihood_names.is_empty() {
@@ -2895,10 +2896,28 @@ impl FitResult {
                 let expanded = np.call_method1("expand_dims", (arr, 0))?;
                 ppc_reshaped.set_item(key, expanded)?;
             }
-            kwargs.set_item("posterior_predictive", ppc_reshaped)?;
+            groups.set_item("posterior_predictive", ppc_reshaped)?;
         }
 
-        az.call_method("from_dict", (), Some(&kwargs))
+        // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
+        // from one keyword per group to a single nested group dictionary.
+        // Keep both generations working because rustmc supports Python
+        // environments that still carry the widely deployed ArviZ 0.x API.
+        let arviz_version: String = az.getattr("__version__")?.extract()?;
+        let arviz_major = arviz_version
+            .split('.')
+            .next()
+            .and_then(|part| part.parse::<u64>().ok())
+            .ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "cannot determine the ArviZ API generation from version '{arviz_version}'"
+                ))
+            })?;
+        if arviz_major >= 1 {
+            az.call_method1("from_dict", (groups,))
+        } else {
+            az.call_method("from_dict", (), Some(&groups))
+        }
     }
 
     fn __repr__(&self) -> String {

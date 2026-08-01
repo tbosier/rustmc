@@ -50,9 +50,12 @@ jobs:
         env:
           VIRTUAL_ENV: ${{ runner.temp }}/source-env
         run: "${{ runner.temp }}/source-env/bin/maturin develop --release --manifest-path python_bindings/Cargo.toml"
-      - name: Install optional ArviZ integration dependency
+      - name: Install ArviZ 0.x integration dependency
+        if: matrix.python-version == '3.11'
+        run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=0.20,<1'"
+      - name: Install ArviZ 1.x integration dependency
         if: matrix.python-version == '3.12'
-        run: "${{ runner.temp }}/source-env/bin/python -m pip install arviz"
+        run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=1,<2'"
       - name: Verify current-source provenance and Python integration
         env:
           RUSTMC_REQUIRE_SITE_PACKAGES: "1"

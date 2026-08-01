@@ -225,7 +225,7 @@ than absolute batch throughput.
 | `divergences()` | `list[int]` | Per-chain divergence counts |
 | `posterior_predictive(n_samples=None, seed=42)` | `dict[str, np.ndarray]` | Posterior predictive samples shaped `(n_samples, n_obs)` per likelihood |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | `arviz.InferenceData` | Convert to ArviZ with observed data, optionally including predictive draws and pointwise log-likelihood |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood |
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 

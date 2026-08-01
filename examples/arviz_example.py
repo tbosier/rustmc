@@ -1,9 +1,9 @@
 """
-rustmc — ArviZ / InferenceData Integration Example
-====================================================
+rustmc — ArviZ Integration Example
+===================================
 
-`fit.to_arviz()` returns an `arviz.InferenceData` object, which unlocks
-the full ArviZ diagnostics and visualization suite instantly.
+`fit.to_arviz()` returns ArviZ's native inference container: `InferenceData`
+on ArviZ 0.x and `DataTree` on ArviZ 1.x.
 
 Install ArviZ first:
     pip install arviz matplotlib
@@ -49,13 +49,21 @@ print("rustmc built-in summary:")
 print(fit.summary())
 print()
 
-# ── 2. Convert to InferenceData ───────────────────────────────────────────────
+# ── 2. Convert to ArviZ's inference container ────────────────────────────────
 
 idata = fit.to_arviz()
 
-print(f"InferenceData groups: {list(idata.groups())}")
-print(f"Posterior variables:  {list(idata.posterior.data_vars)}")
-print(f"Chains × draws:       {idata.posterior.dims['chain']} × {idata.posterior.dims['draw']}")
+def group_dataset(container, name):
+    """Return an xarray Dataset from either ArviZ container generation."""
+    group = getattr(container, name)
+    return getattr(group, "dataset", group)
+
+groups = idata.groups() if callable(idata.groups) else idata.groups
+post = group_dataset(idata, "posterior")
+sample_stats = group_dataset(idata, "sample_stats")
+print(f"ArviZ groups:         {list(groups)}")
+print(f"Posterior variables:  {list(post.data_vars)}")
+print(f"Chains × draws:       {post.sizes['chain']} × {post.sizes['draw']}")
 print()
 
 # ── 3. ArviZ summary (richer than fit.summary()) ──────────────────────────────
@@ -73,7 +81,7 @@ for param, rhat in summary_df["r_hat"].items():
     print(f"  {status}  {param}: R-hat = {rhat:.4f}")
 print()
 
-n_div = int(idata.sample_stats.diverging.values.sum())
+n_div = int(sample_stats.diverging.values.sum())
 print(f"Total divergent transitions: {n_div}")
 print()
 
@@ -114,7 +122,6 @@ except Exception as e:
 
 # ── 6. Posterior statistics via xarray ───────────────────────────────────────
 
-post = idata.posterior
 print("Posterior means via xarray:")
 for var in post.data_vars:
     m = float(post[var].mean())

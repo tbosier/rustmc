@@ -207,6 +207,22 @@ def test_arviz_ppc_export_includes_observed_data():
     )
 
     idata = fit.to_arviz(include_ppc=True)
-    assert "observed_data" in idata.groups()
-    assert "posterior_predictive" in idata.groups()
-    np.testing.assert_array_equal(idata.observed_data["obs"].values, data["y"])
+    groups = idata.groups() if callable(idata.groups) else idata.groups
+    normalized_groups = {group.removeprefix("/") for group in groups}
+    assert "observed_data" in normalized_groups
+    assert "posterior_predictive" in normalized_groups
+
+    def dataset(group_name):
+        group = getattr(idata, group_name)
+        return getattr(group, "dataset", group)
+
+    posterior_dataset = dataset("posterior")
+    stats_dataset = dataset("sample_stats")
+    observed_dataset = dataset("observed_data")
+    log_likelihood_dataset = dataset("log_likelihood")
+    ppc_dataset = dataset("posterior_predictive")
+    assert posterior_dataset["beta"].shape == (1, 2)
+    assert stats_dataset["diverging"].shape == (1, 2)
+    np.testing.assert_array_equal(observed_dataset["obs"].values, data["y"])
+    assert log_likelihood_dataset["obs"].shape == (1, 2, 2)
+    assert ppc_dataset["obs"].shape == (1, 2, 2)
