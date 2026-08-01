@@ -36,6 +36,72 @@ def test_bind_schema_errors_are_actionable():
         compiled.bind({"x": np.array([np.nan]), "y": np.ones(1)})
 
 
+def _add_scalar_likelihood(builder, family, eta):
+    if family == "bernoulli":
+        builder.bernoulli_logit_likelihood("obs", eta, "y")
+    elif family == "poisson":
+        builder.poisson_log_likelihood("obs", eta, "y")
+    elif family == "exponential":
+        builder.exponential_likelihood("obs", eta, "y")
+    elif family == "lognormal":
+        builder.log_normal_likelihood("obs", eta, 1.0, "y")
+    else:
+        builder.negative_binomial_likelihood("obs", eta, 1.0, "y")
+
+
+@pytest.mark.parametrize(
+    ("family", "invalid", "message"),
+    [
+        ("bernoulli", 0.5, "binary"),
+        ("poisson", 1.5, "non-negative integers"),
+        ("exponential", -1.0, "non-negative"),
+        ("lognormal", 0.0, "strictly positive"),
+        ("negative_binomial", 2.5, "non-negative integers"),
+    ],
+)
+def test_bind_revalidates_likelihood_domain(family, invalid, message):
+    builder = rustmc.ModelBuilder()
+    eta = builder.normal_prior("eta", 0.0, 1.0)
+    _add_scalar_likelihood(builder, family, eta)
+
+    compiled = builder.compile()
+    with pytest.raises(ValueError, match=message):
+        compiled.bind({"y": np.array([invalid])})
+
+
+@pytest.mark.parametrize(
+    ("family", "invalid"),
+    [
+        ("bernoulli", 1.0 + 1e-12),
+        ("poisson", -1e-12),
+        ("poisson", 2.0 + 1e-12),
+        ("exponential", -1e-12),
+        ("negative_binomial", 2.0 + 1e-12),
+    ],
+)
+def test_likelihood_support_boundaries_are_exact(family, invalid):
+    bound_builder = rustmc.ModelBuilder({"y": np.array([invalid])})
+    eta = bound_builder.normal_prior("eta", 0.0, 1.0)
+    _add_scalar_likelihood(bound_builder, family, eta)
+    with pytest.raises(ValueError, match="requires"):
+        bound_builder.compile()
+
+    template = rustmc.ModelBuilder()
+    eta = template.normal_prior("eta", 0.0, 1.0)
+    _add_scalar_likelihood(template, family, eta)
+    with pytest.raises(ValueError, match="requires"):
+        template.compile().bind({"y": np.array([invalid])})
+
+
+def test_tiny_positive_lognormal_observation_is_valid():
+    tiny = np.array([1e-12])
+    builder = rustmc.ModelBuilder({"y": tiny})
+    eta = builder.normal_prior("eta", 0.0, 1.0)
+    _add_scalar_likelihood(builder, "lognormal", eta)
+    compiled = builder.compile()
+    assert compiled.bind({"y": tiny}).n_obs == 1
+
+
 def test_bound_model_cannot_be_used_with_a_different_compiled_structure():
     _, first = make_compiled()
     bound = first.bind({"x": np.ones(3), "y": np.ones(3)})
@@ -86,6 +152,10 @@ def test_batch_preserves_ids_and_order():
     assert fit.ids == ["small", "large"]
     assert len(fit) == 2
     assert fit[0].draws == 2
+    assert fit[-1].draws == 2
+    assert len(list(fit)) == 2
+    with pytest.raises(IndexError):
+        _ = fit[2]
 
 
 def test_batch_shared_inputs_are_bound_once_and_cannot_be_shadowed():
@@ -120,3 +190,23 @@ def test_compiled_and_legacy_sampling_parity():
     modern = compiled.sample(data, **kwargs).get_samples()["beta"]
     legacy = rustmc.sample(builder.build(), data, **kwargs).get_samples()["beta"]
     np.testing.assert_array_equal(modern, legacy)
+
+
+def test_arviz_ppc_export_includes_observed_data():
+    pytest.importorskip("arviz")
+    _, compiled = make_compiled()
+    data = {"x": np.array([1.0, 2.0]), "y": np.array([1.5, 2.5])}
+    fit = compiled.sample(
+        data,
+        chains=1,
+        draws=2,
+        warmup=2,
+        sampler="hmc",
+        num_leapfrog_steps=1,
+        show_progress=False,
+    )
+
+    idata = fit.to_arviz(include_ppc=True)
+    assert "observed_data" in idata.groups()
+    assert "posterior_predictive" in idata.groups()
+    np.testing.assert_array_equal(idata.observed_data["obs"].values, data["y"])

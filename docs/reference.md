@@ -11,6 +11,10 @@ x[t] = transition @ x[t-1] + process noise
 y[t] = observation @ x[t] + observation noise
 ```
 
+`initial_mean` and `initial_covariance` describe `x[-1]`, immediately before the
+first observation. The filter applies one transition/process-noise prediction before
+updating on `y[0]`. This convention also applies when forecasting an empty history.
+
 Construct a general model with NumPy arrays, or use the `local_level()`,
 `local_linear_trend()`, and zero-mean `stationary_ar1()` constructors. `filter(y)` returns predicted and filtered
 state means/covariances plus the observed-data log likelihood; `smooth(y)` adds
@@ -221,7 +225,7 @@ than absolute batch throughput.
 | `divergences()` | `list[int]` | Per-chain divergence counts |
 | `posterior_predictive(n_samples=None, seed=42)` | `dict[str, np.ndarray]` | Posterior predictive samples shaped `(n_samples, n_obs)` per likelihood |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | `arviz.InferenceData` | Convert to ArviZ, optionally including predictive draws and pointwise log-likelihood |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | `arviz.InferenceData` | Convert to ArviZ with observed data, optionally including predictive draws and pointwise log-likelihood |
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 

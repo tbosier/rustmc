@@ -17,6 +17,13 @@ tests; roadmap items must not be advertised as current features.
 
 ## Tier 1: Correctness and trust
 
+- Replace the current raw split R-hat and approximate ESS with rank-normalized,
+  folded split R-hat and modern bulk/tail ESS; compute genuine HDIs rather than
+  labeling central quantiles as HDIs.
+- Stabilize scalar/vector logit transforms in extreme tails and add adversarial
+  transform tests.
+- Add configurable initialization and `target_accept`, BFMI, tree-depth saturation,
+  and clearer chain-level numerical-failure reporting.
 - Keep exact post-warmup sampler events and export divergence flags, acceptance
   statistics, energy error, tree depth, leapfrog count, and termination reason.
 - Maintain seeded analytic/recovery tests for every transform and likelihood.
@@ -29,23 +36,34 @@ tests; roadmap items must not be advertised as current features.
 - Keep the immutable graph-template boundary and remove remaining data-owning legacy
   paths only when compatibility shims can preserve current results.
 - Benchmark compile, bind, and sample phases separately before publishing reuse claims.
+- Remove the nested one-thread Rayon pool created per compiled batch dataset and define
+  one explicit parallelism policy across datasets and chains.
+- Add collect-errors batch semantics and bring `BatchResult` diagnostics/predictive
+  methods to parity with `FitResult`.
 - Add artifact serialization/versioning only after in-memory rebinding is correct.
 
 ## Tier 3: State-space time series
 
 - Integrate the existing collapsed linear-Gaussian filter into `ModelBuilder`, rather
   than sampling one latent variable per time step with NUTS.
+- Build a moments-free Kalman log-likelihood kernel with reusable workspace and
+  parameter sensitivities, then return parameter-integrated posterior predictive
+  intervals from a fitted state-space result.
 - Add parameter-estimation paths for local level, local linear trend, and stationary
   AR(1); all three fixed-input constructors and conditional forecast intervals are now
   available.
 - Extend the existing filtering/smoothing and forecast outputs with named coordinates.
 - Validate log likelihood and filtered moments against a small independent reference.
 - Multivariate/non-Gaussian state-space models remain later work.
+- Support singular process covariance for deterministic components, then add
+  time-varying matrices, covariates/seasonality, and multivariate observations.
 
 ## Tier 4: Modeling surface and operations
 
 - Add named dimensions, group indexing, offsets/exposure, vector hierarchical blocks,
   and prediction on newly bound data.
+- Add first-class out-of-sample prediction/forecast binding, preserve chain/draw
+  provenance in posterior predictive output, and ship `py.typed`/`.pyi` metadata.
 - Add a slot-only Rust artifact/runtime API without silently migrating the legacy
   data-owning artifact.
 - Keep Python context-manager syntax optional; do not conflate it with reusable

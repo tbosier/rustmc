@@ -1,3 +1,4 @@
+use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::Graph;
@@ -159,6 +160,35 @@ where
     }
 }
 
+fn validate_initial_target(graph: &Graph, binding: DataBinding) -> Result<(), String> {
+    let mut evaluator =
+        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
+    evaluator.compute(graph, &vec![0.0; graph.param_count]);
+    if !evaluator.total_logp.is_finite() {
+        return Err(format!(
+            "initial log density is not finite at the default zero initialization ({})",
+            evaluator.total_logp
+        ));
+    }
+    if let Some((index, value)) = evaluator
+        .grad
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, value)| !value.is_finite())
+    {
+        let name = graph
+            .param_names
+            .get(index)
+            .map_or("<unknown>", String::as_str);
+        return Err(format!(
+            "initial gradient for parameter '{}' is not finite at the default zero initialization ({})",
+            name, value
+        ));
+    }
+    Ok(())
+}
+
 pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, String> {
     graph.validate_shapes().map_err(|e| e.to_string())?;
     let binding = DataBinding::from_graph(&graph).map_err(|e| e.to_string())?;
@@ -171,6 +201,8 @@ pub fn sample_bound(
     binding: DataBinding,
     config: SamplerConfig,
 ) -> Result<SampleResult, String> {
+    binding.validate_for(&graph).map_err(|e| e.to_string())?;
+    validate_initial_target(&graph, binding.clone())?;
     let param_names = graph.param_names.clone();
 
     // For progress bar, leapfrog count is approximate for NUTS
@@ -319,7 +351,7 @@ pub fn sample_batch_bound(
             .into_par_iter()
             .enumerate()
             .map(|(index, binding)| {
-                let id = binding.id.clone();
+                let id = binding.id().to_string();
                 let seed = config.seed.wrapping_add((index as u64) << 32);
                 sample_bound(Arc::clone(&graph), binding, sampler_config(seed)).map(|sample| {
                     let samples = sample.samples.into_iter().flatten().collect();
@@ -406,6 +438,8 @@ pub fn batch_sample(
 
     for (graph, _) in &models {
         graph.validate_shapes().map_err(|e| e.to_string())?;
+        let binding = DataBinding::from_graph(graph).map_err(|e| e.to_string())?;
+        validate_initial_target(graph, binding)?;
     }
 
     let progress_state = if config.show_progress {
@@ -547,5 +581,27 @@ mod tests {
         assert_eq!(report.total_leapfrog_steps, 8);
         assert_eq!(report.chains.len(), 1);
         assert!(report.mean_accept_prob > 0.0);
+    }
+
+    #[test]
+    fn sampling_rejects_a_non_finite_default_initial_target() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let sigma = graph.add_param("sigma");
+        let zero = graph.add_constant(0.0);
+        graph.normal_logp(x, zero, sigma);
+
+        let error = sample(
+            graph,
+            SamplerConfig {
+                num_chains: 1,
+                num_draws: 1,
+                num_warmup: 1,
+                show_progress: false,
+                ..SamplerConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("initial log density is not finite"));
     }
 }

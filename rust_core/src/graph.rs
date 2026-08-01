@@ -578,6 +578,10 @@ impl Graph {
     }
 
     /// Return observation metadata for every supported observation term.
+    ///
+    /// A structure-only graph intentionally has no dataset payload. In that
+    /// case `n_obs` is zero; row count belongs to a `DataBinding` and becomes
+    /// available again on a hydrated graph returned by `with_binding()`.
     pub fn observation_heads(&self) -> Vec<ObservationHead> {
         self.nodes
             .iter()
@@ -595,7 +599,10 @@ impl Graph {
                         linpred: *linpred_vec,
                         aux: *aux,
                         obs_data_idx: *obs_data_idx,
-                        n_obs: self.obs_vectors[*obs_data_idx].len(),
+                        n_obs: self
+                            .obs_vectors
+                            .get(*obs_data_idx)
+                            .map_or(0, |values| values.len()),
                     })
                 } else {
                     None

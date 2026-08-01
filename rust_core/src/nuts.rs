@@ -224,14 +224,33 @@ pub fn run_chain_bound(
             }
 
             // End of window: update mass matrix, reset adaptation
-            let window_done = (iter + 1 >= next_window_end) || (iter + 1 >= terminal_start);
-            if window_done && iter >= init_buffer && iter < terminal_start && w_count > 3 {
+            let final_window = iter + 1 >= terminal_start;
+            let window_done = iter + 1 >= next_window_end;
+            // Recalibrating the metric and step size needs a meaningful
+            // terminal buffer. With very short warmup schedules, retain the
+            // preceding metric instead of installing a last-minute estimate
+            // that dual averaging has too few iterations to stabilize.
+            let enough_terminal_adaptation = !final_window || term_buffer >= first_window;
+            if window_done
+                && enough_terminal_adaptation
+                && iter >= init_buffer
+                && iter < terminal_start
+                && w_count > 3
+            {
                 mass = mass_acc.finalize();
 
-                // Keep the current step size — the dual averaging state
-                // already has a reasonable estimate and re-running
-                // find_initial_step_size causes a transient instability
-                // while dual averaging re-converges.
+                // A new metric changes both momentum scale and velocity, so
+                // the old metric's step size is no longer calibrated. Find a
+                // reasonable value under the new geometry before restarting
+                // dual averaging for this window.
+                step_size = find_initial_step_size(
+                    graph,
+                    &mut evaluator,
+                    &current.q,
+                    &mass,
+                    &mut scratch,
+                    rng,
+                );
                 da_mu = (10.0 * step_size).ln();
                 log_eps_bar = step_size.ln();
                 adapt_count = 0;
@@ -569,8 +588,11 @@ fn leapfrog(
 /// Endpoint-momentum U-turn check: the trajectory is turning if the momentum
 /// at either end would decrease the distance between the endpoints.
 ///
-///   (q_right - q_left) · (M⁻¹ p_left) < 0  OR
-///   (q_right - q_left) · (M⁻¹ p_right) < 0
+///   (q_right - q_left) · p_left < 0  OR
+///   (q_right - q_left) · p_right < 0
+///
+/// For a constant Euclidean metric, the transform to canonical whitened
+/// coordinates cancels from these dot products.
 fn check_uturn(
     left: &PhasePoint,
     right: &PhasePoint,

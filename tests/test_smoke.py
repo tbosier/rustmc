@@ -10,6 +10,7 @@ assert the module was loaded from site-packages rather than the repo --
 CI's wheel job sets this; local dev runs do not need to.
 """
 import os
+from importlib.metadata import version
 
 import numpy as np
 import pytest
@@ -40,6 +41,7 @@ EXPECTED_API = {
 
 def test_import(rustmc_module):
     assert rustmc_module is not None
+    assert rustmc_module.__version__ == version("rustmc")
 
 
 def test_site_packages_when_required(rustmc_module, assert_installed_from_site_packages):

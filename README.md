@@ -14,7 +14,7 @@ rustmc is built for production workloads where the same model structure is fit r
 
 It is a strong fit for repeated Bayesian regression, forecasting, and hierarchical workflows on CPU. It is not yet a full arbitrary-PPL replacement for PyMC or Stan.
 
-What sets rustmc apart today is a Rust-native sampling loop, a shared Rayon pool for chains and batches, and an in-memory compile-once/bind-many path. Use `ModelBuilder.compile()` for graph reuse; the legacy `batch_sample()` entry point still builds concrete data-owning graphs.
+What sets rustmc apart today is a Rust-native sampling loop, Rayon-parallel chain and batch execution, and an in-memory compile-once/bind-many path. Use `ModelBuilder.compile()` for graph reuse; the legacy `batch_sample()` entry point still builds concrete data-owning graphs.
 
 PyMC and Stan are excellent general-purpose tools, but they are optimized around a broader single-model workflow. rustmc is optimized for the repeated-model setting where Python orchestration, per-model overhead, and deployment friction start to dominate.
 
@@ -157,8 +157,8 @@ The builder supports scalar hierarchical priors today. For `normal_prior`, both 
 | Gamma | (0, inf) | log | Working |
 | Beta | (0, 1) | logit | Working |
 | Uniform | (a, b) | logit | Working |
-| Bernoulli | {0, 1} | None | Discrete, limited |
-| Poisson | {0, 1, 2, ...} | None | Discrete, limited |
+| Bernoulli | {0, 1} | None | Prior predictive only |
+| Poisson | {0, 1, 2, ...} | None | Prior predictive only |
 
 Constrained distributions are automatically sampled in unconstrained space via log/logit transforms with Jacobian corrections. Samples are back-transformed before being returned to the user.
 

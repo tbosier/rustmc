@@ -62,11 +62,12 @@ pub struct DataInputs {
 
 #[derive(Debug, Clone)]
 pub struct DataBinding {
-    pub vectors: Vec<Arc<[f64]>>,
-    pub observations: Vec<Arc<[f64]>>,
-    pub matrices: Vec<MatrixBinding>,
-    pub n_obs: usize,
-    pub id: String,
+    pub(crate) vectors: Vec<Arc<[f64]>>,
+    pub(crate) observations: Vec<Arc<[f64]>>,
+    pub(crate) matrices: Vec<MatrixBinding>,
+    schema: DataSchema,
+    n_obs: usize,
+    id: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +110,14 @@ pub enum BindError {
         index: usize,
         value: f64,
     },
+    InvalidObservation {
+        likelihood: String,
+        family: String,
+        index: usize,
+        value: f64,
+        requirement: &'static str,
+    },
+    SchemaMismatch,
 }
 
 impl Display for BindError {
@@ -169,6 +178,18 @@ impl Display for BindError {
                 "data key '{}' contains non-finite value {} at flat index {}",
                 key, value, index
             ),
+            Self::InvalidObservation {
+                likelihood,
+                family,
+                index,
+                value,
+                requirement,
+            } => write!(
+                f,
+                "{} likelihood '{}' requires {} observed values; found {} at index {}",
+                family, likelihood, requirement, value, index
+            ),
+            Self::SchemaMismatch => write!(f, "binding was created for a different data schema"),
         }
     }
 }
@@ -222,6 +243,7 @@ impl DataBinding {
             vectors,
             observations,
             matrices,
+            schema: graph.schema.clone(),
             n_obs,
             id: "0".to_string(),
         })
@@ -387,9 +409,128 @@ impl DataBinding {
             vectors,
             observations,
             matrices,
+            schema: schema.clone(),
             n_obs: n_obs.unwrap_or(1),
             id: id.into(),
         })
+    }
+
+    pub fn n_obs(&self) -> usize {
+        self.n_obs
+    }
+
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    pub fn set_id(&mut self, id: impl Into<String>) {
+        self.id = id.into();
+    }
+
+    /// Recheck the binding's structural identity and internal payload shapes
+    /// before it enters evaluator code. `DataBinding` fields are opaque so all
+    /// externally constructible values have already passed `bind()`.
+    pub fn validate_for(&self, graph: &crate::graph::Graph) -> Result<(), BindError> {
+        if self.schema != graph.schema {
+            return Err(BindError::SchemaMismatch);
+        }
+        for (index, values) in self.observations.iter().chain(&self.vectors).enumerate() {
+            if values.len() != self.n_obs {
+                return Err(BindError::LengthMismatch {
+                    key: format!("binding vector slot {index}"),
+                    len: values.len(),
+                    expected: self.n_obs,
+                    expected_from: "binding row count".into(),
+                });
+            }
+        }
+        for (index, matrix) in self.matrices.iter().enumerate() {
+            if matrix.n_rows != self.n_obs {
+                return Err(BindError::LengthMismatch {
+                    key: format!("binding matrix slot {index}"),
+                    len: matrix.n_rows,
+                    expected: self.n_obs,
+                    expected_from: "binding row count".into(),
+                });
+            }
+            if matrix.n_rows.checked_mul(matrix.n_cols) != Some(matrix.data.len()) {
+                return Err(BindError::RaggedMatrix {
+                    key: format!("binding matrix slot {index}"),
+                    n_rows: matrix.n_rows,
+                    n_cols: matrix.n_cols,
+                    values: matrix.data.len(),
+                });
+            }
+        }
+        for node in &graph.nodes {
+            let crate::graph::Op::ObsLogP {
+                family,
+                obs_data_idx,
+                ..
+            } = &node.op
+            else {
+                continue;
+            };
+            let values = self
+                .observations
+                .get(*obs_data_idx)
+                .ok_or(BindError::SchemaMismatch)?;
+            let (family_name, requirement, invalid): (&str, &'static str, fn(f64) -> bool) =
+                match family {
+                    crate::graph::ObsFamily::Normal => {
+                        ("Normal", "finite", |value| !value.is_finite())
+                    }
+                    crate::graph::ObsFamily::BernoulliLogit => {
+                        ("Bernoulli-logit", "binary (0 or 1)", |value| {
+                            !value.is_finite() || (value != 0.0 && value != 1.0)
+                        })
+                    }
+                    crate::graph::ObsFamily::PoissonLog => {
+                        ("Poisson-log", "non-negative integers", |value| {
+                            !value.is_finite() || value < 0.0 || value.fract() != 0.0
+                        })
+                    }
+                    crate::graph::ObsFamily::ExponentialLog => {
+                        ("Exponential", "non-negative", |value| {
+                            !value.is_finite() || value < 0.0
+                        })
+                    }
+                    crate::graph::ObsFamily::LogNormal => {
+                        ("LogNormal", "strictly positive", |value| {
+                            !value.is_finite() || value <= 0.0
+                        })
+                    }
+                    crate::graph::ObsFamily::NegativeBinomialLog => {
+                        ("NegativeBinomial", "non-negative integers", |value| {
+                            !value.is_finite() || value < 0.0 || value.fract() != 0.0
+                        })
+                    }
+                };
+            if let Some((index, value)) = values
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, value)| invalid(*value))
+            {
+                let likelihood = graph
+                    .schema
+                    .observations
+                    .get(*obs_data_idx)
+                    .and_then(|slot| match &slot.kind {
+                        SlotKind::Observation { likelihood } => Some(likelihood.clone()),
+                        SlotKind::Vector | SlotKind::Matrix { .. } => None,
+                    })
+                    .unwrap_or_else(|| family_name.to_string());
+                return Err(BindError::InvalidObservation {
+                    likelihood,
+                    family: family_name.to_string(),
+                    index,
+                    value,
+                    requirement,
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -555,19 +696,107 @@ mod tests {
         graph.normal_obs_logp(mu, one, obs);
         let structure = graph.structure_only();
 
-        let wrong = DataBinding {
-            vectors: Vec::new(),
-            observations: vec![Arc::from(vec![1.0])],
+        let foreign_schema = DataSchema {
+            observations: structure.schema.observations.clone(),
+            vectors: vec![DataSlot {
+                key: "foreign_x".into(),
+                kind: SlotKind::Vector,
+                dim: "obs".into(),
+            }],
             matrices: Vec::new(),
-            n_obs: 1,
-            id: "wrong".into(),
         };
+        let wrong = DataBinding::bind(
+            &foreign_schema,
+            DataInputs {
+                vectors: HashMap::from([
+                    ("foreign_x".into(), Arc::from(vec![1.0])),
+                    ("y".into(), Arc::from(vec![1.0])),
+                ]),
+                matrices: HashMap::new(),
+            },
+            "wrong",
+            true,
+            true,
+        )
+        .unwrap();
         let error = match Evaluator::try_with_binding(&structure, wrong) {
             Ok(_) => panic!("binding from another schema was accepted"),
             Err(error) => error,
         };
-        assert!(error
-            .to_string()
-            .contains("does not provide every data slot"));
+        assert!(error.to_string().contains("different data schema"));
+    }
+
+    #[test]
+    fn evaluator_rejects_rebound_observations_outside_likelihood_domain() {
+        let mut graph = Graph::new();
+        let eta = graph.add_param("eta");
+        let eta_vec = graph.scalar_broadcast(eta);
+        let obs = graph.add_named_obs_data("y", "conversion", vec![1.0]);
+        graph.obs_logp_bernoulli_logit(eta_vec, obs);
+        let structure = graph.structure_only();
+        let binding = DataBinding::bind(
+            &structure.schema,
+            DataInputs {
+                vectors: HashMap::from([("y".into(), Arc::from(vec![0.5]))]),
+                matrices: HashMap::new(),
+            },
+            "invalid",
+            true,
+            true,
+        )
+        .unwrap();
+
+        let error = match Evaluator::try_with_binding(&structure, binding) {
+            Ok(_) => panic!("invalid Bernoulli observations were accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("requires binary"));
+        assert!(error.to_string().contains("conversion"));
+    }
+
+    #[test]
+    fn rebound_observation_boundaries_use_exact_support() {
+        let mut lognormal = Graph::new();
+        let mu = lognormal.add_param("mu");
+        let mu_vec = lognormal.scalar_broadcast(mu);
+        let sigma = lognormal.add_constant(1.0);
+        let obs = lognormal.add_named_obs_data("y", "duration", vec![1.0]);
+        lognormal.obs_logp_lognormal(mu_vec, sigma, obs);
+        let structure = lognormal.structure_only();
+        let tiny_positive = DataBinding::bind(
+            &structure.schema,
+            DataInputs {
+                vectors: HashMap::from([("y".into(), Arc::from(vec![1e-12]))]),
+                matrices: HashMap::new(),
+            },
+            "tiny-positive",
+            true,
+            true,
+        )
+        .unwrap();
+        assert!(Evaluator::try_with_binding(&structure, tiny_positive).is_ok());
+
+        let mut exponential = Graph::new();
+        let eta = exponential.add_param("eta");
+        let eta_vec = exponential.scalar_broadcast(eta);
+        let obs = exponential.add_named_obs_data("y", "waiting_time", vec![1.0]);
+        exponential.obs_logp_exponential_log(eta_vec, obs);
+        let structure = exponential.structure_only();
+        let tiny_negative = DataBinding::bind(
+            &structure.schema,
+            DataInputs {
+                vectors: HashMap::from([("y".into(), Arc::from(vec![-1e-12]))]),
+                matrices: HashMap::new(),
+            },
+            "tiny-negative",
+            true,
+            true,
+        )
+        .unwrap();
+        let error = match Evaluator::try_with_binding(&structure, tiny_negative) {
+            Ok(_) => panic!("negative Exponential observation was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("requires non-negative"));
     }
 }

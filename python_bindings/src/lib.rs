@@ -2,7 +2,7 @@ use ndarray::{Array2, Array3};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use numpy::{PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::create_exception;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::seq::SliceRandom;
@@ -132,6 +132,13 @@ fn core_binding_from_maps(
         .map_err(|e| PyValueError::new_err(e.to_string()))
 }
 
+fn validate_core_binding(graph: &Graph, binding: CoreDataBinding) -> PyResult<CoreDataBinding> {
+    binding
+        .validate_for(graph)
+        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+    Ok(binding)
+}
+
 fn data_inputs_from_maps(data_1d: &Data1d, data_2d: &Data2d) -> DataInputs {
     DataInputs {
         vectors: data_1d
@@ -169,8 +176,8 @@ impl PyCompiledModel {
                 ));
             }
             let mut binding = bound.binding.clone();
-            binding.id = id;
-            return Ok(binding);
+            binding.set_id(id);
+            return validate_core_binding(&self.structure, binding);
         }
         let dict = value.downcast::<PyDict>().map_err(|_| {
             PyValueError::new_err("data must be a dict or BoundModel from this compiled model")
@@ -194,7 +201,10 @@ impl PyCompiledModel {
             }
         }
         merge_data_overrides(&mut one_d, &mut two_d, extra_1d, extra_2d);
-        core_binding_from_maps(&self.structure.schema, &one_d, &two_d, id, true, true)
+        validate_core_binding(
+            &self.structure,
+            core_binding_from_maps(&self.structure.schema, &one_d, &two_d, id, true, true)?,
+        )
     }
 }
 
@@ -202,12 +212,12 @@ impl PyCompiledModel {
 impl PyBoundModel {
     #[getter]
     fn id(&self) -> &str {
-        &self.binding.id
+        self.binding.id()
     }
 
     #[getter]
     fn n_obs(&self) -> usize {
-        self.binding.n_obs
+        self.binding.n_obs()
     }
 
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -717,6 +727,33 @@ fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec
     validate_param_references(&declared, &refs).map_err(param_error)
 }
 
+/// HMC and NUTS evolve a continuous Euclidean state.  Discrete latent
+/// parameters therefore need marginalisation or a discrete transition kernel;
+/// treating them as continuous values produces invalid posterior draws.
+/// Keep these priors available for prior-predictive simulation, but reject
+/// every posterior-sampling entry point until such a kernel exists.
+fn reject_discrete_priors_for_gradient_sampling(priors: &[PriorSpec]) -> PyResult<()> {
+    let discrete: Vec<&str> = priors
+        .iter()
+        .filter_map(|prior| match prior {
+            PriorSpec::Bernoulli { name, .. } | PriorSpec::Poisson { name, .. } => {
+                Some(name.as_str())
+            }
+            _ => None,
+        })
+        .collect();
+    if discrete.is_empty() {
+        return Ok(());
+    }
+    Err(PyValueError::new_err(format!(
+        "Discrete prior parameter(s) [{}] cannot be sampled with HMC/NUTS. \
+         Bernoulli and Poisson priors are currently supported only by \
+         sample_prior_predictive(); posterior inference requires continuous \
+         parameters or explicit marginalisation.",
+        discrete.join(", ")
+    )))
+}
+
 impl ModelBuilder {
     /// A reference to one of this model's parameters, tagged with the model id.
     fn param_ref(&self, name: &str) -> ParamRef {
@@ -1211,6 +1248,7 @@ impl ModelBuilder {
     /// are used only to establish structural matrix widths and as bind defaults.
     fn compile(&self) -> PyResult<PyCompiledModel> {
         let spec = self.build()?;
+        reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
         let (template_1d, template_2d) = template_data_for_spec(&spec)?;
         validate_bound_vector_lengths(&template_1d, &template_2d)?;
         let compiled = compile_python_model(&spec, &template_1d, &template_2d)?;
@@ -1406,12 +1444,11 @@ fn validate_expr_keys(
 }
 
 fn validate_binary_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    const TOL: f64 = 1e-8;
     if let Some((idx, value)) = obs
         .iter()
         .copied()
         .enumerate()
-        .find(|(_, v)| (*v - 0.0).abs() > TOL && (*v - 1.0).abs() > TOL)
+        .find(|(_, v)| !v.is_finite() || (*v != 0.0 && *v != 1.0))
     {
         return Err(PyValueError::new_err(format!(
             "Bernoulli-logit likelihood '{}' requires binary observed values; found {} at index {}",
@@ -1422,12 +1459,11 @@ fn validate_binary_observations(obs: &[f64], name: &str) -> PyResult<()> {
 }
 
 fn validate_positive_observations(obs: &[f64], name: &str, strict: bool) -> PyResult<()> {
-    const TOL: f64 = 1e-8;
-    if let Some((idx, value)) =
-        obs.iter()
-            .copied()
-            .enumerate()
-            .find(|(_, v)| if strict { *v <= TOL } else { *v < -TOL })
+    if let Some((idx, value)) = obs
+        .iter()
+        .copied()
+        .enumerate()
+        .find(|(_, v)| !v.is_finite() || if strict { *v <= 0.0 } else { *v < 0.0 })
     {
         let relation = if strict {
             "strictly positive"
@@ -1447,12 +1483,11 @@ fn validate_positive_observations(obs: &[f64], name: &str, strict: bool) -> PyRe
 }
 
 fn validate_integer_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    const TOL: f64 = 1e-8;
     if let Some((idx, value)) = obs
         .iter()
         .copied()
         .enumerate()
-        .find(|(_, v)| *v < -TOL || (*v - v.round()).abs() > TOL)
+        .find(|(_, v)| !v.is_finite() || *v < 0.0 || v.fract() != 0.0)
     {
         return Err(PyValueError::new_err(format!(
             "NegativeBinomial likelihood '{}' requires non-negative integer observed values; found {} at index {}",
@@ -1463,12 +1498,11 @@ fn validate_integer_observations(obs: &[f64], name: &str) -> PyResult<()> {
 }
 
 fn validate_count_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    const TOL: f64 = 1e-8;
     if let Some((idx, value)) = obs
         .iter()
         .copied()
         .enumerate()
-        .find(|(_, v)| *v < -TOL || (*v - v.round()).abs() > TOL)
+        .find(|(_, v)| !v.is_finite() || *v < 0.0 || v.fract() != 0.0)
     {
         return Err(PyValueError::new_err(format!(
             "Poisson-log likelihood '{}' requires non-negative integer observed values; found {} at index {}",
@@ -2757,6 +2791,7 @@ impl FitResult {
     /// Returns an `arviz.InferenceData` with:
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
     ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
+    ///   - `observed_data`         — the fitted response vector for each likelihood
     ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
     ///
     /// Example
@@ -2775,10 +2810,10 @@ impl FitResult {
         ppc_seed: u64,
         include_log_likelihood: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
-        // Helpful error if ArviZ is not installed
-        let az = py.import("arviz").map_err(|_| {
-            PyValueError::new_err("ArviZ is not installed. Install it with: pip install arviz")
-        })?;
+        // Preserve ArviZ's actual import failure. This distinguishes a missing
+        // optional package from a broken transitive dependency or import-time
+        // runtime error, all of which previously looked "not installed".
+        let az = py.import("arviz")?;
 
         let n_chains = self.display_result.samples.len();
         let n_draws = self.display_result.samples.first().map_or(0, |c| c.len());
@@ -2817,6 +2852,31 @@ impl FitResult {
         let kwargs = PyDict::new(py);
         kwargs.set_item("posterior", posterior)?;
         kwargs.set_item("sample_stats", sample_stats)?;
+
+        if !self.likelihood_names.is_empty() {
+            let heads = self.graph.observation_heads();
+            let observed_data = PyDict::new(py);
+            for (li, name) in self.likelihood_names.iter().enumerate() {
+                let head = heads.get(li).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "observation metadata for likelihood '{}' is unavailable",
+                        name
+                    ))
+                })?;
+                let observed = self
+                    .graph
+                    .obs_vectors
+                    .get(head.obs_data_idx)
+                    .ok_or_else(|| {
+                        PyValueError::new_err(format!(
+                            "observed payload for likelihood '{}' is unavailable",
+                            name
+                        ))
+                    })?;
+                observed_data.set_item(name, PyArray1::from_vec(py, observed.clone()))?;
+            }
+            kwargs.set_item("observed_data", observed_data)?;
+        }
 
         if include_log_likelihood && !self.likelihood_names.is_empty() {
             let log_likelihood = self.log_likelihood(py)?;
@@ -2892,6 +2952,7 @@ fn sample(
         max_tree_depth,
         num_leapfrog_steps,
     )?;
+    reject_discrete_priors_for_gradient_sampling(&model_spec.priors)?;
     // Start from data bound at build time, then let call-site data override/extend.
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
@@ -2987,16 +3048,17 @@ impl PyCompiledModel {
         let mut two_d = self.default_data_2d.clone();
         let (extra_1d, extra_2d) = parse_data_dict(data)?;
         merge_data_overrides(&mut one_d, &mut two_d, extra_1d, extra_2d);
+        let binding = core_binding_from_maps(
+            &self.structure.schema,
+            &one_d,
+            &two_d,
+            id.to_string(),
+            strict,
+            check_finite,
+        )?;
         Ok(PyBoundModel {
             structure: Arc::clone(&self.structure),
-            binding: core_binding_from_maps(
-                &self.structure.schema,
-                &one_d,
-                &two_d,
-                id.to_string(),
-                strict,
-                check_finite,
-            )?,
+            binding: validate_core_binding(&self.structure, binding)?,
         })
     }
 
@@ -3112,8 +3174,8 @@ impl PyCompiledModel {
                         ));
                     }
                     let mut binding = bound.binding.clone();
-                    binding.id = id.clone();
-                    return Ok(binding);
+                    binding.set_id(id.clone());
+                    return validate_core_binding(&self.structure, binding);
                 }
                 let dict = data.downcast::<PyDict>().map_err(|_| {
                     PyValueError::new_err("datasets must contain dicts or BoundModel objects")
@@ -3145,8 +3207,10 @@ impl PyCompiledModel {
                         },
                     );
                 }
-                CoreDataBinding::bind(&self.structure.schema, inputs, id.clone(), true, true)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))
+                let binding =
+                    CoreDataBinding::bind(&self.structure.schema, inputs, id.clone(), true, true)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
+                validate_core_binding(&self.structure, binding)
             })
             .collect::<PyResult<Vec<_>>>()?;
         let config = sampler::BatchSampleConfig {
@@ -3325,12 +3389,17 @@ impl PyBatchFit {
         self.results.len()
     }
 
-    fn __getitem__(&self, py: Python<'_>, index: usize) -> PyResult<Py<BatchResult>> {
+    fn __getitem__(&self, py: Python<'_>, index: isize) -> PyResult<Py<BatchResult>> {
+        let len = self.results.len() as isize;
+        let normalized = if index < 0 { len + index } else { index };
+        if normalized < 0 || normalized >= len {
+            return Err(PyIndexError::new_err("batch index out of range"));
+        }
         let result = self
             .results
-            .get(index)
+            .get(normalized as usize)
             .cloned()
-            .ok_or_else(|| PyValueError::new_err("batch index out of range"))?;
+            .ok_or_else(|| PyIndexError::new_err("batch index out of range"))?;
         Py::new(py, result)
     }
 
@@ -3387,6 +3456,7 @@ fn batch_sample(
 
     for (spec_bound, data_bound) in &models {
         let spec = spec_bound.borrow();
+        reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
 
         // Bound data from ModelSpec is the base; call-site dict overrides/extends.
         let mut data_map: HashMap<String, Vec<f64>> = spec.bound_data_1d.clone();
@@ -3865,6 +3935,8 @@ fn state_covariances_array<'py>(
 }
 
 /// A time-homogeneous linear Gaussian state-space model with scalar observations.
+/// Initial moments describe the state immediately before the first observation;
+/// filtering performs one prediction before updating on observations[0].
 #[pyclass(name = "LinearGaussianStateSpace")]
 #[derive(Clone)]
 struct PyLinearGaussianStateSpace {
@@ -4160,6 +4232,7 @@ impl PyForecastResult {
 
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<ModelBuilder>()?;
     m.add_class::<ModelSpec>()?;
     m.add_class::<ParamRef>()?;

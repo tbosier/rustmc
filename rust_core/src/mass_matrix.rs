@@ -22,14 +22,15 @@ struct MassBlock {
 #[derive(Debug, Clone)]
 enum BlockKind {
     Scalar {
+        /// Adapted position variance, equal to the inverse mass metric.
         variance: f64,
-        inv_variance: f64,
     },
     Diagonal {
+        /// Adapted position variances, equal to the diagonal inverse mass metric.
         variances: Vec<f64>,
-        inv_variances: Vec<f64>,
     },
     Dense {
+        /// Cholesky factor of the adapted position covariance (inverse mass metric).
         chol: Vec<f64>,
     },
 }
@@ -184,10 +185,7 @@ impl MassMatrixAccumulator {
 impl MassBlock {
     fn identity(start: usize, len: usize) -> Self {
         let kind = if len == 1 {
-            BlockKind::Scalar {
-                variance: 1.0,
-                inv_variance: 1.0,
-            }
+            BlockKind::Scalar { variance: 1.0 }
         } else if len <= DENSE_BLOCK_MAX_DIM {
             BlockKind::Dense {
                 chol: identity_lower(len),
@@ -195,7 +193,6 @@ impl MassBlock {
         } else {
             BlockKind::Diagonal {
                 variances: vec![1.0; len],
-                inv_variances: vec![1.0; len],
             }
         };
         Self { start, len, kind }
@@ -211,12 +208,14 @@ impl MassBlock {
         match &self.kind {
             BlockKind::Scalar { variance, .. } => {
                 let z: f64 = StandardNormal.sample(rng);
-                momentum[self.start] = z * variance.sqrt();
+                // The adapted position covariance is the inverse mass metric,
+                // so momentum has variance M = variance^-1.
+                momentum[self.start] = z / variance.sqrt();
             }
             BlockKind::Diagonal { variances, .. } => {
                 for (offset, &variance) in variances.iter().enumerate() {
                     let z: f64 = StandardNormal.sample(rng);
-                    momentum[self.start + offset] = z * variance.sqrt();
+                    momentum[self.start + offset] = z / variance.sqrt();
                 }
             }
             BlockKind::Dense { chol } => {
@@ -224,7 +223,10 @@ impl MassBlock {
                 for value in scratch_block.iter_mut() {
                     *value = StandardNormal.sample(rng);
                 }
-                dense_matvec_lower(chol, scratch_block, &mut momentum[range]);
+                // If Sigma = L L^T is the adapted position covariance, then
+                // p = L^-T z has covariance Sigma^-1, the momentum mass M.
+                solve_lower_transpose_in_place(chol, scratch_block);
+                momentum[range].copy_from_slice(scratch_block);
             }
         }
     }
@@ -232,19 +234,19 @@ impl MassBlock {
     fn velocity_into(&self, momentum: &[f64], out: &mut [f64], scratch: &mut [f64]) {
         let range = self.start..self.start + self.len;
         match &self.kind {
-            BlockKind::Scalar { inv_variance, .. } => {
-                out[self.start] = momentum[self.start] * inv_variance;
+            BlockKind::Scalar { variance } => {
+                out[self.start] = momentum[self.start] * variance;
             }
-            BlockKind::Diagonal { inv_variances, .. } => {
-                for (offset, &inv_variance) in inv_variances.iter().enumerate() {
-                    out[self.start + offset] = momentum[self.start + offset] * inv_variance;
+            BlockKind::Diagonal { variances } => {
+                for (offset, &variance) in variances.iter().enumerate() {
+                    out[self.start + offset] = momentum[self.start + offset] * variance;
                 }
             }
             BlockKind::Dense { chol } => {
                 let scratch_block = &mut scratch[range.clone()];
-                scratch_block.copy_from_slice(&momentum[range.clone()]);
-                solve_cholesky_in_place(chol, scratch_block);
-                out[range].copy_from_slice(scratch_block);
+                // M^-1 p = Sigma p = L (L^T p).
+                dense_matvec_lower_transpose(chol, &momentum[range.clone()], scratch_block);
+                dense_matvec_lower(chol, scratch_block, &mut out[range]);
             }
         }
     }
@@ -252,26 +254,22 @@ impl MassBlock {
     fn kinetic_energy(&self, momentum: &[f64], scratch: &mut [f64]) -> f64 {
         let range = self.start..self.start + self.len;
         match &self.kind {
-            BlockKind::Scalar { inv_variance, .. } => {
-                0.5 * momentum[self.start] * momentum[self.start] * inv_variance
+            BlockKind::Scalar { variance } => {
+                0.5 * momentum[self.start] * momentum[self.start] * variance
             }
-            BlockKind::Diagonal { inv_variances, .. } => {
+            BlockKind::Diagonal { variances } => {
                 let mut ke = 0.0f64;
-                for (offset, &inv_variance) in inv_variances.iter().enumerate() {
+                for (offset, &variance) in variances.iter().enumerate() {
                     let p = momentum[self.start + offset];
-                    ke += 0.5 * p * p * inv_variance;
+                    ke += 0.5 * p * p * variance;
                 }
                 ke
             }
             BlockKind::Dense { chol } => {
                 let scratch_block = &mut scratch[range.clone()];
-                scratch_block.copy_from_slice(&momentum[range.clone()]);
-                solve_cholesky_in_place(chol, scratch_block);
-                let mut ke = 0.0f64;
-                for (p, v) in momentum[range].iter().zip(scratch_block.iter()) {
-                    ke += 0.5 * p * v;
-                }
-                ke
+                // p^T Sigma p = ||L^T p||^2.
+                dense_matvec_lower_transpose(chol, &momentum[range], scratch_block);
+                0.5 * scratch_block.iter().map(|value| value * value).sum::<f64>()
             }
         }
     }
@@ -282,47 +280,21 @@ impl MassBlock {
         left_p: &[f64],
         right_q: &[f64],
         right_p: &[f64],
-        scratch: &mut [f64],
+        _scratch: &mut [f64],
     ) -> (f64, f64) {
-        let range = self.start..self.start + self.len;
-        match &self.kind {
-            BlockKind::Scalar { inv_variance, .. } => {
-                let dq = right_q[self.start] - left_q[self.start];
-                let v_left = left_p[self.start] * inv_variance;
-                let v_right = right_p[self.start] * inv_variance;
-                (dq * v_left, dq * v_right)
-            }
-            BlockKind::Diagonal { inv_variances, .. } => {
-                let mut dot_left = 0.0f64;
-                let mut dot_right = 0.0f64;
-                for (offset, &inv_variance) in inv_variances.iter().enumerate() {
-                    let delta = right_q[self.start + offset] - left_q[self.start + offset];
-                    dot_left += delta * (left_p[self.start + offset] * inv_variance);
-                    dot_right += delta * (right_p[self.start + offset] * inv_variance);
-                }
-                (dot_left, dot_right)
-            }
-            BlockKind::Dense { chol } => {
-                let scratch_block = &mut scratch[range.clone()];
-                scratch_block.copy_from_slice(&left_p[range.clone()]);
-                solve_cholesky_in_place(chol, scratch_block);
-                let mut dot_left = 0.0f64;
-                for (offset, &v) in scratch_block.iter().enumerate() {
-                    let dq = right_q[self.start + offset] - left_q[self.start + offset];
-                    dot_left += dq * v;
-                }
-
-                scratch_block.copy_from_slice(&right_p[range.clone()]);
-                solve_cholesky_in_place(chol, scratch_block);
-                let mut dot_right = 0.0f64;
-                for (offset, &v) in scratch_block.iter().enumerate() {
-                    let dq = right_q[self.start + offset] - left_q[self.start + offset];
-                    dot_right += dq * v;
-                }
-
-                (dot_left, dot_right)
-            }
+        // In whitened canonical coordinates z=L^-1 q and p_z=L^T p,
+        // delta_z^T p_z = delta_q^T p: the constant metric cancels.
+        // Using velocity here distorts the turning direction and can cause
+        // dense-metric trajectories to run to maximum tree depth.
+        let mut dot_left = 0.0f64;
+        let mut dot_right = 0.0f64;
+        for offset in 0..self.len {
+            let index = self.start + offset;
+            let delta = right_q[index] - left_q[index];
+            dot_left += delta * left_p[index];
+            dot_right += delta * right_p[index];
         }
+        (dot_left, dot_right)
     }
 }
 
@@ -455,10 +427,7 @@ impl AccumulatorBlock {
                 MassBlock {
                     start: *start,
                     len: 1,
-                    kind: BlockKind::Scalar {
-                        variance,
-                        inv_variance: 1.0 / variance,
-                    },
+                    kind: BlockKind::Scalar { variance },
                 }
             }
             Self::Diagonal {
@@ -466,7 +435,6 @@ impl AccumulatorBlock {
             } => {
                 let len = m2.len();
                 let mut variances = vec![1.0; len];
-                let mut inv_variances = vec![1.0; len];
                 for i in 0..len {
                     let variance = regularize_variance(
                         if *count > 1 {
@@ -477,15 +445,11 @@ impl AccumulatorBlock {
                         *count,
                     );
                     variances[i] = variance;
-                    inv_variances[i] = 1.0 / variance;
                 }
                 MassBlock {
                     start: *start,
                     len,
-                    kind: BlockKind::Diagonal {
-                        variances,
-                        inv_variances,
-                    },
+                    kind: BlockKind::Diagonal { variances },
                 }
             }
             Self::Dense {
@@ -565,15 +529,19 @@ fn dense_matvec_lower(lower: &[f64], x: &[f64], out: &mut [f64]) {
     }
 }
 
-fn solve_cholesky_in_place(lower: &[f64], rhs: &mut [f64]) {
-    let dim = rhs.len();
+fn dense_matvec_lower_transpose(lower: &[f64], x: &[f64], out: &mut [f64]) {
+    let dim = x.len();
     for i in 0..dim {
-        let mut sum = rhs[i];
-        for j in 0..i {
-            sum -= lower[i * dim + j] * rhs[j];
+        let mut sum = 0.0f64;
+        for j in i..dim {
+            sum += lower[j * dim + i] * x[j];
         }
-        rhs[i] = sum / lower[i * dim + i];
+        out[i] = sum;
     }
+}
+
+fn solve_lower_transpose_in_place(lower: &[f64], rhs: &mut [f64]) {
+    let dim = rhs.len();
     for i in (0..dim).rev() {
         let mut sum = rhs[i];
         for j in i + 1..dim {
@@ -624,4 +592,129 @@ fn cholesky_lower_in_place(a: &mut [f64], dim: usize) -> bool {
         }
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+
+    fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "expected {expected} +/- {tolerance}, got {actual}"
+        );
+    }
+
+    #[test]
+    fn scalar_block_uses_position_variance_as_inverse_mass_metric() {
+        let block = MassBlock {
+            start: 0,
+            len: 1,
+            kind: BlockKind::Scalar { variance: 4.0 },
+        };
+        let mut scratch = [0.0];
+        let momentum = [1.5];
+        let mut velocity = [0.0];
+
+        block.velocity_into(&momentum, &mut velocity, &mut scratch);
+        assert_eq!(velocity, [6.0]);
+        assert_eq!(block.kinetic_energy(&momentum, &mut scratch), 4.5);
+
+        let (left, right) = block.uturn_terms(&[0.0], &momentum, &[2.0], &[-0.5], &mut scratch);
+        assert_eq!((left, right), (3.0, -1.0));
+
+        let mut rng = ChaCha8Rng::seed_from_u64(11);
+        let mut sampled = [0.0];
+        let mut sum_sq = 0.0;
+        let draws = 20_000;
+        for _ in 0..draws {
+            block.sample_momentum_into(&mut rng, &mut sampled, &mut scratch);
+            sum_sq += sampled[0] * sampled[0];
+        }
+        assert_close(sum_sq / draws as f64, 0.25, 0.015);
+    }
+
+    #[test]
+    fn diagonal_block_operations_share_the_same_inverse_mass_metric() {
+        let block = MassBlock {
+            start: 0,
+            len: 2,
+            kind: BlockKind::Diagonal {
+                variances: vec![4.0, 0.25],
+            },
+        };
+        let mut scratch = [0.0; 2];
+        let momentum = [1.0, -2.0];
+        let mut velocity = [0.0; 2];
+
+        block.velocity_into(&momentum, &mut velocity, &mut scratch);
+        assert_eq!(velocity, [4.0, -0.5]);
+        assert_eq!(block.kinetic_energy(&momentum, &mut scratch), 2.5);
+
+        let left_q = [1.0, -1.0];
+        let right_q = [3.0, 2.0];
+        let right_p = [-0.5, 4.0];
+        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p, &mut scratch);
+        let delta = [right_q[0] - left_q[0], right_q[1] - left_q[1]];
+        assert_eq!(left, delta[0] * momentum[0] + delta[1] * momentum[1]);
+        assert_eq!(right, delta[0] * right_p[0] + delta[1] * right_p[1]);
+
+        let mut rng = ChaCha8Rng::seed_from_u64(12);
+        let mut sampled = [0.0; 2];
+        let mut sum_sq = [0.0; 2];
+        let draws = 20_000;
+        for _ in 0..draws {
+            block.sample_momentum_into(&mut rng, &mut sampled, &mut scratch);
+            for i in 0..2 {
+                sum_sq[i] += sampled[i] * sampled[i];
+            }
+        }
+        assert_close(sum_sq[0] / draws as f64, 0.25, 0.015);
+        assert_close(sum_sq[1] / draws as f64, 4.0, 0.15);
+    }
+
+    #[test]
+    fn dense_block_operations_share_the_same_inverse_mass_metric() {
+        // L L^T = [[4, 1], [1, 1]], whose inverse is
+        // [[1/3, -1/3], [-1/3, 4/3]].
+        let block = MassBlock {
+            start: 0,
+            len: 2,
+            kind: BlockKind::Dense {
+                chol: vec![2.0, 0.0, 0.5, 0.75_f64.sqrt()],
+            },
+        };
+        let mut scratch = [0.0; 2];
+        let momentum = [1.0, -2.0];
+        let mut velocity = [0.0; 2];
+
+        block.velocity_into(&momentum, &mut velocity, &mut scratch);
+        assert_close(velocity[0], 2.0, 1e-12);
+        assert_close(velocity[1], -1.0, 1e-12);
+        assert_close(block.kinetic_energy(&momentum, &mut scratch), 2.0, 1e-12);
+
+        let left_q = [1.0, -1.0];
+        let right_q = [3.0, 2.0];
+        let right_p = [-0.5, 4.0];
+        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p, &mut scratch);
+        let delta = [right_q[0] - left_q[0], right_q[1] - left_q[1]];
+        assert_close(left, delta[0] * momentum[0] + delta[1] * momentum[1], 1e-12);
+        assert_close(right, delta[0] * right_p[0] + delta[1] * right_p[1], 1e-12);
+
+        let mut rng = ChaCha8Rng::seed_from_u64(13);
+        let mut sampled = [0.0; 2];
+        let mut second_moment = [0.0; 3];
+        let draws = 40_000;
+        for _ in 0..draws {
+            block.sample_momentum_into(&mut rng, &mut sampled, &mut scratch);
+            second_moment[0] += sampled[0] * sampled[0];
+            second_moment[1] += sampled[0] * sampled[1];
+            second_moment[2] += sampled[1] * sampled[1];
+        }
+        assert_close(second_moment[0] / draws as f64, 1.0 / 3.0, 0.02);
+        assert_close(second_moment[1] / draws as f64, -1.0 / 3.0, 0.02);
+        assert_close(second_moment[2] / draws as f64, 4.0 / 3.0, 0.04);
+    }
 }

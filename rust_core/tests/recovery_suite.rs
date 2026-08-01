@@ -11,7 +11,7 @@ use rustmc_core::sampler::{sample as run_sample, SamplerConfig, SamplerType};
 const CHAIN_COUNT: usize = 4;
 const DEFAULT_DRAWS: usize = 600;
 const DEFAULT_WARMUP: usize = 600;
-const FUNNEL_DRAWS: usize = 250;
+const FUNNEL_DRAWS: usize = 400;
 const FUNNEL_WARMUP: usize = 1200;
 
 fn sample_graph(
@@ -314,7 +314,7 @@ fn ridge_regression_recovers_high_dimensional_coefficients() {
     let sigma = graph.add_constant(sigma_true);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 106, 100, 100, 8);
+    let result = sample_graph(graph, 106, 200, 200, 8);
     let report = result.diagnostics();
     assert_health(&report, 1.08, 40.0, 20);
     assert_vector_rmse(&report, "beta", &beta_true, 0.20);

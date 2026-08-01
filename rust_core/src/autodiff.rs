@@ -46,6 +46,9 @@ pub struct Evaluator {
 }
 
 fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
+    binding
+        .validate_for(graph)
+        .map_err(|error| GraphShapeError::new(error.to_string()))?;
     let mut required_vectors = 0usize;
     let mut required_observations = 0usize;
     let mut required_matrices = 0usize;
@@ -82,7 +85,7 @@ impl Evaluator {
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
-        let vec_len = binding.n_obs;
+        let vec_len = binding.n_obs();
 
         validate_binding_slots(graph, &binding)?;
 
@@ -140,7 +143,7 @@ impl Evaluator {
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
         validate_binding_slots(graph, &binding)?;
-        self.vec_len = binding.n_obs;
+        self.vec_len = binding.n_obs();
         let mut slot = 0usize;
         for (kind, node) in self.node_kind.iter_mut().zip(&graph.nodes) {
             if matches!(
@@ -2130,6 +2133,10 @@ mod tests {
         assert_eq!(heads.len(), 1);
         assert_eq!(heads[0].family, ObsFamily::BernoulliLogit);
         assert_eq!(heads[0].n_obs, 4);
+
+        let structure_heads = g.structure_only().observation_heads();
+        assert_eq!(structure_heads.len(), 1);
+        assert_eq!(structure_heads[0].n_obs, 0);
 
         finite_diff_check(&g, &[0.3], 1e-4);
     }

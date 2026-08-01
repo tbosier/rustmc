@@ -3,6 +3,10 @@
 //! The observation is scalar while the latent state may have any positive
 //! dimension.  Matrices are stored in row-major order and validated when the
 //! model is constructed.
+//!
+//! The supplied initial mean and covariance describe the state immediately
+//! before the first observation (`x[-1]`). Filtering first applies the
+//! transition and process covariance to obtain the prediction for `x[0]`.
 
 use std::error::Error;
 use std::fmt;

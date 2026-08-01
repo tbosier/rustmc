@@ -141,6 +141,48 @@ def test_invalid_prior_domains_raise_value_error(
         getattr(builder, method)(*args)
 
 
+@pytest.mark.parametrize(
+    ("method", "args"),
+    [
+        ("bernoulli_prior", ("z", 0.4)),
+        ("poisson_prior", ("z", 2.0)),
+    ],
+)
+def test_discrete_priors_are_prior_predictive_only(
+    rustmc_module, method, args
+):
+    builder = rustmc_module.ModelBuilder()
+    getattr(builder, method)(*args)
+    spec = builder.build()
+
+    # Discrete simulation remains a supported and useful operation.
+    draws = rustmc_module.sample_prior_predictive(
+        spec, n_samples=25, seed=7
+    )["z"]
+    assert len(draws) == 25
+    assert np.all(np.equal(draws, np.floor(draws)))
+
+    message = "cannot be sampled with HMC/NUTS"
+    with pytest.raises(ValueError, match=message):
+        builder.compile()
+    with pytest.raises(ValueError, match=message):
+        rustmc_module.sample(
+            spec,
+            chains=1,
+            draws=1,
+            warmup=1,
+            show_progress=False,
+        )
+    with pytest.raises(ValueError, match=message):
+        rustmc_module.batch_sample(
+            [(spec, {})],
+            chains=1,
+            draws=1,
+            warmup=1,
+            show_progress=False,
+        )
+
+
 def test_invalid_constant_likelihood_scale_is_rejected(rustmc_module):
     builder = rustmc_module.ModelBuilder()
     beta = builder.normal_prior("beta", 0.0, 1.0)
