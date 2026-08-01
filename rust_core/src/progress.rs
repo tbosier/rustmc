@@ -116,11 +116,11 @@ fn render_tty(state: &ProgressState, err: &mut impl Write) {
     let elapsed = state.start_time.elapsed().as_secs_f64();
     let is_done = state.done.load(Ordering::Relaxed);
 
-    let pct = if total > 0 {
-        (completed * 100 / total).min(100)
-    } else {
-        0
-    };
+    let pct = completed
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(100);
     let speed = if elapsed > 0.1 {
         completed as f64 / elapsed
     } else {
@@ -134,11 +134,10 @@ fn render_tty(state: &ProgressState, err: &mut impl Write) {
 
     // Bar: 20 chars wide — keeps total line ≤ 79 chars for standard terminals.
     let bar_width = 20usize;
-    let filled = if total > 0 {
-        (bar_width * completed).min(bar_width * total) / total
-    } else {
-        0
-    };
+    let filled = bar_width
+        .saturating_mul(completed.min(total))
+        .checked_div(total)
+        .unwrap_or(0);
     let bar = format!("{}{}", "━".repeat(filled), "╌".repeat(bar_width - filled));
 
     if is_done {
@@ -178,11 +177,11 @@ fn render_plain(state: &ProgressState, err: &mut impl Write) {
     let elapsed = state.start_time.elapsed().as_secs_f64();
     let is_done = state.done.load(Ordering::Relaxed);
 
-    let pct = if total > 0 {
-        (completed * 100 / total).min(100)
-    } else {
-        0
-    };
+    let pct = completed
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(0)
+        .min(100);
     let speed = if elapsed > 0.1 {
         completed as f64 / elapsed
     } else {
@@ -235,11 +234,10 @@ pub fn spawn_progress_thread(state: Arc<ProgressState>) -> std::thread::JoinHand
                 // For non-TTY: print every 10% progress or every 10 seconds.
                 let completed = state.completed.load(Ordering::Relaxed);
                 let total = state.total_iters;
-                let pct = if total > 0 {
-                    completed * 100 / total
-                } else {
-                    0
-                };
+                let pct = completed
+                    .saturating_mul(100)
+                    .checked_div(total)
+                    .unwrap_or(0);
                 let secs_since = last_plain_time.elapsed().as_secs_f64();
                 if pct >= last_plain_pct + 10 || secs_since >= 10.0 {
                     render_plain(&state, &mut err);
