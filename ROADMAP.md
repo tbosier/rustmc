@@ -6,16 +6,17 @@ over feature count.
 
 ## Product direction
 
-rustmc should grow as a **general Bayesian inference library with structure-aware
-execution**. Its reason to exist is not that every operation happens in Rust, nor that it
-duplicates every feature in a mature probabilistic programming system. The distinctive
-combination is:
+rustmc should grow as a **practical, extensible, general Bayesian toolkit**. It should
+complement PyMC and Stan rather than duplicate their complete modeling languages. Its
+distinctive combination is:
 
 1. a compact graph, autodiff, and sampling runtime for general supported models;
 2. compile-once/bind-many execution for repeated model structures;
 3. specialized exact, conjugate, or state-space inference when structure permits;
 4. deterministic posterior and predictive outputs that can be audited and deployed; and
-5. a stable native core usable without keeping Python in the execution path.
+5. a stable native core usable without keeping Python in the execution path; and
+6. implementations that remain understandable and adaptable for focused work in science,
+   engineering, biomedical research, finance, and other domains.
 
 Forecasting is an important proving ground for these ideas, but it is one application.
 Regression, GLMs, hierarchical models, experiments, reliability models, and other

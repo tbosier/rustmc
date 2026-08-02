@@ -7,16 +7,18 @@ Bayesian inference powered by Rust, with a Python API.
 > intentionally smaller than mature probabilistic programming systems. Validate every
 > model on representative data before using its output for consequential decisions.
 
-rustmc is a general Bayesian inference library built around a simple idea: use a generic
-sampler when a model needs one, but exploit model structure when a more direct algorithm
-is available. The same package therefore contains graph-based automatic differentiation
-and NUTS/HMC, reusable compiled models, exact conjugate inference, and specialized
-state-space algorithms.
+rustmc is a practical, general-purpose Bayesian toolkit. It combines graph-based
+automatic differentiation and NUTS/HMC with reusable compiled models, exact conjugate
+inference, and specialized state-space algorithms. A generic sampler is available when a
+model needs one, while focused methods can be added when a research or production problem
+benefits from them.
 
-It is not intended to be a smaller clone of PyMC or Stan. The long-term opportunity is a
-compact, auditable inference runtime that can recognize useful structure, fit one model
-or many related datasets, and return posterior and predictive draws with their provenance
-intact.
+rustmc complements PyMC and Stan rather than trying to replace them. Its practical
+distinction is native Rust execution and Rayon-powered parallelism across chains and
+repeated-model workloads. That foundation can support fast forecasting, regression, and
+domain-specific models in biomedical research, engineering, science, finance, and other
+fields. The project aims to keep those implementations understandable enough to inspect,
+adapt, and extend for real work.
 
 ## Why rustmc
 
@@ -30,6 +32,9 @@ intact.
   in Rust outside the Python hot path.
 - **Deterministic parallelism.** Chains and repeated-model workloads use Rayon with
   stable per-chain seed derivation and ordered results.
+- **A focused extension path.** General inference and specialized model implementations
+  share a small native core, allowing new domain methods to be added without pursuing
+  feature parity with a mature probabilistic-programming language.
 - **Bayesian workflow support.** Prior predictive checks, posterior predictive draws,
   pointwise log likelihood, convergence diagnostics, and ArviZ export are available for
   the generic inference path.
@@ -48,9 +53,7 @@ Install the latest published Python package with:
 pip install rustmc
 ```
 
-The source tree is prepared as version 0.9.0. Until a 0.9.0 wheel is published, the
-package on PyPI may not contain the APIs and correctness changes described on `main`.
-To build the current source:
+To build the current source instead of installing a published wheel:
 
 ```bash
 git clone https://github.com/tbosier/rustmc.git

@@ -6,21 +6,7 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
-### Changed
-
-- Reframed the project as a general, structure-aware Bayesian inference library;
-  forecasting is one application rather than the library's identity.
-- Added configurable `target_accept` to generic NUTS/HMC sampling entry points.
-- Extended fixed linear-Gaussian state-space forecasts with joint future-observation
-  covariance and exact cumulative Gaussian summaries.
-- Added a fixed-parameter sum-to-zero seasonal local-level state-space constructor.
-- Added fitted Bayesian seasonal local-level inference with Gibbs/FFBS, missing-value
-  support, and coherent seasonal and cumulative posterior-predictive paths.
-- Exposed generic sampler transition diagnostics through the Python API.
-- Moved internal planning, review, and validation notes out of the source repository.
-- Removed generated plots and scratch data from version control.
-
-## [0.9.0] - Unreleased
+## [0.9.0] - 2026-08-02
 
 ### Added
 
@@ -31,6 +17,20 @@ versioning while the public API is stabilized.
 - In-memory compile-once/bind-many model reuse.
 - A rebate-accrual example that distinguishes latent credible intervals from
   future-observation posterior-predictive intervals and aggregates paths correctly.
+
+### Changed
+
+- Reframed the project as a practical, general Bayesian toolkit; forecasting is one
+  application rather than the library's identity.
+- Added configurable `target_accept` to generic NUTS/HMC sampling entry points.
+- Extended fixed linear-Gaussian state-space forecasts with joint future-observation
+  covariance and exact cumulative Gaussian summaries.
+- Added a fixed-parameter sum-to-zero seasonal local-level state-space constructor.
+- Added fitted Bayesian seasonal local-level inference with Gibbs/FFBS, missing-value
+  support, and coherent seasonal and cumulative posterior-predictive paths.
+- Exposed generic sampler transition diagnostics through the Python API.
+- Moved internal planning, review, and validation notes out of the source repository.
+- Removed generated plots and scratch data from version control.
 
 ### Fixed
 
