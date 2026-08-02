@@ -125,15 +125,21 @@ def test_child_environment_scopes_backend_flags(monkeypatch, tmp_path):
 
     rustmc_env = benchmark_run._child_environment("rustmc", config, str(tmp_path))
     assert rustmc_env["XLA_FLAGS"] == "--existing"
-    assert rustmc_env["PYTENSOR_FLAGS"] == "optimizer=fast"
+    assert "PYTENSOR_FLAGS" not in rustmc_env
+    assert "NUMBA_CACHE_DIR" not in rustmc_env
 
     pymc_env = benchmark_run._child_environment("pymc", config, str(tmp_path))
     assert "xla_force_host_platform_device_count" not in pymc_env["XLA_FLAGS"]
     assert f"base_compiledir={tmp_path}" in pymc_env["PYTENSOR_FLAGS"]
+    assert "NUMBA_CACHE_DIR" not in pymc_env
+
+    nutpie_env = benchmark_run._child_environment("nutpie", config, str(tmp_path))
+    assert nutpie_env["NUMBA_CACHE_DIR"] == str(tmp_path)
 
     numpyro_env = benchmark_run._child_environment("numpyro", config, str(tmp_path))
     assert "--xla_force_host_platform_device_count=3" in numpyro_env["XLA_FLAGS"]
-    assert "base_compiledir" not in numpyro_env["PYTENSOR_FLAGS"]
+    assert "PYTENSOR_FLAGS" not in numpyro_env
+    assert "NUMBA_CACHE_DIR" not in numpyro_env
 
 
 def test_quick_config_dry_run_is_machine_readable():

@@ -15,6 +15,8 @@ versioning while the public API is stabilized.
 - Fixed-matrix linear-Gaussian state-space filtering, smoothing, missing-observation
   handling, and forecasting.
 - In-memory compile-once/bind-many model reuse.
+- A reproducible cross-engine benchmark harness for rustmc, PyMC, PyMC with nutpie, and
+  NumPyro with analytic posterior checks and isolated backend environments.
 - A rebate-accrual example that distinguishes latent credible intervals from
   future-observation posterior-predictive intervals and aggregates paths correctly.
 

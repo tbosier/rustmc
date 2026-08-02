@@ -309,7 +309,6 @@ def _child_environment(
             "NUMEXPR_NUM_THREADS": "1",
             "XDG_CACHE_HOME": cache_dir,
             "MPLCONFIGDIR": cache_dir,
-            "NUMBA_CACHE_DIR": cache_dir,
         }
     )
     pytensor_flags = [
@@ -319,10 +318,16 @@ def _child_environment(
     ]
     if engine in {"pymc", "nutpie"}:
         pytensor_flags.append(f"base_compiledir={cache_dir}")
+    else:
+        pytensor_flags = []
     if pytensor_flags:
         env["PYTENSOR_FLAGS"] = ",".join(pytensor_flags)
     else:
         env.pop("PYTENSOR_FLAGS", None)
+    if engine == "nutpie":
+        env["NUMBA_CACHE_DIR"] = cache_dir
+    else:
+        env.pop("NUMBA_CACHE_DIR", None)
 
     xla_flags = [
         flag
