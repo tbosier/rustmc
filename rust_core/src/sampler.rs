@@ -23,6 +23,8 @@ pub struct SamplerConfig {
     pub num_draws: usize,
     pub num_warmup: usize,
     pub step_size: f64,
+    /// Desired average acceptance probability for step-size adaptation.
+    pub target_accept: f64,
     /// HMC only: fixed number of leapfrog steps.
     pub num_leapfrog_steps: usize,
     /// NUTS only: maximum tree depth (default 10).
@@ -40,6 +42,7 @@ impl Default for SamplerConfig {
             num_draws: 1000,
             num_warmup: 500,
             step_size: 0.0,
+            target_accept: 0.80,
             num_leapfrog_steps: 15,
             max_tree_depth: 10,
             seed: 42,
@@ -56,6 +59,7 @@ pub struct BatchSampleConfig {
     pub num_draws: usize,
     pub num_warmup: usize,
     pub step_size: f64,
+    pub target_accept: f64,
     pub num_leapfrog_steps: usize,
     pub max_tree_depth: usize,
     pub seed: u64,
@@ -70,6 +74,7 @@ impl Default for BatchSampleConfig {
             num_draws: 500,
             num_warmup: 300,
             step_size: 0.0,
+            target_accept: 0.80,
             num_leapfrog_steps: 15,
             max_tree_depth: 8,
             seed: 42,
@@ -189,6 +194,14 @@ fn validate_initial_target(graph: &Graph, binding: DataBinding) -> Result<(), St
     Ok(())
 }
 
+fn validate_target_accept(target_accept: f64) -> Result<(), String> {
+    if target_accept.is_finite() && target_accept > 0.0 && target_accept < 1.0 {
+        Ok(())
+    } else {
+        Err("target_accept must be finite and strictly between 0 and 1".to_string())
+    }
+}
+
 pub fn sample(graph: Graph, config: SamplerConfig) -> Result<SampleResult, String> {
     graph.validate_shapes().map_err(|e| e.to_string())?;
     let binding = DataBinding::from_graph(&graph).map_err(|e| e.to_string())?;
@@ -201,6 +214,7 @@ pub fn sample_bound(
     binding: DataBinding,
     config: SamplerConfig,
 ) -> Result<SampleResult, String> {
+    validate_target_accept(config.target_accept)?;
     binding.validate_for(&graph).map_err(|e| e.to_string())?;
     validate_initial_target(&graph, binding.clone())?;
     let param_names = graph.param_names.clone();
@@ -239,6 +253,7 @@ pub fn sample_bound(
                     SamplerType::Nuts => {
                         let nuts_config = NutsConfig {
                             step_size: config.step_size,
+                            target_accept: config.target_accept,
                             max_tree_depth: config.max_tree_depth,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
@@ -255,6 +270,7 @@ pub fn sample_bound(
                     SamplerType::Hmc => {
                         let hmc_config = HmcConfig {
                             step_size: config.step_size,
+                            target_accept: config.target_accept,
                             num_leapfrog_steps: config.num_leapfrog_steps,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
@@ -340,6 +356,7 @@ pub fn sample_batch_bound(
         num_draws: config.num_draws,
         num_warmup: config.num_warmup,
         step_size: config.step_size,
+        target_accept: config.target_accept,
         num_leapfrog_steps: config.num_leapfrog_steps,
         max_tree_depth: config.max_tree_depth,
         seed,
@@ -432,6 +449,7 @@ pub fn batch_sample(
     models: Vec<(Graph, Vec<f64>)>,
     config: BatchSampleConfig,
 ) -> Result<Vec<BatchModelResult>, String> {
+    validate_target_accept(config.target_accept)?;
     let n_models = models.len();
     let chains_per_model = config.num_chains.max(1);
     let total_chain_runs = n_models * chains_per_model;
@@ -481,6 +499,7 @@ pub fn batch_sample(
                         SamplerType::Nuts => {
                             let nuts_config = NutsConfig {
                                 step_size: config.step_size,
+                                target_accept: config.target_accept,
                                 max_tree_depth: config.max_tree_depth,
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
@@ -490,6 +509,7 @@ pub fn batch_sample(
                         SamplerType::Hmc => {
                             let hmc_config = HmcConfig {
                                 step_size: config.step_size,
+                                target_accept: config.target_accept,
                                 num_leapfrog_steps: config.num_leapfrog_steps,
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
@@ -603,5 +623,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("initial log density is not finite"));
+    }
+
+    #[test]
+    fn sampling_rejects_invalid_target_accept() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        graph.normal_logp(x, zero, one);
+
+        let error = sample(
+            graph,
+            SamplerConfig {
+                target_accept: 1.0,
+                num_chains: 1,
+                num_draws: 1,
+                num_warmup: 1,
+                show_progress: false,
+                ..SamplerConfig::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("target_accept"));
     }
 }

@@ -1,8 +1,16 @@
 # Batch Inference
 
-Fit related independent models in one call. rustmc runs their chains through a shared
-Rayon thread pool, although each current batch entry still owns a concrete graph and
-dataset; compile-once/bind-many graph reuse is planned, not implemented.
+Fit independent models in one call. rustmc runs their chains through a shared Rayon
+thread pool and supports two batch shapes:
+
+- `CompiledModel.sample_batch()` reuses one immutable graph structure across validated
+  datasets with the same schema.
+- The legacy `batch_sample()` accepts different model structures, so each entry owns its
+  concrete graph and dataset.
+
+The example below uses the legacy path because every entry is built independently. Prefer
+`CompiledModel.sample_batch()` when the model structure is shared; see the
+[API reference](../reference.md#compiledmodel).
 
 ## Use Case
 

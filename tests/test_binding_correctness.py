@@ -41,6 +41,9 @@ def test_non_finite_matrix_data_is_rejected(rustmc_module):
         ({"warmup": 0}, "warmup"),
         ({"step_size": float("nan")}, "step_size"),
         ({"step_size": -0.1}, "step_size"),
+        ({"target_accept": float("nan")}, "target_accept"),
+        ({"target_accept": 0.0}, "target_accept"),
+        ({"target_accept": 1.0}, "target_accept"),
         ({"max_tree_depth": 0}, "max_tree_depth"),
         ({"max_tree_depth": 64}, "max_tree_depth"),
         ({"num_leapfrog_steps": 0}, "num_leapfrog_steps"),
@@ -58,6 +61,25 @@ def test_invalid_sample_configuration_fails_before_sampling(
     config.update(kwargs)
     with pytest.raises(ValueError, match=message):
         rustmc_module.sample(_model(rustmc_module), **config)
+
+
+def test_transition_diagnostics_expose_integrator_work(rustmc_module):
+    fit = rustmc_module.sample(
+        _model(rustmc_module),
+        chains=1,
+        draws=2,
+        warmup=2,
+        seed=19,
+        max_tree_depth=3,
+        show_progress=False,
+    )
+    telemetry = fit.transition_diagnostics()
+    assert telemetry["total_transitions"] == 4
+    assert telemetry["total_warmup_transitions"] == 2
+    assert telemetry["total_draw_transitions"] == 2
+    assert telemetry["total_leapfrog_steps"] >= 4
+    assert len(telemetry["chains"]) == 1
+    assert telemetry["chains"][0]["max_tree_depth"] <= 3
 
 
 @pytest.mark.parametrize(

@@ -37,17 +37,95 @@ def test_smoothing_and_forecasting(rustmc_module):
     assert forecast.state_covariances.shape == (2, 1, 1)
     np.testing.assert_allclose(forecast.observation_means, [1.5, 1.5])
     np.testing.assert_allclose(forecast.observation_variances, [2.625, 3.625])
+    np.testing.assert_allclose(
+        forecast.observation_covariance,
+        [[2.625, 1.625], [1.625, 3.625]],
+    )
+    np.testing.assert_allclose(forecast.cumulative_observation_means, [1.5, 3.0])
+    np.testing.assert_allclose(forecast.cumulative_observation_variances, [2.625, 9.5])
 
     lower, upper = forecast.interval()
     critical = 1.959963984540054
     scale = np.sqrt(forecast.observation_variances)
     np.testing.assert_allclose(lower, forecast.observation_means - critical * scale, rtol=2e-4)
     np.testing.assert_allclose(upper, forecast.observation_means + critical * scale, rtol=2e-4)
+    cumulative_lower, cumulative_upper = forecast.cumulative_interval()
+    cumulative_scale = np.sqrt(forecast.cumulative_observation_variances)
+    np.testing.assert_allclose(
+        cumulative_lower,
+        forecast.cumulative_observation_means - critical * cumulative_scale,
+        rtol=2e-4,
+    )
+    np.testing.assert_allclose(
+        cumulative_upper,
+        forecast.cumulative_observation_means + critical * cumulative_scale,
+        rtol=2e-4,
+    )
+    assert forecast.cumulative_observation_variances[-1] > np.sum(
+        forecast.observation_variances
+    )
     assert forecast.uncertainty_kind == "conditional_fixed_parameters"
 
     for invalid in (0.0, 1.0, -0.1, 1.1, np.nan):
         with pytest.raises(ValueError, match="strictly between"):
             forecast.interval(invalid)
+        with pytest.raises(ValueError, match="strictly between"):
+            forecast.cumulative_interval(invalid)
+
+
+def test_seasonal_local_level_repeats_cycle_and_supports_filtering(rustmc_module):
+    effects = [1.0, -0.5, -0.25, -0.25]
+    model = rustmc_module.LinearGaussianStateSpace.seasonal_local_level(
+        period=4,
+        level_variance=0.0,
+        seasonal_variance=0.0,
+        observation_variance=0.1,
+        initial_level=10.0,
+        initial_seasonal_effects=effects,
+        initial_level_variance=1.0,
+        initial_seasonal_variance=1.0,
+    )
+
+    assert model.dimension == 4
+    forecast = model.forecast(np.array([], dtype=float), 8)
+    np.testing.assert_allclose(
+        forecast.observation_means,
+        10.0 + np.resize(np.asarray(effects), 8),
+    )
+    assert forecast.observation_covariance.shape == (8, 8)
+    np.testing.assert_allclose(
+        forecast.observation_covariance,
+        forecast.observation_covariance.T,
+    )
+    assert np.all(np.linalg.eigvalsh(forecast.observation_covariance) > 0.0)
+
+    filtered = model.filter(10.0 + np.resize(np.asarray(effects), 12))
+    assert filtered.filtered_means.shape == (12, 4)
+    assert np.isfinite(filtered.log_likelihood)
+
+
+@pytest.mark.parametrize(
+    "kwargs, match",
+    [
+        ({"period": 1}, "period must be at least 2"),
+        (
+            {"period": 4, "initial_seasonal_effects": [1.0, 0.0, 0.0, 0.0]},
+            "must sum to zero",
+        ),
+        ({"period": 4, "initial_seasonal_effects": [0.0, 0.0]}, "expected 4"),
+        ({"period": 4, "seasonal_variance": -0.1}, "non-negative"),
+    ],
+)
+def test_seasonal_local_level_validation(rustmc_module, kwargs, match):
+    arguments = {
+        "period": 4,
+        "level_variance": 0.1,
+        "seasonal_variance": 0.1,
+        "observation_variance": 0.2,
+    }
+    arguments.update(kwargs)
+    with pytest.raises(rustmc_module.StateSpaceError, match=match):
+        rustmc_module.LinearGaussianStateSpace.seasonal_local_level(**arguments)
 
 
 def test_stationary_ar1_constructor_and_forecast(rustmc_module):
@@ -103,8 +181,8 @@ def test_general_two_dimensional_model_and_trend_constructor(rustmc_module):
     "factory, match",
     [
         (
-            lambda rmc: rmc.LinearGaussianStateSpace.local_level(0.0, 1.0),
-            "positive definite",
+            lambda rmc: rmc.LinearGaussianStateSpace.local_level(-1.0, 1.0),
+            "positive semidefinite",
         ),
         (
             lambda rmc: rmc.LinearGaussianStateSpace.local_level(1.0, -1.0),
@@ -147,3 +225,6 @@ def test_observation_infinity_is_rejected_but_empty_series_is_supported(rustmc_m
     assert filtered.log_likelihood == 0.0
     forecast = model.forecast(np.array([], dtype=float), 0)
     assert forecast.observation_means.shape == (0,)
+    assert forecast.observation_covariance.shape == (0, 0)
+    assert forecast.cumulative_observation_means.shape == (0,)
+    assert forecast.cumulative_observation_variances.shape == (0,)

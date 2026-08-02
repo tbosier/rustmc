@@ -1,22 +1,28 @@
 # rustmc
 
-**Fast Bayesian inference in Rust with a Python API.**
+**Bayesian inference powered by Rust, with a Python API.**
 
-rustmc runs the entire sampling loop in compiled Rust - no Python in the inner loop. Chains are parallelized across threads via Rayon. The result is designed for fitting many independent Bayesian models in a single call.
+rustmc is a general Bayesian inference library with a deliberately scoped modeling
+surface. It combines graph-based automatic differentiation and NUTS/HMC with exact,
+conjugate, and state-space algorithms for models whose structure permits a more direct
+approach.
 
 ## Why rustmc?
 
-PyMC, Stan, and other Bayesian frameworks are built for general single-model workflows. That is useful for research, but it becomes expensive when you need to fit the same model structure to thousands of datasets - per-store demand models, per-SKU pricing models, per-patient dosing models.
-
-rustmc is designed for that repeated-model setting. Its batch inference API runs many independent models through a single Rayon thread pool, sharing compute across all available cores with low orchestration overhead.
+The project is exploring a structure-aware inference runtime rather than a smaller clone
+of an existing probabilistic programming system. Generic models use the Rust autodiff and
+sampling engine. Repeated models can reuse a compiled structure across validated data
+bindings. Specialized algorithms remain available through the same package when they are
+a better match than sampling every latent variable with NUTS.
 
 ## Differentiation
 
-- Rust-native inference loop with no Python in the hot path.
-- Batch execution tuned for repeated independent models, not just single-model sampling.
-- Graph-based execution with cached buffers, transforms, and Jacobians.
-- Fast paths for regression-style models and high-dimensional `X @ beta` workloads.
-- Built-in diagnostics, predictive checks, pointwise log-likelihood, and ArviZ export aimed at production validation.
+- Generic NUTS/HMC and reverse-mode autodiff execute in Rust outside the Python hot path.
+- `ModelBuilder.compile()` separates immutable model structure from validated datasets.
+- Independent chains and repeated-model workloads share one Rayon thread pool.
+- Exact conjugate and state-space algorithms complement the generic sampler.
+- Diagnostics, predictive checks, pointwise log likelihood, and ArviZ export support a
+  complete Bayesian workflow for the current modeling surface.
 
 ## Benchmarks
 
@@ -49,19 +55,11 @@ fit = rmc.sample(model_spec=model, data={"x": x, "y": y}, chains=4, draws=1000)
 print(fit.summary())
 ```
 
-```
-4 chains x 1000 draws per chain
-
-Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
------------------------------------------------------------------------------------------------
-beta           2.4575   0.0313     2.3982     2.5133       2638       2966   1.0055   0.000610
------------------------------------------------------------------------------------------------
-Mean accept rate: 0.94  |  Divergences: 0
-```
-
 ## What's Implemented
 
-**Sampling:** NUTS with multinomial candidate selection, block-structured mass matrix adaptation, dual-averaging step size, fixed-step HMC fallback, and multi-chain parallelism via Rayon.
+**Sampling:** NUTS with multinomial candidate selection, block-structured mass matrix
+adaptation, dual-averaging step size, configurable `target_accept`, fixed-trajectory HMC
+fallback, and multi-chain parallelism via Rayon.
 
 **Priors:** Normal, HalfNormal, Exponential, LogNormal, StudentT, Gamma, Beta, Uniform, Bernoulli, Poisson. Constrained distributions are automatically sampled in unconstrained space.
 
@@ -83,16 +81,24 @@ graph structure.
 **Linear Gaussian state space:** `LinearGaussianStateSpace` provides fixed-system
 Kalman filtering, smoothing, missing-observation handling, and forecasting.
 
-**Bayesian forecasting:** fitted local-level and local-linear-trend structural models
+**Forecasting application:** fitted local-level, seasonal local-level, and local-linear-trend structural models
 provide FFBS/Gibbs posterior prediction, while `BayesianAutoRegression(order=p)` supports
 directly observed Gaussian AR(p) at any positive lag order. All return coherent paths and
 parameter-integrated pointwise intervals.
 
 ## What Is Still Missing
 
-- Vector-valued hierarchical models and richer automatic reparameterization support.
+- A broader general modeling surface: named dimensions, group indexing, vector-valued
+  hierarchical models, robust likelihoods, and stable extension points.
+- Richer automatic reparameterization support.
 - Portable serialization and prediction-on-new-data for the in-memory re-bindable
   compiled model; the legacy JSON artifact remains data-owning.
 - Generic Bayesian state-space estimation and collapsed Kalman-likelihood integration in
   `ModelBuilder`; specialized local level, local trend, and direct AR(p) are implemented.
-- Higher-level production templates for repeated forecasting and panel workflows.
+- Consistent result coordinates, typed Python APIs, and richer sampler telemetry.
+- Higher-level applications for repeated inference, forecasting, and panel workflows.
+
+See the
+[project roadmap](https://github.com/tbosier/rustmc/blob/main/ROADMAP.md)
+for the ordered plan. Forecasting is one application of the shared inference core; it is
+not the boundary of the project.

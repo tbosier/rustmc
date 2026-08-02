@@ -20,6 +20,8 @@ use rand_chacha::ChaCha8Rng;
 #[derive(Debug, Clone)]
 pub struct NutsConfig {
     pub step_size: f64,
+    /// Desired average Metropolis acceptance probability during adaptation.
+    pub target_accept: f64,
     pub max_tree_depth: usize,
     pub num_draws: usize,
     pub num_warmup: usize,
@@ -29,6 +31,7 @@ impl Default for NutsConfig {
     fn default() -> Self {
         Self {
             step_size: 0.0,
+            target_accept: 0.80,
             max_tree_depth: 10,
             num_draws: 1000,
             num_warmup: 500,
@@ -141,8 +144,8 @@ pub fn run_chain_bound(
         find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng)
     };
 
-    // Dual averaging (target = 0.80 for NUTS, following Stan)
-    let target_accept = 0.80;
+    // Dual averaging targets the caller-selected acceptance probability.
+    let target_accept = config.target_accept;
     let mut da_mu = (10.0 * step_size).ln();
     let da_gamma = 0.05;
     let da_t0 = 10.0;
@@ -721,6 +724,7 @@ mod tests {
         graph.normal_logp(x, zero, one);
         let config = NutsConfig {
             step_size: 0.1,
+            target_accept: 0.80,
             max_tree_depth: 3,
             num_draws: 3,
             num_warmup: 2,

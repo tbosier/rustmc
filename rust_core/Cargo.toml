@@ -2,13 +2,13 @@
 name = "rustmc_core"
 version = "0.9.0"
 edition = "2021"
-description = "Bayesian inference and state-space forecasting engine"
+description = "Structure-aware Bayesian inference engine"
 license = "MIT"
 repository = "https://github.com/tbosier/rustmc"
 homepage = "https://github.com/tbosier/rustmc"
 documentation = "https://docs.rs/rustmc_core"
 readme = "README.md"
-keywords = ["bayesian", "forecasting", "mcmc", "state-space", "statistics"]
+keywords = ["bayesian", "inference", "mcmc", "statistics", "autodiff"]
 categories = ["science", "algorithms"]
 
 [dependencies]

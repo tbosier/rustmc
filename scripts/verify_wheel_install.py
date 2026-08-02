@@ -53,6 +53,8 @@ def main() -> int:
         "LinearGaussianStateSpace", "KalmanFilterResult", "KalmanSmootherResult",
         "ForecastResult", "InverseGammaPrior", "BayesianLocalLevel",
         "BayesianLocalLevelFit", "BayesianForecastResult",
+        "BayesianSeasonalLocalLevel", "BayesianSeasonalLocalLevelFit",
+        "BayesianSeasonalForecast",
         "BayesianLocalLinearTrend", "BayesianLocalLinearTrendFit",
         "BayesianTrendForecast", "NormalInverseGammaPrior",
         "BayesianAutoRegression", "BayesianAR", "BayesianARFit",

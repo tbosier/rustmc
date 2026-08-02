@@ -35,6 +35,8 @@ pub struct TransitionStats {
 #[derive(Debug, Clone)]
 pub struct HmcConfig {
     pub step_size: f64,
+    /// Desired average Metropolis acceptance probability during adaptation.
+    pub target_accept: f64,
     pub num_leapfrog_steps: usize,
     pub num_draws: usize,
     pub num_warmup: usize,
@@ -44,6 +46,7 @@ impl Default for HmcConfig {
     fn default() -> Self {
         Self {
             step_size: 0.0, // 0 = auto-detect
+            target_accept: 0.80,
             num_leapfrog_steps: 15,
             num_draws: 1000,
             num_warmup: 500,
@@ -122,7 +125,7 @@ pub fn run_chain_bound(
     };
 
     // Dual-averaging state
-    let target_accept = 0.80;
+    let target_accept = config.target_accept;
     let da_mu = (10.0 * step_size).ln();
     let da_gamma = 0.05;
     let da_t0 = 10.0;
@@ -399,6 +402,7 @@ mod tests {
         let graph = simple_gaussian_graph();
         let config = HmcConfig {
             step_size: 0.1,
+            target_accept: 0.80,
             num_leapfrog_steps: 2,
             num_draws: 3,
             num_warmup: 2,
@@ -468,6 +472,7 @@ mod tests {
             &graph,
             &HmcConfig {
                 step_size: 10.0,
+                target_accept: 0.80,
                 num_leapfrog_steps: 2,
                 num_draws: 1,
                 num_warmup: 0,
@@ -486,6 +491,7 @@ mod tests {
             &graph,
             &HmcConfig {
                 step_size: 0.1,
+                target_accept: 0.80,
                 num_leapfrog_steps: 2,
                 num_draws: 1,
                 num_warmup: 0,

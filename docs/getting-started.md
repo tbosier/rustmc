@@ -149,10 +149,15 @@ filtered = ssm.filter(y_with_optional_nan_values)
 smoothed = ssm.smooth(y_with_optional_nan_values)
 forecast = ssm.forecast(y_with_optional_nan_values, steps=12)
 lower_95, upper_95 = forecast.interval(0.95)
+cumulative_lower, cumulative_upper = forecast.cumulative_interval(0.95)
 ```
 
 This standalone API keeps the supplied variances fixed. Its interval includes state,
 process, and observation uncertainty, but not parameter uncertainty.
+
+For a known seasonal structure, `LinearGaussianStateSpace.seasonal_local_level(...)`
+adds sum-to-zero dummy seasonality. This is still a fixed-system constructor: the level,
+seasonal, and observation variances are supplied rather than inferred.
 
 For Bayesian local-level fitting and a parameter-integrated 95% forecast interval:
 
@@ -173,6 +178,28 @@ state_lower_95, state_upper_95 = forecast.state_interval(0.95)
 
 The inverse-gamma priors are on variances and must be chosen for the units of your
 series; rustmc does not silently infer a universal scale.
+
+For one fitted sum-to-zero seasonal component:
+
+```python
+seasonal = rmc.BayesianSeasonalLocalLevel(
+    period=12,
+    level_variance_prior=rmc.InverseGammaPrior(3.0, 2.0),
+    seasonal_variance_prior=rmc.InverseGammaPrior(3.0, 1.0),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 8.0),
+    initial_level=float(y_with_optional_nan_values[:12].mean()),
+)
+seasonal_fit = seasonal.fit(
+    y_with_optional_nan_values, chains=4, draws=1000, warmup=500
+)
+seasonal_forecast = seasonal_fit.forecast(steps=12, seed=43)
+lower, upper = seasonal_forecast.interval(0.95)
+cumulative_lower, cumulative_upper = seasonal_forecast.cumulative_interval(0.95)
+```
+
+With 24 monthly observations, a period-12 model sees only two cycles. It can be fit, but
+seasonal and variance inference will be prior-sensitive and requires rolling-origin
+comparison against simple seasonal baselines.
 
 For a fitted stochastic level and slope:
 
@@ -225,6 +252,7 @@ fit.std()                # dict: param -> float
 fit.get_samples()        # dict: param -> flattened samples
 fit.get_samples_2d()     # dict: param -> np.ndarray, shape (chains, draws)
 fit.diagnostics()        # list of per-parameter diagnostics
+fit.transition_diagnostics()  # sampler energy/tree/integrator telemetry
 fit.accept_rates()       # list of per-chain accept rates
 fit.step_sizes()         # list of per-chain step sizes
 fit.divergences()        # list of per-chain divergence counts

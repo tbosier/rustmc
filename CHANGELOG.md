@@ -8,8 +8,15 @@ versioning while the public API is stabilized.
 
 ### Changed
 
-- Reframed the project around honest, decision-grade Bayesian inference and forecasting
-  rather than unaudited performance comparisons.
+- Reframed the project as a general, structure-aware Bayesian inference library;
+  forecasting is one application rather than the library's identity.
+- Added configurable `target_accept` to generic NUTS/HMC sampling entry points.
+- Extended fixed linear-Gaussian state-space forecasts with joint future-observation
+  covariance and exact cumulative Gaussian summaries.
+- Added a fixed-parameter sum-to-zero seasonal local-level state-space constructor.
+- Added fitted Bayesian seasonal local-level inference with Gibbs/FFBS, missing-value
+  support, and coherent seasonal and cumulative posterior-predictive paths.
+- Exposed generic sampler transition diagnostics through the Python API.
 - Moved internal planning, review, and validation notes out of the source repository.
 - Removed generated plots and scratch data from version control.
 
@@ -17,8 +24,8 @@ versioning while the public API is stabilized.
 
 ### Added
 
-- Fitted Bayesian local-level, local-linear-trend, and directly observed AR(p) forecast
-  models with coherent posterior paths.
+- Fitted Bayesian local-level, seasonal local-level, local-linear-trend, and directly
+  observed AR(p) forecast models with coherent posterior paths.
 - Fixed-matrix linear-Gaussian state-space filtering, smoothing, missing-observation
   handling, and forecasting.
 - In-memory compile-once/bind-many model reuse.

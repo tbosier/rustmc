@@ -16,22 +16,32 @@ first observation. The filter applies one transition/process-noise prediction be
 updating on `y[0]`. This convention also applies when forecasting an empty history.
 
 Construct a general model with NumPy arrays, or use the `local_level()`,
-`local_linear_trend()`, and zero-mean `stationary_ar1()` constructors. `filter(y)` returns predicted and filtered
+`local_linear_trend()`, `seasonal_local_level()`, and zero-mean `stationary_ar1()`
+constructors. `filter(y)` returns predicted and filtered
 state means/covariances plus the observed-data log likelihood; `smooth(y)` adds
 smoothed state moments; and `forecast(y, steps)` returns future latent-state and
 observation means/variances. A `NaN` observation is treated as missing and
 causes a prediction-only step; infinities are rejected.
 
-`forecast.interval(level=0.95)` returns lower and upper pointwise Gaussian
+`forecast.observation_covariance` contains the joint covariance across future scalar
+observations. `cumulative_observation_means`, `cumulative_observation_variances`, and
+`cumulative_interval(level=0.95)` summarize prefix totals without discarding
+cross-horizon dependence. `forecast.interval(level=0.95)` returns lower and upper pointwise Gaussian
 predictive bounds. Its `uncertainty_kind` is `"conditional_fixed_parameters"`:
 the interval includes filtered-state, future-process, and observation noise, but
 does not include uncertainty about the supplied system parameters. It is therefore
 a conditional predictive interval, not yet a parameter-integrated Bayesian credible
 interval.
 
-This first state-space API assumes fixed, time-invariant system matrices,
-Gaussian noise, and univariate observations. Covariance matrices and scalar
-noise variances must be strictly positive definite/positive. It does not yet
+`seasonal_local_level(period=..., ...)` builds a sum-to-zero dummy-seasonal system.
+Its supplied seasonal and level variances remain fixed; it does not estimate them.
+The optional `initial_seasonal_effects` is one complete cycle in forecast order and
+must sum to zero.
+
+This state-space API assumes fixed, time-invariant system matrices, Gaussian noise,
+and univariate observations. Process covariance may be positive semidefinite so
+deterministic state shifts are representable; initial covariance must be positive
+definite, and observation variance must be positive. It does not yet
 estimate system parameters, support multivariate observations, accept
 time-varying matrices, or integrate a Kalman likelihood into `ModelBuilder`.
 Filtering, smoothing, and forecasting release the Python GIL after converting the
@@ -88,6 +98,39 @@ Gaussian observations; seasonality, covariates, and irregular timestamps are not
 of this model. Gibbs output remains finite
 MCMC output, so inspect multiple-chain convergence and effective sample sizes rather
 than treating it as an analytic posterior.
+
+## Bayesian seasonal local-level forecasting
+
+`BayesianSeasonalLocalLevel` adds one stochastic sum-to-zero dummy-seasonal component
+to a stochastic local level. It jointly samples latent states with multivariate FFBS and
+updates level, seasonal, and observation variances from explicit inverse-gamma priors.
+
+```python
+model = rmc.BayesianSeasonalLocalLevel(
+    period=12,
+    level_variance_prior=rmc.InverseGammaPrior(3.0, 2.0),
+    seasonal_variance_prior=rmc.InverseGammaPrior(3.0, 1.0),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 8.0),
+    initial_level=100.0,
+    initial_seasonal_effects=np.zeros(12),
+    initial_level_variance=25.0,
+    initial_seasonal_variance=9.0,
+)
+fit = model.fit(y, chains=4, draws=1000, warmup=500, seed=42)
+forecast = fit.forecast(steps=12, seed=43)
+lower, upper = forecast.interval(0.95)
+cumulative_lower, cumulative_upper = forecast.cumulative_interval(0.95)
+```
+
+The initial seasonal vector is one cycle in forecast order and must sum to zero.
+`forecast.level_samples`, `seasonal_samples`, `observation_samples`, and
+`cumulative_observation_samples` have shape `(chain, draw, step)`. Cumulative paths are
+formed inside each posterior draw before quantiles are calculated.
+
+The fitted model is equally spaced, scalar, Gaussian, and single-seasonal. Seasonal
+innovations preserve structural identification but do not force every realized rolling
+cycle to sum exactly to zero. Missing values retain their time positions. With only two
+observed cycles, variance and seasonal inference is necessarily prior-sensitive.
 
 ## Bayesian local-linear-trend forecasting
 
@@ -308,6 +351,7 @@ fit = rmc.sample(
     seed=42,
     threads=0,
     step_size=0.0,
+    target_accept=0.8,
     sampler="nuts",
     max_tree_depth=10,
     num_leapfrog_steps=15,
@@ -324,6 +368,7 @@ Notes:
 - `max_tree_depth` applies to NUTS.
 - `num_leapfrog_steps` applies to HMC.
 - `step_size=0.0` means auto-tune.
+- `target_accept` controls dual-averaging during warmup and must be between 0 and 1.
 
 ## `rmc.batch_sample()`
 
@@ -336,6 +381,7 @@ results = rmc.batch_sample(
     seed=42,
     sampler="nuts",
     step_size=0.0,
+    target_accept=0.8,
     max_tree_depth=8,
     num_leapfrog_steps=15,
     show_progress=True,
@@ -345,7 +391,7 @@ results = rmc.batch_sample(
 Returns a list of `BatchResult`, one per model.
 
 Unlike the original throughput-only path, batch sampling now supports multiple chains per
-model and both NUTS and fixed-step HMC. Use `chains > 1` when reliability matters more
+model and both NUTS and fixed-trajectory HMC. Use `chains > 1` when reliability matters more
 than absolute batch throughput.
 
 ## `FitResult`
@@ -358,6 +404,7 @@ than absolute batch throughput.
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
 | `diagnostics()` | `list[dict]` | Per-parameter diagnostics |
+| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
 | `divergences()` | `list[int]` | Per-chain divergence counts |

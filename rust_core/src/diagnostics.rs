@@ -320,7 +320,7 @@ pub fn compute_transition_diagnostics(
             max_abs_energy_error,
             mean_step_size,
             max_tree_depth,
-            total_leapfrog_steps,
+            total_leapfrog_steps: chain_leapfrog_steps,
         });
     }
 
@@ -884,6 +884,8 @@ mod tests {
         assert_eq!(report.total_leapfrog_steps, 18);
         assert_eq!(report.chains.len(), 2);
         assert_eq!(report.chains[0].divergences, 1);
+        assert_eq!(report.chains[0].total_leapfrog_steps, 12);
+        assert_eq!(report.chains[1].total_leapfrog_steps, 6);
         assert_eq!(report.chains[1].max_tree_depth, None);
         assert_eq!(report.mean_accept_prob, 0.75);
         assert!(report.max_abs_energy_error >= 0.4);

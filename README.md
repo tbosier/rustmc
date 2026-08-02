@@ -1,36 +1,44 @@
 # rustmc
 
-Bayesian inference and state-space forecasting powered by Rust, with a Python API.
+Bayesian inference powered by Rust, with a Python API.
 
-> **Project status: alpha.** rustmc is suitable for research, evaluation, and controlled
-> internal workflows. It is not yet a sole source for audited financial forecasts or a
-> general-purpose replacement for PyMC or Stan.
+> **Project status: alpha.** rustmc is suitable for research, evaluation, and
+> controlled internal workflows. Its supported modeling surface is useful but still
+> intentionally smaller than mature probabilistic programming systems. Validate every
+> model on representative data before using its output for consequential decisions.
 
-rustmc is exploring a focused product thesis: make coherent Bayesian forecasts for many
-short, related business time series fast to fit, easy to aggregate, and straightforward
-to deploy. The current release contains useful foundations for that goal, but seasonality,
-regressors, hierarchical fleet models, and forecasting-specific validation are still on
-the roadmap.
+rustmc is a general Bayesian inference library built around a simple idea: use a generic
+sampler when a model needs one, but exploit model structure when a more direct algorithm
+is available. The same package therefore contains graph-based automatic differentiation
+and NUTS/HMC, reusable compiled models, exact conjugate inference, and specialized
+state-space algorithms.
 
-## Why this project exists
+It is not intended to be a smaller clone of PyMC or Stan. The long-term opportunity is a
+compact, auditable inference runtime that can recognize useful structure, fit one model
+or many related datasets, and return posterior and predictive draws with their provenance
+intact.
 
-The project is built around workloads where a model structure is reused across many
-datasets or where a specialized inference method is preferable to applying a generic
-sampler to every latent state.
+## Why rustmc
 
-- Generic NUTS and HMC execute in Rust, outside the Python hot path.
-- Independent chains and batch workloads use a shared Rayon thread pool.
-- `ModelBuilder.compile()` provides an in-memory compile-once/bind-many path.
-- Specialized local-level and local-linear-trend models use FFBS/Gibbs inference.
-- Directly observed Gaussian AR(p) models use an exact Normal-Inverse-Gamma posterior.
-- Forecasts retain `(chain, draw, horizon)` paths so users can aggregate uncertainty
-  coherently across time.
-- Fixed linear-Gaussian state-space models provide Kalman filtering, smoothing, missing
-  observation handling, and forecasting.
+- **General and specialized inference in one runtime.** The model builder uses
+  reverse-mode automatic differentiation with NUTS or HMC. Local-level, seasonal, and
+  trend models use FFBS/Gibbs, while Gaussian AR(p) uses an exact
+  Normal-Inverse-Gamma posterior.
+- **Compile once, bind many.** `ModelBuilder.compile()` separates immutable model
+  structure from validated datasets, including datasets with different row counts.
+- **Native execution.** Sampling, state-space operations, and chain coordination execute
+  in Rust outside the Python hot path.
+- **Deterministic parallelism.** Chains and repeated-model workloads use Rayon with
+  stable per-chain seed derivation and ordered results.
+- **Bayesian workflow support.** Prior predictive checks, posterior predictive draws,
+  pointwise log likelihood, convergence diagnostics, and ArviZ export are available for
+  the generic inference path.
+- **Coherent uncertainty.** Specialized forecasting APIs retain complete
+  `(chain, draw, horizon)` paths so derived totals and other nonlinear quantities can be
+  calculated draw by draw.
 
-These are implementation facts, not a claim that rustmc is faster or more accurate than
-another engine on every workload. Benchmark results depend on the model, sampler,
-hardware, tuning, and statistical quality of the draws.
+These are implementation capabilities, not a universal speed or accuracy claim.
+Performance and statistical quality depend on the model, data, tuning, and hardware.
 
 ## Installation
 
@@ -40,9 +48,9 @@ Install the latest published Python package with:
 pip install rustmc
 ```
 
-The source tree is currently prepared as version 0.9.0. Until a 0.9.0 wheel is published,
-the PyPI package may not contain the forecasting and correctness changes described on
-`main`. To build the current source:
+The source tree is prepared as version 0.9.0. Until a 0.9.0 wheel is published, the
+package on PyPI may not contain the APIs and correctness changes described on `main`.
+To build the current source:
 
 ```bash
 git clone https://github.com/tbosier/rustmc.git
@@ -53,85 +61,27 @@ python -m pip install --upgrade pip maturin numpy
 maturin develop --manifest-path python_bindings/Cargo.toml --release
 ```
 
-Python 3.9 through 3.13 are covered by the repository's source-install and wheel-install
-CI matrix. NumPy is the only required Python runtime dependency; ArviZ and Matplotlib are
-optional:
+Python 3.9 through 3.13 are covered by source-install and wheel-install CI. NumPy is the
+only required Python runtime dependency. ArviZ and Matplotlib are optional:
 
 ```bash
 pip install "rustmc[viz]"
 ```
 
 The Python extension is the supported public package today. `rustmc_core` contains the
-Rust implementation, but its API should still be considered unstable.
+Rust implementation, but its public API should still be considered unstable.
 
-## Forecasting quick start
+## Quick start
 
-The local-level model is a nonseasonal baseline for a noisy latent level. It estimates
-process and observation variances and returns both latent-state credible intervals and
-future-observation posterior-predictive intervals.
-
-```python
-import numpy as np
-import rustmc as rmc
-
-monthly_values = np.asarray(
-    [101, 98, 103, 105, 102, 108, 111, 109, 114, 116, 113, 119,
-     121, 118, 123, 126, 124, 129, 131, 128, 134, 136, 133, 139],
-    dtype=float,
-)
-
-model = rmc.BayesianLocalLevel(
-    process_variance_prior=rmc.InverseGammaPrior(shape=3.0, scale=20.0),
-    observation_variance_prior=rmc.InverseGammaPrior(shape=3.0, scale=50.0),
-    initial_mean=float(monthly_values[0]),
-    initial_variance=100.0,
-)
-fit = model.fit(monthly_values, chains=4, warmup=500, draws=1000, seed=42)
-forecast = fit.forecast(steps=12, seed=43)
-
-predictive_lower, predictive_upper = forecast.interval(0.95)
-level_lower, level_upper = forecast.state_interval(0.95)
-
-print(forecast.observation_mean)  # expected future observations
-print(predictive_lower, predictive_upper)
-print(level_lower, level_upper)   # uncertainty in the latent expected level
-
-# Aggregate the paths first, then summarize. Do not sum marginal interval bounds.
-six_month_totals = forecast.observation_samples[:, :, :6].sum(axis=2)
-print(six_month_totals.mean())
-print(np.quantile(six_month_totals, [0.025, 0.975]))
-```
-
-For rebate accrual work, distinguish the estimand:
-
-- A 95% **credible interval** describes uncertainty in a latent expected accrual or level.
-- A 95% **posterior-predictive interval** describes uncertainty in a future realized
-  payment or observation and normally includes more variation.
-- A multi-month total must be computed within each posterior path before taking
-  quantiles, which preserves dependence across months.
-
-The current fitted forecast models are equally spaced, univariate, Gaussian, and
-nonseasonal. Twenty-four monthly observations contain only two annual cycles. Do not use
-the example above as a production model for seasonal, zero-heavy, or quarter-end rebate
-payments without rolling-origin validation and suitable business drivers.
-
-Complete examples:
-
-- [`examples/rebate_accrual_forecast.py`](examples/rebate_accrual_forecast.py)
-- [`examples/bayesian_local_level_forecasting.py`](examples/bayesian_local_level_forecasting.py)
-- [`examples/bayesian_local_linear_trend_forecasting.py`](examples/bayesian_local_linear_trend_forecasting.py)
-- [`examples/bayesian_ar_forecasting.py`](examples/bayesian_ar_forecasting.py)
-- [`examples/custom_state_space_forecasting.py`](examples/custom_state_space_forecasting.py)
-
-## General inference quick start
+This example fits a Bayesian linear regression with NUTS:
 
 ```python
 import numpy as np
 import rustmc as rmc
 
 rng = np.random.default_rng(42)
-x = rng.normal(size=1000)
-y = 2.5 * x + rng.normal(size=1000)
+x = rng.normal(size=1_000)
+y = 2.5 * x + rng.normal(size=1_000)
 
 builder = rmc.ModelBuilder()
 beta = builder.normal_prior("beta", mu=0.0, sigma=1.0)
@@ -146,46 +96,121 @@ fit = rmc.sample(
     model_spec=builder.build(),
     data={"x": x, "y": y},
     chains=4,
-    warmup=1000,
-    draws=1000,
+    warmup=1_000,
+    draws=1_000,
     seed=42,
 )
 print(fit.summary())
 ```
 
-The model builder supports scalar hierarchical priors, GLM-style expressions, and a
-vectorized `beta @ "X"` path backed by faer. `ModelBuilder.compile()` can reuse one
-validated graph structure across multiple data bindings. The older `sample()` and
-`batch_sample()` entry points remain available.
+The same modeling surface supports scalar hierarchical priors, GLM-style expressions,
+and a vectorized `beta @ "X"` path backed by faer.
+
+### Reuse one model structure
+
+When the structure is shared across datasets, compile it once and bind new data:
+
+```python
+builder = rmc.ModelBuilder()
+intercept = builder.normal_prior("intercept", mu=0.0, sigma=5.0)
+slope = builder.normal_prior("slope", mu=0.0, sigma=2.0)
+builder.normal_likelihood(
+    "obs",
+    mu_expr=intercept + slope * "x",
+    sigma=1.0,
+    observed_key="y",
+)
+
+compiled = builder.compile()
+batch = compiled.sample_batch(
+    [
+        {"x": x_a, "y": y_a},
+        {"x": x_b, "y": y_b},
+    ],
+    ids=["dataset-a", "dataset-b"],
+    chains=4,
+    warmup=500,
+    draws=1_000,
+    seed=42,
+)
+```
+
+`CompiledModel` validates each binding against the same structural schema. The legacy
+`sample()` and `batch_sample()` entry points remain available.
+
+## Forecasting as an application
+
+Forecasting is one application of rustmc's structure-aware inference rather than the
+definition of the library. Current specialized models include Bayesian local level,
+seasonal local level, local linear trend, and directly observed Gaussian AR(p), plus
+fixed-parameter linear Gaussian state-space filtering, smoothing, and a sum-to-zero
+seasonal constructor.
+
+```python
+values = np.asarray(
+    [101, 98, 103, 105, 102, 108, 111, 109, 114, 116, 113, 119,
+     121, 118, 123, 126, 124, 129, 131, 128, 134, 136, 133, 139],
+    dtype=float,
+)
+
+model = rmc.BayesianLocalLevel(
+    process_variance_prior=rmc.InverseGammaPrior(shape=3.0, scale=20.0),
+    observation_variance_prior=rmc.InverseGammaPrior(shape=3.0, scale=50.0),
+    initial_mean=float(values[0]),
+    initial_variance=100.0,
+)
+fit = model.fit(values, chains=4, warmup=500, draws=1_000, seed=42)
+forecast = fit.forecast(steps=12, seed=43)
+
+predictive_lower, predictive_upper = forecast.interval(0.95)
+level_lower, level_upper = forecast.state_interval(0.95)
+
+# Derived quantities are summarized after calculation within each joint draw.
+six_period_totals = forecast.observation_samples[:, :, :6].sum(axis=2)
+total_mean = six_period_totals.mean()
+total_interval = np.quantile(six_period_totals, [0.025, 0.975])
+```
+
+The observation interval is posterior predictive; the latent-level interval is a
+credible interval for the expected level. Applications include demand, operations,
+sensor data, and financial series such as rebate accruals. Rebate payments are only an
+example: seasonal settlement timing, zeros, contract drivers, and positive support need
+careful priors and may need calendar, covariate, hurdle, or positive-valued models beyond
+the current Gaussian fitted APIs.
+
+Forecasting examples:
+
+- [`examples/rebate_accrual_forecast.py`](examples/rebate_accrual_forecast.py)
+- [`examples/bayesian_local_level_forecasting.py`](examples/bayesian_local_level_forecasting.py)
+- [`examples/bayesian_seasonal_forecasting.py`](examples/bayesian_seasonal_forecasting.py)
+- [`examples/bayesian_local_linear_trend_forecasting.py`](examples/bayesian_local_linear_trend_forecasting.py)
+- [`examples/bayesian_ar_forecasting.py`](examples/bayesian_ar_forecasting.py)
+- [`examples/custom_state_space_forecasting.py`](examples/custom_state_space_forecasting.py)
 
 ## Implemented surface
 
 | Area | Current support |
 |---|---|
-| Generic inference | NUTS, fixed-step HMC, transformed continuous parameters, parallel chains |
+| Generic inference | NUTS with configurable `target_accept`, fixed-trajectory HMC, transformed continuous parameters, parallel chains |
 | Continuous priors | Normal, Student-t, HalfNormal, Exponential, LogNormal, Gamma, Beta, Uniform |
 | Likelihoods | Normal, Bernoulli-logit, Poisson-log, Exponential, LogNormal, Negative Binomial |
-| Diagnostics | Rank-normalized folded split R-hat, rank-normalized bulk/tail ESS, MCSE, 94% HDI, divergences and acceptance summaries |
+| Model structure | Scalar hierarchical priors, scalar/vector regression expressions, automatic non-centering for supported scalar hierarchies |
+| Diagnostics | Rank-normalized folded split R-hat, rank-normalized bulk/tail ESS, MCSE, empirical 94% HDI, divergences and acceptance summaries |
 | Predictive workflow | Prior predictive, posterior predictive, pointwise log likelihood, ArviZ export |
-| Repeated models | In-memory compile/bind reuse and batch sampling |
-| Fixed state space | General time-homogeneous linear-Gaussian models, Kalman filter, RTS smoother, missing values, conditional forecasts |
-| Fitted forecasting | Bayesian local level, local linear trend, and directly observed Gaussian AR(p) |
+| Repeated models | In-memory compile/bind reuse and parallel batch sampling |
+| Fixed state space | Time-homogeneous linear-Gaussian models, Kalman filter, RTS smoother, missing observations, a seasonal constructor, joint and cumulative conditional forecasts |
+| Specialized inference | Bayesian local level, seasonal local level, local linear trend, and directly observed Gaussian AR(p) |
 
-Bernoulli and Poisson are available as prior-predictive distributions, but discrete
-latent parameters are not suitable for the current gradient-based samplers. The fitted
-AR(p) coefficient posterior is not constrained to the stationary region; explosive
-draws are possible and must not be silently discarded.
+Bernoulli and Poisson are exposed for prior-predictive use, but discrete latent
+parameters are not suitable for the current gradient-based samplers. Fitted AR(p)
+coefficient draws are not constrained to the stationary region; explosive draws are
+possible and are not silently discarded.
 
 ## Validation and benchmarks
 
-The repository includes:
-
-- finite-difference autodiff checks;
-- analytic and synthetic posterior-recovery tests;
-- deterministic cross-thread tests for specialized forecasting models;
-- state-space filter, smoother, missing-value, and forecast tests;
-- Python API, packaging, clean-wheel, and supported-version checks; and
-- benchmark drivers that record timing and statistical-quality metrics.
+The repository includes finite-difference autodiff checks, analytic and synthetic
+posterior recovery, state-space reference tests, cross-thread determinism checks, Python
+API tests, and clean-wheel verification.
 
 Run the core verification with:
 
@@ -196,84 +221,39 @@ cargo test --workspace --release
 python -m pytest -q
 ```
 
-Run `python examples/run_benchmarks.py --help` for the benchmark harness. No numeric
-cross-engine result is claimed in this README because the repository does not currently
-retain the complete raw output, environment, and revision needed to audit one. Use
+Run `python examples/run_benchmarks.py --help` for the benchmark harness. This README
+does not publish a numeric cross-engine result because the repository does not retain a
+complete raw output, environment, and revision for one. Use
 [`benchmarks/RESULTS_TEMPLATE.md`](benchmarks/RESULTS_TEMPLATE.md) when publishing a
-result. Report wall time together with R-hat, ESS, divergences, posterior error, memory,
-seeds, and matched work across engines.
+result, and report statistical quality together with wall time.
 
-Tests demonstrate correctness on their stated reference cases. They do not establish
-accuracy or interval calibration for a new user's data-generating process. Forecasting
-claims require rolling-origin evaluation on representative historical data.
+Tests establish behavior on their stated reference cases. They do not prove that a new
+model is appropriate for a user's data or that its intervals are calibrated under
+misspecification.
 
-## Current limitations and non-goals
+## Current limitations
 
-Important current limitations:
-
-- No native fitted seasonal, calendar, holiday, or dynamic-regression forecast model.
-- No positive or hurdle observation model in the specialized forecasting API.
-- No hierarchical pooling across related time series.
-- No unified dated forecast result with built-in cumulative summaries and backtesting.
-- Generic fixed state-space matrices are inputs, not inferred parameters.
+- The expression and distribution surface is deliberately finite; arbitrary user-defined
+  probability functions and broad tensor algebra are not yet supported.
+- Vector-valued hierarchical priors, group indexing, named dimensions, and coordinates
+  are incomplete.
 - Compile/bind artifacts are in-memory only and are not portable or versioned.
-- Vector-valued hierarchical priors, named dimensions, and coordinates are incomplete.
-- Specialized forecast fits do not yet expose the full generic diagnostic surface.
-- Performance has not been established across a representative, reproducible corpus.
+- Initialization controls remain limited; BFMI and explicit termination reasons are not
+  yet reported.
+- The generic state-space API accepts fixed system matrices rather than inferring them.
+- Specialized forecasting lacks covariates/calendar interventions, multiple
+  seasonalities, positive/robust observations, hierarchical pooling, dated outputs,
+  and rolling backtests.
+- Performance has not been established on a representative, retained benchmark corpus.
 
-rustmc is not currently pursuing arbitrary-PPL feature parity, a Stan-language parser,
-GPU inference, or distributed MCMC. Those directions should not displace correctness,
-decision-grade forecasting, and a stable deployment artifact.
-
-## Roadmap, in order
-
-### 1. Trust and release integrity
-
-- Publish 0.9.0 from a clean tag with the tested wheel matrix and synchronized Rust and
-  Python versions.
-- Maintain reference tests for every log density and gradient, plus recovery tests for
-  every supported likelihood.
-- Extend sampler telemetry with energy/BFMI, tree-depth saturation, leapfrog counts,
-  termination reasons, configurable initialization, and `target_accept`.
-- Check in raw, reproducible validation and benchmark artifacts before making numeric
-  performance or calibration claims.
-
-### 2. Decision-grade univariate forecasting
-
-- Unify forecast results with dates, named dimensions, latent and observation summaries,
-  and draw-wise cumulative 3/6/12-period totals.
-- Ship a maintained Python stub surface (`.pyi` and `py.typed`) for the public API.
-- Add rolling-origin backtests, seasonal-naive and ETS baselines, coverage, bias,
-  sharpness, CRPS/WIS, and prior-sensitivity reports.
-- Add fitted seasonality, calendar effects, regressors, exposure/offset terms, and
-  time-varying matrices.
-- Add positive, robust, censored, and zero-heavy observation families suitable for
-  revenue, demand, and rebate payments.
-
-### 3. Forecast fleets
-
-- Add hierarchical partial pooling across customers, programs, products, or locations.
-- Provide group indexing, panel data, coherent aggregation/reconciliation, partial
-  failure handling, and incremental updates.
-- Establish a reproducible short-series corpus with calibration and throughput gates.
-
-### 4. Deployment
-
-- Define a portable, versioned, slot-only model artifact.
-- Support prediction on new bindings from Rust and Python without rebuilding the graph.
-- Provide a stable Rust runtime and then consider C, WASM, or service interfaces.
-
-### 5. Broader inference methods
-
-- MAP estimation and Laplace approximation.
-- Variational inference where its approximation quality can be measured.
-- Automatic reparameterization and broader hierarchical vector support.
+See [`ROADMAP.md`](ROADMAP.md) for the ordered engineering plan and differentiated
+capability ideas.
 
 ## Contributing
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development and evidence requirements. Bug
-reports that include a minimal model, seed, environment, diagnostics, and expected result
-are especially valuable.
+reports are most useful when they include a minimal model, seed, environment,
+diagnostics, and expected result.
 
 ## License
 

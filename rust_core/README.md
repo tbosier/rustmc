@@ -1,13 +1,13 @@
 # rustmc_core
 
 `rustmc_core` is the Rust engine behind the [`rustmc`](https://pypi.org/project/rustmc/)
-Python package. It provides Bayesian sampling, linear Gaussian state-space filtering and
-smoothing, and fitted local-level, local-linear-trend, and autoregressive forecasting
-models.
+Python package. It combines graph-based Bayesian sampling with specialized algorithms
+for model structures that admit more direct inference, including conjugate and linear
+Gaussian state-space methods.
 
 The Rust API is alpha and currently favors explicit model configuration over a broad
-probabilistic-programming language. It is useful when inference or forecasting must run
-inside a Rust process. It is not presented as a general replacement for Stan or PyMC.
+probabilistic-programming language. It is useful when inference must run inside a Rust
+process. It is not presented as a general replacement for Stan or PyMC.
 
 ```toml
 [dependencies]
@@ -31,12 +31,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-Forecast draws retain their joint path structure, allowing downstream code to calculate
-distributions of cumulative values correctly. Missing observations are represented by
-`NaN` in the state-space and local-level APIs.
+Fixed-system forecasts expose the joint future-observation covariance and cumulative
+Gaussian moments. Posterior-predictive draws from fitted models retain their joint path
+structure, allowing downstream code to calculate distributions of cumulative values
+correctly. Missing observations are represented by `NaN` in state-space APIs.
 
-Current limitations include no fitted seasonal or covariate state-space model, no stable
-serialized deployment format, and no stability guarantee for the alpha Rust API. See the
+Current limitations include no fitted covariate or multiple-seasonality state-space
+model, no stable serialized deployment format, and no stability guarantee for the alpha Rust API. See the
 [repository](https://github.com/tbosier/rustmc) for Python documentation, examples, and the
 ordered roadmap.
 

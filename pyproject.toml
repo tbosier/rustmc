@@ -6,13 +6,13 @@ build-backend = "maturin"
 [project]
 name = "rustmc"
 version = "0.9.0"
-description = "Bayesian inference and state-space forecasting powered by Rust"
+description = "Structure-aware Bayesian inference powered by Rust"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = ["numpy"]
-keywords = ["bayesian", "forecasting", "mcmc", "state-space", "statistics", "rust"]
+keywords = ["bayesian", "inference", "mcmc", "statistics", "rust", "python"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -32,6 +32,7 @@ classifiers = [
 
 [project.optional-dependencies]
 viz = ["arviz", "matplotlib"]
+benchmark = ["arviz", "pymc", "nutpie", "numpyro"]
 # NOTE: deliberately not using a [dependency-groups] (PEP 735) table here --
 # `maturin develop` auto-installs dependency groups via `pip install
 # --group`, which requires pip >=25.1. Older pip (as ships with several

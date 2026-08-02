@@ -11,6 +11,9 @@
 use std::error::Error;
 use std::fmt;
 
+use rand::Rng;
+use rand_distr::{Distribution, StandardNormal};
+
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 const LOG_2_PI: f64 = 1.8378770664093453;
 
@@ -20,6 +23,7 @@ pub enum StateSpaceError {
     InvalidParameter(String),
     NonFinite(String),
     NotSymmetric(String),
+    NotPositiveSemidefinite(String),
     NotPositiveDefinite(String),
     InvalidVariance(String),
     NumericalFailure(String),
@@ -32,6 +36,9 @@ impl fmt::Display for StateSpaceError {
             Self::InvalidParameter(message) => write!(f, "invalid parameter: {message}"),
             Self::NonFinite(message) => write!(f, "non-finite value: {message}"),
             Self::NotSymmetric(message) => write!(f, "matrix is not symmetric: {message}"),
+            Self::NotPositiveSemidefinite(message) => {
+                write!(f, "matrix is not positive semidefinite: {message}")
+            }
             Self::NotPositiveDefinite(message) => {
                 write!(f, "matrix is not positive definite: {message}")
             }
@@ -65,6 +72,13 @@ pub struct ForecastResult {
     pub state_covariances: Vec<Vec<f64>>,
     pub observation_means: Vec<f64>,
     pub observation_variances: Vec<f64>,
+    /// Joint covariance of future observations, stored row-major as
+    /// `steps * steps` entries.
+    pub observation_covariance: Vec<f64>,
+    /// Prefix-sum means: entry `h - 1` is the mean of observations 1 through h.
+    pub cumulative_observation_means: Vec<f64>,
+    /// Prefix-sum variances, including all cross-horizon covariance terms.
+    pub cumulative_observation_variances: Vec<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -114,9 +128,9 @@ impl LinearGaussianStateSpace {
         }
         check_symmetric("process covariance", &process_covariance, dimension)?;
         check_symmetric("initial covariance", &initial_covariance, dimension)?;
-        cholesky(&process_covariance, dimension).map_err(|_| {
-            StateSpaceError::NotPositiveDefinite(
-                "process covariance must be strictly positive definite".into(),
+        positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
+            StateSpaceError::NotPositiveSemidefinite(
+                "process covariance must be positive semidefinite".into(),
             )
         })?;
         cholesky(&initial_covariance, dimension).map_err(|_| {
@@ -170,6 +184,109 @@ impl LinearGaussianStateSpace {
             observation_variance,
             vec![initial_level, initial_trend],
             vec![initial_level_variance, 0.0, 0.0, initial_trend_variance],
+        )
+    }
+
+    /// Construct a local-level model with sum-to-zero dummy seasonality.
+    ///
+    /// `initial_seasonal_effects` contains one complete cycle in forecast
+    /// order and must have `period` finite entries summing to zero. The latent
+    /// state contains the level and `period - 1` seasonal states. Deterministic
+    /// shift states make the process covariance positive semidefinite rather
+    /// than strictly positive definite.
+    #[allow(clippy::too_many_arguments)]
+    pub fn seasonal_local_level(
+        period: usize,
+        level_variance: f64,
+        seasonal_variance: f64,
+        observation_variance: f64,
+        initial_level: f64,
+        initial_seasonal_effects: Vec<f64>,
+        initial_level_variance: f64,
+        initial_seasonal_variance: f64,
+    ) -> Result<Self, StateSpaceError> {
+        if period < 2 {
+            return Err(StateSpaceError::InvalidParameter(
+                "seasonal period must be at least 2".into(),
+            ));
+        }
+        check_len(
+            "initial seasonal effects",
+            initial_seasonal_effects.len(),
+            period,
+        )?;
+        check_finite("initial seasonal effects", &initial_seasonal_effects)?;
+        let seasonal_scale = initial_seasonal_effects
+            .iter()
+            .map(|effect| effect.abs())
+            .sum::<f64>()
+            .max(1.0);
+        let seasonal_sum = initial_seasonal_effects.iter().sum::<f64>();
+        if seasonal_sum.abs() > SYMMETRY_TOLERANCE * seasonal_scale {
+            return Err(StateSpaceError::InvalidParameter(format!(
+                "initial seasonal effects must sum to zero; sum is {seasonal_sum}"
+            )));
+        }
+        for (name, variance) in [
+            ("level variance", level_variance),
+            ("seasonal variance", seasonal_variance),
+        ] {
+            if !variance.is_finite() || variance < 0.0 {
+                return Err(StateSpaceError::InvalidVariance(format!(
+                    "{name} must be finite and non-negative"
+                )));
+            }
+        }
+        for (name, variance) in [
+            ("initial level variance", initial_level_variance),
+            ("initial seasonal variance", initial_seasonal_variance),
+        ] {
+            if !variance.is_finite() || variance <= 0.0 {
+                return Err(StateSpaceError::InvalidVariance(format!(
+                    "{name} must be finite and strictly positive"
+                )));
+            }
+        }
+
+        let dimension = period;
+        let square = dimension.checked_mul(dimension).ok_or_else(|| {
+            StateSpaceError::InvalidDimension("seasonal period is too large".into())
+        })?;
+        let mut transition = vec![0.0; square];
+        transition[0] = 1.0;
+        for column in 1..dimension {
+            transition[dimension + column] = -1.0;
+        }
+        for row in 2..dimension {
+            transition[row * dimension + row - 1] = 1.0;
+        }
+
+        let mut observation = vec![0.0; dimension];
+        observation[0] = 1.0;
+        observation[1] = 1.0;
+        let mut process_covariance = vec![0.0; square];
+        process_covariance[0] = level_variance;
+        process_covariance[dimension + 1] = seasonal_variance;
+
+        let mut initial_mean = vec![0.0; dimension];
+        initial_mean[0] = initial_level;
+        for state_index in 1..dimension {
+            initial_mean[state_index] = initial_seasonal_effects[period - state_index];
+        }
+        let mut initial_covariance = vec![0.0; square];
+        initial_covariance[0] = initial_level_variance;
+        for index in 1..dimension {
+            initial_covariance[index * dimension + index] = initial_seasonal_variance;
+        }
+
+        Self::new(
+            dimension,
+            transition,
+            observation,
+            process_covariance,
+            observation_variance,
+            initial_mean,
+            initial_covariance,
         )
     }
 
@@ -440,12 +557,142 @@ impl LinearGaussianStateSpace {
             previous_mean = mean;
             previous_covariance = covariance;
         }
+
+        let square = steps.checked_mul(steps).ok_or_else(|| {
+            StateSpaceError::InvalidDimension("forecast horizon is too large".into())
+        })?;
+        let mut observation_covariance = vec![0.0; square];
+        for first in 0..steps {
+            let mut cross_covariance = state_covariances[first].clone();
+            for second in first..steps {
+                if second > first {
+                    cross_covariance =
+                        mat_mul_transpose_right(&cross_covariance, &self.transition, d);
+                }
+                let mut covariance = dot(
+                    &self.observation,
+                    &mat_vec(&cross_covariance, &self.observation, d),
+                );
+                if first == second {
+                    covariance += self.observation_variance;
+                }
+                if !covariance.is_finite() {
+                    return Err(StateSpaceError::NumericalFailure(format!(
+                        "joint forecast covariance at ({first}, {second}) is not finite"
+                    )));
+                }
+                observation_covariance[first * steps + second] = covariance;
+                observation_covariance[second * steps + first] = covariance;
+            }
+        }
+
+        let mut cumulative_observation_means = Vec::with_capacity(steps);
+        let mut cumulative_observation_variances = Vec::with_capacity(steps);
+        let mut cumulative_mean = 0.0;
+        let mut cumulative_variance = 0.0;
+        for end in 0..steps {
+            cumulative_mean += observation_means[end];
+            cumulative_variance += observation_covariance[end * steps + end];
+            for earlier in 0..end {
+                cumulative_variance += 2.0 * observation_covariance[earlier * steps + end];
+            }
+            if !cumulative_mean.is_finite()
+                || !cumulative_variance.is_finite()
+                || cumulative_variance <= 0.0
+            {
+                return Err(StateSpaceError::NumericalFailure(format!(
+                    "cumulative forecast moments through step {end} are invalid"
+                )));
+            }
+            cumulative_observation_means.push(cumulative_mean);
+            cumulative_observation_variances.push(cumulative_variance);
+        }
         Ok(ForecastResult {
             state_means,
             state_covariances,
             observation_means,
             observation_variances,
+            observation_covariance,
+            cumulative_observation_means,
+            cumulative_observation_variances,
         })
+    }
+
+    /// Draw the pre-observation initial state and all filtered states from the
+    /// joint smoothing distribution. This is crate-private because callers
+    /// must still provide an outer parameter sampler to obtain Bayesian fits.
+    pub(crate) fn sample_states_ffbs<R: Rng + ?Sized>(
+        &self,
+        observations: &[f64],
+        rng: &mut R,
+    ) -> Result<Vec<Vec<f64>>, StateSpaceError> {
+        let filter = self.filter(observations)?;
+        let count = observations.len();
+        let d = self.dimension;
+        let mut filtered_means = Vec::with_capacity(count + 1);
+        let mut filtered_covariances = Vec::with_capacity(count + 1);
+        filtered_means.push(self.initial_mean.clone());
+        filtered_means.extend(filter.filtered_means.iter().cloned());
+        filtered_covariances.push(self.initial_covariance.clone());
+        filtered_covariances.extend(filter.filtered_covariances.iter().cloned());
+
+        let mut states = vec![vec![0.0; d]; count + 1];
+        states[count] = sample_multivariate_normal(
+            &filtered_means[count],
+            &filtered_covariances[count],
+            d,
+            rng,
+        )?;
+
+        for index in (0..count).rev() {
+            let filtered_covariance = &filtered_covariances[index];
+            let numerator = mat_mul_transpose_right(filtered_covariance, &self.transition, d);
+            let prediction_factor =
+                cholesky(&filter.predicted_covariances[index], d).map_err(|_| {
+                    StateSpaceError::NumericalFailure(format!(
+                        "predicted covariance at time {index} could not be factored for FFBS"
+                    ))
+                })?;
+            let mut gain = vec![0.0; d * d];
+            for row in 0..d {
+                let rhs = &numerator[row * d..(row + 1) * d];
+                let solution = cholesky_solve(&prediction_factor, rhs, d);
+                gain[row * d..(row + 1) * d].copy_from_slice(&solution);
+            }
+
+            let delta: Vec<f64> = states[index + 1]
+                .iter()
+                .zip(&filter.predicted_means[index])
+                .map(|(sampled, predicted)| sampled - predicted)
+                .collect();
+            let correction = mat_vec(&gain, &delta, d);
+            let conditional_mean: Vec<f64> = filtered_means[index]
+                .iter()
+                .zip(correction)
+                .map(|(mean, correction)| mean + correction)
+                .collect();
+
+            // Stable Joseph-style form for P - J P_pred J':
+            // (I - J T) P (I - J T)' + J Q J'.
+            let mut residual_transition = identity(d);
+            let gain_transition = mat_mul(&gain, &self.transition, d);
+            for (entry, subtraction) in residual_transition.iter_mut().zip(gain_transition) {
+                *entry -= subtraction;
+            }
+            let propagated = mat_mul_transpose_right(
+                &mat_mul(&residual_transition, filtered_covariance, d),
+                &residual_transition,
+                d,
+            );
+            let process_contribution =
+                mat_mul_transpose_right(&mat_mul(&gain, &self.process_covariance, d), &gain, d);
+            let mut conditional_covariance = propagated;
+            add_assign(&mut conditional_covariance, &process_contribution);
+            symmetrize(&mut conditional_covariance, d);
+            states[index] =
+                sample_multivariate_normal(&conditional_mean, &conditional_covariance, d, rng)?;
+        }
+        Ok(states)
     }
 }
 
@@ -591,6 +838,60 @@ fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
     Ok(factor)
 }
 
+/// Cholesky-like validation for positive-semidefinite covariance matrices.
+/// A zero pivot is valid only when the corresponding residual off-diagonal
+/// entries are also numerically zero.
+fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
+    let mut factor = vec![0.0; d * d];
+    let scale = matrix.iter().map(|value| value.abs()).fold(1.0, f64::max);
+    let tolerance = 1e-12 * scale;
+    for i in 0..d {
+        for j in 0..=i {
+            let mut value = matrix[i * d + j];
+            for k in 0..j {
+                value -= factor[i * d + k] * factor[j * d + k];
+            }
+            if i == j {
+                if !value.is_finite() || value < -tolerance {
+                    return Err(());
+                }
+                factor[i * d + j] = value.max(0.0).sqrt();
+            } else if factor[j * d + j] > tolerance.sqrt() {
+                factor[i * d + j] = value / factor[j * d + j];
+            } else if value.abs() > tolerance {
+                return Err(());
+            }
+        }
+    }
+    Ok(factor)
+}
+
+fn sample_multivariate_normal<R: Rng + ?Sized>(
+    mean: &[f64],
+    covariance: &[f64],
+    d: usize,
+    rng: &mut R,
+) -> Result<Vec<f64>, StateSpaceError> {
+    let factor = positive_semidefinite_factor(covariance, d).map_err(|_| {
+        StateSpaceError::NumericalFailure(
+            "conditional smoothing covariance is not positive semidefinite".into(),
+        )
+    })?;
+    let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
+    let mut draw = mean.to_vec();
+    for row in 0..d {
+        for column in 0..=row {
+            draw[row] += factor[row * d + column] * standard[column];
+        }
+    }
+    if draw.iter().any(|value| !value.is_finite()) {
+        return Err(StateSpaceError::NumericalFailure(
+            "FFBS produced a non-finite state draw".into(),
+        ));
+    }
+    Ok(draw)
+}
+
 fn cholesky_solve(factor: &[f64], rhs: &[f64], d: usize) -> Vec<f64> {
     let mut result = rhs.to_vec();
     for i in 0..d {
@@ -611,6 +912,8 @@ fn cholesky_solve(factor: &[f64], rhs: &[f64], d: usize) -> Vec<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
@@ -664,6 +967,137 @@ mod tests {
         assert_close(result.state_covariances[1][0], 5.0);
         assert_close(result.observation_variances[0], 6.0);
         assert_close(result.observation_variances[1], 7.0);
+        assert_eq!(result.observation_covariance, vec![6.0, 4.0, 4.0, 7.0]);
+        assert_eq!(result.cumulative_observation_means, vec![0.0, 0.0]);
+        assert_close(result.cumulative_observation_variances[0], 6.0);
+        // Var(y1 + y2) = 6 + 7 + 2 * Cov(y1, y2), where Cov=4.
+        assert_close(result.cumulative_observation_variances[1], 21.0);
+    }
+
+    #[test]
+    fn seasonal_local_level_repeats_a_sum_to_zero_cycle() {
+        let effects = vec![1.0, -0.5, -0.25, -0.25];
+        let model = LinearGaussianStateSpace::seasonal_local_level(
+            4,
+            0.0,
+            0.0,
+            0.1,
+            10.0,
+            effects.clone(),
+            1.0,
+            1.0,
+        )
+        .unwrap();
+
+        assert_eq!(model.dimension(), 4);
+        assert_eq!(model.process_covariance, vec![0.0; 16]);
+        let forecast = model.forecast(&[], 8).unwrap();
+        let expected: Vec<f64> = effects
+            .iter()
+            .cycle()
+            .take(8)
+            .map(|effect| 10.0 + effect)
+            .collect();
+        assert_eq!(forecast.observation_means, expected);
+        assert!(forecast
+            .observation_covariance
+            .iter()
+            .all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn seasonal_local_level_validates_period_effects_and_variances() {
+        assert!(matches!(
+            LinearGaussianStateSpace::seasonal_local_level(
+                1,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+                vec![0.0],
+                1.0,
+                1.0,
+            ),
+            Err(StateSpaceError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            LinearGaussianStateSpace::seasonal_local_level(
+                4,
+                1.0,
+                1.0,
+                1.0,
+                0.0,
+                vec![1.0, 0.0, 0.0, 0.0],
+                1.0,
+                1.0,
+            ),
+            Err(StateSpaceError::InvalidParameter(_))
+        ));
+        assert!(matches!(
+            LinearGaussianStateSpace::seasonal_local_level(
+                4,
+                -1.0,
+                1.0,
+                1.0,
+                0.0,
+                vec![0.0; 4],
+                1.0,
+                1.0,
+            ),
+            Err(StateSpaceError::InvalidVariance(_))
+        ));
+    }
+
+    #[test]
+    fn seasonal_ffbs_preserves_deterministic_shifts_and_matches_terminal_moments() {
+        let model = LinearGaussianStateSpace::seasonal_local_level(
+            4,
+            0.08,
+            0.03,
+            0.2,
+            5.0,
+            vec![1.0, -0.5, -0.25, -0.25],
+            2.0,
+            1.0,
+        )
+        .unwrap();
+        let observations = [6.0, 4.7, f64::NAN, 4.8, 6.1, 4.5, 4.9, 4.8];
+        let smoother = model.smooth(&observations).unwrap();
+        let expected_mean = smoother.smoothed_means.last().unwrap();
+        let expected_covariance = smoother.smoothed_covariances.last().unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(91);
+        let draws = 6000;
+        let mut sums = [0.0; 4];
+        let mut products = [0.0; 16];
+        for _ in 0..draws {
+            let states = model.sample_states_ffbs(&observations, &mut rng).unwrap();
+            for pair in states.windows(2) {
+                assert!((pair[1][2] - pair[0][1]).abs() < 1e-8);
+                assert!((pair[1][3] - pair[0][2]).abs() < 1e-8);
+            }
+            let terminal = states.last().unwrap();
+            for row in 0..4 {
+                sums[row] += terminal[row];
+                for column in 0..4 {
+                    products[row * 4 + column] += terminal[row] * terminal[column];
+                }
+            }
+        }
+        let sampled_mean: Vec<f64> = sums.iter().map(|sum| sum / draws as f64).collect();
+        for index in 0..4 {
+            assert!((sampled_mean[index] - expected_mean[index]).abs() < 0.04);
+        }
+        for row in 0..4 {
+            for column in 0..4 {
+                let sampled_covariance = products[row * 4 + column] / draws as f64
+                    - sampled_mean[row] * sampled_mean[column];
+                assert!(
+                    (sampled_covariance - expected_covariance[row * 4 + column]).abs() < 0.05,
+                    "covariance ({row}, {column}) differs: {sampled_covariance} vs {}",
+                    expected_covariance[row * 4 + column]
+                );
+            }
+        }
     }
 
     #[test]
@@ -750,9 +1184,19 @@ mod tests {
             ),
             Err(StateSpaceError::NotSymmetric(_))
         ));
+        LinearGaussianStateSpace::local_level(0.0, 1.0, 0.0, 1.0)
+            .expect("deterministic state evolution has a valid semidefinite covariance");
         assert!(matches!(
-            LinearGaussianStateSpace::local_level(0.0, 1.0, 0.0, 1.0),
-            Err(StateSpaceError::NotPositiveDefinite(_))
+            LinearGaussianStateSpace::new(
+                2,
+                vec![1.0, 0.0, 0.0, 1.0],
+                vec![1.0, 0.0],
+                vec![1.0, 2.0, 2.0, 1.0],
+                1.0,
+                vec![0.0; 2],
+                vec![1.0, 0.0, 0.0, 1.0]
+            ),
+            Err(StateSpaceError::NotPositiveSemidefinite(_))
         ));
         let model = LinearGaussianStateSpace::local_level(1.0, 1.0, 0.0, 1.0).unwrap();
         assert!(matches!(

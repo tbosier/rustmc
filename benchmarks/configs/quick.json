@@ -1,0 +1,20 @@
+{
+  "name": "linear-regression-quick",
+  "observations": 250,
+  "parameters": 3,
+  "chains": 2,
+  "warmup": 100,
+  "draws": 100,
+  "threads": 2,
+  "data_seed": 20260802,
+  "sampler_seed": 314159,
+  "observation_sigma": 1.0,
+  "prior_sigma": 1.0,
+  "target_accept": 0.8,
+  "max_tree_depth": 10,
+  "quality_max_rhat": 1.05,
+  "quality_max_divergences": 0,
+  "quality_min_ess_bulk": 50.0,
+  "quality_max_mean_error_sd_units": 0.3,
+  "quality_max_sd_relative_rmse": 0.3
+}

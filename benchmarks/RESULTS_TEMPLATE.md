@@ -19,13 +19,17 @@ the relevant field instead of leaving it blank or guessing.
 | rustmc version | |
 | PyMC version | |
 | nutpie version | |
+| NumPyro version | |
+| JAX version / backend / devices | |
 | arviz version | |
 | numpy version | |
 | Python version | |
 
 ## Model / workload
 
-- Script: `examples/...`
+- Script: `benchmarks/run.py`
+- Machine-readable config file:
+- Data SHA-256 (must match across every engine subprocess):
 - Description of the model (parameters, likelihood, observation count):
 - True/simulated parameter values (if synthetic data):
 - Which parameters are estimated vs. fixed as known constants, **on each
@@ -43,8 +47,10 @@ the relevant field instead of leaving it blank or guessing.
 | Phase | Engine A | Engine B | ... |
 |---|---|---|---|
 | Model construction | | | |
-| Compilation | | | |
-| Sampling | | | |
+| Compilation (only where separately observable) | | | |
+| Warmup / adaptation (only where separately observable) | | | |
+| Retained sampling (only where separately observable) | | | |
+| Engine-native combined phase(s), named exactly | | | |
 | Post-processing (diagnostics, export) | | | |
 | **Total wall time** | | | |
 
@@ -60,13 +66,15 @@ the whole time to "sampling".
 | Divergences | | | |
 | Max rank-normalized folded split R-hat (needs >=2 chains) | | | |
 | Mean / min bulk ESS | | | |
-| ESS/s (bulk ESS / total wall time) | | | |
+| Mean bulk ESS / fit-second (primary cross-engine throughput) | | | |
+| Mean bulk ESS / retained-sampling-second (only where separately observable) | | | |
 | Posterior error vs. known simulated truth (e.g. RMSE of posterior mean vs. true parameter) | | | |
 | Peak RSS (MB) | | | |
+| Machine-readable quality gate passed? (necessary, not sufficient) | | | |
 
 ## Result
 
-- Raw output log: `benchmarks/results/<name>.log` (or pasted below)
+- Raw JSON from `benchmarks/run.py`:
 - Honest conclusion (state a loss plainly if there is one):
 
 ## Reproduction

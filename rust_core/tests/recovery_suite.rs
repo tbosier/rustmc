@@ -29,6 +29,7 @@ fn sample_graph(
             num_draws: draws,
             num_warmup: warmup,
             step_size: 0.0,
+            target_accept: 0.80,
             num_leapfrog_steps: 15,
             max_tree_depth,
             seed,

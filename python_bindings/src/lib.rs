@@ -23,6 +23,13 @@ use rustmc_core::bayesian_forecast::{
     LocalLevelPosteriorDraw as CoreLocalLevelPosteriorDraw,
     PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
 };
+use rustmc_core::bayesian_seasonal::{
+    fit_bayesian_seasonal_local_level,
+    BayesianSeasonalLocalLevelConfig as CoreBayesianSeasonalLocalLevelConfig,
+    SeasonalLocalLevelPosterior as CoreSeasonalLocalLevelPosterior,
+    SeasonalLocalLevelPosteriorDraw as CoreSeasonalLocalLevelPosteriorDraw,
+    SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
+};
 use rustmc_core::bayesian_trend::{
     fit_bayesian_local_linear_trend,
     BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
@@ -2476,6 +2483,7 @@ fn validate_sample_config(
     draws: usize,
     warmup: usize,
     step_size: f64,
+    target_accept: f64,
     max_tree_depth: usize,
     num_leapfrog_steps: usize,
 ) -> PyResult<()> {
@@ -2491,6 +2499,11 @@ fn validate_sample_config(
     if !step_size.is_finite() || step_size < 0.0 {
         return Err(PyValueError::new_err(
             "step_size must be finite and >= 0 (0 enables adaptation)",
+        ));
+    }
+    if !target_accept.is_finite() || target_accept <= 0.0 || target_accept >= 1.0 {
+        return Err(PyValueError::new_err(
+            "target_accept must be finite and strictly between 0 and 1",
         ));
     }
     if !(1..=63).contains(&max_tree_depth) {
@@ -2611,6 +2624,40 @@ impl FitResult {
             .collect();
         let list = PyList::new(py, &items)?;
         Ok(list)
+    }
+
+    /// Structured sampler telemetry, including integrator work and tree depth.
+    fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let report = self.raw_result.transition_diagnostics();
+        let result = PyDict::new(py);
+        result.set_item("total_transitions", report.total_transitions)?;
+        result.set_item("total_warmup_transitions", report.total_warmup_transitions)?;
+        result.set_item("total_draw_transitions", report.total_draw_transitions)?;
+        result.set_item("total_divergences", report.total_divergences)?;
+        result.set_item("total_leapfrog_steps", report.total_leapfrog_steps)?;
+        result.set_item("mean_accept_prob", report.mean_accept_prob)?;
+        result.set_item("mean_energy_error", report.mean_energy_error)?;
+        result.set_item("max_abs_energy_error", report.max_abs_energy_error)?;
+
+        let chains = PyList::empty(py);
+        for chain in report.chains {
+            let item = PyDict::new(py);
+            item.set_item("chain", chain.chain_index)?;
+            item.set_item("transitions", chain.num_transitions)?;
+            item.set_item("warmup_transitions", chain.num_warmup_transitions)?;
+            item.set_item("draw_transitions", chain.num_draw_transitions)?;
+            item.set_item("divergences", chain.divergences)?;
+            item.set_item("accepted_transitions", chain.accepted_transitions)?;
+            item.set_item("mean_accept_prob", chain.mean_accept_prob)?;
+            item.set_item("mean_energy_error", chain.mean_energy_error)?;
+            item.set_item("max_abs_energy_error", chain.max_abs_energy_error)?;
+            item.set_item("mean_step_size", chain.mean_step_size)?;
+            item.set_item("max_tree_depth", chain.max_tree_depth)?;
+            item.set_item("total_leapfrog_steps", chain.total_leapfrog_steps)?;
+            chains.append(item)?;
+        }
+        result.set_item("chains", chains)?;
+        Ok(result)
     }
 
     /// Per-chain adapted step sizes.
@@ -2948,7 +2995,7 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -2960,6 +3007,7 @@ fn sample(
     seed: u64,
     threads: usize,
     step_size: f64,
+    target_accept: f64,
     sampler: &str,
     max_tree_depth: usize,
     num_leapfrog_steps: usize,
@@ -2970,6 +3018,7 @@ fn sample(
         draws,
         warmup,
         step_size,
+        target_accept,
         max_tree_depth,
         num_leapfrog_steps,
     )?;
@@ -3011,6 +3060,7 @@ fn sample(
         num_draws: draws,
         num_warmup: warmup,
         step_size,
+        target_accept,
         num_leapfrog_steps,
         max_tree_depth,
         seed,
@@ -3083,7 +3133,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
     #[allow(clippy::too_many_arguments)]
     fn sample(
         &self,
@@ -3095,6 +3145,7 @@ impl PyCompiledModel {
         seed: u64,
         threads: usize,
         step_size: f64,
+        target_accept: f64,
         sampler: &str,
         max_tree_depth: usize,
         num_leapfrog_steps: usize,
@@ -3105,6 +3156,7 @@ impl PyCompiledModel {
             draws,
             warmup,
             step_size,
+            target_accept,
             max_tree_depth,
             num_leapfrog_steps,
         )?;
@@ -3116,6 +3168,7 @@ impl PyCompiledModel {
             num_draws: draws,
             num_warmup: warmup,
             step_size,
+            target_accept,
             num_leapfrog_steps,
             max_tree_depth,
             seed,
@@ -3135,7 +3188,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
     #[allow(clippy::too_many_arguments)]
     fn sample_batch(
         &self,
@@ -3149,6 +3202,7 @@ impl PyCompiledModel {
         seed: u64,
         sampler: &str,
         step_size: f64,
+        target_accept: f64,
         max_tree_depth: usize,
         num_leapfrog_steps: usize,
         show_progress: bool,
@@ -3158,6 +3212,7 @@ impl PyCompiledModel {
             draws,
             warmup,
             step_size,
+            target_accept,
             max_tree_depth,
             num_leapfrog_steps,
         )?;
@@ -3240,6 +3295,7 @@ impl PyCompiledModel {
             num_draws: draws,
             num_warmup: warmup,
             step_size,
+            target_accept,
             num_leapfrog_steps,
             max_tree_depth,
             seed,
@@ -3448,7 +3504,7 @@ impl PyBatchFit {
 /// 1 NUTS chain for throughput, but the batch runner can be configured to use
 /// multiple chains or fixed-step HMC when reliability matters more.
 #[pyfunction]
-#[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
 // The Python API intentionally exposes each sampler option as a named argument.
 #[allow(clippy::too_many_arguments)]
 fn batch_sample(
@@ -3460,6 +3516,7 @@ fn batch_sample(
     seed: u64,
     sampler: &str,
     step_size: f64,
+    target_accept: f64,
     max_tree_depth: usize,
     num_leapfrog_steps: usize,
     show_progress: bool,
@@ -3469,6 +3526,7 @@ fn batch_sample(
         draws,
         warmup,
         step_size,
+        target_accept,
         max_tree_depth,
         num_leapfrog_steps,
     )?;
@@ -3507,6 +3565,7 @@ fn batch_sample(
         num_draws: draws,
         num_warmup: warmup,
         step_size,
+        target_accept,
         num_leapfrog_steps,
         max_tree_depth,
         seed,
@@ -4073,6 +4132,38 @@ impl PyLinearGaussianStateSpace {
         })
     }
 
+    /// Construct a local-level model with sum-to-zero dummy seasonality.
+    /// `initial_seasonal_effects`, when supplied, is one complete cycle in
+    /// forecast order and must sum to zero.
+    #[staticmethod]
+    #[pyo3(signature = (period, level_variance, seasonal_variance, observation_variance, initial_level=0.0, initial_seasonal_effects=None, initial_level_variance=1.0, initial_seasonal_variance=1.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn seasonal_local_level(
+        period: usize,
+        level_variance: f64,
+        seasonal_variance: f64,
+        observation_variance: f64,
+        initial_level: f64,
+        initial_seasonal_effects: Option<Vec<f64>>,
+        initial_level_variance: f64,
+        initial_seasonal_variance: f64,
+    ) -> PyResult<Self> {
+        let effects = initial_seasonal_effects.unwrap_or_else(|| vec![0.0; period]);
+        Ok(Self {
+            inner: CoreLinearGaussianStateSpace::seasonal_local_level(
+                period,
+                level_variance,
+                seasonal_variance,
+                observation_variance,
+                initial_level,
+                effects,
+                initial_level_variance,
+                initial_seasonal_variance,
+            )
+            .map_err(state_space_error)?,
+        })
+    }
+
     /// Construct a zero-mean stationary AR(1) latent process observed with
     /// independent Gaussian noise.
     #[staticmethod]
@@ -4248,6 +4339,35 @@ impl PyForecastResult {
         self.inner.observation_variances.clone().into_pyarray(py)
     }
 
+    /// Joint covariance matrix across forecast observations. Off-diagonal
+    /// entries retain the dependence needed for aggregate forecast intervals.
+    #[getter]
+    fn observation_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
+        let steps = self.inner.observation_means.len();
+        Array2::from_shape_fn((steps, steps), |(row, column)| {
+            self.inner.observation_covariance[row * steps + column]
+        })
+        .into_pyarray(py)
+    }
+
+    /// Prefix-sum forecast means. Entry h-1 summarizes observations 1..h.
+    #[getter]
+    fn cumulative_observation_means<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner
+            .cumulative_observation_means
+            .clone()
+            .into_pyarray(py)
+    }
+
+    /// Prefix-sum forecast variances including cross-horizon covariance.
+    #[getter]
+    fn cumulative_observation_variances<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.inner
+            .cumulative_observation_variances
+            .clone()
+            .into_pyarray(py)
+    }
+
     /// Pointwise Gaussian predictive interval conditional on the fixed model
     /// parameters. This does not include parameter-estimation uncertainty.
     #[pyo3(signature = (level=0.95))]
@@ -4265,6 +4385,35 @@ impl PyForecastResult {
             .observation_means
             .iter()
             .zip(&self.inner.observation_variances)
+        {
+            let half_width = critical * variance.sqrt();
+            lower.push(mean - half_width);
+            upper.push(mean + half_width);
+        }
+        Ok((lower.into_pyarray(py), upper.into_pyarray(py)))
+    }
+
+    /// Gaussian predictive intervals for cumulative observations 1..h,
+    /// conditional on the fixed model parameters.
+    #[pyo3(signature = (level=0.95))]
+    fn cumulative_interval<'py>(
+        &self,
+        py: Python<'py>,
+        level: f64,
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
+            return Err(PyValueError::new_err(
+                "level must be finite and strictly between 0 and 1",
+            ));
+        }
+        let critical = inv_normal_cdf(0.5 + level / 2.0);
+        let mut lower = Vec::with_capacity(self.inner.cumulative_observation_means.len());
+        let mut upper = Vec::with_capacity(self.inner.cumulative_observation_means.len());
+        for (&mean, &variance) in self
+            .inner
+            .cumulative_observation_means
+            .iter()
+            .zip(&self.inner.cumulative_observation_variances)
         {
             let half_width = critical * variance.sqrt();
             lower.push(mean - half_width);
@@ -4682,6 +4831,428 @@ impl PyBayesianForecastResult {
             self.steps(),
         )
     }
+}
+
+fn seasonal_parameter_array<'py, F>(
+    py: Python<'py>,
+    posterior: &CoreSeasonalLocalLevelPosterior,
+    value: F,
+) -> Bound<'py, PyArray2<f64>>
+where
+    F: Fn(&CoreSeasonalLocalLevelPosteriorDraw) -> f64,
+{
+    let chains = posterior.chains.len();
+    let draws = posterior.chains.first().map_or(0, Vec::len);
+    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
+        value(&posterior.chains[chain][draw])
+    })
+    .into_pyarray(py)
+}
+
+/// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
+#[pyclass(name = "BayesianSeasonalLocalLevel", frozen)]
+#[derive(Clone)]
+struct PyBayesianSeasonalLocalLevel {
+    period: usize,
+    initial_level: f64,
+    initial_seasonal_effects: Vec<f64>,
+    initial_level_variance: f64,
+    initial_seasonal_variance: f64,
+    level_variance_prior: CoreInverseGammaPrior,
+    seasonal_variance_prior: CoreInverseGammaPrior,
+    observation_variance_prior: CoreInverseGammaPrior,
+}
+
+#[pymethods]
+impl PyBayesianSeasonalLocalLevel {
+    #[new]
+    #[pyo3(signature = (period, level_variance_prior, seasonal_variance_prior, observation_variance_prior, initial_level=0.0, initial_seasonal_effects=None, initial_level_variance=100.0, initial_seasonal_variance=10.0))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        period: usize,
+        level_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        seasonal_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        observation_variance_prior: PyRef<'_, PyInverseGammaPrior>,
+        initial_level: f64,
+        initial_seasonal_effects: Option<Vec<f64>>,
+        initial_level_variance: f64,
+        initial_seasonal_variance: f64,
+    ) -> PyResult<Self> {
+        let effects = initial_seasonal_effects.unwrap_or_else(|| vec![0.0; period]);
+        // Reuse the fixed structural constructor for immediate shape,
+        // sum-to-zero, and covariance validation.
+        CoreLinearGaussianStateSpace::seasonal_local_level(
+            period,
+            level_variance_prior.inner.scale / (level_variance_prior.inner.shape + 1.0),
+            seasonal_variance_prior.inner.scale / (seasonal_variance_prior.inner.shape + 1.0),
+            observation_variance_prior.inner.scale / (observation_variance_prior.inner.shape + 1.0),
+            initial_level,
+            effects.clone(),
+            initial_level_variance,
+            initial_seasonal_variance,
+        )
+        .map_err(state_space_error)?;
+        Ok(Self {
+            period,
+            initial_level,
+            initial_seasonal_effects: effects,
+            initial_level_variance,
+            initial_seasonal_variance,
+            level_variance_prior: level_variance_prior.inner,
+            seasonal_variance_prior: seasonal_variance_prior.inner,
+            observation_variance_prior: observation_variance_prior.inner,
+        })
+    }
+
+    #[getter]
+    fn period(&self) -> usize {
+        self.period
+    }
+
+    #[getter]
+    fn initial_seasonal_effects<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
+        self.initial_seasonal_effects.clone().into_pyarray(py)
+    }
+
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit(
+        &self,
+        py: Python<'_>,
+        observations: PyReadonlyArray1<'_, f64>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianSeasonalLocalLevelFit> {
+        let observations = state_space_vector(observations);
+        let config = CoreBayesianSeasonalLocalLevelConfig {
+            period: self.period,
+            initial_level: self.initial_level,
+            initial_seasonal_effects: self.initial_seasonal_effects.clone(),
+            initial_level_variance: self.initial_level_variance,
+            initial_seasonal_variance: self.initial_seasonal_variance,
+            level_variance_prior: self.level_variance_prior,
+            seasonal_variance_prior: self.seasonal_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        };
+        let posterior = py
+            .allow_threads(|| fit_bayesian_seasonal_local_level(&observations, &config))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianSeasonalLocalLevelFit {
+            posterior,
+            observations,
+            config,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianSeasonalLocalLevel(period={}, initial_level={})",
+            self.period, self.initial_level
+        )
+    }
+}
+
+#[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+struct PyBayesianSeasonalLocalLevelFit {
+    posterior: CoreSeasonalLocalLevelPosterior,
+    observations: Vec<f64>,
+    config: CoreBayesianSeasonalLocalLevelConfig,
+}
+
+#[pymethods]
+impl PyBayesianSeasonalLocalLevelFit {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.posterior.chains.len()
+    }
+    #[getter]
+    fn draws(&self) -> usize {
+        self.posterior.chains.first().map_or(0, Vec::len)
+    }
+    #[getter]
+    fn period(&self) -> usize {
+        self.posterior.period
+    }
+    #[getter]
+    fn time_count(&self) -> usize {
+        self.observations.len()
+    }
+    #[getter]
+    fn observed_count(&self) -> usize {
+        self.observations
+            .iter()
+            .filter(|value| !value.is_nan())
+            .count()
+    }
+    #[getter]
+    fn warmup(&self) -> usize {
+        self.config.num_warmup
+    }
+    #[getter]
+    fn thin(&self) -> usize {
+        self.config.thinning
+    }
+
+    fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        for (name, values) in [
+            (
+                "level_variance",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.level_variance),
+            ),
+            (
+                "seasonal_variance",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.seasonal_variance),
+            ),
+            (
+                "observation_variance",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.observation_variance),
+            ),
+            (
+                "level_sd",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.level_variance.sqrt()),
+            ),
+            (
+                "seasonal_sd",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.seasonal_variance.sqrt()),
+            ),
+            (
+                "observation_sd",
+                seasonal_parameter_array(py, &self.posterior, |draw| {
+                    draw.observation_variance.sqrt()
+                }),
+            ),
+            (
+                "terminal_level",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.terminal_state[0]),
+            ),
+            (
+                "terminal_seasonal",
+                seasonal_parameter_array(py, &self.posterior, |draw| draw.terminal_state[1]),
+            ),
+        ] {
+            samples.set_item(name, values)?;
+        }
+        Ok(samples)
+    }
+
+    #[pyo3(signature = (steps, seed=43))]
+    fn forecast(
+        &self,
+        py: Python<'_>,
+        steps: usize,
+        seed: u64,
+    ) -> PyResult<PyBayesianSeasonalForecast> {
+        let inner = py
+            .allow_threads(|| self.posterior.forecast(steps, seed))
+            .map_err(bayesian_forecast_error)?;
+        Ok(PyBayesianSeasonalForecast { inner })
+    }
+
+    fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
+        let az = py.import("arviz")?;
+        let groups = PyDict::new(py);
+        groups.set_item("posterior", self.get_samples_2d(py)?)?;
+        let observed = PyDict::new(py);
+        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
+        groups.set_item("observed_data", observed)?;
+        arviz_from_groups(&az, groups)
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianSeasonalLocalLevelFit(period={}, chains={}, draws={}, time_count={}, observed_count={})",
+            self.period(), self.chains(), self.draws(), self.time_count(), self.observed_count()
+        )
+    }
+}
+
+#[pyclass(name = "BayesianSeasonalForecast")]
+struct PyBayesianSeasonalForecast {
+    inner: CoreSeasonalPosteriorPredictiveForecast,
+}
+
+#[pymethods]
+impl PyBayesianSeasonalForecast {
+    #[getter]
+    fn chains(&self) -> usize {
+        self.inner.observation_paths.len()
+    }
+    #[getter]
+    fn draws(&self) -> usize {
+        self.inner.observation_paths.first().map_or(0, Vec::len)
+    }
+    #[getter]
+    fn steps(&self) -> usize {
+        self.inner.horizon()
+    }
+    #[getter]
+    fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.level_paths)
+    }
+    #[getter]
+    fn seasonal_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.seasonal_paths)
+    }
+    #[getter]
+    fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.observation_paths)
+    }
+    #[getter]
+    fn cumulative_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        local_level_path_array(py, &self.inner.cumulative_observation_paths)
+    }
+    #[getter]
+    fn level_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .level_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+    #[getter]
+    fn seasonal_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .seasonal_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+    #[getter]
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .observation_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+    #[getter]
+    fn cumulative_observation_mean<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .cumulative_observation_means()
+            .map_err(bayesian_forecast_error)?
+            .into_pyarray(py))
+    }
+
+    fn level_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .level_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?[0]
+            .values
+            .clone()
+            .into_pyarray(py))
+    }
+    fn seasonal_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .seasonal_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?[0]
+            .values
+            .clone()
+            .into_pyarray(py))
+    }
+    fn observation_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .observation_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?[0]
+            .values
+            .clone()
+            .into_pyarray(py))
+    }
+    fn cumulative_observation_quantile<'py>(
+        &self,
+        py: Python<'py>,
+        probability: f64,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        Ok(self
+            .inner
+            .cumulative_observation_quantiles(&[probability])
+            .map_err(bayesian_forecast_error)?[0]
+            .values
+            .clone()
+            .into_pyarray(py))
+    }
+
+    #[pyo3(signature = (level=0.95))]
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        seasonal_interval(py, level, |probabilities| {
+            self.inner.observation_quantiles(probabilities)
+        })
+    }
+    #[pyo3(signature = (level=0.95))]
+    fn cumulative_interval<'py>(
+        &self,
+        py: Python<'py>,
+        level: f64,
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        seasonal_interval(py, level, |probabilities| {
+            self.inner.cumulative_observation_quantiles(probabilities)
+        })
+    }
+    #[getter]
+    fn uncertainty_kind(&self) -> &'static str {
+        "parameter_integrated_posterior_predictive"
+    }
+    #[getter]
+    fn interval_kind(&self) -> &'static str {
+        "pointwise_equal_tailed"
+    }
+    fn __repr__(&self) -> String {
+        format!(
+            "BayesianSeasonalForecast(chains={}, draws={}, steps={})",
+            self.chains(),
+            self.draws(),
+            self.steps()
+        )
+    }
+}
+
+fn seasonal_interval<'py, F>(
+    py: Python<'py>,
+    level: f64,
+    quantiles: F,
+) -> PyResult<PyIntervalArrays<'py>>
+where
+    F: FnOnce(
+        &[f64],
+    ) -> Result<
+        Vec<rustmc_core::bayesian_forecast::ForecastQuantile>,
+        rustmc_core::bayesian_forecast::BayesianForecastError,
+    >,
+{
+    validate_interval_level(level)?;
+    let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
+    let values = quantiles(&probabilities).map_err(bayesian_forecast_error)?;
+    Ok((
+        values[0].values.clone().into_pyarray(py),
+        values[1].values.clone().into_pyarray(py),
+    ))
 }
 
 fn trend_parameter_array<'py, F>(
@@ -5564,6 +6135,9 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBayesianLocalLevel>()?;
     m.add_class::<PyBayesianLocalLevelFit>()?;
     m.add_class::<PyBayesianForecastResult>()?;
+    m.add_class::<PyBayesianSeasonalLocalLevel>()?;
+    m.add_class::<PyBayesianSeasonalLocalLevelFit>()?;
+    m.add_class::<PyBayesianSeasonalForecast>()?;
     m.add_class::<PyBayesianLocalLinearTrend>()?;
     m.add_class::<PyBayesianLocalLinearTrendFit>()?;
     m.add_class::<PyBayesianTrendForecast>()?;
