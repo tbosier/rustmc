@@ -59,8 +59,8 @@ def main() -> None:
     fit = model.fit(
         observations,
         chains=4,
-        draws=600,
-        warmup=400,
+        draws=1_200,
+        warmup=800,
         thin=1,
         seed=42,
     )
@@ -70,8 +70,8 @@ def main() -> None:
     predictive_lower, predictive_upper = forecast.interval(0.95)
     state_lower, state_upper = forecast.state_interval(0.95)
 
-    assert forecast.observation_samples.shape == (4, 600, horizon)
-    assert forecast.state_samples.shape == (4, 600, horizon)
+    assert forecast.observation_samples.shape == (4, 1_200, horizon)
+    assert forecast.state_samples.shape == (4, 1_200, horizon)
     assert forecast.uncertainty_kind == "parameter_integrated_posterior_predictive"
     assert forecast.interval_kind == "pointwise_equal_tailed"
 

@@ -309,11 +309,8 @@ fn find_initial_step_size(
         scratch,
     );
 
-    let direction = if log_ratio > (-0.5_f64).ln() {
-        1.0
-    } else {
-        -1.0
-    };
+    let log_half = 0.5_f64.ln();
+    let direction = if log_ratio > log_half { 1.0 } else { -1.0 };
 
     for _ in 0..50 {
         let lr = one_step_log_ratio(
@@ -335,10 +332,10 @@ fn find_initial_step_size(
             eps *= 0.5;
             break;
         }
-        if direction > 0.0 && lr < (-0.5_f64).ln() {
+        if direction > 0.0 && lr < log_half {
             break;
         }
-        if direction < 0.0 && lr > (-0.5_f64).ln() {
+        if direction < 0.0 && lr > log_half {
             break;
         }
         eps *= 2.0_f64.powf(direction);
@@ -437,6 +434,30 @@ mod tests {
             .count() as f64
             / posterior_transitions.len() as f64;
         assert_eq!(chain.accept_rate, posterior_accept_rate);
+    }
+
+    #[test]
+    fn initial_step_size_search_is_not_pinned_to_lower_bound() {
+        let graph = simple_gaussian_graph();
+        let mut evaluator = Evaluator::new(&graph);
+        let mass = MassMatrix::from_graph(&graph);
+        let mut scratch = vec![0.0; 1];
+        let mut rng = ChaCha8Rng::seed_from_u64(17);
+
+        let step_size = find_initial_step_size(
+            &graph,
+            &mut evaluator,
+            &[0.0],
+            &mass,
+            &mut scratch,
+            &mut rng,
+        );
+
+        assert!(step_size.is_finite());
+        assert!(
+            step_size > 1e-6,
+            "initial step-size search collapsed to {step_size}"
+        );
     }
 
     #[test]

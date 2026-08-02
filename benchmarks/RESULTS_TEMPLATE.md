@@ -58,7 +58,7 @@ the whole time to "sampling".
 | Metric | Engine A | Engine B | ... |
 |---|---|---|---|
 | Divergences | | | |
-| Max R-hat (raw split R-hat; needs >=2 chains) | | | |
+| Max rank-normalized folded split R-hat (needs >=2 chains) | | | |
 | Mean / min bulk ESS | | | |
 | ESS/s (bulk ESS / total wall time) | | | |
 | Posterior error vs. known simulated truth (e.g. RMSE of posterior mean vs. true parameter) | | | |

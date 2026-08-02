@@ -73,7 +73,7 @@ r.divergences_per_chain  # list[int]
 
 ## Comparison
 
-Use `examples/batch_10k_skus.py` for a matched rustmc/PyMC+nutpie comparison that reports
+Use `examples/batch_many_series.py` for a matched rustmc/PyMC+nutpie comparison that reports
 divergences, R-hat, and ESS/s alongside wall time. Results are intentionally not checked
 in without their raw output and environment provenance.
 

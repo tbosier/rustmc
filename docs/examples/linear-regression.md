@@ -56,7 +56,7 @@ print(fit.summary())
     sigma          1.4654   0.0464     1.3796     1.5534       7998       7998   1.0003   0.000519
     ────────────────────────────────────────────────────────────────────────────────────────────────
     Mean accept rate: 0.89  │  Divergences: 45
-    ⚠  45 divergent transitions — results may be unreliable.
+    WARNING: 45 divergent transitions; results may be unreliable.
 
 
     Sampling done: 12000/12000 | 45 div | elapsed 1s
@@ -204,4 +204,3 @@ print(f"PPC p-value (std): {ppc_p:.3f}  (0.5 = perfect calibration)")
 
 
     PPC p-value (std): 1.000  (0.5 = perfect calibration)
-

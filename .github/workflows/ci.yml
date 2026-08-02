@@ -24,6 +24,8 @@ jobs:
       # Statistical recovery tests exercise thousands of gradient evaluations;
       # run them with production arithmetic/code generation.
       - run: cargo test --workspace --release
+      - name: Verify publishable Rust crate archive
+        run: cargo package -p rustmc_core --locked
 
   python-source-install:
     name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
@@ -117,7 +119,9 @@ jobs:
 
   build:
     name: Build wheel (${{ matrix.target }})
-    needs: version-check
+    # A tag must not reach the publish path unless both source installs and
+    # clean-wheel installs passed across the advertised Python matrix.
+    needs: [version-check, python-source-install, python-wheel-install]
     if: startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false

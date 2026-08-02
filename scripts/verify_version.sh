@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify that version in Cargo.toml and pyproject.toml matches the git tag (e.g. v0.6.0 -> 0.6.0).
-# Run from repo root. Usage: ./scripts/verify_version.sh
+# Run from repo root. Usage: bash scripts/verify_version.sh [vX.Y.Z]
 set -e
 TAG="${1:-${GITHUB_REF#refs/tags/}}"
 if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

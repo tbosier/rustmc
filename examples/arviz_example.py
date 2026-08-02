@@ -77,7 +77,7 @@ print()
 print("Per-parameter R-hat values:")
 summary_df = az.summary(idata)
 for param, rhat in summary_df["r_hat"].items():
-    status = "✓" if rhat < 1.01 else "⚠"
+    status = "PASS" if rhat < 1.01 else "WARNING"
     print(f"  {status}  {param}: R-hat = {rhat:.4f}")
 print()
 

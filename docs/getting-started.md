@@ -62,7 +62,7 @@ Mean accept rate: 0.94  |  Divergences: 0
 - **mean / std** — posterior mean and standard deviation
 - **hdi_3% / hdi_97%** — 94% highest density interval
 - **ess_bulk / ess_tail** — effective sample size; aim for > 400
-- **r_hat** — raw split-chain convergence diagnostic; values near 1.0 indicate convergence
+- **r_hat** — rank-normalized folded split-chain convergence diagnostic; values near 1.0 indicate convergence
 - **mcse_mean** — Monte Carlo standard error of the mean
 
 ## Core API

@@ -71,7 +71,8 @@ Mean accept rate: 0.94  |  Divergences: 0
 
 **Predictive workflow:** prior predictive sampling, posterior predictive sampling, pointwise log-likelihood, and ArviZ export are implemented for the current likelihood families.
 
-**Diagnostics:** Raw split R-hat, rank-normalized bulk/tail ESS, MCSE, 94% HDI, divergence detection, per-chain acceptance rates.
+**Diagnostics:** Rank-normalized folded split R-hat, rank-normalized bulk/tail ESS,
+MCSE, empirical 94% HDI, divergence detection, and per-chain acceptance rates.
 
 **High-dimensional regression:** faer-backed `MatVecMul` op — `beta @ "X"` dispatches to a BLAS-level GEMV rather than N scalar graph nodes.
 

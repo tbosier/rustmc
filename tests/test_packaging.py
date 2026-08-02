@@ -78,12 +78,49 @@ def test_wheel_metadata_matches_pyproject(wheel_path):
 
     assert f"Version: {expected_version}" in metadata, metadata
     assert f"Requires-Python: {expected_requires_python}" in metadata, metadata
+    assert "License-Expression: MIT" in metadata, metadata
+    assert "License-File: LICENSE" in metadata, metadata
+    assert (
+        "Project-URL: Changelog, "
+        "https://github.com/tbosier/rustmc/blob/main/CHANGELOG.md"
+    ) in metadata
+    assert "Project-URL: Documentation, https://tbosier.github.io/rustmc/" in metadata
+    assert "Project-URL: Issues, https://github.com/tbosier/rustmc/issues" in metadata
+
+
+def test_wheel_uses_python39_stable_abi(wheel_path):
+    """One wheel per platform must import on every claimed CPython 3.9+ version."""
+    wheel_name = Path(wheel_path).name
+    assert "-cp39-abi3-" in wheel_name, (
+        f"expected a CPython 3.9 stable-ABI wheel, got {wheel_name}"
+    )
+
+
+def test_release_versions_are_synchronized():
+    manifests = [
+        REPO_ROOT / "rust_core" / "Cargo.toml",
+        REPO_ROOT / "python_bindings" / "Cargo.toml",
+        REPO_ROOT / "pyproject.toml",
+    ]
+    versions = {}
+    for manifest in manifests:
+        match = re.search(r'(?m)^version\s*=\s*"([^"]+)"', manifest.read_text())
+        assert match is not None, f"no package version found in {manifest}"
+        versions[str(manifest.relative_to(REPO_ROOT))] = match.group(1)
+    assert len(set(versions.values())) == 1, f"release version mismatch: {versions}"
+
+
+def test_python_bridge_cannot_collide_on_crates_io():
+    binding_manifest = (REPO_ROOT / "python_bindings" / "Cargo.toml").read_text()
+    assert re.search(r'(?m)^publish\s*=\s*false\s*$', binding_manifest), (
+        "the PyO3 bridge is named rustmc, which is occupied on crates.io; "
+        "keep it publish=false and publish rustmc_core instead"
+    )
 
 
 @pytest.mark.xfail(strict=True, reason=(
-    "known packaging gap (Task 4 finding): no py.typed marker or .pyi stubs "
-    "are shipped, so type checkers see an untyped package. Remove this "
-    "xfail once stubs/py.typed are added."
+    "known packaging gap: no py.typed marker or .pyi stubs are shipped, "
+    "so type checkers see an untyped package"
 ))
 def test_wheel_ships_type_information(wheel_path):
     with zipfile.ZipFile(wheel_path) as z:

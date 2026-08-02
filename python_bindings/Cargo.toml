@@ -1,15 +1,20 @@
 [package]
 name = "rustmc"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 license = "MIT"
+description = "Python extension module for rustmc"
+repository = "https://github.com/tbosier/rustmc"
+# The `rustmc` name on crates.io belongs to an unrelated project. This
+# crate is only the native extension used to build the PyPI distribution.
+publish = false
 
 [lib]
 name = "rustmc"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustmc_core = { path = "../rust_core" }
+rustmc_core = { path = "../rust_core", version = "0.9.0" }
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
 numpy = "0.25"
 ndarray = "0.16"

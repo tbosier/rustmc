@@ -1,6 +1,6 @@
 """
-rustmc — Hierarchical Time Series Forecasting
-================================================
+rustmc — Fixed-effects panel forecasting
+==========================================
 
 Stress test: forecast weekly sales for a retail hierarchy.
 
@@ -16,7 +16,9 @@ Model (Bayesian fixed-effects regression):
 
     171 parameters, ~132K training observations.
 
-    Train on weeks 0–21, forecast weeks 22–25 with posterior uncertainty.
+    This is an unpooled fixed-effects model, not hierarchical partial pooling.
+    Train on weeks 0–21, forecast weeks 22–25 with posterior uncertainty
+    in the conditional mean.
     Compare one series against ARIMA.
 """
 
@@ -225,7 +227,8 @@ n_forecast = len(test_t)
 samples = fit.get_samples()
 n_samples = len(samples[param_specs[0][0]])
 
-# Compute posterior predictive for each sample
+# Compute posterior draws for the conditional mean. Observation noise is not added,
+# so the resulting interval is not posterior predictive.
 forecasts = np.zeros((n_samples, n_forecast))
 for draw in range(n_samples):
     for fi, t in enumerate(test_t):
@@ -250,7 +253,7 @@ actual = rows_y[series_mask]
 
 bayesian_mae = np.mean(np.abs(forecast_mean - actual))
 
-print(f"\n{'Week':<8} {'Actual':>8} {'Bayesian':>10} {'90% CI':>20}")
+print(f"\n{'Week':<8} {'Actual':>8} {'Bayesian':>10} {'90% credible':>20}")
 print("─" * 50)
 for i in range(n_forecast):
     print(f"  {int(test_t[i]):<6} {actual[i]:>8.1f} {forecast_mean[i]:>10.1f} "
@@ -284,9 +287,8 @@ try:
     print("─" * 40)
     print(f"{'rustmc Bayesian':<20} {bayesian_mae:>8.2f} {sampling_time:>9.1f}s")
     print(f"{'ARIMA(2,1,1)':<20} {arima_mae:>8.2f} {arima_time:>9.3f}s")
-    print(f"\nNote: Bayesian model fits ALL {N_SERIES:,} series jointly;")
-    print(f"      ARIMA fits 1 series. To fit all {N_SERIES:,} with ARIMA: "
-          f"~{arima_time * N_SERIES:.0f}s")
+    print(f"\nNote: the Bayesian fixed-effects model fits all {N_SERIES:,} series jointly;")
+    print("      the ARIMA timing above is for one series and is not extrapolated.")
 
 except ImportError:
     print("\nstatsmodels not installed — skipping ARIMA comparison.")

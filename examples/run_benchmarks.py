@@ -39,7 +39,7 @@ BENCHMARK_SCRIPTS = [
     "compare_with_pymc.py",
     "benchmark_vs_pymc.py",
     "benchmark_multivariate.py",
-    "batch_10k_skus.py",
+    "batch_many_series.py",
 ]
 
 

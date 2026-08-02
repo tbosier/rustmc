@@ -11,11 +11,10 @@ parallelism.
 
 Fairness notes (previously violated by this script — see
 benchmarks/RESULTS_TEMPLATE.md and the PR description for the full audit):
-  - PyMC previously ran with its (slow) default NUTS sampler and no
-    explicit tune count or seed. It now runs with an explicit seed and
-    tune=1000 (matching rustmc's warmup=1000) using BOTH PyMC's default
-    NUTS and the nutpie backend, so the README doesn't quietly compare
-    rustmc against the weakest available PyMC configuration.
+  - PyMC previously ran without an explicit sampler backend, tune count,
+    or seed. It now uses an explicit seed and tune=1000 (matching rustmc's
+    warmup=1000) with both the explicitly named ``pymc`` and ``nutpie``
+    backends. It does not assume which backend a PyMC release defaults to.
   - sigma=0.5 is the true simulated noise, fixed (not estimated) on every
     engine — same parameter count (10 betas) everywhere.
   - Only wall time and point estimates were reported before; R-hat,
@@ -26,6 +25,7 @@ benchmarks/RESULTS_TEMPLATE.md and the PR description for the full audit):
 import time
 
 import numpy as np
+import arviz as az
 
 from bench_common import PhaseTimer, print_environment, peak_rss_mb
 
@@ -84,9 +84,16 @@ with pt.phase("compile+sample"):
     )
 
 with pt.phase("postprocess"):
-    diag = fit.diagnostics()
-    beta_ess = np.mean([d["ess_bulk"] for d in diag if d["name"].startswith("beta_")])
-    max_rhat = max(d["r_hat"] for d in diag if d["name"].startswith("beta_"))
+    rustmc_samples = fit.get_samples_2d()
+    beta_names = [f"beta_{i}" for i in range(P)]
+    rustmc_ess = np.asarray(
+        [float(az.ess(rustmc_samples[name])) for name in beta_names]
+    )
+    rustmc_rhat = np.asarray(
+        [float(az.rhat(rustmc_samples[name])) for name in beta_names]
+    )
+    beta_ess = float(rustmc_ess.mean())
+    max_rhat = float(rustmc_rhat.max())
     rustmc_means = fit.mean()
     beta_est = np.array([rustmc_means[f"beta_{i}"] for i in range(P)])
     rmse = float(np.sqrt(np.mean((beta_est - beta_true) ** 2)))
@@ -106,11 +113,10 @@ print()
 results.append(("rustmc", pt.total, beta_ess, max_rhat, divs, rmse))
 
 # ---------------------------------------------------------------------------
-# Fit with PyMC — both default NUTS and nutpie, explicit seed both times
+# Fit with PyMC — two explicitly named backends, explicit seed both times
 # ---------------------------------------------------------------------------
 def run_pymc(nuts_sampler):
     import pymc as pm
-    import arviz as az
 
     pt = PhaseTimer()
     with pt.phase("build"):

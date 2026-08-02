@@ -178,12 +178,3 @@ def peak_rss_mb() -> float | None:
         return val / 1024
     except Exception:
         return None
-
-
-def rank_normalized_split_rhat_note() -> str:
-    return (
-        "rustmc reports raw split R-hat and rank-normalized bulk/tail ESS; "
-        "ArviZ reports rank-normalized R-hat. Built-in R-hat values therefore "
-        "are not estimator-identical across engines; ESS is comparable when the "
-        "same ArviZ calls are used on both sets of chain/draw arrays."
-    )

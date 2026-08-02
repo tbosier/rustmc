@@ -18,6 +18,7 @@ installed wheel.
 Exits 0 on success, 1 with a diagnostic message on any failure.
 """
 import sys
+from importlib.metadata import version
 
 
 def main() -> int:
@@ -29,6 +30,16 @@ def main() -> int:
     print(f"Python:          {sys.version.split()[0]}")
     print(f"rustmc.__file__: {mod_file}")
 
+    installed_version = version("rustmc")
+    if rmc.__version__ != installed_version:
+        print(
+            "FAIL: module/distribution version mismatch: "
+            f"{rmc.__version__!r} != {installed_version!r}",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"rustmc version:  {installed_version}")
+
     if "site-packages" not in mod_file.replace("\\", "/").split("/"):
         print(
             f"FAIL: rustmc was not loaded from a site-packages directory: {mod_file}",
@@ -38,8 +49,15 @@ def main() -> int:
 
     expected_api = {
         "ModelBuilder", "ModelSpec", "ParamRef", "VectorParamRef", "Expr",
-        "FitResult", "BatchResult", "sample", "batch_sample",
-        "sample_prior_predictive",
+        "FitResult", "BatchResult", "CompiledModel", "BoundModel", "BatchFit",
+        "LinearGaussianStateSpace", "KalmanFilterResult", "KalmanSmootherResult",
+        "ForecastResult", "InverseGammaPrior", "BayesianLocalLevel",
+        "BayesianLocalLevelFit", "BayesianForecastResult",
+        "BayesianLocalLinearTrend", "BayesianLocalLinearTrendFit",
+        "BayesianTrendForecast", "NormalInverseGammaPrior",
+        "BayesianAutoRegression", "BayesianAR", "BayesianARFit",
+        "BayesianARForecast", "ParameterError", "StateSpaceError", "sample",
+        "batch_sample", "sample_prior_predictive",
     }
     missing = {name for name in expected_api if not hasattr(rmc, name)}
     if missing:

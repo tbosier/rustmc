@@ -9,14 +9,15 @@ simulated beta — not wall time alone.
 Fairness notes:
   - sigma=1.0 is the true simulated noise, fixed (not estimated) on every
     engine — same parameter count (intercept + 500 betas) everywhere.
-  - PyMC is run with both its own default NUTS and the nutpie backend, so
-    the comparison isn't quietly picking whichever PyMC config wins.
-  - chains=1 and seed=42 on every engine.
+  - PyMC is run with both the explicit ``pymc`` and ``nutpie`` backends,
+    so the backend choice is visible rather than described as a default.
+  - chains=2 and seed=42 on every engine.
 """
 import time
 import warnings
 import logging
 import numpy as np
+import arviz as az
 
 from bench_common import PhaseTimer, print_environment, peak_rss_mb
 
@@ -68,10 +69,20 @@ with pt.phase("compile+sample"):
                             show_progress=False)
 
 with pt.phase("postprocess"):
-    rmc_diag = rmc_result.diagnostics()
-    rmc_beta_ess = np.mean([d["ess_bulk"] for d in rmc_diag if d["name"].startswith("beta[")])
-    rmc_max_rhat = max(d["r_hat"] for d in rmc_diag)
-    beta_means = np.array([d["mean"] for d in rmc_diag if d["name"].startswith("beta[")])
+    rmc_samples = rmc_result.get_samples_2d()
+    beta_names = sorted(
+        (name for name in rmc_samples if name.startswith("beta[")),
+        key=lambda name: int(name.removeprefix("beta[").removesuffix("]")),
+    )
+    rmc_beta_ess_values = np.asarray(
+        [float(az.ess(rmc_samples[name])) for name in beta_names]
+    )
+    rmc_rhat_values = np.asarray(
+        [float(az.rhat(rmc_samples[name])) for name in beta_names]
+    )
+    rmc_beta_ess = float(rmc_beta_ess_values.mean())
+    rmc_max_rhat = float(rmc_rhat_values.max())
+    beta_means = np.asarray([rmc_samples[name].mean() for name in beta_names])
     rmc_rmse = float(np.sqrt(np.mean((beta_means - true_beta) ** 2)))
 
 rmc_divs = sum(rmc_result.divergences())
@@ -90,7 +101,6 @@ logging.getLogger("pymc").setLevel(logging.ERROR)
 warnings.filterwarnings("ignore")
 
 import pymc as pm
-import arviz as az
 
 
 def run_pymc(nuts_sampler: str):

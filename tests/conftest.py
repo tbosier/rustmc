@@ -1,12 +1,8 @@
 """
 Shared pytest fixtures for the rustmc test suite.
 
-This file is intentionally general-purpose: in addition to Task 4's own
-tests (test_smoke.py, test_packaging.py), other test files may live in this
-directory (e.g. test_param_resolution.py, test_statistical_*.py, added by
-parallel workstreams). Nothing here should assume it is the only test
-module present, and nothing here should impose collection-time
-requirements (env vars, network, etc.) on files it does not own.
+Nothing here should impose collection-time requirements such as environment
+variables or network access on unrelated test modules.
 """
 import os
 import sys

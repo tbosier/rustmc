@@ -129,23 +129,25 @@ impl DiagnosticsReport {
         let any_bad_rhat = self
             .params
             .iter()
-            .any(|p| p.r_hat > 1.05 || !p.r_hat.is_finite());
+            .any(|p| p.r_hat > 1.01 || !p.r_hat.is_finite());
         let any_low_ess = self
             .params
             .iter()
             .any(|p| p.ess_bulk < 400.0 || p.ess_tail < 400.0);
 
         if any_bad_rhat {
-            lines.push("⚠  Some R-hat values > 1.05 — chains may not have converged.".to_string());
+            lines.push(
+                "WARNING: Some R-hat values > 1.01; chains may not have converged.".to_string(),
+            );
         }
         if any_low_ess {
             lines.push(
-                "⚠  Some ESS values < 400 — consider increasing draws or tuning.".to_string(),
+                "WARNING: Some ESS values < 400; consider increasing draws or tuning.".to_string(),
             );
         }
         if self.divergences > 0 {
             lines.push(format!(
-                "⚠  {} divergent transitions — results may be unreliable.",
+                "WARNING: {} divergent transitions; results may be unreliable.",
                 self.divergences
             ));
         }
@@ -219,13 +221,13 @@ pub fn compute_diagnostics(
         let std = chain_std_all(&chains, mean);
         let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
         all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let hdi_3 = quantile_sorted(&all, 0.03);
-        let hdi_97 = quantile_sorted(&all, 0.97);
+        let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
         let ess_bulk = ess_bulk_chains(&chains);
         let ess_tail = ess_tail_chains(&chains);
         let r_hat = r_hat_chains(&chains);
-        let mcse_mean = if ess_bulk > 0.0 {
-            std / ess_bulk.sqrt()
+        let ess_mean = ess_raw(&chains);
+        let mcse_mean = if ess_mean > 0.0 {
+            std / ess_mean.sqrt()
         } else {
             f64::NAN
         };
@@ -384,13 +386,45 @@ fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
     sorted[lo] * (1.0 - frac) + sorted[hi.min(sorted.len() - 1)] * frac
 }
 
-/// Split R-hat: split each chain in half, treat as 2M chains, compute R-hat.
+/// Shortest empirical interval containing at least `probability` of the draws.
+fn hdi_interval_sorted(sorted: &[f64], probability: f64) -> (f64, f64) {
+    if sorted.is_empty() || !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
+        return (f64::NAN, f64::NAN);
+    }
+    let included = ((probability * sorted.len() as f64).ceil() as usize).clamp(1, sorted.len());
+    let (start, _) = (0..=sorted.len() - included)
+        .map(|start| (start, sorted[start + included - 1] - sorted[start]))
+        .min_by(|(_, left), (_, right)| {
+            left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .expect("a non-empty sample has at least one HDI candidate");
+    (sorted[start], sorted[start + included - 1])
+}
+
+/// Rank-normalized, folded split R-hat (Vehtari et al. 2021).
 fn r_hat_chains(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
-    let m = split.len() as f64;
-    let n = split[0].len() as f64;
+    if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 2) {
+        return f64::NAN;
+    }
 
-    let chain_means: Vec<f64> = split.iter().map(|c| mean(c)).collect();
+    let rank_r_hat = basic_r_hat(&rank_normalize(&split));
+    let mut all: Vec<f64> = split.iter().flatten().copied().collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = quantile_sorted(&all, 0.5);
+    let folded: Vec<Vec<f64>> = split
+        .iter()
+        .map(|chain| chain.iter().map(|value| (value - median).abs()).collect())
+        .collect();
+    let folded_r_hat = basic_r_hat(&rank_normalize(&folded));
+    rank_r_hat.max(folded_r_hat)
+}
+
+fn basic_r_hat(chains: &[Vec<f64>]) -> f64 {
+    let m = chains.len() as f64;
+    let n = chains[0].len() as f64;
+
+    let chain_means: Vec<f64> = chains.iter().map(|c| mean(c)).collect();
     let grand_mean = chain_means.iter().sum::<f64>() / m;
 
     // Between-chain variance B
@@ -401,7 +435,7 @@ fn r_hat_chains(chains: &[Vec<f64>]) -> f64 {
             .sum::<f64>();
 
     // Within-chain variance W
-    let w = split
+    let w = chains
         .iter()
         .map(|c| {
             let cm = mean(c);
@@ -411,7 +445,7 @@ fn r_hat_chains(chains: &[Vec<f64>]) -> f64 {
         / m;
 
     if w < 1e-30 {
-        return f64::NAN;
+        return if b < 1e-30 { f64::NAN } else { f64::INFINITY };
     }
 
     let var_hat = (n - 1.0) / n * w + b / n;
@@ -503,6 +537,9 @@ fn rank_normalize(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
 /// ESS from split chains using autocorrelation (Geyer's initial monotone sequence).
 fn ess_raw(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
+    if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 3) {
+        return f64::NAN;
+    }
     let m = split.len();
     let n = split[0].len();
 
@@ -523,11 +560,19 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
         return f64::NAN;
     }
 
-    // Compute autocorrelation at each lag using the FFT-free method
-    let max_lag = n;
-    let mut rho_hat = Vec::with_capacity(max_lag);
+    let b = n_f / (m_f - 1.0)
+        * chain_means
+            .iter()
+            .map(|chain_mean| (chain_mean - mean(&chain_means)).powi(2))
+            .sum::<f64>();
+    let var_plus = (n_f - 1.0) / n_f * w + b / n_f;
+    if !var_plus.is_finite() || var_plus < 1e-30 {
+        return f64::NAN;
+    }
 
-    for lag in 0..max_lag {
+    // Estimate autocorrelations with V-hat-plus in the denominator. The
+    // autocovariance uses the biased (1 / n) estimator used by Stan/ArviZ.
+    let rho_at = |lag: usize| {
         let mut gamma = 0.0f64;
         for (ci, chain) in split.iter().enumerate() {
             let cm = chain_means[ci];
@@ -536,32 +581,42 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
                 gamma += (chain[t] - cm) * (chain[t + lag] - cm);
             }
         }
-        gamma /= m_f * (n_f - 1.0);
-        rho_hat.push(1.0 - (w - gamma) / w);
-    }
+        gamma /= m_f * n_f;
+        1.0 - (w - gamma) / var_plus
+    };
 
-    // Geyer's initial positive sequence: sum consecutive pairs until negative
-    let mut tau = -1.0f64;
-    let mut t = 1;
-    while t + 1 < rho_hat.len() {
-        let pair_sum = rho_hat[t] + rho_hat[t + 1];
-        if pair_sum < 0.0 {
+    // Geyer's initial positive sequence, followed by the initial monotone
+    // sequence. The first pair includes rho_0 = 1.
+    let mut pair_sums = Vec::new();
+    let mut lag = 1;
+    while lag < n {
+        let rho_even = if lag == 1 { 1.0 } else { rho_at(lag - 1) };
+        let rho_odd = rho_at(lag);
+        let mut pair_sum = rho_even + rho_odd;
+        if !pair_sum.is_finite() || pair_sum < 0.0 {
             break;
         }
-        tau += pair_sum;
-        t += 2;
+        if let Some(previous) = pair_sums.last() {
+            pair_sum = pair_sum.min(*previous);
+        }
+        pair_sums.push(pair_sum);
+        lag += 2;
     }
-    tau = tau.max(1.0 / (m_f * n_f));
 
-    m_f * n_f / (1.0 + 2.0 * tau)
+    let total_draws = m_f * n_f;
+    let tau = (-1.0 + 2.0 * pair_sums.iter().sum::<f64>()).max(1.0 / total_draws.log10());
+    total_draws / tau
 }
 
 fn split_chains(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut split = Vec::with_capacity(chains.len() * 2);
     for chain in chains {
         let mid = chain.len() / 2;
+        if mid == 0 {
+            continue;
+        }
         split.push(chain[..mid].to_vec());
-        split.push(chain[mid..].to_vec());
+        split.push(chain[chain.len() - mid..].to_vec());
     }
     split
 }
@@ -633,6 +688,9 @@ pub fn inv_normal_cdf(p: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::hmc::TransitionStats;
+    use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
+    use rand_distr::{Distribution, StandardNormal};
 
     #[test]
     fn inverse_normal_cdf_is_accurate_at_common_interval_levels() {
@@ -678,6 +736,21 @@ mod tests {
     }
 
     #[test]
+    fn folded_r_hat_detects_scale_nonconvergence() {
+        let narrow: Vec<f64> = (0..1000)
+            .map(|i| if i % 2 == 0 { -1.0 } else { 1.0 })
+            .collect();
+        let wide: Vec<f64> = (0..1000)
+            .map(|i| if i % 2 == 0 { -10.0 } else { 10.0 })
+            .collect();
+        let r_hat = r_hat_chains(&[narrow.clone(), narrow, wide.clone(), wide]);
+        assert!(
+            r_hat > 1.1,
+            "folded R-hat failed to detect scale mismatch: {r_hat}"
+        );
+    }
+
+    #[test]
     fn test_ess_positive() {
         let chains: Vec<Vec<f64>> = (0..4)
             .map(|seed| {
@@ -688,6 +761,80 @@ mod tests {
             .collect();
         let ess = ess_bulk_chains(&chains);
         assert!(ess > 0.0, "ESS should be positive, got {}", ess);
+    }
+
+    #[test]
+    fn ess_tracks_ar1_closed_form() {
+        const PHI: f64 = 0.5;
+        const CHAINS: usize = 4;
+        const DRAWS: usize = 1000;
+        let mut chains = Vec::with_capacity(CHAINS);
+        for seed in 0..CHAINS {
+            let mut rng = ChaCha8Rng::seed_from_u64(100 + seed as u64);
+            let mut state = 0.0;
+            let mut chain = Vec::with_capacity(DRAWS);
+            for _ in 0..DRAWS {
+                let innovation: f64 = StandardNormal.sample(&mut rng);
+                state = PHI * state + innovation;
+                chain.push(state);
+            }
+            chains.push(chain);
+        }
+
+        let actual = ess_raw(&chains);
+        let total = (CHAINS * DRAWS) as f64;
+        let expected = total * (1.0 - PHI) / (1.0 + PHI);
+        assert!(
+            (actual - expected).abs() / expected < 0.30,
+            "AR(1) ESS {actual} differs too much from closed-form {expected}"
+        );
+    }
+
+    #[test]
+    fn ess_accounts_for_between_chain_offsets() {
+        let base: Vec<f64> = (0..1000).map(|i| ((i as f64) * 0.173).sin()).collect();
+        let chains: Vec<Vec<f64>> = [-15.0, -5.0, 5.0, 15.0]
+            .iter()
+            .map(|offset| base.iter().map(|value| value + offset).collect())
+            .collect();
+
+        let ess = ess_raw(&chains);
+        assert!(
+            ess < 100.0,
+            "ESS ignored persistent between-chain offsets: {ess}"
+        );
+    }
+
+    #[test]
+    fn reported_interval_is_a_highest_density_interval() {
+        let mut draws = vec![0.0; 94];
+        draws.extend([10.0, 11.0, 12.0, 13.0, 14.0, 15.0]);
+        let (lower, upper) = hdi_interval_sorted(&draws, 0.94);
+        assert_eq!((lower, upper), (0.0, 0.0));
+        assert_ne!(upper, quantile_sorted(&draws, 0.97));
+    }
+
+    #[test]
+    fn diagnostics_warn_at_modern_r_hat_threshold() {
+        let report = DiagnosticsReport {
+            params: vec![ParamDiagnostics {
+                name: "theta".into(),
+                mean: 0.0,
+                std: 1.0,
+                hdi_3: -1.0,
+                hdi_97: 1.0,
+                ess_bulk: 1000.0,
+                ess_tail: 1000.0,
+                r_hat: 1.02,
+                mcse_mean: 0.01,
+            }],
+            num_chains: 4,
+            num_draws: 1000,
+            accept_rates: vec![0.8; 4],
+            divergences: 0,
+        };
+
+        assert!(report.to_table().contains("R-hat values > 1.01"));
     }
 
     #[test]

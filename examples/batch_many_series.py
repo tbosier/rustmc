@@ -6,8 +6,8 @@ Fit independent Bayesian demand models for N_SKUS SKUs using batch inference.
 Each SKU gets a 3-parameter model (intercept + trend + seasonality) fit on
 52 weeks of synthetic sales data.
 
-Then pick one random SKU and compare the 4-week-ahead forecast (with 95%
-credible interval) against Prophet and ARIMA.
+Then pick one SKU and compare the 8-week-ahead forecast (with a 95%
+posterior-predictive interval) against Prophet and ARIMA.
 
 Corrected from an earlier version of this script (see
 benchmarks/RESULTS_TEMPLATE.md / PR description for the audit):
@@ -130,8 +130,8 @@ with pt.phase("postprocess"):
     total_divs = sum(r.divergences for r in results)
     avg_accept = np.mean([r.accept_rate for r in results])
     # Aggregate both engines with ArviZ's estimators, computed directly from
-    # their raw (chain, draw) arrays, so this comparison does not mix rustmc's
-    # built-in raw split R-hat with ArviZ's rank-normalized R-hat.
+    # their raw (chain, draw) arrays, so both sides use the exact same
+    # diagnostic implementation for this comparison.
     import arviz as az
     rhats, esses = [], []
     for r in results:
@@ -343,11 +343,9 @@ print("(both engines: same chains/warmup/draws/seed per SKU and the same ArviZ "
       "diagnostic estimators; MAE above is a point-forecast metric, "
       "not a substitute for these posterior-quality diagnostics.)")
 if arima_mae is not None:
-    est_arima_total = arima_time * N_SKUS
-    print(f"{'ARIMA(1,1,1)':<28} {arima_mae:>8.2f} {arima_time:>11.3f}s {f'×{N_SKUS:,}={est_arima_total:.0f}s':>22}")
+    print(f"{'ARIMA(1,1,1)':<28} {arima_mae:>8.2f} {arima_time:>11.3f}s {'one model':>22}")
 if prophet_mae is not None:
-    est_prophet_total = prophet_time * N_SKUS
-    print(f"{'Prophet':<28} {prophet_mae:>8.2f} {prophet_time:>11.3f}s {f'×{N_SKUS:,}={est_prophet_total:.0f}s':>22}")
+    print(f"{'Prophet':<28} {prophet_mae:>8.2f} {prophet_time:>11.3f}s {'one model':>22}")
 
 # ─── Plot ────────────────────────────────────────────────────────────
 
@@ -374,8 +372,9 @@ try:
         ax.plot(weeks_test, nutpie_mean, "C3-.", linewidth=2, label=f"PyMC+nutpie (MAE={nutpie_mae:.1f})")
         ax.fill_between(weeks_test, nutpie_lo, nutpie_hi, color="C3", alpha=0.15)
 
-    # Plot rustmc last so CI band is on top and visible
-    ax.fill_between(weeks_test, rustmc_lo, rustmc_hi, color="C0", alpha=0.2, label="rustmc 95% CI", zorder=3)
+    # Plot rustmc last so its posterior-predictive band is visible.
+    ax.fill_between(weeks_test, rustmc_lo, rustmc_hi, color="C0", alpha=0.2,
+                    label="rustmc 95% posterior predictive", zorder=3)
     ax.plot(weeks_test, rustmc_mean, "C0-", linewidth=2.5, zorder=4, label=f"rustmc (MAE={rustmc_mae:.1f})")
 
     ax.axvline(TRAIN_WEEKS - 0.5, color="gray", linestyle="--", alpha=0.5)

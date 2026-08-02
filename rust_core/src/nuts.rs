@@ -656,11 +656,8 @@ fn find_initial_step_size(
     let h1 = test.energy(mass, scratch);
     let log_ratio = h0 - h1;
 
-    let direction = if log_ratio > (-0.5_f64).ln() {
-        1.0
-    } else {
-        -1.0
-    };
+    let log_half = 0.5_f64.ln();
+    let direction = if log_ratio > log_half { 1.0 } else { -1.0 };
 
     for _ in 0..50 {
         let t = leapfrog(graph, evaluator, &initial_point, eps, mass, dim, scratch);
@@ -669,10 +666,10 @@ fn find_initial_step_size(
             eps *= 0.5;
             break;
         }
-        if direction > 0.0 && lr < (-0.5_f64).ln() {
+        if direction > 0.0 && lr < log_half {
             break;
         }
-        if direction < 0.0 && lr > (-0.5_f64).ln() {
+        if direction < 0.0 && lr > log_half {
             break;
         }
         eps *= 2.0_f64.powf(direction);
@@ -686,6 +683,34 @@ mod tests {
     use super::*;
     use crate::graph::Graph;
     use rand::SeedableRng;
+
+    #[test]
+    fn initial_step_size_search_is_not_pinned_to_lower_bound() {
+        let mut graph = Graph::new();
+        let x = graph.add_param("x");
+        let zero = graph.add_constant(0.0);
+        let one = graph.add_constant(1.0);
+        graph.normal_logp(x, zero, one);
+        let mut evaluator = Evaluator::new(&graph);
+        let mass = MassMatrix::from_graph(&graph);
+        let mut scratch = vec![0.0; 1];
+        let mut rng = ChaCha8Rng::seed_from_u64(17);
+
+        let step_size = find_initial_step_size(
+            &graph,
+            &mut evaluator,
+            &[0.0],
+            &mass,
+            &mut scratch,
+            &mut rng,
+        );
+
+        assert!(step_size.is_finite());
+        assert!(
+            step_size > 1e-6,
+            "initial step-size search collapsed to {step_size}"
+        );
+    }
 
     #[test]
     fn nuts_chain_reports_posterior_only_diagnostics() {

@@ -11,9 +11,8 @@ Fairness notes (see benchmarks/RESULTS_TEMPLATE.md for the full audit):
   - sigma=1.0 is the true simulated noise and is fixed (not estimated) on
     BOTH sides — same number of estimated parameters (1: beta).
   - chains, tune/warmup, draws, and seed are identical on both sides.
-  - PyMC is run twice: once with its own default NUTS, once with the
-    nutpie (Rust/JAX) backend, so neither a pessimistic nor an optimistic
-    PyMC baseline is silently chosen.
+  - PyMC is run twice with explicit ``pymc`` and ``nutpie`` backends. The
+    script does not assume which backend a particular PyMC release defaults to.
 
 Requirements:
     pip install pymc nutpie numpy arviz
@@ -21,6 +20,7 @@ Requirements:
 import time
 
 import numpy as np
+import arviz as az
 
 from bench_common import PhaseTimer, print_environment, peak_rss_mb
 
@@ -72,14 +72,13 @@ with pt.phase("sample"):  # rustmc compiles the Evaluator lazily inside sample()
     )
 
 with pt.phase("postprocess"):
-    diag = fit.diagnostics()
-    beta_diag = next(d for d in diag if d["name"] == "beta")
+    beta_draws = fit.get_samples_2d()["beta"]
     rustmc_mean = fit.mean()["beta"]
     rustmc_std = fit.std()["beta"]
     rustmc_rmse = abs(rustmc_mean - TRUE_BETA)
 
-rustmc_ess = beta_diag["ess_bulk"]
-rustmc_rhat = beta_diag["r_hat"]
+rustmc_ess = float(az.ess(beta_draws))
+rustmc_rhat = float(az.rhat(beta_draws))
 rustmc_divs = sum(fit.divergences())
 
 print("rustmc")
@@ -95,13 +94,10 @@ results.append(("rustmc", pt.total, rustmc_ess, rustmc_rhat, rustmc_divs, rustmc
 
 
 # ---------------------------------------------------------------------------
-# PyMC helper — runs once per backend so both a pessimistic (default) and
-# an optimistic (nutpie) PyMC baseline are reported, not just whichever
-# makes the comparison look best.
+# PyMC helper — runs once per explicitly named backend.
 # ---------------------------------------------------------------------------
 def run_pymc(nuts_sampler: str):
     import pymc as pm
-    import arviz as az
 
     pt = PhaseTimer()
     with pt.phase("build"):

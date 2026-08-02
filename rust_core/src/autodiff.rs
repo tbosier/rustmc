@@ -1887,7 +1887,7 @@ pub fn ln_gamma(x: f64) -> f64 {
     ];
     let y = x;
     let tmp = y + 5.5;
-    let tmp = tmp - (y - 0.5) * tmp.ln();
+    let tmp = tmp - (y + 0.5) * tmp.ln();
     let mut ser = 1.000000000190015f64;
     for (i, &c) in coeffs.iter().enumerate() {
         ser += c / (y + 1.0 + i as f64);
@@ -1913,6 +1913,24 @@ fn digamma(mut x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::graph::{Graph, ObsFamily};
+
+    #[test]
+    fn ln_gamma_matches_known_values() {
+        let cases = [
+            (0.5, 0.5 * std::f64::consts::PI.ln()),
+            (1.0, 0.0),
+            (5.0, 24.0_f64.ln()),
+            (10.0, 362_880.0_f64.ln()),
+        ];
+
+        for (x, expected) in cases {
+            let actual = ln_gamma(x);
+            assert!(
+                (actual - expected).abs() < 1e-10,
+                "ln_gamma({x}) = {actual}, expected {expected}"
+            );
+        }
+    }
 
     #[test]
     fn test_normal_logp_gradient() {
@@ -2139,6 +2157,20 @@ mod tests {
         assert_eq!(structure_heads[0].n_obs, 0);
 
         finite_diff_check(&g, &[0.3], 1e-4);
+    }
+
+    #[test]
+    fn negative_binomial_logp_and_gradient_are_consistent() {
+        let mut g = Graph::new();
+        let eta = g.add_param("eta");
+        let alpha = g.add_param("alpha");
+        let eta_vec = g.scalar_broadcast(eta);
+        let obs_idx = g.add_obs_data(vec![0.0, 1.0, 4.0, 9.0]);
+        g.obs_logp_negative_binomial_log(eta_vec, alpha, obs_idx);
+
+        // The former ln_gamma sign error changed the density without changing
+        // digamma, so finite differences specifically failed for alpha.
+        full_finite_diff_check(&g, &[1.0, 3.0], 2e-5);
     }
 
     /// Test MatVecMul + VectorNormalLogP forward and gradient via finite differences.

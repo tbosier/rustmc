@@ -1,16 +1,18 @@
 [build-system]
-requires = ["maturin>=1.0,<2.0"]
+# 1.9.3 fixes PEP 639 license-file inclusion in sdists, which this project uses.
+requires = ["maturin>=1.9.3,<2.0"]
 build-backend = "maturin"
 
 [project]
 name = "rustmc"
-version = "0.8.0"
-description = "High-performance Bayesian inference engine written in Rust"
+version = "0.9.0"
+description = "Bayesian inference and state-space forecasting powered by Rust"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.9"
 dependencies = ["numpy"]
-keywords = ["bayesian", "mcmc", "nuts", "inference", "statistics", "rust"]
+keywords = ["bayesian", "forecasting", "mcmc", "state-space", "statistics", "rust"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -35,15 +37,17 @@ viz = ["arviz", "matplotlib"]
 # --group`, which requires pip >=25.1. Older pip (as ships with several
 # actions/setup-python versions and plain `python -m venv`) errors out with
 # "no such option: --group". Keep dev/test deps as a normal extra instead.
-test = ["pytest>=7", "maturin>=1.0,<2.0", "numpy"]
+test = ["pytest>=7", "maturin>=1.9.3,<2.0", "numpy"]
 
 [project.urls]
+Changelog = "https://github.com/tbosier/rustmc/blob/main/CHANGELOG.md"
+Documentation = "https://tbosier.github.io/rustmc/"
+Issues = "https://github.com/tbosier/rustmc/issues"
 Repository = "https://github.com/tbosier/rustmc"
 
 [tool.maturin]
 manifest-path = "python_bindings/Cargo.toml"
 features = ["pyo3/extension-module"]
-include = ["LICENSE"]
 
 [tool.pytest.ini_options]
 minversion = "7.0"

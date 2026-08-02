@@ -92,8 +92,8 @@ print(fit.summary())
     mu_7           6.0607   0.3590     5.3950     6.7355       7998       7998   0.9996   0.004014
     ────────────────────────────────────────────────────────────────────────────────────────────────
     Mean accept rate: 0.89  │  Divergences: 128
-    ⚠  Some ESS values < 400 — consider increasing draws or tuning.
-    ⚠  128 divergent transitions — results may be unreliable.
+    WARNING: Some ESS values < 400; consider increasing draws or tuning.
+    WARNING: 128 divergent transitions; results may be unreliable.
 
 
 ## ArviZ Diagnostics
@@ -349,4 +349,3 @@ print(f"sigma_group: true={mu_true.std():.2f}  estimated={means['sigma_group']:.
 
     mu_global:   true=2.50  estimated=2.4020 ± 1.2983
     sigma_group: true=3.50  estimated=4.1013 ± 1.1551
-

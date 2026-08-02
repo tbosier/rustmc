@@ -2,8 +2,17 @@
 target*
 .env*
 .codex*
+.claude/
+nvim.log
 /*site*
 __pycache__/
 *.pyc
 /dist/
 .pytest_cache/
+
+# Generated example output; keep reproducible source in examples/ instead.
+/trace_plot.png
+/posterior_plot.png
+/pair_plot.png
+/examples/forecast_comparison.png
+/examples/ci_debug.csv
