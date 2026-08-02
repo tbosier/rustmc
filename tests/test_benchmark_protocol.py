@@ -1,10 +1,17 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 import numpy as np
 import pytest
+
+if os.environ.get("RUSTMC_REQUIRE_SITE_PACKAGES") == "1":
+    pytest.skip(
+        "the source-only benchmark harness is not part of the runtime wheel",
+        allow_module_level=True,
+    )
 
 from benchmarks import run as benchmark_run
 from benchmarks.protocol import (
