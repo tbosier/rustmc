@@ -61,6 +61,9 @@ an unrestricted tensor language immediately.
   numeric handling.
 - Define a stable extension boundary for new distributions and graph operations so each
   feature does not require unrelated Python and Rust surgery.
+- Split the Python binding monolith into focused model, inference, diagnostics,
+  state-space, and conversion modules, leaving `lib.rs` responsible primarily for module
+  registration.
 - Unify result shapes, parameter naming, coordinates, and ArviZ groups across scalar,
   vector, hierarchical, and specialized fits.
 - Ship `py.typed` and maintained `.pyi` files for the supported Python API.

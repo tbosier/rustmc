@@ -1,0 +1,19 @@
+{
+  "excluded_candidates": [
+    {
+      "model": "BayesianSeasonalLocalLevel",
+      "frequency": "weekly",
+      "period": 52,
+      "state_dimension": 53,
+      "chains": 4,
+      "draws_per_chain": 1000,
+      "warmup_per_chain": 500,
+      "rayon_threads": 4,
+      "fit_seconds": 272.14958824799396,
+      "forecast_seconds": 0.0035794829891528934,
+      "measurement_repetitions": 1,
+      "status": "excluded_as_impractical",
+      "reason": "The current dense FFBS implementation scales poorly for a 52-period seasonal state."
+    }
+  ]
+}

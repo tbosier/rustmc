@@ -32,9 +32,11 @@ adapt, and extend for real work.
   in Rust outside the Python hot path.
 - **Deterministic parallelism.** Chains and repeated-model workloads use Rayon with
   stable per-chain seed derivation and ordered results.
-- **A focused extension path.** General inference and specialized model implementations
-  share a small native core, allowing new domain methods to be added without pursuing
-  feature parity with a mature probabilistic-programming language.
+- **A focused scope.** General inference and specialized model implementations share a
+  native core, so domain methods can be added without pursuing feature parity with a
+  mature probabilistic-programming language. The Python binding surface still needs the
+  modularization described in the roadmap before that extension path is as simple as it
+  should be.
 - **Bayesian workflow support.** Prior predictive checks, posterior predictive draws,
   pointwise log likelihood, convergence diagnostics, and ArviZ export are available for
   the generic inference path.
@@ -229,6 +231,10 @@ does not publish a numeric cross-engine result because the repository does not r
 complete raw output, environment, and revision for one. Use
 [`benchmarks/RESULTS_TEMPLATE.md`](benchmarks/RESULTS_TEMPLATE.md) when publishing a
 result, and report statistical quality together with wall time.
+
+The separate [`demo-docs` synthetic forecasting study](demo-docs/README.md) retains its
+generated data, model-selection code, raw outputs, RustMC plots, comparison timings, and
+negative results. It is a diagnostic example, not a general product benchmark.
 
 Tests establish behavior on their stated reference cases. They do not prove that a new
 model is appropriate for a user's data or that its intervals are calibrated under
