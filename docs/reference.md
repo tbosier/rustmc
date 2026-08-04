@@ -47,6 +47,86 @@ time-varying matrices, or integrate a Kalman likelihood into `ModelBuilder`.
 Filtering, smoothing, and forecasting release the Python GIL after converting the
 input NumPy array.
 
+## Joint hierarchical means for ragged series
+
+`BayesianHierarchicalMean` fits all supplied programs in one posterior:
+
+```text
+population_mean ~ Normal(population_mean_prior, population_variance_prior)
+group_mean[g] ~ Normal(population_mean, group_variance)
+program_mean[p] ~ Normal(group_mean[group_index[p]], program_variance)
+y[p, t] ~ Normal(program_mean[p], observation_variance)
+```
+
+The three variances have explicit `InverseGammaPrior(shape, scale)` priors. The
+specialized conjugate Gibbs kernel draws exact full conditionals, so it does not send
+NUTS/HMC through the funnel geometry of a centered hierarchy. Centered Gibbs chains can
+still be highly autocorrelated when a variance component approaches zero. This remains
+finite MCMC: use multiple chains and inspect `fit.summary()` or `fit.diagnostics()` for
+rank-normalized R-hat, bulk/tail ESS, and MCSE, especially with few groups or sparse
+programs.
+
+```python
+model = rmc.BayesianHierarchicalMean(
+    group_variance_prior=rmc.InverseGammaPrior(3.0, 20.0),
+    program_variance_prior=rmc.InverseGammaPrior(3.0, 10.0),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 25.0),
+    population_mean_prior=100.0,
+    population_variance_prior=400.0,
+)
+fit = model.fit(
+    [program_a, program_b, program_c],
+    group_index=[0, 0, 1],
+    program_names=["a", "b", "c"],
+    group_names=["division-a", "division-b"],
+    chains=4,
+    warmup=500,
+    draws=1_000,
+    seed=42,
+)
+forecast = fit.forecast(steps=12, seed=43)
+```
+
+Series are genuinely ragged and each may contain one or more finite observations.
+`NaN` positions are ignored by the likelihood, infinities are rejected, and input
+program order is preserved. Conditional on the variance draws, the program posterior
+mean weights its sample mean by
+`n * program_variance / (n * program_variance + observation_variance)`. A one-point
+program therefore receives more groupward shrinkage than an otherwise comparable long
+program. How strongly either program leans on its group depends on the learned ratio of
+program to observation variance; the shrinkage strength is inferred rather than manually
+assigned.
+
+`fit.get_samples()` returns scalar population/variance/standard-deviation arrays shaped
+`(chain, draw)`, group means shaped `(chain, draw, group)`, and program means shaped
+`(chain, draw, program)`. `time_counts`, `observed_counts`, `group_index`,
+`program_names`, and `group_names` preserve the ragged hierarchy metadata.
+Hierarchical validation and numerical failures raise `InferenceError`, which subclasses
+`ValueError`.
+
+Forecast `state_samples` and `observation_samples` have shape
+`(chain, draw, program, step)`. Selecting `[:, :, program, :]` produces the same
+`(chain, draw, step)` layout as other fitted forecast objects. Rollups must be formed
+inside each joint draw:
+
+```python
+company_draws = forecast.observation_samples.sum(axis=2)
+division_draws = forecast.group_observation_samples  # chain, draw, group, step
+assert np.array_equal(company_draws, forecast.total_observation_samples)
+```
+
+Forecast storage is contiguous per posterior draw and does not retain a redundant copy
+of the static state at every step. To fail predictably instead of risking process OOM,
+one fit is limited to 50 million retained parameter values and one forecast call to 25
+million materialized observation values. Refit with fewer retained chains/draws, or
+reduce the forecast horizon, if a guard is reached.
+
+This first model pools a static intercept only. Time ordering does not affect the fit,
+and future observations are conditionally iid around each program mean. It does not yet
+pool trends or seasonal shapes and is not a stochastic local-level model. A common
+within-program observation variance and shared group/program variances are assumed;
+variance priors can materially influence singleton programs and weakly populated groups.
+
 ## Bayesian local-level forecasting
 
 `BayesianLocalLevel` estimates the two unknown noise variances in the scalar model

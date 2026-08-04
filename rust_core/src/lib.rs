@@ -8,6 +8,7 @@ pub mod data;
 pub mod diagnostics;
 pub mod distributions;
 pub mod graph;
+pub mod hierarchical;
 pub mod hmc;
 pub mod mass_matrix;
 pub mod nuts;

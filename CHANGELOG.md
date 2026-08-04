@@ -6,6 +6,36 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-04
+
+### Added
+
+- Added `BayesianHierarchicalMean`, a joint population → group → program Gaussian
+  partial-pooling model for ragged program series.
+- Added a dedicated conjugate Gibbs kernel that draws the hierarchy's exact full
+  conditionals and avoids requiring HMC/NUTS to traverse funnel geometry.
+- Added explicit group, program, and observation variance priors plus program/group
+  names and ragged time/observation-count metadata.
+- Added aligned hierarchical posterior-predictive paths shaped
+  `(chain, draw, program, step)` and built-in draw-wise group/company rollups.
+- Added hierarchical R-hat, bulk/tail ESS, MCSE, and HDI reporting plus a dedicated
+  `InferenceError` Python exception.
+- Added Rust and Python coverage for singleton adaptive shrinkage, missing values,
+  reproducibility, axis alignment, ragged validation, and coherent aggregation.
+
+### Performance
+
+- Precomputed group membership and per-program sufficient statistics so each Gibbs
+  sweep is linear in programs/groups rather than rescanning all programs per group.
+- Stored predictive observations contiguously, reconstructed static state paths lazily,
+  and added checked posterior/forecast allocation guards.
+
+### Documentation
+
+- Documented the static hierarchical-intercept estimand, ragged-series weighting,
+  prior sensitivity, and the boundary with dynamic local-level forecasting.
+- Added a complete hierarchical mean and rollup example.
+
 ## [0.9.0] - 2026-08-02
 
 ### Added
@@ -54,6 +84,7 @@ versioning while the public API is stabilized.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/tbosier/rustmc/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tbosier/rustmc/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tbosier/rustmc/releases/tag/v0.8.0

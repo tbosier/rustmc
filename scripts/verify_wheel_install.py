@@ -51,14 +51,16 @@ def main() -> int:
         "ModelBuilder", "ModelSpec", "ParamRef", "VectorParamRef", "Expr",
         "FitResult", "BatchResult", "CompiledModel", "BoundModel", "BatchFit",
         "LinearGaussianStateSpace", "KalmanFilterResult", "KalmanSmootherResult",
-        "ForecastResult", "InverseGammaPrior", "BayesianLocalLevel",
+        "ForecastResult", "InverseGammaPrior", "BayesianHierarchicalMean",
+        "BayesianHierarchicalMeanFit", "BayesianHierarchicalForecast",
+        "BayesianLocalLevel",
         "BayesianLocalLevelFit", "BayesianForecastResult",
         "BayesianSeasonalLocalLevel", "BayesianSeasonalLocalLevelFit",
         "BayesianSeasonalForecast",
         "BayesianLocalLinearTrend", "BayesianLocalLinearTrendFit",
         "BayesianTrendForecast", "NormalInverseGammaPrior",
         "BayesianAutoRegression", "BayesianAR", "BayesianARFit",
-        "BayesianARForecast", "ParameterError", "StateSpaceError", "sample",
+        "BayesianARForecast", "ParameterError", "InferenceError", "StateSpaceError", "sample",
         "batch_sample", "sample_prior_predictive",
     }
     missing = {name for name in expected_api if not hasattr(rmc, name)}
@@ -99,6 +101,31 @@ def main() -> int:
     if not isinstance(alpha_arr, np.ndarray) or alpha_arr.dtype != np.float64:
         print(f"FAIL: expected float64 ndarray, got {type(alpha_arr)} {getattr(alpha_arr, 'dtype', None)}", file=sys.stderr)
         return 1
+
+    hierarchical = rmc.BayesianHierarchicalMean(
+        group_variance_prior=rmc.InverseGammaPrior(3.0, 2.0),
+        program_variance_prior=rmc.InverseGammaPrior(3.0, 2.0),
+        observation_variance_prior=rmc.InverseGammaPrior(3.0, 2.0),
+    ).fit(
+        [np.array([1.0]), np.array([0.8, 1.1, 1.0]), np.array([9.0, 10.0])],
+        group_index=[0, 0, 1],
+        chains=2,
+        draws=20,
+        warmup=20,
+        seed=7,
+    )
+    hierarchical_forecast = hierarchical.forecast(steps=3, seed=8)
+    if hierarchical_forecast.observation_samples.shape != (2, 20, 3, 3):
+        print(
+            "FAIL: hierarchical forecast has unexpected shape "
+            f"{hierarchical_forecast.observation_samples.shape}",
+            file=sys.stderr,
+        )
+        return 1
+    np.testing.assert_allclose(
+        hierarchical_forecast.total_observation_samples,
+        hierarchical_forecast.observation_samples.sum(axis=2),
+    )
 
     print("OK: wheel install verified (import, API surface, numpy interop, end-to-end sampling)")
     return 0

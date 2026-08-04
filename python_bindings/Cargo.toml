@@ -1,6 +1,6 @@
 [package]
 name = "rustmc"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 license = "MIT"
 description = "Python extension module for rustmc"
@@ -14,7 +14,7 @@ name = "rustmc"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustmc_core = { path = "../rust_core", version = "0.9.0" }
+rustmc_core = { path = "../rust_core", version = "0.10.0" }
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
 numpy = "0.25"
 ndarray = "0.16"

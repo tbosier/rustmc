@@ -146,10 +146,39 @@ batch = compiled.sample_batch(
 ## Forecasting as an application
 
 Forecasting is one application of rustmc's structure-aware inference rather than the
-definition of the library. Current specialized models include Bayesian local level,
-seasonal local level, local linear trend, and directly observed Gaussian AR(p), plus
-fixed-parameter linear Gaussian state-space filtering, smoothing, and a sum-to-zero
-seasonal constructor.
+definition of the library. Current specialized models include a joint hierarchical
+mean for ragged related series, Bayesian local level, seasonal local level, local linear
+trend, and directly observed Gaussian AR(p), plus fixed-parameter linear Gaussian
+state-space filtering, smoothing, and a sum-to-zero seasonal constructor.
+
+For many short program series, fit one population → group → program posterior instead
+of independently batching models:
+
+```python
+model = rmc.BayesianHierarchicalMean(
+    group_variance_prior=rmc.InverseGammaPrior(3.0, 20.0),
+    program_variance_prior=rmc.InverseGammaPrior(3.0, 10.0),
+    observation_variance_prior=rmc.InverseGammaPrior(3.0, 25.0),
+    population_mean_prior=100.0,
+    population_variance_prior=400.0,
+)
+fit = model.fit(
+    [program_a, program_b, program_c],       # unequal lengths are native
+    group_index=[0, 0, 1],
+    program_names=["a", "b", "c"],
+    group_names=["division-a", "division-b"],
+)
+forecast = fit.forecast(steps=12)
+
+# (chain, draw, program, step); chain/draw alignment preserves dependence.
+company_draws = forecast.observation_samples.sum(axis=2)
+division_draws = forecast.group_observation_samples
+```
+
+This MVP pools a static Gaussian intercept/mean; it is not a dynamic local-level model.
+Its conjugate Gibbs kernel samples the joint hierarchy directly and avoids requiring HMC
+to navigate a funnel. Centered Gibbs can still mix slowly near zero variance, so inspect
+`fit.summary()`/`fit.diagnostics()`; explicit priors remain important for sparse groups.
 
 ```python
 values = np.asarray(
@@ -199,7 +228,7 @@ Forecasting examples:
 | Generic inference | NUTS with configurable `target_accept`, fixed-trajectory HMC, transformed continuous parameters, parallel chains |
 | Continuous priors | Normal, Student-t, HalfNormal, Exponential, LogNormal, Gamma, Beta, Uniform |
 | Likelihoods | Normal, Bernoulli-logit, Poisson-log, Exponential, LogNormal, Negative Binomial |
-| Model structure | Scalar hierarchical priors, scalar/vector regression expressions, automatic non-centering for supported scalar hierarchies |
+| Model structure | Joint ragged hierarchical means, scalar hierarchical priors, scalar/vector regression expressions, automatic non-centering for supported generic scalar hierarchies |
 | Diagnostics | Rank-normalized folded split R-hat, rank-normalized bulk/tail ESS, MCSE, empirical 94% HDI, divergences and acceptance summaries |
 | Predictive workflow | Prior predictive, posterior predictive, pointwise log likelihood, ArviZ export |
 | Repeated models | In-memory compile/bind reuse and parallel batch sampling |

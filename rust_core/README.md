@@ -11,7 +11,7 @@ process. It is not presented as a general replacement for Stan or PyMC.
 
 ```toml
 [dependencies]
-rustmc_core = "0.9"
+rustmc_core = "0.10"
 ```
 
 ```rust
@@ -35,6 +35,11 @@ Fixed-system forecasts expose the joint future-observation covariance and cumula
 Gaussian moments. Posterior-predictive draws from fitted models retain their joint path
 structure, allowing downstream code to calculate distributions of cumulative values
 correctly. Missing observations are represented by `NaN` in state-space APIs.
+
+For related ragged series, `hierarchical::fit_hierarchical_mean` fits one joint
+population → group → program Gaussian posterior with a specialized conjugate Gibbs
+kernel. Its forecast paths are indexed `[chain][draw][program][step]`, so downstream
+Rust code can aggregate aligned draws without discarding cross-program dependence.
 
 Current limitations include no fitted covariate or multiple-seasonality state-space
 model, no stable serialized deployment format, and no stability guarantee for the alpha Rust API. See the
