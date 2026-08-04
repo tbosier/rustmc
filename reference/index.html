@@ -1,0 +1,2044 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Fast Bayesian inference in Rust with a Python API.">
+      
+      
+      
+        <link rel="canonical" href="https://tbosier.github.io/rustmc/reference/">
+      
+      
+        <link rel="prev" href="../examples/high-dimensional/">
+      
+      
+        <link rel="next" href="../architecture/compiled-model/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>API Reference - rustmc</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#api-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="rustmc" class="md-header__button md-logo" aria-label="rustmc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rustmc
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              API Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/tbosier/rustmc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tbosier/rustmc
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../getting-started/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Getting Started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../examples/linear-regression/" class="md-tabs__link">
+          
+  
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/compiled-model/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="rustmc" class="md-nav__button md-logo" aria-label="rustmc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rustmc
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/tbosier/rustmc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tbosier/rustmc
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/linear-regression/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linear Regression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/hierarchical/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/hierarchical-templates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical Templates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/batch-inference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Batch Inference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/high-dimensional/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    High-Dimensional Regression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#linear-gaussian-state-space-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linear Gaussian state-space models
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#joint-hierarchical-means-for-ragged-series" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joint hierarchical means for ragged series
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-local-level-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian local-level forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-seasonal-local-level-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian seasonal local-level forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-local-linear-trend-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian local-linear-trend forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-autoregression-arp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian autoregression AR(p)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#modelbuilder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ModelBuilder
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ModelBuilder">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#priors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Priors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hierarchical-priors-and-automatic-non-centering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hierarchical priors and automatic non-centering
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#likelihoods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Likelihoods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        compile()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compiledmodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CompiledModel
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CompiledModel">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#context-manager-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context-manager contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcsample" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.sample()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcbatch_sample" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.batch_sample()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fitresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FitResult
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcsample_prior_predictive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.sample_prior_predictive()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#batchresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BatchResult
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#paramref-and-expr-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ParamRef and Expr operators
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/compiled-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compiled models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#linear-gaussian-state-space-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Linear Gaussian state-space models
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#joint-hierarchical-means-for-ragged-series" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Joint hierarchical means for ragged series
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-local-level-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian local-level forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-seasonal-local-level-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian seasonal local-level forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-local-linear-trend-forecasting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian local-linear-trend forecasting
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#bayesian-autoregression-arp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bayesian autoregression AR(p)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#modelbuilder" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ModelBuilder
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ModelBuilder">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#priors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Priors
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#hierarchical-priors-and-automatic-non-centering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hierarchical priors and automatic non-centering
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#likelihoods" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Likelihoods
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        build()
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compile" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        compile()
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compiledmodel" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CompiledModel
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="CompiledModel">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#context-manager-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Context-manager contract
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcsample" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.sample()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcbatch_sample" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.batch_sample()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#fitresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        FitResult
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rmcsample_prior_predictive" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rmc.sample_prior_predictive()
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#batchresult" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        BatchResult
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#paramref-and-expr-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ParamRef and Expr operators
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="api-reference">API Reference</h1>
+<h2 id="linear-gaussian-state-space-models">Linear Gaussian state-space models</h2>
+<p><code>LinearGaussianStateSpace</code> implements a time-homogeneous Kalman filter and
+Rauch--Tung--Striebel smoother for an arbitrary-dimensional latent state and a
+single scalar observation per time point. Arrays use the conventional model</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>x[t] = transition @ x[t-1] + process noise
+<a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>y[t] = observation @ x[t] + observation noise
+</code></pre></div>
+<p><code>initial_mean</code> and <code>initial_covariance</code> describe <code>x[-1]</code>, immediately before the
+first observation. The filter applies one transition/process-noise prediction before
+updating on <code>y[0]</code>. This convention also applies when forecasting an empty history.</p>
+<p>Construct a general model with NumPy arrays, or use the <code>local_level()</code>,
+<code>local_linear_trend()</code>, <code>seasonal_local_level()</code>, and zero-mean <code>stationary_ar1()</code>
+constructors. <code>filter(y)</code> returns predicted and filtered
+state means/covariances plus the observed-data log likelihood; <code>smooth(y)</code> adds
+smoothed state moments; and <code>forecast(y, steps)</code> returns future latent-state and
+observation means/variances. A <code>NaN</code> observation is treated as missing and
+causes a prediction-only step; infinities are rejected.</p>
+<p><code>forecast.observation_covariance</code> contains the joint covariance across future scalar
+observations. <code>cumulative_observation_means</code>, <code>cumulative_observation_variances</code>, and
+<code>cumulative_interval(level=0.95)</code> summarize prefix totals without discarding
+cross-horizon dependence. <code>forecast.interval(level=0.95)</code> returns lower and upper pointwise Gaussian
+predictive bounds. Its <code>uncertainty_kind</code> is <code>"conditional_fixed_parameters"</code>:
+the interval includes filtered-state, future-process, and observation noise, but
+does not include uncertainty about the supplied system parameters. It is therefore
+a conditional predictive interval, not yet a parameter-integrated Bayesian credible
+interval.</p>
+<p><code>seasonal_local_level(period=..., ...)</code> builds a sum-to-zero dummy-seasonal system.
+Its supplied seasonal and level variances remain fixed; it does not estimate them.
+The optional <code>initial_seasonal_effects</code> is one complete cycle in forecast order and
+must sum to zero.</p>
+<p>This state-space API assumes fixed, time-invariant system matrices, Gaussian noise,
+and univariate observations. Process covariance may be positive semidefinite so
+deterministic state shifts are representable; initial covariance must be positive
+definite, and observation variance must be positive. It does not yet
+estimate system parameters, support multivariate observations, accept
+time-varying matrices, or integrate a Kalman likelihood into <code>ModelBuilder</code>.
+Filtering, smoothing, and forecasting release the Python GIL after converting the
+input NumPy array.</p>
+<h2 id="joint-hierarchical-means-for-ragged-series">Joint hierarchical means for ragged series</h2>
+<p><code>BayesianHierarchicalMean</code> fits all supplied programs in one posterior:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>population_mean ~ Normal(population_mean_prior, population_variance_prior)
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>group_mean[g] ~ Normal(population_mean, group_variance)
+<a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>program_mean[p] ~ Normal(group_mean[group_index[p]], program_variance)
+<a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>y[p, t] ~ Normal(program_mean[p], observation_variance)
+</code></pre></div>
+<p>The three variances have explicit <code>InverseGammaPrior(shape, scale)</code> priors. The
+specialized conjugate Gibbs kernel draws exact full conditionals, so it does not send
+NUTS/HMC through the funnel geometry of a centered hierarchy. Centered Gibbs chains can
+still be highly autocorrelated when a variance component approaches zero. This remains
+finite MCMC: use multiple chains and inspect <code>fit.summary()</code> or <code>fit.diagnostics()</code> for
+rank-normalized R-hat, bulk/tail ESS, and MCSE, especially with few groups or sparse
+programs.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">model</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">BayesianHierarchicalMean</span><span class="p">(</span>
+<a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>    <span class="n">group_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">20.0</span><span class="p">),</span>
+<a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    <span class="n">program_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">10.0</span><span class="p">),</span>
+<a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">observation_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">25.0</span><span class="p">),</span>
+<a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">population_mean_prior</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+<a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="n">population_variance_prior</span><span class="o">=</span><span class="mf">400.0</span><span class="p">,</span>
+<a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="p">)</span>
+<a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span>
+<a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="p">[</span><span class="n">program_a</span><span class="p">,</span> <span class="n">program_b</span><span class="p">,</span> <span class="n">program_c</span><span class="p">],</span>
+<a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="n">group_index</span><span class="o">=</span><span class="p">[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span>
+<a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">program_names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;a&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">,</span> <span class="s2">&quot;c&quot;</span><span class="p">],</span>
+<a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>    <span class="n">group_names</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;division-a&quot;</span><span class="p">,</span> <span class="s2">&quot;division-b&quot;</span><span class="p">],</span>
+<a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>    <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="n">warmup</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>    <span class="n">draws</span><span class="o">=</span><span class="mi">1_000</span><span class="p">,</span>
+<a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
+<a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a><span class="p">)</span>
+<a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a><span class="n">forecast</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">forecast</span><span class="p">(</span><span class="n">steps</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">43</span><span class="p">)</span>
+</code></pre></div>
+<p>Series are genuinely ragged and each may contain one or more finite observations.
+<code>NaN</code> positions are ignored by the likelihood, infinities are rejected, and input
+program order is preserved. Conditional on the variance draws, the program posterior
+mean weights its sample mean by
+<code>n * program_variance / (n * program_variance + observation_variance)</code>. A one-point
+program therefore receives more groupward shrinkage than an otherwise comparable long
+program. How strongly either program leans on its group depends on the learned ratio of
+program to observation variance; the shrinkage strength is inferred rather than manually
+assigned.</p>
+<p><code>fit.get_samples()</code> returns scalar population/variance/standard-deviation arrays shaped
+<code>(chain, draw)</code>, group means shaped <code>(chain, draw, group)</code>, and program means shaped
+<code>(chain, draw, program)</code>. <code>time_counts</code>, <code>observed_counts</code>, <code>group_index</code>,
+<code>program_names</code>, and <code>group_names</code> preserve the ragged hierarchy metadata.
+Hierarchical validation and numerical failures raise <code>InferenceError</code>, which subclasses
+<code>ValueError</code>.</p>
+<p>Forecast <code>state_samples</code> and <code>observation_samples</code> have shape
+<code>(chain, draw, program, step)</code>. Selecting <code>[:, :, program, :]</code> produces the same
+<code>(chain, draw, step)</code> layout as other fitted forecast objects. Rollups must be formed
+inside each joint draw:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">company_draws</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">observation_samples</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">division_draws</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">group_observation_samples</span>  <span class="c1"># chain, draw, group, step</span>
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">assert</span> <span class="n">np</span><span class="o">.</span><span class="n">array_equal</span><span class="p">(</span><span class="n">company_draws</span><span class="p">,</span> <span class="n">forecast</span><span class="o">.</span><span class="n">total_observation_samples</span><span class="p">)</span>
+</code></pre></div>
+<p>Forecast storage is contiguous per posterior draw and does not retain a redundant copy
+of the static state at every step. To fail predictably instead of risking process OOM,
+one fit is limited to 50 million retained parameter values and one forecast call to 25
+million materialized observation values. Refit with fewer retained chains/draws, or
+reduce the forecast horizon, if a guard is reached.</p>
+<p>This first model pools a static intercept only. Time ordering does not affect the fit,
+and future observations are conditionally iid around each program mean. It does not yet
+pool trends or seasonal shapes and is not a stochastic local-level model. A common
+within-program observation variance and shared group/program variances are assumed;
+variance priors can materially influence singleton programs and weakly populated groups.</p>
+<h2 id="bayesian-local-level-forecasting">Bayesian local-level forecasting</h2>
+<p><code>BayesianLocalLevel</code> estimates the two unknown noise variances in the scalar model</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>x[-1] ~ Normal(initial_mean, initial_variance)
+<a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>x[t] = x[t-1] + Normal(0, process_variance)
+<a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>y[t] = x[t] + Normal(0, observation_variance)
+</code></pre></div>
+<p>It uses joint forward-filtering/backward-sampling state draws and conjugate Gibbs
+updates for the variances, following the FFBS/data-augmentation approach described by
+<a href="https://doi.org/10.1111/j.1467-9892.1994.tb00184.x">Frühwirth-Schnatter (1994)</a>
+and <a href="https://doi.org/10.1093/biomet/81.3.541">Carter and Kohn (1994)</a>.</p>
+<p>Priors are deliberately explicit because variance scales depend on the units of the
+series:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="n">model</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">BayesianLocalLevel</span><span class="p">(</span>
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    <span class="n">process_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="mf">2.5</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.3</span><span class="p">),</span>
+<a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>    <span class="n">observation_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="n">shape</span><span class="o">=</span><span class="mf">2.5</span><span class="p">,</span> <span class="n">scale</span><span class="o">=</span><span class="mf">0.6</span><span class="p">),</span>
+<a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">initial_mean</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">initial_variance</span><span class="o">=</span><span class="mf">4.0</span><span class="p">,</span>
+<a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">)</span>
+<a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">draws</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">warmup</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">forecast</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">forecast</span><span class="p">(</span><span class="n">steps</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">43</span><span class="p">)</span>
+<a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>
+<a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">predictive_lower</span><span class="p">,</span> <span class="n">predictive_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+<a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">state_lower</span><span class="p">,</span> <span class="n">state_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">state_interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+</code></pre></div>
+<p><code>InverseGammaPrior(shape, scale)</code> is a prior on a <strong>variance</strong>, with density
+proportional to <code>x^(-shape-1) exp(-scale/x)</code>. <code>fit.get_samples_2d()</code> returns both
+variance and standard-deviation draws plus the terminal latent level, all preserving
+<code>(chain, draw)</code> shape. <code>fit.to_arviz()</code> exports the parameters and observed series for
+convergence checks.</p>
+<p><code>forecast.state_samples</code> and <code>forecast.observation_samples</code> have shape
+<code>(chain, draw, step)</code> and contain coherent paths. <code>state_interval()</code> is a pointwise
+equal-tailed latent-state posterior credible interval. <code>interval()</code> is a pointwise
+equal-tailed posterior-predictive interval for future observations. The latter
+integrates parameter uncertainty, terminal-state uncertainty, future process noise,
+and observation noise. It is not a simultaneous trajectory band.</p>
+<p><code>NaN</code> retains a missing time step and infinities are rejected. Fitting requires at
+least two finite observations. This specialized model assumes equally spaced scalar
+Gaussian observations; seasonality, covariates, and irregular timestamps are not part
+of this model. Gibbs output remains finite
+MCMC output, so inspect multiple-chain convergence and effective sample sizes rather
+than treating it as an analytic posterior.</p>
+<h2 id="bayesian-seasonal-local-level-forecasting">Bayesian seasonal local-level forecasting</h2>
+<p><code>BayesianSeasonalLocalLevel</code> adds one stochastic sum-to-zero dummy-seasonal component
+to a stochastic local level. It jointly samples latent states with multivariate FFBS and
+updates level, seasonal, and observation variances from explicit inverse-gamma priors.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">model</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">BayesianSeasonalLocalLevel</span><span class="p">(</span>
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    <span class="n">period</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span>
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    <span class="n">level_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span>
+<a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">seasonal_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">),</span>
+<a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">observation_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">8.0</span><span class="p">),</span>
+<a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">initial_level</span><span class="o">=</span><span class="mf">100.0</span><span class="p">,</span>
+<a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">initial_seasonal_effects</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">12</span><span class="p">),</span>
+<a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="n">initial_level_variance</span><span class="o">=</span><span class="mf">25.0</span><span class="p">,</span>
+<a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>    <span class="n">initial_seasonal_variance</span><span class="o">=</span><span class="mf">9.0</span><span class="p">,</span>
+<a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="p">)</span>
+<a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">draws</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">warmup</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="n">forecast</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">forecast</span><span class="p">(</span><span class="n">steps</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">43</span><span class="p">)</span>
+<a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+<a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a><span class="n">cumulative_lower</span><span class="p">,</span> <span class="n">cumulative_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">cumulative_interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+</code></pre></div>
+<p>The initial seasonal vector is one cycle in forecast order and must sum to zero.
+<code>forecast.level_samples</code>, <code>seasonal_samples</code>, <code>observation_samples</code>, and
+<code>cumulative_observation_samples</code> have shape <code>(chain, draw, step)</code>. Cumulative paths are
+formed inside each posterior draw before quantiles are calculated.</p>
+<p>The fitted model is equally spaced, scalar, Gaussian, and single-seasonal. Seasonal
+innovations preserve structural identification but do not force every realized rolling
+cycle to sum exactly to zero. Missing values retain their time positions. With only two
+observed cycles, variance and seasonal inference is necessarily prior-sensitive.</p>
+<h2 id="bayesian-local-linear-trend-forecasting">Bayesian local-linear-trend forecasting</h2>
+<p><code>BayesianLocalLinearTrend</code> fits the two-state structural model</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>[level[-1], slope[-1]] ~ Normal(initial_mean, initial_covariance)
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>level[t] = level[t-1] + slope[t-1] + Normal(0, level_variance)
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>slope[t] = slope[t-1] + Normal(0, slope_variance)
+<a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>y[t] = level[t] + Normal(0, observation_variance)
+</code></pre></div>
+<p>All three variance priors are explicit. The initial covariance is configured with level
+variance, slope variance, and an optional level/slope covariance and must be strictly
+positive definite.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="n">model</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">BayesianLocalLinearTrend</span><span class="p">(</span>
+<a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>    <span class="n">level_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">0.24</span><span class="p">),</span>
+<a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>    <span class="n">slope_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">0.04</span><span class="p">),</span>
+<a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">observation_variance_prior</span><span class="o">=</span><span class="n">rmc</span><span class="o">.</span><span class="n">InverseGammaPrior</span><span class="p">(</span><span class="mf">3.0</span><span class="p">,</span> <span class="mf">0.70</span><span class="p">),</span>
+<a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">initial_level</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">initial_slope</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">initial_level_variance</span><span class="o">=</span><span class="mf">4.0</span><span class="p">,</span>
+<a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>    <span class="n">initial_slope_variance</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span>
+<a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="p">)</span>
+<a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">draws</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">warmup</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span> <span class="n">thin</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a><span class="n">forecast</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">forecast</span><span class="p">(</span><span class="n">steps</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">43</span><span class="p">)</span>
+<a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="n">predictive_lower</span><span class="p">,</span> <span class="n">predictive_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+<a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="n">level_lower</span><span class="p">,</span> <span class="n">level_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">level_interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+<a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a><span class="n">slope_lower</span><span class="p">,</span> <span class="n">slope_upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">slope_interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+</code></pre></div>
+<p>Level, slope, and observation samples each have shape <code>(chain, draw, step)</code> and belong
+to the same coherent paths. <code>interval()</code> is the observation posterior-predictive
+interval; <code>level_interval()</code> and <code>slope_interval()</code> summarize the latent states. The
+process innovations are independent (diagonal process covariance). <code>NaN</code> retains a
+scheduled missing time point. Variance components can be weakly identified near zero,
+so inspect multi-chain convergence.</p>
+<h2 id="bayesian-autoregression-arp">Bayesian autoregression AR(p)</h2>
+<p><code>BayesianAutoRegression(order=p)</code> and its shorter alias <code>BayesianAR</code> fit any positive
+caller-selected order under the conditional Gaussian likelihood</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>y[t] = intercept + phi[1] y[t-1] + ... + phi[p] y[t-p] + epsilon[t]
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>epsilon[t] ~ Normal(0, innovation_variance)
+</code></pre></div>
+<p>The explicit conjugate prior is</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a>innovation_variance ~ InverseGamma(variance_shape, variance_scale)
+<a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a>coefficients | innovation_variance
+<a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>    ~ Normal(coefficient_mean, innovation_variance * coefficient_precision^-1)
+</code></pre></div>
+<p>Coefficients are always <code>[intercept, lag_1, ..., lag_p]</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a><span class="n">order</span> <span class="o">=</span> <span class="mi">3</span>
+<a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="n">prior</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">NormalInverseGammaPrior</span><span class="p">(</span>
+<a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>    <span class="n">coefficient_mean</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">order</span> <span class="o">+</span> <span class="mi">1</span><span class="p">),</span>
+<a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>    <span class="n">coefficient_precision</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">eye</span><span class="p">(</span><span class="n">order</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.05</span><span class="p">,</span>
+<a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>    <span class="n">variance_shape</span><span class="o">=</span><span class="mf">2.5</span><span class="p">,</span>
+<a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>    <span class="n">variance_scale</span><span class="o">=</span><span class="mf">0.2</span><span class="p">,</span>
+<a id="__codelineno-11-7" name="__codelineno-11-7" href="#__codelineno-11-7"></a><span class="p">)</span>
+<a id="__codelineno-11-8" name="__codelineno-11-8" href="#__codelineno-11-8"></a><span class="n">model</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">BayesianAutoRegression</span><span class="p">(</span><span class="n">order</span><span class="o">=</span><span class="n">order</span><span class="p">,</span> <span class="n">prior</span><span class="o">=</span><span class="n">prior</span><span class="p">)</span>
+<a id="__codelineno-11-9" name="__codelineno-11-9" href="#__codelineno-11-9"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">model</span><span class="o">.</span><span class="n">fit</span><span class="p">(</span><span class="n">y</span><span class="p">,</span> <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span> <span class="n">draws</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">)</span>
+<a id="__codelineno-11-10" name="__codelineno-11-10" href="#__codelineno-11-10"></a><span class="n">forecast</span> <span class="o">=</span> <span class="n">fit</span><span class="o">.</span><span class="n">forecast</span><span class="p">(</span><span class="n">steps</span><span class="o">=</span><span class="mi">12</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">43</span><span class="p">)</span>
+<a id="__codelineno-11-11" name="__codelineno-11-11" href="#__codelineno-11-11"></a><span class="n">lower</span><span class="p">,</span> <span class="n">upper</span> <span class="o">=</span> <span class="n">forecast</span><span class="o">.</span><span class="n">interval</span><span class="p">(</span><span class="mf">0.95</span><span class="p">)</span>
+</code></pre></div>
+<p>This is a directly observed AR(p), distinct from the latent
+<code>LinearGaussianStateSpace.stationary_ar1()</code> model with separate process and measurement
+noise. The conjugate posterior draws are independent, so there is no warmup or thinning.
+<code>fit.get_samples()</code> returns <code>coefficient</code> with shape <code>(chain, draw, p + 1)</code> and innovation
+variance/standard deviation with shape <code>(chain, draw)</code>. Forecast observation and recursive
+conditional-mean paths have shape <code>(chain, draw, step)</code>.</p>
+<p>The likelihood conditions on the first <code>p</code> observations. Input must be complete, finite,
+equally spaced, and longer than <code>p</code>. Coefficient draws are not restricted to the
+stationary region and are never silently clipped; explosive recursive draws return a
+numerical error. <code>interval()</code> is a pointwise equal-tailed posterior-predictive interval,
+not a simultaneous path band.</p>
+<h2 id="modelbuilder"><code>ModelBuilder</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-12-1" name="__codelineno-12-1" href="#__codelineno-12-1"></a><span class="n">builder</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">(</span><span class="n">data</span><span class="o">=</span><span class="kc">None</span><span class="p">)</span>
+</code></pre></div>
+<p>Constructs a model. Data can be bound at build time or passed later to <code>rmc.sample()</code>,
+<code>rmc.batch_sample()</code>, or <code>rmc.sample_prior_predictive()</code>.</p>
+<h3 id="priors">Priors</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Distribution</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>normal_prior(name, mu, sigma)</code></td>
+<td>Normal(mu, sigma)</td>
+<td><code>mu</code> and <code>sigma</code> may be <code>float</code> or earlier <code>ParamRef</code> values</td>
+</tr>
+<tr>
+<td><code>half_normal_prior(name, sigma)</code></td>
+<td>HalfNormal(sigma)</td>
+<td><code>sigma</code> may be <code>float</code> or earlier <code>ParamRef</code></td>
+</tr>
+<tr>
+<td><code>exponential_prior(name, rate)</code></td>
+<td>Exponential(rate)</td>
+<td><code>rate</code> may be <code>float</code> or earlier <code>ParamRef</code></td>
+</tr>
+<tr>
+<td><code>log_normal_prior(name, mu, sigma)</code></td>
+<td>LogNormal(mu, sigma)</td>
+<td><code>mu</code> and <code>sigma</code> may be <code>float</code> or earlier <code>ParamRef</code></td>
+</tr>
+<tr>
+<td><code>student_t_prior(name, nu, mu=0.0, sigma=1.0)</code></td>
+<td>StudentT(nu, mu, sigma)</td>
+<td>scalar only</td>
+</tr>
+<tr>
+<td><code>gamma_prior(name, alpha, beta)</code></td>
+<td>Gamma(alpha, beta)</td>
+<td>scalar only</td>
+</tr>
+<tr>
+<td><code>beta_prior(name, alpha, beta)</code></td>
+<td>Beta(alpha, beta)</td>
+<td>scalar only</td>
+</tr>
+<tr>
+<td><code>uniform_prior(name, lower=0.0, upper=1.0)</code></td>
+<td>Uniform(lower, upper)</td>
+<td>scalar only</td>
+</tr>
+<tr>
+<td><code>vector_normal_prior(name, n, mu=0.0, sigma=1.0)</code></td>
+<td>Normal(mu, sigma)^n</td>
+<td>explicit vector block</td>
+</tr>
+<tr>
+<td><code>bernoulli_prior(name, p=0.5)</code></td>
+<td>Bernoulli(p)</td>
+<td>discrete, not suitable for gradient-based inference</td>
+</tr>
+<tr>
+<td><code>poisson_prior(name, lam)</code></td>
+<td>Poisson(lam)</td>
+<td>discrete, not suitable for gradient-based inference</td>
+</tr>
+</tbody>
+</table>
+<p>All scalar prior methods return a <code>ParamRef</code>. <code>vector_normal_prior()</code> returns a <code>VectorParamRef</code>.</p>
+<h3 id="hierarchical-priors-and-automatic-non-centering">Hierarchical priors and automatic non-centering</h3>
+<p>Scalar hierarchical priors are supported for:</p>
+<ul>
+<li><code>normal_prior()</code> with parameter-valued <code>mu</code> and/or <code>sigma</code></li>
+<li><code>half_normal_prior()</code> with parameter-valued <code>sigma</code></li>
+<li><code>exponential_prior()</code> with parameter-valued <code>rate</code></li>
+<li><code>log_normal_prior()</code> with parameter-valued <code>mu</code> and/or <code>sigma</code></li>
+</ul>
+<p>When a scalar <code>normal_prior()</code> depends on another parameter through <code>mu</code> or <code>sigma</code>,
+rustmc automatically compiles it as a non-centered latent where appropriate. Users still
+see the logical parameter name in summaries, diagnostics, ArviZ export, and predictive
+workflows.</p>
+<p>Vector-valued hierarchical priors are not yet supported.</p>
+<h3 id="likelihoods">Likelihoods</h3>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Family</th>
+<th>Linear predictor</th>
+<th>Extra parameter</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>normal_likelihood(name, mu_expr, sigma, observed_key)</code></td>
+<td>Normal</td>
+<td><code>mu_expr</code></td>
+<td><code>sigma</code> is <code>float</code> or <code>ParamRef</code></td>
+</tr>
+<tr>
+<td><code>bernoulli_logit_likelihood(name, eta_expr, observed_key)</code></td>
+<td>Bernoulli with logit link</td>
+<td><code>eta_expr</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>poisson_log_likelihood(name, eta_expr, observed_key)</code></td>
+<td>Poisson with log link</td>
+<td><code>eta_expr</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>exponential_likelihood(name, eta_expr, observed_key)</code></td>
+<td>Exponential with log-rate link</td>
+<td><code>eta_expr</code></td>
+<td>none</td>
+</tr>
+<tr>
+<td><code>log_normal_likelihood(name, mu_expr, sigma, observed_key)</code></td>
+<td>LogNormal</td>
+<td><code>mu_expr</code></td>
+<td><code>sigma</code> is <code>float</code> or <code>ParamRef</code></td>
+</tr>
+<tr>
+<td><code>negative_binomial_likelihood(name, eta_expr, alpha, observed_key)</code></td>
+<td>NegativeBinomial with log-mean link</td>
+<td><code>eta_expr</code></td>
+<td><code>alpha</code> is <code>float</code> or <code>ParamRef</code></td>
+</tr>
+</tbody>
+</table>
+<p>Likelihood expressions accept:</p>
+<ul>
+<li>a bare <code>ParamRef</code></li>
+<li><code>beta * "x"</code></li>
+<li><code>alpha + beta * "x"</code></li>
+<li><code>beta @ "X"</code> for matrix-vector regression</li>
+<li>additive constants such as <code>alpha + beta * "x" + 1.0</code></li>
+</ul>
+<h3 id="build"><code>build()</code></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="n">model</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">build</span><span class="p">()</span>
+</code></pre></div>
+<p>Returns a <code>ModelSpec</code>, the opaque handle passed to the sampling and predictive APIs.</p>
+<h3 id="compile"><code>compile()</code></h3>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a><span class="n">compiled</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">compile</span><span class="p">()</span>
+</code></pre></div>
+<p>Returns a <code>CompiledModel</code> containing immutable graph structure and a <code>DataSchema</code>, without
+concrete observation payloads. Matrix column counts and parameter shapes are structural;
+the observation row count belongs to each binding.</p>
+<h2 id="compiledmodel"><code>CompiledModel</code></h2>
+<table>
+<thead>
+<tr>
+<th>Member</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>param_names</code></td>
+<td>Structural parameter names</td>
+</tr>
+<tr>
+<td><code>required_keys</code></td>
+<td>Predictor, response, and matrix keys required by the schema</td>
+</tr>
+<tr>
+<td><code>structure_id</code></td>
+<td>Process-local identity useful for checking structure reuse</td>
+</tr>
+<tr>
+<td><code>bind(data, id="0", strict=True, check_finite=True)</code></td>
+<td>Validate data and return a <code>BoundModel</code></td>
+</tr>
+<tr>
+<td><code>sample(data_or_binding, **sampler_options)</code></td>
+<td>Sample one validated dataset and return <code>FitResult</code></td>
+</tr>
+<tr>
+<td><code>sample_batch(datasets, ids=None, shared=None, **sampler_options)</code></td>
+<td>Sample many datasets and return <code>BatchFit</code> in input order</td>
+</tr>
+</tbody>
+</table>
+<p><code>BoundModel</code> exposes <code>id</code> and <code>n_obs</code> and can be reused only with the <code>CompiledModel</code>
+that created it. In <code>sample_batch()</code>, keys supplied through <code>shared</code> are converted once
+and cannot be shadowed by a per-dataset dictionary. Dataset IDs must be unique and match
+the number of datasets.</p>
+<p><code>BatchFit.ids</code> preserves caller order; <code>len(batch_fit)</code> returns the dataset count and
+<code>batch_fit[i]</code> returns a <code>BatchResult</code>. This foundational batch path currently fails fast
+on binding or sampling errors; partial-failure collection is future work.</p>
+<h3 id="context-manager-contract">Context-manager contract</h3>
+<p><code>ModelBuilder</code>, <code>CompiledModel</code>, <code>BoundModel</code>, and <code>BatchFit</code> may be used with
+<code>with</code> when lexical scoping improves readability:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="k">with</span> <span class="n">rmc</span><span class="o">.</span><span class="n">ModelBuilder</span><span class="p">()</span> <span class="k">as</span> <span class="n">builder</span><span class="p">:</span>
+<a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>    <span class="n">beta</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">normal_prior</span><span class="p">(</span><span class="s2">&quot;beta&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">)</span>
+<a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>    <span class="n">builder</span><span class="o">.</span><span class="n">normal_likelihood</span><span class="p">(</span><span class="s2">&quot;obs&quot;</span><span class="p">,</span> <span class="n">beta</span> <span class="o">*</span> <span class="s2">&quot;x&quot;</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="s2">&quot;y&quot;</span><span class="p">)</span>
+<a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a>
+<a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="k">with</span> <span class="n">builder</span><span class="o">.</span><span class="n">compile</span><span class="p">()</span> <span class="k">as</span> <span class="n">compiled</span><span class="p">:</span>
+<a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a>    <span class="k">with</span> <span class="n">compiled</span><span class="o">.</span><span class="n">bind</span><span class="p">(</span><span class="n">data</span><span class="p">,</span> <span class="nb">id</span><span class="o">=</span><span class="s2">&quot;store-17&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">bound</span><span class="p">:</span>
+<a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>        <span class="n">fit</span> <span class="o">=</span> <span class="n">compiled</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span><span class="n">bound</span><span class="p">)</span>
+</code></pre></div>
+<p>Entering returns the same object and exiting propagates exceptions. No object is
+closed or invalidated, so the builder, compiled model, binding, and batch result
+remain usable afterward. There is no ambient or thread-local current model:
+model declarations must always be called on the intended builder. Context syntax
+does not compile a builder or bind data automatically.</p>
+<h2 id="rmcsample"><code>rmc.sample()</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="n">fit</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">sample</span><span class="p">(</span>
+<a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>    <span class="n">model_spec</span><span class="p">,</span>
+<a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a>    <span class="n">data</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a>    <span class="n">chains</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+<a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a>    <span class="n">draws</span><span class="o">=</span><span class="mi">1000</span><span class="p">,</span>
+<a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a>    <span class="n">warmup</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
+<a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a>    <span class="n">threads</span><span class="o">=</span><span class="mi">0</span><span class="p">,</span>
+<a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a>    <span class="n">step_size</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a>    <span class="n">target_accept</span><span class="o">=</span><span class="mf">0.8</span><span class="p">,</span>
+<a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a>    <span class="n">sampler</span><span class="o">=</span><span class="s2">&quot;nuts&quot;</span><span class="p">,</span>
+<a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a>    <span class="n">max_tree_depth</span><span class="o">=</span><span class="mi">10</span><span class="p">,</span>
+<a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>    <span class="n">num_leapfrog_steps</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
+<a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>    <span class="n">show_progress</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="p">)</span>
+</code></pre></div>
+<p>Returns a <code>FitResult</code>.</p>
+<p>Notes:</p>
+<ul>
+<li><code>sampler</code> may be <code>"nuts"</code> or <code>"hmc"</code>.</li>
+<li><code>threads=0</code> uses Rayon defaults.</li>
+<li><code>max_tree_depth</code> applies to NUTS.</li>
+<li><code>num_leapfrog_steps</code> applies to HMC.</li>
+<li><code>step_size=0.0</code> means auto-tune.</li>
+<li><code>target_accept</code> controls dual-averaging during warmup and must be between 0 and 1.</li>
+</ul>
+<h2 id="rmcbatch_sample"><code>rmc.batch_sample()</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a><span class="n">results</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">batch_sample</span><span class="p">(</span>
+<a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>    <span class="n">models</span><span class="p">,</span>  <span class="c1"># list[(ModelSpec, data_dict)]</span>
+<a id="__codelineno-17-3" name="__codelineno-17-3" href="#__codelineno-17-3"></a>    <span class="n">chains</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+<a id="__codelineno-17-4" name="__codelineno-17-4" href="#__codelineno-17-4"></a>    <span class="n">draws</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-17-5" name="__codelineno-17-5" href="#__codelineno-17-5"></a>    <span class="n">warmup</span><span class="o">=</span><span class="mi">300</span><span class="p">,</span>
+<a id="__codelineno-17-6" name="__codelineno-17-6" href="#__codelineno-17-6"></a>    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
+<a id="__codelineno-17-7" name="__codelineno-17-7" href="#__codelineno-17-7"></a>    <span class="n">sampler</span><span class="o">=</span><span class="s2">&quot;nuts&quot;</span><span class="p">,</span>
+<a id="__codelineno-17-8" name="__codelineno-17-8" href="#__codelineno-17-8"></a>    <span class="n">step_size</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span>
+<a id="__codelineno-17-9" name="__codelineno-17-9" href="#__codelineno-17-9"></a>    <span class="n">target_accept</span><span class="o">=</span><span class="mf">0.8</span><span class="p">,</span>
+<a id="__codelineno-17-10" name="__codelineno-17-10" href="#__codelineno-17-10"></a>    <span class="n">max_tree_depth</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span>
+<a id="__codelineno-17-11" name="__codelineno-17-11" href="#__codelineno-17-11"></a>    <span class="n">num_leapfrog_steps</span><span class="o">=</span><span class="mi">15</span><span class="p">,</span>
+<a id="__codelineno-17-12" name="__codelineno-17-12" href="#__codelineno-17-12"></a>    <span class="n">show_progress</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+<a id="__codelineno-17-13" name="__codelineno-17-13" href="#__codelineno-17-13"></a><span class="p">)</span>
+</code></pre></div>
+<p>Returns a list of <code>BatchResult</code>, one per model.</p>
+<p>Unlike the original throughput-only path, batch sampling now supports multiple chains per
+model and both NUTS and fixed-trajectory HMC. Use <code>chains &gt; 1</code> when reliability matters more
+than absolute batch throughput.</p>
+<h2 id="fitresult"><code>FitResult</code></h2>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Returns</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>summary()</code></td>
+<td><code>str</code></td>
+<td>Formatted diagnostics table</td>
+</tr>
+<tr>
+<td><code>mean()</code></td>
+<td><code>dict[str, float]</code></td>
+<td>Posterior mean per parameter</td>
+</tr>
+<tr>
+<td><code>std()</code></td>
+<td><code>dict[str, float]</code></td>
+<td>Posterior std per parameter</td>
+</tr>
+<tr>
+<td><code>get_samples()</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Flattened samples across chains</td>
+</tr>
+<tr>
+<td><code>get_samples_2d()</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Samples shaped <code>(chains, draws)</code></td>
+</tr>
+<tr>
+<td><code>diagnostics()</code></td>
+<td><code>list[dict]</code></td>
+<td>Per-parameter diagnostics</td>
+</tr>
+<tr>
+<td><code>transition_diagnostics()</code></td>
+<td><code>dict</code></td>
+<td>Per-chain and aggregate energy, tree-depth, and leapfrog telemetry</td>
+</tr>
+<tr>
+<td><code>accept_rates()</code></td>
+<td><code>list[float]</code></td>
+<td>Per-chain accept rates</td>
+</tr>
+<tr>
+<td><code>step_sizes()</code></td>
+<td><code>list[float]</code></td>
+<td>Per-chain adapted step sizes</td>
+</tr>
+<tr>
+<td><code>divergences()</code></td>
+<td><code>list[int]</code></td>
+<td>Per-chain divergence counts</td>
+</tr>
+<tr>
+<td><code>posterior_predictive(n_samples=None, seed=42)</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Posterior predictive samples shaped <code>(n_samples, n_obs)</code> per likelihood</td>
+</tr>
+<tr>
+<td><code>log_likelihood()</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Pointwise log-likelihood shaped <code>(chain, draw, obs)</code> per likelihood</td>
+</tr>
+<tr>
+<td><code>to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)</code></td>
+<td>ArviZ inference container</td>
+<td>Convert to ArviZ's version-native container (<code>InferenceData</code> on 0.x, <code>DataTree</code> on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood</td>
+</tr>
+</tbody>
+</table>
+<p><code>log_likelihood()</code> is the intended bridge for <code>az.loo(...)</code> and <code>az.waic(...)</code>.</p>
+<h2 id="rmcsample_prior_predictive"><code>rmc.sample_prior_predictive()</code></h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-18-1" name="__codelineno-18-1" href="#__codelineno-18-1"></a><span class="n">prior_pred</span> <span class="o">=</span> <span class="n">rmc</span><span class="o">.</span><span class="n">sample_prior_predictive</span><span class="p">(</span>
+<a id="__codelineno-18-2" name="__codelineno-18-2" href="#__codelineno-18-2"></a>    <span class="n">model</span><span class="p">,</span>
+<a id="__codelineno-18-3" name="__codelineno-18-3" href="#__codelineno-18-3"></a>    <span class="n">data</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+<a id="__codelineno-18-4" name="__codelineno-18-4" href="#__codelineno-18-4"></a>    <span class="n">n_samples</span><span class="o">=</span><span class="mi">500</span><span class="p">,</span>
+<a id="__codelineno-18-5" name="__codelineno-18-5" href="#__codelineno-18-5"></a>    <span class="n">seed</span><span class="o">=</span><span class="mi">42</span><span class="p">,</span>
+<a id="__codelineno-18-6" name="__codelineno-18-6" href="#__codelineno-18-6"></a><span class="p">)</span>
+</code></pre></div>
+<p>Returns <code>dict[str, np.ndarray]</code> containing:</p>
+<ul>
+<li>one 1-D array per parameter with <code>n_samples</code> prior draws</li>
+<li>one 2-D array per likelihood with shape <code>(n_samples, n_obs)</code></li>
+</ul>
+<p>For automatically non-centered scalar hierarchical normals, the returned parameter draws use
+the logical parameter name, not the hidden raw latent.</p>
+<h2 id="batchresult"><code>BatchResult</code></h2>
+<p>Each element returned by <code>rmc.batch_sample()</code> is a <code>BatchResult</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Method / property</th>
+<th>Returns</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mean()</code></td>
+<td><code>dict[str, float]</code></td>
+<td>Posterior mean per parameter</td>
+</tr>
+<tr>
+<td><code>std()</code></td>
+<td><code>dict[str, float]</code></td>
+<td>Posterior std per parameter</td>
+</tr>
+<tr>
+<td><code>get_samples()</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Flattened samples across all chains and draws</td>
+</tr>
+<tr>
+<td><code>get_samples_2d()</code></td>
+<td><code>dict[str, np.ndarray]</code></td>
+<td>Samples shaped <code>(chains, draws)</code></td>
+</tr>
+<tr>
+<td><code>chains</code></td>
+<td><code>int</code></td>
+<td>Number of chains run for this model</td>
+</tr>
+<tr>
+<td><code>draws</code></td>
+<td><code>int</code></td>
+<td>Number of post-warmup draws per chain</td>
+</tr>
+<tr>
+<td><code>accept_rate</code></td>
+<td><code>float</code></td>
+<td>Mean accept rate across chains</td>
+</tr>
+<tr>
+<td><code>accept_rates</code></td>
+<td><code>list[float]</code></td>
+<td>Per-chain accept rates</td>
+</tr>
+<tr>
+<td><code>divergences</code></td>
+<td><code>int</code></td>
+<td>Total divergences across chains</td>
+</tr>
+<tr>
+<td><code>divergences_per_chain</code></td>
+<td><code>list[int]</code></td>
+<td>Per-chain divergence counts</td>
+</tr>
+</tbody>
+</table>
+<h2 id="paramref-and-expr-operators"><code>ParamRef</code> and <code>Expr</code> operators</h2>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-19-1" name="__codelineno-19-1" href="#__codelineno-19-1"></a><span class="n">beta</span> <span class="o">*</span> <span class="s2">&quot;x&quot;</span>             <span class="c1"># elementwise scalar predictor</span>
+<a id="__codelineno-19-2" name="__codelineno-19-2" href="#__codelineno-19-2"></a><span class="n">alpha</span> <span class="o">+</span> <span class="n">beta</span> <span class="o">*</span> <span class="s2">&quot;x&quot;</span>     <span class="c1"># additive linear predictor</span>
+<a id="__codelineno-19-3" name="__codelineno-19-3" href="#__codelineno-19-3"></a><span class="n">beta</span> <span class="o">@</span> <span class="s2">&quot;X&quot;</span>             <span class="c1"># matrix-vector regression</span>
+<a id="__codelineno-19-4" name="__codelineno-19-4" href="#__codelineno-19-4"></a><span class="n">beta</span> <span class="o">+</span> <span class="mf">1.0</span>             <span class="c1"># additive constant</span>
+<a id="__codelineno-19-5" name="__codelineno-19-5" href="#__codelineno-19-5"></a><span class="mf">1.0</span> <span class="o">+</span> <span class="n">beta</span> <span class="o">*</span> <span class="s2">&quot;x&quot;</span>       <span class="c1"># constant plus expression</span>
+</code></pre></div>
+<p>Direct use as the likelihood expression is also valid:</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-20-1" name="__codelineno-20-1" href="#__codelineno-20-1"></a><span class="n">mu_global</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">normal_prior</span><span class="p">(</span><span class="s2">&quot;mu_global&quot;</span><span class="p">,</span> <span class="n">mu</span><span class="o">=</span><span class="mf">0.0</span><span class="p">,</span> <span class="n">sigma</span><span class="o">=</span><span class="mf">5.0</span><span class="p">)</span>
+<a id="__codelineno-20-2" name="__codelineno-20-2" href="#__codelineno-20-2"></a><span class="n">sigma_group</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">half_normal_prior</span><span class="p">(</span><span class="s2">&quot;sigma_group&quot;</span><span class="p">,</span> <span class="n">sigma</span><span class="o">=</span><span class="mf">2.0</span><span class="p">)</span>
+<a id="__codelineno-20-3" name="__codelineno-20-3" href="#__codelineno-20-3"></a><span class="n">mu_group</span> <span class="o">=</span> <span class="n">builder</span><span class="o">.</span><span class="n">normal_prior</span><span class="p">(</span><span class="s2">&quot;mu_group&quot;</span><span class="p">,</span> <span class="n">mu</span><span class="o">=</span><span class="n">mu_global</span><span class="p">,</span> <span class="n">sigma</span><span class="o">=</span><span class="n">sigma_group</span><span class="p">)</span>
+<a id="__codelineno-20-4" name="__codelineno-20-4" href="#__codelineno-20-4"></a><span class="n">builder</span><span class="o">.</span><span class="n">normal_likelihood</span><span class="p">(</span><span class="s2">&quot;obs&quot;</span><span class="p">,</span> <span class="n">mu_expr</span><span class="o">=</span><span class="n">mu_group</span><span class="p">,</span> <span class="n">sigma</span><span class="o">=</span><span class="mf">1.0</span><span class="p">,</span> <span class="n">observed_key</span><span class="o">=</span><span class="s2">&quot;y&quot;</span><span class="p">)</span>
+</code></pre></div>
+<p>That scalar hierarchical pattern is supported today and will automatically use the
+non-centered compilation path when eligible.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/tbosier/rustmc" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/rustmc" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.expand", "navigation.top", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>
