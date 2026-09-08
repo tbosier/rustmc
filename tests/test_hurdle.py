@@ -110,3 +110,105 @@ def test_arviz_export_when_installed(rustmc_module):
     fit = model(rustmc_module).fit(np.array([0., 2., 0., 3.]), chains=2, draws=20, warmup=10)
     exported = fit.to_arviz()
     np.testing.assert_array_equal(exported.posterior["payment_probability"], fit.get_samples_2d()["payment_probability"])
+
+
+def test_hurdle_batches_preserve_sparse_cells_seeds_and_coherent_forecasts(rustmc_module):
+    rmc = rustmc_module
+    sparse = model(rmc)
+    histories = [np.zeros(9), np.array([0., np.nan, 2.5, 0.]), np.zeros(9)]
+    ids = ["never/α", "one-positive", "same-data/different-id"]
+    kwargs = dict(chains=2, draws=80, warmup=30, thin=2, seed=705)
+    batch = sparse.fit_batch(histories, ids, threads=1, chunk_size=3, **kwargs)
+    reverse = sparse.fit_batch(histories[::-1], ids[::-1], threads=3, chunk_size=1, **kwargs)
+    resumed = sparse.fit_batch(histories[1:2], ids[1:2], threads=2, **kwargs)
+    assert batch.ids == ids and batch.errors == {}
+    assert not batch[ids[0]].severity_informed_by_data
+    assert batch[ids[1]].severity_informed_by_data
+    assert (batch[ids[1]].time_count, batch[ids[1]].observed_count) == (4, 3)
+    for cell, y in zip(ids, histories):
+        single = sparse.fit(y, chains=2, draws=80, warmup=30, thin=2,
+                             seed=rmc.forecast_cell_seed(705, cell))
+        for name, values in batch[cell].get_samples_2d().items():
+            np.testing.assert_array_equal(values, reverse[cell].get_samples_2d()[name])
+            np.testing.assert_array_equal(values, single.get_samples_2d()[name])
+        assert batch[cell].sampler_stats()["divergences"] is None
+    for name, values in resumed[ids[1]].get_samples_2d().items():
+        np.testing.assert_array_equal(values, batch[ids[1]].get_samples_2d()[name])
+    assert not np.array_equal(batch[ids[0]].get_samples_2d()["payment_probability"],
+                              batch[ids[2]].get_samples_2d()["payment_probability"])
+    assert set(batch.diagnostics()) == set(ids)
+    assert {p["name"] for p in batch.diagnostics()[ids[0]]} == set(batch[ids[0]].get_samples_2d())
+    future = batch.forecast(6, seed=871, threads=3, chunk_size=1)
+    reverse_future = reverse.forecast(6, seed=871, threads=1)
+    resumed_future = resumed.forecast(6, seed=871)
+    for cell in ids:
+        paths = future[cell].observation_samples
+        assert np.isfinite(paths).all() and np.all(paths >= 0)
+        np.testing.assert_array_equal(paths, reverse_future[cell].observation_samples)
+        np.testing.assert_array_equal(paths, batch[cell].forecast(
+            6, seed=rmc.forecast_cell_seed(871, cell, "forecast")).observation_samples)
+        np.testing.assert_array_equal(np.cumsum(paths, axis=-1), future[cell].cumulative_observation_samples)
+        np.testing.assert_allclose(future[cell].mean_samples,
+                                  batch[cell].get_samples_2d()["payment_probability"][..., None]
+                                  * future[cell].positive_mean_samples)
+    np.testing.assert_array_equal(future[ids[1]].observation_samples,
+                                  resumed_future[ids[1]].observation_samples)
+
+
+def test_hurdle_batches_use_per_cell_priors_and_mix_with_regression(rustmc_module):
+    rmc = rustmc_module
+    sparse = model(rmc)
+    other = model(rmc, occurrence_alpha=3., occurrence_beta=2., process_variance_upper=.02)
+    zero_batch = sparse.fit_batch([np.zeros(4), np.zeros(4)], ["default", "other"],
+                                   models=[None, other], chains=2, draws=2000, seed=174, threads=2)
+    # Independent analytic Beta posterior references establish per-cell prior routing.
+    for cell, alpha, beta in [("default", 1., 5.), ("other", 3., 6.)]:
+        p = zero_batch[cell].get_samples_2d()["payment_probability"]
+        assert p.mean() == pytest.approx(alpha / (alpha + beta), abs=.01)
+        assert p.var() == pytest.approx(alpha * beta / ((alpha+beta)**2 * (alpha+beta+1)), rel=.12)
+    assert np.all(zero_batch["other"].get_samples_2d()["process_variance"] <= .02)
+    prior = rmc.InverseGammaPrior(3., .1)
+    gaussian = rmc.BayesianLocalLevel(prior, prior)
+    coefficient_prior = rmc.GaussianCoefficientPrior(np.zeros(1), np.eye(1))
+    y = [np.zeros(4), np.array([0., .2, .4, .6])]
+    x = [None, np.arange(4, dtype=float)[:, None]]
+    mixed = sparse.fit_batch(y, ["sparse", "regression"], models=[None, gaussian],
+                             exog=x, coefficient_priors=[None, coefficient_prior],
+                             chains=2, draws=24, warmup=12, threads=2)
+    assert isinstance(mixed["sparse"], rmc.BayesianHurdleLogNormalFit)
+    assert isinstance(mixed["regression"], rmc.BayesianRegressionFit)
+    prediction = mixed.forecast(2, exog=[None, np.array([[4.], [5.]])], threads=2)
+    assert prediction["sparse"].observation_samples.shape == (2, 24, 2)
+    assert prediction["regression"].observation_samples.shape == (2, 24, 2)
+    # The ordinary model's entry point must also recognize a hurdle per-cell model.
+    from_gaussian = gaussian.fit_batch([np.zeros(3)], ["hurdle"], models=[sparse], draws=8, warmup=2)
+    assert isinstance(from_gaussian["hurdle"], rmc.BayesianHurdleLogNormalFit)
+
+
+def test_hurdle_batch_errors_exog_and_allocation_guards(rustmc_module):
+    rmc = rustmc_module
+    sparse = model(rmc)
+    batch = sparse.fit_batch([[0.], [0., -1.], [np.nan]], ["ok", "negative", "missing"],
+                             chains=1, draws=8, warmup=2, errors="collect")
+    assert set(batch.errors) == {"negative", "missing"}
+    assert batch.results[1:] == [None, None]
+    assert set(batch.forecast(2, errors="collect").errors) == {"negative", "missing"}
+    with pytest.raises(ValueError, match="negative"):
+        sparse.fit_batch([[0., -1.]], ["negative"], draws=8)
+    assert "allocation limit" in sparse.fit_batch([[0.]], ["big"], draws=2**61,
+                                                   errors="collect").errors["big"]
+    assert "allocation limit" in batch.forecast(2**61, errors="collect").errors["ok"]
+    coefficient_prior = rmc.GaussianCoefficientPrior(np.zeros(1), np.eye(1))
+    for kwargs in [dict(exog=[[[1.]]]), dict(coefficient_priors=[coefficient_prior]),
+                   dict(exog=[[[1.]]], coefficient_priors=[coefficient_prior])]:
+        invalid = sparse.fit_batch([[0.]], ["unsupported"], draws=8, errors="collect", **kwargs)
+        assert "hurdle exog is unsupported" in invalid.errors["unsupported"]
+    plain = sparse.fit_batch([[0.]], ["plain"], chains=1, draws=8)
+    assert "hurdle exog is unsupported" in plain.forecast(1, exog=[[[1.]]], errors="collect").errors["plain"]
+    overflow = rmc.BayesianHurdleLogNormal(rmc.InverseGammaPrior(4., .03),
+                                         rmc.InverseGammaPrior(4., .3), initial_log_level=1000.)
+    numerical = sparse.fit_batch([[0.], [0.]], ["ok", "overflow"], models=[None, overflow],
+                                  chains=1, draws=8, threads=2)
+    forecasts = numerical.forecast(1, errors="collect")
+    assert set(forecasts.errors) == {"overflow"}
+    assert "overflow" in forecasts.errors["overflow"].lower()

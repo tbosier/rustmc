@@ -11,8 +11,66 @@ pub(crate) struct PyHurdleLogNormal {
     pub(crate) config: HurdleLogNormalConfig,
 }
 
+impl PyHurdleLogNormal {
+    pub(crate) fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let mut config = self.config.clone();
+        config.num_chains = chains;
+        config.num_draws = draws;
+        config.num_warmup = warmup;
+        config.thinning = thin;
+        forecast_batch::Config::Hurdle(config)
+    }
+}
+
 #[pymethods]
 impl PyHurdleLogNormal {
+    /// Fit independent sparse-amount cells with stable IDs on one native worker pool.
+    /// Optional models permit per-cell priors and mixed forecasting model families.
+    /// Hurdle cells do not support exog; regression cells in a mixed batch may use it.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            exog,
+            coefficient_priors,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     /// Independent Beta occurrence and dynamic lognormal positive amounts.
     /// Log-variance inverse-gamma priors are truncated at the explicit upper bounds.
     #[new]

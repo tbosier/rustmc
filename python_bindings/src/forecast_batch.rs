@@ -1,4 +1,5 @@
 //! Native independent-cell forecasting bindings. One pool spans cells and chains.
+use super::hurdle::{PyHurdleFit, PyHurdleForecast, PyHurdleLogNormal};
 use super::regression::{
     PyBayesianRegressionFit, PyBayesianRegressionForecast, PyGaussianCoefficientPrior,
 };
@@ -10,6 +11,7 @@ use rustmc_core::diagnostics::DiagnosticsReport;
 use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
+use rustmc_core::hurdle::{fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast};
 
 // Limit each call's retained scalar values and each cell's conservative FFBS
 // workspace estimate. Larger workloads must use caller-managed chunks.
@@ -33,6 +35,7 @@ pub(crate) enum Config {
     Seasonal(CoreBayesianSeasonalLocalLevelConfig),
     Trend(CoreBayesianLocalLinearTrendConfig),
     Ar(CoreBayesianArConfig),
+    Hurdle(HurdleLogNormalConfig),
     Regression(Box<RegressionConfig>, Vec<Vec<f64>>),
 }
 #[derive(Clone)]
@@ -41,6 +44,7 @@ enum CellFit {
     Seasonal(PyBayesianSeasonalLocalLevelFit),
     Trend(PyBayesianLocalLinearTrendFit),
     Ar(PyBayesianArFit),
+    Hurdle(PyHurdleFit),
     Regression(Box<PyBayesianRegressionFit>),
 }
 #[derive(Clone)]
@@ -49,11 +53,13 @@ enum CellForecast {
     Seasonal(CoreSeasonalPosteriorPredictiveForecast),
     Trend(CoreTrendPosteriorPredictiveForecast),
     Ar(CoreBayesianArForecast),
+    Hurdle(HurdleLogNormalForecast),
     Regression(RegressionForecast, bool, usize),
 }
 impl Config {
     fn allocation_size(&self, history: usize) -> Result<usize, String> {
         let (chains, draws, parameters, dimension) = match self {
+            Self::Hurdle(c) => (c.num_chains, c.num_draws, 4, 1),
             Self::Local(c) => (c.num_chains, c.num_draws, 3, 1),
             Self::Seasonal(c) => (
                 c.num_chains,
@@ -101,6 +107,7 @@ impl Config {
         prior: GaussianCoefficientPrior,
     ) -> Result<Self, String> {
         let config = match self {
+            Self::Hurdle(_) => return Err("hurdle exog is unsupported: occurrence is static and severity has no exogenous features".into()),
             Self::Local(config) => RegressionConfig::from_local_level(&config, prior),
             Self::Seasonal(config) => RegressionConfig::from_seasonal(&config, prior),
             Self::Trend(config) => RegressionConfig::from_trend(&config, prior),
@@ -112,6 +119,17 @@ impl Config {
     fn fit(&self, observations: &[f64], seed: u64) -> Result<CellFit, String> {
         self.allocation_size(observations.len())?;
         match self {
+            Self::Hurdle(base) => {
+                let mut config = base.clone();
+                config.seed = seed;
+                let posterior = fit_hurdle_lognormal(observations, &config)
+                    .map_err(|error| error.to_string())?;
+                Ok(CellFit::Hurdle(PyHurdleFit {
+                    posterior,
+                    observations: observations.to_vec(),
+                    config,
+                }))
+            }
             Self::Regression(base, design) => {
                 let mut config = (**base).clone();
                 config.seed = seed;
@@ -172,6 +190,11 @@ impl Config {
 impl CellFit {
     fn forecast_allocation_size(&self, steps: usize) -> Result<usize, String> {
         let (chains, draws, components) = match self {
+            Self::Hurdle(fit) => (
+                fit.posterior.chains.len(),
+                fit.posterior.chains.first().map_or(0, Vec::len),
+                3,
+            ),
             Self::Local(fit) => (fit.chains(), fit.draws(), 3),
             Self::Seasonal(fit) => (fit.chains(), fit.draws(), 4),
             Self::Trend(fit) => (fit.chains(), fit.draws(), 4),
@@ -187,6 +210,7 @@ impl CellFit {
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         match self {
             Self::Regression(fit) => Ok(Py::new(py, (**fit).clone())?.into_any()),
+            Self::Hurdle(fit) => Ok(Py::new(py, fit.clone())?.into_any()),
             Self::Local(fit) => Ok(Py::new(py, fit.clone())?.into_any()),
             Self::Seasonal(fit) => Ok(Py::new(py, fit.clone())?.into_any()),
             Self::Trend(fit) => Ok(Py::new(py, fit.clone())?.into_any()),
@@ -196,6 +220,7 @@ impl CellFit {
     fn report(&self) -> DiagnosticsReport {
         match self {
             Self::Regression(fit) => fit.posterior.diagnostics(),
+            Self::Hurdle(fit) => fit.report(),
             Self::Local(fit) => fit.posterior.diagnostics(),
             Self::Seasonal(fit) => fit.posterior.diagnostics(),
             Self::Trend(fit) => fit.posterior.diagnostics(),
@@ -209,6 +234,9 @@ impl CellFit {
         exog: Option<&[Vec<f64>]>,
     ) -> Result<CellForecast, String> {
         self.forecast_allocation_size(steps)?;
+        if exog.is_some() && matches!(self, Self::Hurdle(_)) {
+            return Err("hurdle exog is unsupported: occurrence is static and severity has no exogenous features".into());
+        }
         if exog.is_some() && !matches!(self, Self::Regression(_)) {
             return Err("future exog was supplied to a fit without regression".into());
         }
@@ -229,6 +257,11 @@ impl CellFit {
                     })
                     .map_err(|error| error.to_string())
             }
+            Self::Hurdle(fit) => fit
+                .posterior
+                .forecast(steps, seed)
+                .map(CellForecast::Hurdle)
+                .map_err(|error| error.to_string()),
             Self::Local(fit) => fit
                 .posterior
                 .forecast(steps, seed)
@@ -261,6 +294,13 @@ impl CellForecast {
                     inner: inner.clone(),
                     seasonal: *seasonal,
                     dimension: *dimension,
+                },
+            )?
+            .into_any()),
+            Self::Hurdle(inner) => Ok(Py::new(
+                py,
+                PyHurdleForecast {
+                    inner: inner.clone(),
                 },
             )?
             .into_any()),
@@ -397,6 +437,8 @@ pub(crate) fn fit_batch(
                 let model = &models[index];
                 if model.is_none() {
                     default.clone()
+                } else if let Ok(model) = model.extract::<PyRef<'_, PyHurdleLogNormal>>() {
+                    model.batch_config(chains, draws, warmup, thin)
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLevel>>() {
                     model.batch_config(chains, draws, warmup, thin)
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianSeasonalLocalLevel>>()
@@ -423,6 +465,9 @@ pub(crate) fn fit_batch(
                 .as_ref()
                 .map(|items| &items[index])
                 .filter(|item| !item.is_none());
+            if matches!(&config, Config::Hurdle(_)) && (design.is_some() || prior.is_some()) {
+                return Err("hurdle exog is unsupported: occurrence is static and severity has no exogenous features".into());
+            }
             let config =
                 match (design, prior) {
                     (Some(design), Some(prior)) => {

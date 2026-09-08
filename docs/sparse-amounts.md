@@ -91,3 +91,34 @@ The occurrence process has no calendar covariates or time dependence in this mod
 The positive severity component has a local level, without exogenous features or
 hierarchical pooling. Compare zero frequency, positive-amount tails, and cumulative
 coverage on rolling origins before choosing the model for a particular cell family.
+
+Independent sparse cells use the same [native batch API](forecast-batches.md) as
+Gaussian forecasting models:
+
+```python
+batch = model.fit_batch(
+    [np.zeros(12), np.array([0., np.nan, 110., 0.])],
+    ids=["no-payments", "one-payment"],
+    chains=4, draws=1000, warmup=500, seed=42,
+    threads=4, chunk_size=32, errors="collect",
+)
+print(batch.errors)
+print(batch["no-payments"].severity_informed_by_data)  # False
+print(batch.diagnostics())
+future = batch.forecast(12, seed=43, threads=4, errors="collect")
+paths = future["one-payment"].observation_samples
+```
+
+Supply `models=[model_for_first_cell, model_for_second_cell]` to vary occurrence
+priors, log-level priors, or variance bounds; `None` uses the calling model. Mixed
+batches can include the other supported forecasting models. Hurdle cells explicitly
+reject training or future `exog` and coefficient priors; regression cells in a mixed
+batch may supply them. All-zero and one-positive histories keep their distinct
+severity-information metadata and ordinary fit result types.
+
+Seeds use stable cell IDs for fitting and coherent forecasts, so results are
+unchanged by reordering, resuming a subset, chunk size, or worker count. Per-cell
+validation, allocation-limit and numerical failures can be collected alongside
+successful cells. The shared worker and retained-memory limits apply; use
+caller-managed slices to retain a larger workload. Each cell remains independent:
+batching introduces no shared occurrence shocks or hierarchical pooling.
