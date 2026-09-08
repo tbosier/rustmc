@@ -101,9 +101,8 @@ jobs:
           ${{ github.workspace }}/tests
 
   version-check:
-    name: Version matches tag
+    name: Release versions
     needs: test
-    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -114,7 +113,8 @@ jobs:
     # A tag must not reach the publish path unless both source installs and
     # clean-wheel installs passed across the advertised Python matrix.
     needs: [version-check, python-source-install, python-wheel-install]
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Exercise the release platforms before merging, as well as on release tags.
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     strategy:
       fail-fast: false
       matrix:
@@ -151,7 +151,7 @@ jobs:
   sdist:
     name: Source distribution
     needs: [version-check, python-source-install, python-wheel-install]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

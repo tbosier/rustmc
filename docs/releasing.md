@@ -43,6 +43,8 @@ installed on a matching native platform; a clean temporary environment runs the
 API smoke check and full Python tests against that exact wheel before upload.
 The source archive is likewise installed and tested before upload. Network-marked
 packaging tests remain deselected; these jobs perform archive installation directly.
+Pull requests run these same native artifact checks before merge. Publishing remains
+restricted to matching release tags.
 
 Release builds use CPython 3.11 and retain the `cp39-abi3` compatibility tag. Native
 Linux ARM and Intel/ARM macOS jobs use standard GitHub-hosted runner labels; see
