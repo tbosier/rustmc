@@ -1,5 +1,6 @@
 mod forecast_batch;
 mod forecast_diagnostics;
+mod hurdle;
 mod regression;
 mod runoff;
 use ndarray::{Array2, Array3, Array4};
@@ -7224,6 +7225,7 @@ fn validate_interval_level(level: f64) -> PyResult<()> {
 
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    hurdle::register(m)?;
     regression::register(m)?;
     runoff::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

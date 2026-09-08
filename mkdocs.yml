@@ -39,6 +39,11 @@ nav:
     - Batch Inference: examples/batch-inference.md
     - High-Dimensional Regression: examples/high-dimensional.md
   - API Reference: reference.md
+  - Forecasting:
+    - Regression and Fourier terms: regression-forecasting.md
+    - Independent batches and diagnostics: forecast-batches.md
+    - Sparse amounts: sparse-amounts.md
+    - Payment-count runoff: runoff.md
   - Architecture:
     - Compiled models: architecture/compiled-model.md
 

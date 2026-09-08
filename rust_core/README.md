@@ -41,8 +41,13 @@ population → group → program Gaussian posterior with a specialized conjugate
 kernel. Its forecast paths are indexed `[chain][draw][program][step]`, so downstream
 Rust code can aggregate aligned draws without discarding cross-program dependence.
 
-Current limitations include no fitted covariate or multiple-seasonality state-space
-model, no stable serialized deployment format, and no stability guarantee for the alpha Rust API. See the
+`bayesian_regression` jointly samples Gaussian coefficient, structural-state, and
+variance uncertainty with time-varying designs. `forecast_batch` provides independent
+cell execution with stable ID seeds. `hurdle` fits sparse nonnegative amounts, and
+`runoff` provides censored payment-count development with known or uncertain ultimates.
+
+Current limitations include no automatic inference planner, no stable serialized
+deployment format, and no stability guarantee for the alpha Rust API. See the
 [repository](https://github.com/tbosier/rustmc) for Python documentation, examples, and the
 ordered roadmap.
 

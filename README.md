@@ -208,9 +208,21 @@ total_interval = np.quantile(six_period_totals, [0.025, 0.975])
 The observation interval is posterior predictive; the latent-level interval is a
 credible interval for the expected level. Applications include demand, operations,
 sensor data, and financial series such as rebate accruals. Rebate payments are only an
-example: seasonal settlement timing, zeros, contract drivers, and positive support need
-careful priors and may need calendar, covariate, hurdle, or positive-valued models beyond
-the current Gaussian fitted APIs.
+example: choose a model for settlement timing, zeros, contract drivers, and positive
+support, with priors matched to observation units.
+
+The fitted Gaussian models support [joint Bayesian regressors and Fourier calendar
+terms](docs/regression-forecasting.md), including known future design rows. Calendar
+coefficients, structural states, and variance parameters remain aligned in posterior
+forecast paths. [Native independent batches](docs/forecast-batches.md) fit ragged cells
+with stable IDs, explicit worker limits, per-cell diagnostics, and collected errors.
+Annual seasonal models accept histories shorter than two full cycles under proper priors.
+
+For sparse nonnegative amounts, [BayesianHurdleLogNormal](docs/sparse-amounts.md)
+combines a learned zero probability with dynamic positive severity and bounded log
+variances. [DirichletMultinomialRunoff](docs/runoff.md) models payment-event counts by
+cohort and lag, including unknown ultimate counts and an explicit unscheduled tail.
+Runoff count inputs represent events; currency amounts need an amount model.
 
 Forecasting examples:
 
@@ -230,11 +242,11 @@ Forecasting examples:
 | Continuous priors | Normal, Student-t, HalfNormal, Exponential, LogNormal, Gamma, Beta, Uniform |
 | Likelihoods | Normal, Bernoulli-logit, Poisson-log, Exponential, LogNormal, Negative Binomial |
 | Model structure | Joint ragged hierarchical means, scalar hierarchical priors, scalar/vector regression expressions, automatic non-centering for supported generic scalar hierarchies |
-| Diagnostics | Rank-normalized folded split R-hat, rank-normalized bulk/tail ESS, MCSE, empirical 94% HDI, divergences and acceptance summaries |
+| Diagnostics | Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs on generic and specialized fits; sampler-specific divergence/acceptance metadata |
 | Predictive workflow | Prior predictive, posterior predictive, pointwise log likelihood, ArviZ export |
-| Repeated models | In-memory compile/bind reuse and parallel batch sampling |
-| Fixed state space | Time-homogeneous linear-Gaussian models, Kalman filter, RTS smoother, missing observations, a seasonal constructor, joint and cumulative conditional forecasts |
-| Specialized inference | Bayesian local level, seasonal local level, local linear trend, and directly observed Gaussian AR(p) |
+| Repeated models | In-memory compile/bind reuse, generic batch sampling, and independent forecasting batches with stable cell IDs |
+| Fixed state space | Constant transitions and time-varying observation rows, Kalman filter, RTS smoother, missing observations, joint and cumulative conditional forecasts |
+| Specialized inference | Bayesian level/trend/seasonal regression, Fourier calendar features, Gaussian AR(p), sparse hurdle lognormal, and payment-count runoff |
 
 Bernoulli and Poisson are exposed for prior-predictive use, but discrete latent
 parameters are not suitable for the current gradient-based samplers. Fitted AR(p)
