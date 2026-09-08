@@ -17,7 +17,7 @@ def test_complete_conjugate_posterior_and_diagnostics():
     assert fit.allocation_samples.shape == (2, 4000, 2, 3)
     assert fit.observed_mask.all()
     assert not fit.tail_samples.any()
-    stats = fit.sampler_stats()
+    stats = fit.sampler_stats
     assert stats["divergences"] is None
     assert stats["acceptance_rate"] is None
     assert len(fit.diagnostics()) == 3

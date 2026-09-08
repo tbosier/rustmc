@@ -117,6 +117,7 @@ impl PyRunoffFit {
             .to_table_with_sampler(Some(&format!("Sampler: {}", self.sampler())))
     }
 
+    #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         crate::forecast_diagnostics::sampler_stats(
             py,

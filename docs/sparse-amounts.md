@@ -79,7 +79,7 @@ Forecast arrays have shape `(chain, draw, step)`:
 `mean_interval()` summarizes conditional mean uncertainty. With high zero probability,
 an interval can have zero as its lower bound or both endpoints. Diagnose probability,
 variance parameters, and the terminal log level using `diagnostics()`/`summary()`.
-`sampler_stats()` reports Hamiltonian divergences and acceptance as unavailable.
+`sampler_stats` reports Hamiltonian divergences and acceptance as unavailable.
 `to_arviz()` exports parameter draws and the observed amounts when ArviZ is installed.
 
 The standalone `hurdle_lognormal_logp(y, payment_probability, log_level, log_variance)`

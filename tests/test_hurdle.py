@@ -34,8 +34,8 @@ def test_zero_history_retains_occurrence_uncertainty_and_prior_severity(rustmc_m
         forecast.mean_samples,
         samples["payment_probability"][..., None] * forecast.positive_mean_samples,
     )
-    assert fit.sampler_stats()["divergences"] is None
-    assert fit.sampler_stats()["acceptance_rate"] is None
+    assert fit.sampler_stats["divergences"] is None
+    assert fit.sampler_stats["acceptance_rate"] is None
     assert "no positive observations" in fit.summary()
 
 
@@ -131,7 +131,7 @@ def test_hurdle_batches_preserve_sparse_cells_seeds_and_coherent_forecasts(rustm
         for name, values in batch[cell].get_samples_2d().items():
             np.testing.assert_array_equal(values, reverse[cell].get_samples_2d()[name])
             np.testing.assert_array_equal(values, single.get_samples_2d()[name])
-        assert batch[cell].sampler_stats()["divergences"] is None
+        assert batch[cell].sampler_stats["divergences"] is None
     for name, values in resumed[ids[1]].get_samples_2d().items():
         np.testing.assert_array_equal(values, batch[ids[1]].get_samples_2d()[name])
     assert not np.array_equal(batch[ids[0]].get_samples_2d()["payment_probability"],

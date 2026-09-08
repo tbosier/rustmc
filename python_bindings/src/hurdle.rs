@@ -225,6 +225,7 @@ impl PyHurdleFit {
         };
         self.report().to_table_with_sampler(Some(sampler))
     }
+    #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let name = if self.positive_count() == 0 {
             "independent_prior_and_beta"
@@ -262,9 +263,7 @@ impl PyHurdleFit {
         let observed = PyDict::new(py);
         observed.set_item("y", self.observations.clone().into_pyarray(py))?;
         kwargs.set_item("observed_data", observed)?;
-        py.import("arviz")?
-            .getattr("from_dict")?
-            .call((), Some(&kwargs))
+        arviz_from_groups(&py.import("arviz")?, kwargs)
     }
 }
 

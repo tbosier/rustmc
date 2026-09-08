@@ -137,7 +137,7 @@ quantiles for totals or cumulative intervals; summing marginal interval endpoint
 does not give an interval for the total. NumPy quantiles give equal-tailed
 posterior-predictive intervals, not HDIs or confidence intervals.
 
-`diagnostics()`, `summary()`, and `sampler_stats()` reuse the common parameter
+`diagnostics()`, `summary()`, and `sampler_stats` reuse the common parameter
 diagnostics. Coverage includes lag probabilities, unknown intensities, and unknown
 ultimate counts. Acceptance rates and Hamiltonian divergences are unavailable for
 both inference paths. Very short or constant traces have unavailable convergence

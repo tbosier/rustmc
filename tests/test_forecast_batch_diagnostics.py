@@ -147,7 +147,7 @@ def test_diagnostics_match_arviz_for_identical_retained_chains(rustmc_module):
         values = posterior[item["name"]]
         assert item["r_hat"] == pytest.approx(float(az.rhat(values, method="rank")), rel=1e-7)
         assert item["ess_bulk"] == pytest.approx(float(az.ess(values, method="bulk")), rel=.04)
-        assert item["ess_tail"] == pytest.approx(float(az.ess(values, method="tail")), rel=.04)
+        assert item["ess_tail"] == pytest.approx(float(az.ess(values, method="tail", prob=(.05, .95))), rel=.04)
         assert item["mcse_mean"] == pytest.approx(np.asarray(az.mcse(values, method="mean")).item(), rel=.04)
 
 

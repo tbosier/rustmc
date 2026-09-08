@@ -216,7 +216,7 @@ requires two finite observations, with no full-cycle minimum. Short histories ca
 strongly sensitive to initial-state and variance priors. The regression extension and
 `fourier_design` provide a smaller harmonic model for long periods.
 
-All specialized fits expose `summary()`, `diagnostics()`, and `sampler_stats()`.
+All specialized fits expose `summary()`, `diagnostics()`, and `sampler_stats`.
 Hamiltonian divergences and acceptance are unavailable for Gibbs/FFBS and exact
 conjugate sampling. [Independent batches](forecast-batches.md) preserve cell identity
 and return per-cell fits, errors, diagnostics, and forecasts.
