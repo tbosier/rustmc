@@ -26,7 +26,9 @@ def main():
     with tempfile.TemporaryDirectory(prefix="rustmc-release-test-") as directory:
         temporary = Path(directory)
         environment = temporary / "env"
-        venv.EnvBuilder(with_pip=True).create(environment)
+        # Portable Python builds can use an executable-relative libpython path;
+        # copying that executable into a venv loses the library location on Unix.
+        venv.EnvBuilder(with_pip=True, symlinks=os.name != "nt").create(environment)
         executable = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         subprocess.run([str(executable), "-m", "pip", "install", str(artifacts[0]), "numpy", "pytest"], check=True)
         # cwd and the import path stay outside the checkout. Tests can reference

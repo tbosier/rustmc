@@ -163,8 +163,8 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     assert wheels, "maturin build produced no wheel"
 
     env_dir = tmp_path / "clean-env"
-    venv.EnvBuilder(with_pip=True).create(env_dir)
-    env_python = env_dir / "bin" / "python"
+    venv.EnvBuilder(with_pip=True, symlinks=os.name != "nt").create(env_dir)
+    env_python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     subprocess.run(
         [str(env_python), "-m", "pip", "install", "--quiet", str(wheels[0]), "numpy"],
