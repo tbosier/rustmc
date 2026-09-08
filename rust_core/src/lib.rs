@@ -7,6 +7,8 @@ pub mod compiled_model;
 pub mod data;
 pub mod diagnostics;
 pub mod distributions;
+pub mod forecast_batch;
+pub mod forecast_diagnostics;
 pub mod graph;
 pub mod hierarchical;
 pub mod hmc;

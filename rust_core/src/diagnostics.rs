@@ -69,6 +69,11 @@ pub struct TransitionDiagnosticsReport {
 impl DiagnosticsReport {
     /// Render the diagnostics as a formatted table string.
     pub fn to_table(&self) -> String {
+        self.to_table_with_sampler(None)
+    }
+
+    /// Supply sampler-specific metadata instead of Hamiltonian telemetry.
+    pub fn to_table_with_sampler(&self, sampler: Option<&str>) -> String {
         let mut lines = Vec::new();
         lines.push(format!(
             "{} chains × {} draws per chain",
@@ -116,15 +121,19 @@ impl DiagnosticsReport {
 
         lines.push("─".repeat(96));
 
-        let avg_accept: f64 = if self.accept_rates.is_empty() {
-            0.0
+        if let Some(sampler) = sampler {
+            lines.push(sampler.to_string());
         } else {
-            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
-        };
-        lines.push(format!(
-            "Mean accept rate: {:.2}  │  Divergences: {}",
-            avg_accept, self.divergences
-        ));
+            let avg_accept: f64 = if self.accept_rates.is_empty() {
+                0.0
+            } else {
+                self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
+            };
+            lines.push(format!(
+                "Mean accept rate: {:.2}  │  Divergences: {}",
+                avg_accept, self.divergences
+            ));
+        }
 
         let any_bad_rhat = self
             .params
@@ -145,7 +154,7 @@ impl DiagnosticsReport {
                 "WARNING: Some ESS values < 400; consider increasing draws or tuning.".to_string(),
             );
         }
-        if self.divergences > 0 {
+        if sampler.is_none() && self.divergences > 0 {
             lines.push(format!(
                 "WARNING: {} divergent transitions; results may be unreliable.",
                 self.divergences
@@ -371,6 +380,9 @@ fn chain_std_all(chains: &[Vec<f64>], mean: f64) -> f64 {
             sum_sq += d * d;
             n += 1;
         }
+    }
+    if n < 2 {
+        return f64::NAN;
     }
     (sum_sq / (n - 1) as f64).sqrt()
 }

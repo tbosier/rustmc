@@ -1,3 +1,5 @@
+mod forecast_batch;
+mod forecast_diagnostics;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2,
@@ -4961,34 +4963,24 @@ impl PyBayesianHierarchicalMeanFit {
 
     /// Formatted rank-normalized R-hat, ESS, MCSE, and HDI diagnostics.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table().replace(
-            "Mean accept rate: 1.00  │  Divergences: 0",
-            "Sampler: conjugate Gibbs (no Metropolis acceptance or divergences)",
-        )
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs (acceptance and divergences unavailable)",
+        ))
     }
 
-    /// Per-parameter convergence diagnostics. Variance-component ESS is
-    /// particularly important when the hierarchy is weakly identified.
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let report = self.posterior.diagnostics();
-        let items = report
-            .params
-            .iter()
-            .map(|parameter| {
-                let item = PyDict::new(py);
-                item.set_item("name", &parameter.name)?;
-                item.set_item("mean", parameter.mean)?;
-                item.set_item("std", parameter.std)?;
-                item.set_item("hdi_3%", parameter.hdi_3)?;
-                item.set_item("hdi_97%", parameter.hdi_97)?;
-                item.set_item("ess_bulk", parameter.ess_bulk)?;
-                item.set_item("ess_tail", parameter.ess_tail)?;
-                item.set_item("r_hat", parameter.r_hat)?;
-                item.set_item("mcse_mean", parameter.mcse_mean)?;
-                Ok(item)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        PyList::new(py, &items)
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs",
+            self.chains(),
+            self.draws(),
+            "all retained hierarchical parameters",
+        )
     }
 
     #[pyo3(signature = (steps, seed=43))]
@@ -5286,6 +5278,41 @@ struct PyBayesianLocalLevel {
 
 #[pymethods]
 impl PyBayesianLocalLevel {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (process_variance_prior, observation_variance_prior, initial_mean=0.0, initial_variance=100.0))]
     fn new(
@@ -5384,6 +5411,7 @@ impl PyBayesianLocalLevel {
 }
 
 #[pyclass(name = "BayesianLocalLevelFit")]
+#[derive(Clone)]
 struct PyBayesianLocalLevelFit {
     posterior: CoreLocalLevelPosterior,
     observations: Vec<f64>,
@@ -5392,6 +5420,28 @@ struct PyBayesianLocalLevelFit {
 
 #[pymethods]
 impl PyBayesianLocalLevelFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs/FFBS",
+            self.chains(),
+            self.draws(),
+            "variance parameters and terminal level; historical states are not retained",
+        )
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -5643,6 +5693,41 @@ struct PyBayesianSeasonalLocalLevel {
 
 #[pymethods]
 impl PyBayesianSeasonalLocalLevel {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (period, level_variance_prior, seasonal_variance_prior, observation_variance_prior, initial_level=0.0, initial_seasonal_effects=None, initial_level_variance=100.0, initial_seasonal_variance=10.0))]
     #[allow(clippy::too_many_arguments)]
@@ -5739,6 +5824,7 @@ impl PyBayesianSeasonalLocalLevel {
 }
 
 #[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+#[derive(Clone)]
 struct PyBayesianSeasonalLocalLevelFit {
     posterior: CoreSeasonalLocalLevelPosterior,
     observations: Vec<f64>,
@@ -5747,6 +5833,22 @@ struct PyBayesianSeasonalLocalLevelFit {
 
 #[pymethods]
 impl PyBayesianSeasonalLocalLevelFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(py, "conjugate Gibbs/FFBS", self.chains(), self.draws(), "variance parameters and all terminal seasonal state coordinates; historical states are not retained")
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -6062,6 +6164,41 @@ struct PyBayesianLocalLinearTrend {
 
 #[pymethods]
 impl PyBayesianLocalLinearTrend {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (
         level_variance_prior,
@@ -6204,6 +6341,7 @@ impl PyBayesianLocalLinearTrend {
 }
 
 #[pyclass(name = "BayesianLocalLinearTrendFit")]
+#[derive(Clone)]
 struct PyBayesianLocalLinearTrendFit {
     posterior: CoreLocalLinearTrendPosterior,
     observations: Vec<f64>,
@@ -6212,6 +6350,28 @@ struct PyBayesianLocalLinearTrendFit {
 
 #[pymethods]
 impl PyBayesianLocalLinearTrendFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs/FFBS",
+            self.chains(),
+            self.draws(),
+            "variance parameters, terminal level and slope; historical states are not retained",
+        )
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -6601,6 +6761,41 @@ struct PyBayesianAutoRegression {
 
 #[pymethods]
 impl PyBayesianAutoRegression {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     fn new(order: usize, prior: PyRef<'_, PyNormalInverseGammaPrior>) -> PyResult<Self> {
         if order == 0 {
@@ -6673,6 +6868,7 @@ impl PyBayesianAutoRegression {
 }
 
 #[pyclass(name = "BayesianARFit")]
+#[derive(Clone)]
 struct PyBayesianArFit {
     posterior: CoreBayesianArPosterior,
     observations: Vec<f64>,
@@ -6681,6 +6877,28 @@ struct PyBayesianArFit {
 
 #[pymethods]
 impl PyBayesianArFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: exact conjugate independent draws; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "exact conjugate independent draws",
+            self.chains(),
+            self.draws(),
+            "coefficients and innovation variance",
+        )
+    }
+
     #[getter]
     fn order(&self) -> usize {
         self.posterior.order
@@ -6905,6 +7123,9 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCompiledModel>()?;
     m.add_class::<PyBoundModel>()?;
     m.add_class::<PyBatchFit>()?;
+    m.add_function(wrap_pyfunction!(forecast_batch::forecast_cell_seed, m)?)?;
+    m.add_class::<forecast_batch::PyForecastBatchFit>()?;
+    m.add_class::<forecast_batch::PyForecastBatchForecast>()?;
     m.add_class::<PyLinearGaussianStateSpace>()?;
     m.add_class::<PyKalmanFilterResult>()?;
     m.add_class::<PyKalmanSmootherResult>()?;
@@ -6934,4 +7155,101 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sample_prior_predictive, m)?)?;
     Ok(())
+}
+
+impl PyBayesianLocalLevel {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Local(CoreBayesianLocalLevelConfig {
+            initial_mean: self.initial_mean,
+            initial_variance: self.initial_variance,
+            process_variance_prior: self.process_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianSeasonalLocalLevel {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Seasonal(CoreBayesianSeasonalLocalLevelConfig {
+            period: self.period,
+            initial_level: self.initial_level,
+            initial_seasonal_effects: self.initial_seasonal_effects.clone(),
+            initial_level_variance: self.initial_level_variance,
+            initial_seasonal_variance: self.initial_seasonal_variance,
+            level_variance_prior: self.level_variance_prior,
+            seasonal_variance_prior: self.seasonal_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianLocalLinearTrend {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Trend(CoreBayesianLocalLinearTrendConfig {
+            initial_mean: self.initial_mean,
+            initial_covariance: self.initial_covariance,
+            level_variance_prior: self.level_variance_prior,
+            slope_variance_prior: self.slope_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianAutoRegression {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+        let _ = (warmup, thin);
+        forecast_batch::Config::Ar(CoreBayesianArConfig {
+            order: self.order,
+            prior: self.prior.clone(),
+            num_chains: chains,
+            num_draws: draws,
+            seed,
+        })
+    }
 }

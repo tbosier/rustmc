@@ -16,7 +16,7 @@
 //! `NaN` values are retained as missing positions and ignored by the likelihood.
 
 use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
-use crate::diagnostics::{self, DiagnosticsReport};
+use crate::diagnostics::DiagnosticsReport;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -145,7 +145,7 @@ impl HierarchicalMeanPosterior {
                     .collect()
             })
             .collect::<Vec<_>>();
-        diagnostics::compute_diagnostics(&samples, &names, &vec![1.0; self.chains.len()], 0)
+        crate::forecast_diagnostics::parameter_diagnostics(&samples, &names)
     }
 
     /// Generate aligned future paths. Summing the program axis within a draw
