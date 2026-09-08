@@ -6,11 +6,23 @@
 //! `count[lag] ~ Poisson(lambda * p[lag])`. Currency is not a count observation.
 //! The final category is an unscheduled tail, never a dated calendar payment.
 
-use rand::SeedableRng;
+use rand::{distributions::Open01, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Binomial, Distribution, Gamma, Poisson};
 
 const MAX_EXACT_COUNT: u64 = (1_u64 << 53) - 1;
+const MAX_RETAINED_VALUES: usize = 25_000_000;
+
+fn validate_allocation(factors: &[usize]) -> Result<(), String> {
+    if factors
+        .iter()
+        .try_fold(1_usize, |n, factor| n.checked_mul(*factor))
+        .is_none_or(|n| n > MAX_RETAINED_VALUES)
+    {
+        return Err("requested runoff allocation exceeds 25 million values; reduce cohorts, lags, chains, draws, or horizon".into());
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone)]
 pub struct RunoffConfig {
@@ -133,6 +145,7 @@ fn validate_config(config: &RunoffConfig) -> Result<(), String> {
             "draws and chains must be positive and draws + warmup must not overflow".into(),
         );
     }
+    validate_allocation(&[config.draws, config.chains])?;
     Ok(())
 }
 
@@ -157,7 +170,31 @@ fn dirichlet(alpha: &[f64], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, String> {
 }
 
 fn binomial(n: u64, probability: f64, rng: &mut ChaCha8Rng) -> Result<u64, String> {
-    Ok(Binomial::new(n, probability.clamp(0.0, 1.0))
+    let probability = probability.clamp(0.0, 1.0);
+    let p = probability.min(1.0 - probability);
+    // rand_distr 0.4's BINV uses powi(i32), so it incorrectly dispatches sparse
+    // n > i32::MAX cases to BTPE, whose rejection envelope can be invalid.
+    // Exact geometric waiting times handle these rare-event binomials in O(np).
+    if n > i32::MAX as u64 && n as f64 * p < 10.0 && p > 0.0 {
+        let mut remaining = n;
+        let mut events = 0_u64;
+        let log_failure = (-p).ln_1p();
+        while remaining > 0 {
+            let uniform: f64 = rng.sample(Open01);
+            let failures = (uniform.ln() / log_failure).floor();
+            if failures >= remaining as f64 {
+                break;
+            }
+            remaining -= failures as u64 + 1;
+            events += 1;
+        }
+        return Ok(if probability <= 0.5 {
+            events
+        } else {
+            n - events
+        });
+    }
+    Ok(Binomial::new(n, probability)
         .map_err(|e| e.to_string())?
         .sample(rng))
 }
@@ -211,6 +248,20 @@ pub fn fit_runoff(
 ) -> Result<RunoffPosterior, String> {
     validate_config(config)?;
     triangle.validate(config.alpha.len())?;
+    validate_allocation(&[
+        config.chains,
+        config.draws,
+        triangle
+            .counts
+            .len()
+            .checked_add(1)
+            .ok_or("cohort count overflow")?,
+        config
+            .alpha
+            .len()
+            .checked_add(3)
+            .ok_or("lag count overflow")?,
+    ])?;
     let exact = triangle.known_totals.iter().all(Option::is_some);
     let hazards = if exact {
         Some(known_total_hazard_posterior(triangle, &config.alpha)?)
@@ -378,6 +429,11 @@ impl RunoffPosterior {
         {
             return Err("steps must be positive and fit the integer calendar".into());
         }
+        validate_allocation(&[
+            self.chains.len(),
+            self.chains.first().map_or(0, Vec::len),
+            steps,
+        ])?;
         self.chains
             .iter()
             .map(|chain| {
@@ -595,6 +651,43 @@ mod tests {
             .sum::<f64>()
             / 10000.0;
         assert!((p - 0.2).abs() < 0.015);
+    }
+
+    #[test]
+    fn large_sparse_binomial_is_exact_and_bounded_allocations_reject_oversize() {
+        let mut rng = ChaCha8Rng::seed_from_u64(31);
+        let samples = (0..20000)
+            .map(|_| binomial(10_000_000_000, 2e-10, &mut rng).unwrap() as f64)
+            .collect::<Vec<_>>();
+        let (mean, variance) = mean_var(&samples);
+        assert!((mean - 2.0).abs() < 0.03);
+        assert!((variance - 2.0).abs() < 0.07);
+        let complements = (0..20000)
+            .map(|_| {
+                (10_000_000_000 - binomial(10_000_000_000, 1.0 - 2e-10, &mut rng).unwrap()) as f64
+            })
+            .collect::<Vec<_>>();
+        assert!((mean_var(&complements).0 - 2.0).abs() < 0.03);
+        let triangle = PaymentTriangle {
+            counts: vec![vec![Some(0), None], vec![None, None]],
+            origins: vec![0, 1],
+            valuation: 0,
+            known_totals: vec![Some(10_000_000_000); 2],
+        };
+        let mut cfg = config(vec![1.0, 1.0]);
+        cfg.draws = 10;
+        let fit = fit_runoff(&triangle, &cfg).unwrap();
+        assert!(fit
+            .chains
+            .iter()
+            .flatten()
+            .all(|d| d.totals == vec![10_000_000_000; 2]));
+        assert!(fit.calendar_samples(usize::MAX / 8).is_err());
+        cfg.chains = usize::MAX;
+        assert!(fit_runoff(&triangle, &cfg).is_err());
+        cfg.chains = 1;
+        cfg.draws = MAX_RETAINED_VALUES;
+        assert!(fit_runoff(&triangle, &cfg).is_err());
     }
 
     #[test]

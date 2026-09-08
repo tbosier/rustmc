@@ -108,6 +108,20 @@ def test_short_diagnostics_and_invalid_prior():
             rustmc.DirichletMultinomialRunoff(alpha)
 
 
+def test_large_sparse_totals_and_oversized_calendar_are_safe():
+    fit = rustmc.DirichletMultinomialRunoff([1, 1]).fit(
+        np.array([[0., np.nan], [np.nan, np.nan]]), [0, 1], 0,
+        [10**10, 10**10], draws=10, chains=1,
+    )
+    assert (fit.ultimate_samples == 10**10).all()
+    with pytest.raises(ValueError, match="allocation"):
+        fit.calendar_samples(2**61)
+    with pytest.raises(ValueError, match="allocation"):
+        rustmc.DirichletMultinomialRunoff([1, 1]).fit(
+            np.array([[0., np.nan]]), [0], 0, [1], draws=10**9,
+        )
+
+
 def test_rolling_valuation_holdout_on_known_total_cohorts():
     rng = np.random.default_rng(203)
     truth = np.array([.5, .3, .15, .05])

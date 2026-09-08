@@ -38,6 +38,9 @@ The input matrix is a two-dimensional float64 NumPy array. Finite cells must be
 nonnegative integers no larger than `2**53 - 1`; this bound also applies to each
 cohort total. A literal zero is an observed zero. `NaN` means unobserved.
 Input is incremental, not cumulative; difference cumulative histories before use.
+Retained fit and calendar allocations are bounded at 25 million scalar values;
+oversized requests raise errors. This is an allocation guard, not a byte-level
+peak-memory guarantee, because nested arrays also carry metadata.
 
 `origins` and `valuation` are integer periods on a common calendar. For example,
 encode months as `12 * year + month - 1`. Lag zero falls in the origin period.
