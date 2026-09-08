@@ -347,23 +347,24 @@ pub fn fit_bayesian_seasonal_local_level(
     })
 }
 
-fn validate_observations(observations: &[f64], period: usize) -> Result<(), BayesianForecastError> {
-    if observations.len() < period.saturating_mul(2) {
-        return Err(BayesianForecastError::InvalidObservations(format!(
-            "at least two full seasonal periods ({} time points) are required",
-            period * 2
-        )));
-    }
+fn validate_observations(
+    observations: &[f64],
+    _period: usize,
+) -> Result<(), BayesianForecastError> {
     if observations.iter().any(|value| value.is_infinite()) {
         return Err(BayesianForecastError::InvalidObservations(
             "observations may be finite or NaN, but not infinite".into(),
         ));
     }
-    if observations.iter().filter(|value| !value.is_nan()).count() < period + 2 {
-        return Err(BayesianForecastError::InvalidObservations(format!(
-            "at least {} finite observations are required",
-            period + 2
-        )));
+    if observations
+        .iter()
+        .filter(|value| value.is_finite())
+        .count()
+        < 2
+    {
+        return Err(BayesianForecastError::InvalidObservations(
+            "at least two finite observations are required".into(),
+        ));
     }
     Ok(())
 }
@@ -575,7 +576,8 @@ mod tests {
     }
 
     #[test]
-    fn validation_requires_two_cycles_and_sum_to_zero_effects() {
+    fn validation_requires_finite_data_and_sum_to_zero_effects() {
+        assert!(fit_bayesian_seasonal_local_level(&[0.0; 2], &config()).is_ok());
         let mut invalid_config = config();
         invalid_config.initial_seasonal_effects[0] += 1.0;
         assert!(matches!(
@@ -583,7 +585,7 @@ mod tests {
             Err(BayesianForecastError::InvalidConfiguration(_))
         ));
         assert!(matches!(
-            fit_bayesian_seasonal_local_level(&[0.0; 7], &config()),
+            fit_bayesian_seasonal_local_level(&[0.0, f64::NAN], &config()),
             Err(BayesianForecastError::InvalidObservations(_))
         ));
     }

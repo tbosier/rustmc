@@ -1,5 +1,6 @@
 mod forecast_batch;
 mod forecast_diagnostics;
+mod regression;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2,
@@ -4064,7 +4065,8 @@ fn state_covariances_array<'py>(
     .into_pyarray(py)
 }
 
-/// A time-homogeneous linear Gaussian state-space model with scalar observations.
+/// A linear Gaussian state-space model with scalar observations and constant
+/// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
 #[pyclass(name = "LinearGaussianStateSpace")]
@@ -4209,6 +4211,17 @@ impl PyLinearGaussianStateSpace {
         self.inner.dimension()
     }
 
+    /// Return a model with a finite observation row for each training time.
+    fn with_observation_rows(&self, observation_rows: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .with_observation_rows(regression::rows(observation_rows))
+                .map_err(state_space_error)?,
+        })
+    }
+
     fn filter(
         &self,
         py: Python<'_>,
@@ -4233,15 +4246,28 @@ impl PyLinearGaussianStateSpace {
         Ok(PyKalmanSmootherResult::new(result, self.inner.dimension()))
     }
 
+    #[pyo3(signature=(observations, steps, *, future_observation_rows=None))]
     fn forecast(
         &self,
         py: Python<'_>,
         observations: PyReadonlyArray1<'_, f64>,
         steps: usize,
+        future_observation_rows: Option<PyReadonlyArray2<'_, f64>>,
     ) -> PyResult<PyForecastResult> {
         let observations = state_space_vector(observations);
+        let future_rows = future_observation_rows.map(regression::rows);
+        if future_rows.as_ref().is_some_and(|rows| rows.len() != steps) {
+            return Err(StateSpaceError::new_err(
+                "future observation row count must equal steps",
+            ));
+        }
         let result = py
-            .allow_threads(|| self.inner.forecast(&observations, steps))
+            .allow_threads(|| match future_rows {
+                Some(rows) => self
+                    .inner
+                    .forecast_with_observation_rows(&observations, &rows),
+                None => self.inner.forecast(&observations, steps),
+            })
             .map_err(state_space_error)?;
         Ok(PyForecastResult::new(result, self.inner.dimension()))
     }
@@ -5363,7 +5389,7 @@ impl PyBayesianLocalLevel {
         }
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -5374,8 +5400,30 @@ impl PyBayesianLocalLevel {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianLocalLevelFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::local_level(
+                    1.0,
+                    1.0,
+                    self.initial_mean,
+                    self.initial_variance,
+                )
+                .map_err(state_space_error)?,
+                vec![self.process_variance_prior],
+                vec!["process_variance"],
+                self.observation_variance_prior,
+                false,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianLocalLevelConfig {
             initial_mean: self.initial_mean,
             initial_variance: self.initial_variance,
@@ -5390,11 +5438,15 @@ impl PyBayesianLocalLevel {
         let posterior = py
             .allow_threads(|| fit_bayesian_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianLocalLevelFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianLocalLevelFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -5777,7 +5829,7 @@ impl PyBayesianSeasonalLocalLevel {
         self.initial_seasonal_effects.clone().into_pyarray(py)
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -5788,8 +5840,34 @@ impl PyBayesianSeasonalLocalLevel {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianSeasonalLocalLevelFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::seasonal_local_level(
+                    self.period,
+                    1.0,
+                    1.0,
+                    1.0,
+                    self.initial_level,
+                    self.initial_seasonal_effects.clone(),
+                    self.initial_level_variance,
+                    self.initial_seasonal_variance,
+                )
+                .map_err(state_space_error)?,
+                vec![self.level_variance_prior, self.seasonal_variance_prior],
+                vec!["level_variance", "seasonal_variance"],
+                self.observation_variance_prior,
+                true,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianSeasonalLocalLevelConfig {
             period: self.period,
             initial_level: self.initial_level,
@@ -5808,11 +5886,15 @@ impl PyBayesianSeasonalLocalLevel {
         let posterior = py
             .allow_threads(|| fit_bayesian_seasonal_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianSeasonalLocalLevelFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianSeasonalLocalLevelFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -6297,7 +6379,7 @@ impl PyBayesianLocalLinearTrend {
         }
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -6308,8 +6390,33 @@ impl PyBayesianLocalLinearTrend {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianLocalLinearTrendFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::new(
+                    2,
+                    vec![1.0, 1.0, 0.0, 1.0],
+                    vec![1.0, 0.0],
+                    vec![1.0, 0.0, 0.0, 1.0],
+                    1.0,
+                    self.initial_mean.to_vec(),
+                    self.initial_covariance.to_vec(),
+                )
+                .map_err(state_space_error)?,
+                vec![self.level_variance_prior, self.slope_variance_prior],
+                vec!["level_variance", "slope_variance"],
+                self.observation_variance_prior,
+                false,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianLocalLinearTrendConfig {
             initial_mean: self.initial_mean,
             initial_covariance: self.initial_covariance,
@@ -6325,11 +6432,15 @@ impl PyBayesianLocalLinearTrend {
         let posterior = py
             .allow_threads(|| fit_bayesian_local_linear_trend(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianLocalLinearTrendFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianLocalLinearTrendFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -7112,6 +7223,7 @@ fn validate_interval_level(level: f64) -> PyResult<()> {
 
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    regression::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<ModelBuilder>()?;
     m.add_class::<ModelSpec>()?;
