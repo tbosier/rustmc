@@ -1,0 +1,33 @@
+{
+  "revision": "0474d4669920c2b52d9ddbd4d1143037d8e7897d",
+  "platform": "Linux-6.18.46-1-lts-x86_64-with-glibc2.44",
+  "python": "3.12.9",
+  "numpy": "2.4.2",
+  "threads": 1,
+  "cells": 128,
+  "chains": 4,
+  "draws": 200,
+  "warmup": 100,
+  "history_range": [
+    48,
+    60
+  ],
+  "horizon": 12,
+  "chunk_size": 32,
+  "fit_seed": 91,
+  "forecast_seed": 92,
+  "fit_seconds": 0.20348923599522095,
+  "fit_cells_per_second": 629.0259009228682,
+  "forecast_seconds": 0.037272756002494134,
+  "peak_rss_kib_linux": 73384,
+  "max_rhat": 1.1149524939320552,
+  "min_bulk_ess": 27.921802278250436,
+  "min_tail_ess": 47.18146388504586,
+  "retained_fit_cells": 128,
+  "retained_forecast_cells": 128,
+  "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+  "logical_cpus": 24,
+  "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+  "command": "/tmp/rustmc-011-batch-py312/bin/python benchmarks/forecast_batch.py --threads 1",
+  "quality_gate_passed": false
+}

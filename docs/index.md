@@ -79,12 +79,19 @@ MCSE, empirical 94% HDI, divergence detection, and per-chain acceptance rates.
 graph structure.
 
 **Linear Gaussian state space:** `LinearGaussianStateSpace` provides fixed-system
-Kalman filtering, smoothing, missing-observation handling, and forecasting.
+Kalman filtering, smoothing, missing-observation handling, and forecasting, with
+optional time-varying observation rows.
 
 **Forecasting application:** fitted local-level, seasonal local-level, and local-linear-trend structural models
 provide FFBS/Gibbs posterior prediction, while `BayesianAutoRegression(order=p)` supports
 directly observed Gaussian AR(p) at any positive lag order. All return coherent paths and
 parameter-integrated pointwise intervals.
+
+The Gaussian forecasting models support [joint Bayesian exogenous regressors and
+Fourier seasonality](regression-forecasting.md), [independent cell batches and
+diagnostics](forecast-batches.md), and seasonal histories shorter than two cycles.
+Specialized [sparse amount](sparse-amounts.md) and [payment-count runoff](runoff.md)
+models handle zeros and censored cohort development with explicit statistical contracts.
 
 ## What Is Still Missing
 

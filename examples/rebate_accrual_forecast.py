@@ -73,19 +73,19 @@ def main() -> None:
     # Back-transform every coherent path before summarizing. exp(mean(log Y)) is not
     # generally equal to mean(Y), so transforming a summary would be wrong.
     payment_draws = np.exp(forecast.observation_samples)
-    expected_level_draws = np.exp(forecast.state_samples)
+    median_level_draws = np.exp(forecast.state_samples)
 
     print("Monthly forecast (thousands)")
-    print("month   payment mean and 95% predictive     expected level and 95% credible")
+    print("month   payment mean and 95% predictive     conditional median and 95% credible")
     for month in range(12):
         payment = payment_draws[:, :, month]
-        expected_level = expected_level_draws[:, :, month]
+        median_level = median_level_draws[:, :, month]
         payment_low, payment_high = interval(payment)
-        level_low, level_high = interval(expected_level)
+        level_low, level_high = interval(median_level)
         print(
             f"{month + 1:>5}   "
             f"{payment.mean():>8.2f} [{payment_low:>8.2f}, {payment_high:>8.2f}]   "
-            f"{expected_level.mean():>8.2f} [{level_low:>8.2f}, {level_high:>8.2f}]"
+            f"{median_level.mean():>8.2f} [{level_low:>8.2f}, {level_high:>8.2f}]"
         )
 
     print("\nCumulative payment forecast (thousands)")

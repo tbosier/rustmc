@@ -62,6 +62,11 @@ def main() -> int:
         "BayesianAutoRegression", "BayesianAR", "BayesianARFit",
         "BayesianARForecast", "ParameterError", "InferenceError", "StateSpaceError", "sample",
         "batch_sample", "sample_prior_predictive",
+        "GaussianCoefficientPrior", "BayesianRegressionFit", "BayesianRegressionForecast",
+        "fourier_design", "ForecastBatchFit", "ForecastBatchForecast", "forecast_cell_seed",
+        "DirichletMultinomialRunoff", "RunoffFit",
+        "BayesianHurdleLogNormal", "BayesianHurdleLogNormalFit",
+        "BayesianHurdleLogNormalForecast", "hurdle_lognormal_logp",
     }
     missing = {name for name in expected_api if not hasattr(rmc, name)}
     if missing:

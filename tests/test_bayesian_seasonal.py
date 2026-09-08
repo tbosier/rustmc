@@ -131,7 +131,7 @@ def test_synthetic_variance_recovery_is_in_the_right_scale(rustmc_module):
         assert truth / 2.0 < posterior_median < truth * 2.0
 
 
-def test_validation_rejects_unidentified_or_invalid_seasonal_fits(rustmc_module):
+def test_validation_rejects_insufficient_or_invalid_seasonal_fits(rustmc_module):
     rmc = rustmc_module
     with pytest.raises(ValueError, match="sum to zero"):
         rmc.BayesianSeasonalLocalLevel(
@@ -143,8 +143,8 @@ def test_validation_rejects_unidentified_or_invalid_seasonal_fits(rustmc_module)
         )
     model = make_model(rmc)
     for observations in (
-        np.zeros(7),
-        np.array([0.0] * 5 + [np.nan] * 3),
+        np.zeros(1),
+        np.array([0.0] + [np.nan] * 3),
         np.array([0.0] * 7 + [np.inf]),
     ):
         with pytest.raises(ValueError):

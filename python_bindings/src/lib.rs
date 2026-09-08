@@ -1,3 +1,8 @@
+mod forecast_batch;
+mod forecast_diagnostics;
+mod hurdle;
+mod regression;
+mod runoff;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2,
@@ -4062,7 +4067,8 @@ fn state_covariances_array<'py>(
     .into_pyarray(py)
 }
 
-/// A time-homogeneous linear Gaussian state-space model with scalar observations.
+/// A linear Gaussian state-space model with scalar observations and constant
+/// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
 #[pyclass(name = "LinearGaussianStateSpace")]
@@ -4207,6 +4213,17 @@ impl PyLinearGaussianStateSpace {
         self.inner.dimension()
     }
 
+    /// Return a model with a finite observation row for each training time.
+    fn with_observation_rows(&self, observation_rows: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
+        Ok(Self {
+            inner: self
+                .inner
+                .clone()
+                .with_observation_rows(regression::rows(observation_rows))
+                .map_err(state_space_error)?,
+        })
+    }
+
     fn filter(
         &self,
         py: Python<'_>,
@@ -4231,15 +4248,28 @@ impl PyLinearGaussianStateSpace {
         Ok(PyKalmanSmootherResult::new(result, self.inner.dimension()))
     }
 
+    #[pyo3(signature=(observations, steps, *, future_observation_rows=None))]
     fn forecast(
         &self,
         py: Python<'_>,
         observations: PyReadonlyArray1<'_, f64>,
         steps: usize,
+        future_observation_rows: Option<PyReadonlyArray2<'_, f64>>,
     ) -> PyResult<PyForecastResult> {
         let observations = state_space_vector(observations);
+        let future_rows = future_observation_rows.map(regression::rows);
+        if future_rows.as_ref().is_some_and(|rows| rows.len() != steps) {
+            return Err(StateSpaceError::new_err(
+                "future observation row count must equal steps",
+            ));
+        }
         let result = py
-            .allow_threads(|| self.inner.forecast(&observations, steps))
+            .allow_threads(|| match future_rows {
+                Some(rows) => self
+                    .inner
+                    .forecast_with_observation_rows(&observations, &rows),
+                None => self.inner.forecast(&observations, steps),
+            })
             .map_err(state_space_error)?;
         Ok(PyForecastResult::new(result, self.inner.dimension()))
     }
@@ -4961,34 +4991,24 @@ impl PyBayesianHierarchicalMeanFit {
 
     /// Formatted rank-normalized R-hat, ESS, MCSE, and HDI diagnostics.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table().replace(
-            "Mean accept rate: 1.00  │  Divergences: 0",
-            "Sampler: conjugate Gibbs (no Metropolis acceptance or divergences)",
-        )
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs (acceptance and divergences unavailable)",
+        ))
     }
 
-    /// Per-parameter convergence diagnostics. Variance-component ESS is
-    /// particularly important when the hierarchy is weakly identified.
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let report = self.posterior.diagnostics();
-        let items = report
-            .params
-            .iter()
-            .map(|parameter| {
-                let item = PyDict::new(py);
-                item.set_item("name", &parameter.name)?;
-                item.set_item("mean", parameter.mean)?;
-                item.set_item("std", parameter.std)?;
-                item.set_item("hdi_3%", parameter.hdi_3)?;
-                item.set_item("hdi_97%", parameter.hdi_97)?;
-                item.set_item("ess_bulk", parameter.ess_bulk)?;
-                item.set_item("ess_tail", parameter.ess_tail)?;
-                item.set_item("r_hat", parameter.r_hat)?;
-                item.set_item("mcse_mean", parameter.mcse_mean)?;
-                Ok(item)
-            })
-            .collect::<PyResult<Vec<_>>>()?;
-        PyList::new(py, &items)
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs",
+            self.chains(),
+            self.draws(),
+            "all retained hierarchical parameters",
+        )
     }
 
     #[pyo3(signature = (steps, seed=43))]
@@ -5286,6 +5306,45 @@ struct PyBayesianLocalLevel {
 
 #[pymethods]
 impl PyBayesianLocalLevel {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            exog,
+            coefficient_priors,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (process_variance_prior, observation_variance_prior, initial_mean=0.0, initial_variance=100.0))]
     fn new(
@@ -5336,7 +5395,7 @@ impl PyBayesianLocalLevel {
         }
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -5347,8 +5406,30 @@ impl PyBayesianLocalLevel {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianLocalLevelFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::local_level(
+                    1.0,
+                    1.0,
+                    self.initial_mean,
+                    self.initial_variance,
+                )
+                .map_err(state_space_error)?,
+                vec![self.process_variance_prior],
+                vec!["process_variance"],
+                self.observation_variance_prior,
+                false,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianLocalLevelConfig {
             initial_mean: self.initial_mean,
             initial_variance: self.initial_variance,
@@ -5363,11 +5444,15 @@ impl PyBayesianLocalLevel {
         let posterior = py
             .allow_threads(|| fit_bayesian_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianLocalLevelFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianLocalLevelFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -5384,6 +5469,7 @@ impl PyBayesianLocalLevel {
 }
 
 #[pyclass(name = "BayesianLocalLevelFit")]
+#[derive(Clone)]
 struct PyBayesianLocalLevelFit {
     posterior: CoreLocalLevelPosterior,
     observations: Vec<f64>,
@@ -5392,6 +5478,28 @@ struct PyBayesianLocalLevelFit {
 
 #[pymethods]
 impl PyBayesianLocalLevelFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs/FFBS",
+            self.chains(),
+            self.draws(),
+            "variance parameters and terminal level; historical states are not retained",
+        )
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -5643,6 +5751,45 @@ struct PyBayesianSeasonalLocalLevel {
 
 #[pymethods]
 impl PyBayesianSeasonalLocalLevel {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            exog,
+            coefficient_priors,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (period, level_variance_prior, seasonal_variance_prior, observation_variance_prior, initial_level=0.0, initial_seasonal_effects=None, initial_level_variance=100.0, initial_seasonal_variance=10.0))]
     #[allow(clippy::too_many_arguments)]
@@ -5692,7 +5839,7 @@ impl PyBayesianSeasonalLocalLevel {
         self.initial_seasonal_effects.clone().into_pyarray(py)
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -5703,8 +5850,34 @@ impl PyBayesianSeasonalLocalLevel {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianSeasonalLocalLevelFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::seasonal_local_level(
+                    self.period,
+                    1.0,
+                    1.0,
+                    1.0,
+                    self.initial_level,
+                    self.initial_seasonal_effects.clone(),
+                    self.initial_level_variance,
+                    self.initial_seasonal_variance,
+                )
+                .map_err(state_space_error)?,
+                vec![self.level_variance_prior, self.seasonal_variance_prior],
+                vec!["level_variance", "seasonal_variance"],
+                self.observation_variance_prior,
+                true,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianSeasonalLocalLevelConfig {
             period: self.period,
             initial_level: self.initial_level,
@@ -5723,11 +5896,15 @@ impl PyBayesianSeasonalLocalLevel {
         let posterior = py
             .allow_threads(|| fit_bayesian_seasonal_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianSeasonalLocalLevelFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianSeasonalLocalLevelFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -5739,6 +5916,7 @@ impl PyBayesianSeasonalLocalLevel {
 }
 
 #[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+#[derive(Clone)]
 struct PyBayesianSeasonalLocalLevelFit {
     posterior: CoreSeasonalLocalLevelPosterior,
     observations: Vec<f64>,
@@ -5747,6 +5925,22 @@ struct PyBayesianSeasonalLocalLevelFit {
 
 #[pymethods]
 impl PyBayesianSeasonalLocalLevelFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(py, "conjugate Gibbs/FFBS", self.chains(), self.draws(), "variance parameters and all terminal seasonal state coordinates; historical states are not retained")
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -6062,6 +6256,45 @@ struct PyBayesianLocalLinearTrend {
 
 #[pymethods]
 impl PyBayesianLocalLinearTrend {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            exog,
+            coefficient_priors,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     #[pyo3(signature = (
         level_variance_prior,
@@ -6160,7 +6393,7 @@ impl PyBayesianLocalLinearTrend {
         }
     }
 
-    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42))]
+    #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
     #[allow(clippy::too_many_arguments)]
     fn fit(
         &self,
@@ -6171,8 +6404,33 @@ impl PyBayesianLocalLinearTrend {
         warmup: usize,
         thin: usize,
         seed: u64,
-    ) -> PyResult<PyBayesianLocalLinearTrendFit> {
+        exog: Option<PyReadonlyArray2<'_, f64>>,
+        coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
+    ) -> PyResult<PyObject> {
         let observations = state_space_vector(observations);
+        if let Some(exog) = exog {
+            let config = regression::config(
+                CoreLinearGaussianStateSpace::new(
+                    2,
+                    vec![1.0, 1.0, 0.0, 1.0],
+                    vec![1.0, 0.0],
+                    vec![1.0, 0.0, 0.0, 1.0],
+                    1.0,
+                    self.initial_mean.to_vec(),
+                    self.initial_covariance.to_vec(),
+                )
+                .map_err(state_space_error)?,
+                vec![self.level_variance_prior, self.slope_variance_prior],
+                vec!["level_variance", "slope_variance"],
+                self.observation_variance_prior,
+                false,
+                (chains, draws, warmup, thin, seed),
+            );
+            return regression::fit(py, observations, exog, coefficient_prior, config);
+        }
+        if coefficient_prior.is_some() {
+            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+        }
         let config = CoreBayesianLocalLinearTrendConfig {
             initial_mean: self.initial_mean,
             initial_covariance: self.initial_covariance,
@@ -6188,11 +6446,15 @@ impl PyBayesianLocalLinearTrend {
         let posterior = py
             .allow_threads(|| fit_bayesian_local_linear_trend(&observations, &config))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianLocalLinearTrendFit {
-            posterior,
-            observations,
-            config,
-        })
+        Ok(Py::new(
+            py,
+            PyBayesianLocalLinearTrendFit {
+                posterior,
+                observations,
+                config,
+            },
+        )?
+        .into_any())
     }
 
     fn __repr__(&self) -> String {
@@ -6204,6 +6466,7 @@ impl PyBayesianLocalLinearTrend {
 }
 
 #[pyclass(name = "BayesianLocalLinearTrendFit")]
+#[derive(Clone)]
 struct PyBayesianLocalLinearTrendFit {
     posterior: CoreLocalLinearTrendPosterior,
     observations: Vec<f64>,
@@ -6212,6 +6475,28 @@ struct PyBayesianLocalLinearTrendFit {
 
 #[pymethods]
 impl PyBayesianLocalLinearTrendFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "conjugate Gibbs/FFBS",
+            self.chains(),
+            self.draws(),
+            "variance parameters, terminal level and slope; historical states are not retained",
+        )
+    }
+
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()
@@ -6601,6 +6886,45 @@ struct PyBayesianAutoRegression {
 
 #[pymethods]
 impl PyBayesianAutoRegression {
+    /// Fit independent ragged cells on one bounded native worker pool.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[allow(clippy::too_many_arguments)]
+    fn fit_batch(
+        &self,
+        py: Python<'_>,
+        observations: &Bound<'_, PyAny>,
+        ids: Vec<String>,
+        models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+        seed: u64,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+    ) -> PyResult<forecast_batch::PyForecastBatchFit> {
+        forecast_batch::fit_batch(
+            py,
+            observations,
+            ids,
+            models,
+            exog,
+            coefficient_priors,
+            self.batch_config(chains, draws, warmup, thin),
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+            threads,
+            chunk_size,
+            errors,
+        )
+    }
+
     #[new]
     fn new(order: usize, prior: PyRef<'_, PyNormalInverseGammaPrior>) -> PyResult<Self> {
         if order == 0 {
@@ -6673,6 +6997,7 @@ impl PyBayesianAutoRegression {
 }
 
 #[pyclass(name = "BayesianARFit")]
+#[derive(Clone)]
 struct PyBayesianArFit {
     posterior: CoreBayesianArPosterior,
     observations: Vec<f64>,
@@ -6681,6 +7006,28 @@ struct PyBayesianArFit {
 
 #[pymethods]
 impl PyBayesianArFit {
+    /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: exact conjugate independent draws; acceptance and divergences unavailable",
+        ))
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(
+            py,
+            "exact conjugate independent draws",
+            self.chains(),
+            self.draws(),
+            "coefficients and innovation variance",
+        )
+    }
+
     #[getter]
     fn order(&self) -> usize {
         self.posterior.order
@@ -6894,6 +7241,9 @@ fn validate_interval_level(level: f64) -> PyResult<()> {
 
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    hurdle::register(m)?;
+    regression::register(m)?;
+    runoff::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<ModelBuilder>()?;
     m.add_class::<ModelSpec>()?;
@@ -6905,6 +7255,9 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCompiledModel>()?;
     m.add_class::<PyBoundModel>()?;
     m.add_class::<PyBatchFit>()?;
+    m.add_function(wrap_pyfunction!(forecast_batch::forecast_cell_seed, m)?)?;
+    m.add_class::<forecast_batch::PyForecastBatchFit>()?;
+    m.add_class::<forecast_batch::PyForecastBatchForecast>()?;
     m.add_class::<PyLinearGaussianStateSpace>()?;
     m.add_class::<PyKalmanFilterResult>()?;
     m.add_class::<PyKalmanSmootherResult>()?;
@@ -6934,4 +7287,101 @@ fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sample_prior_predictive, m)?)?;
     Ok(())
+}
+
+impl PyBayesianLocalLevel {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Local(CoreBayesianLocalLevelConfig {
+            initial_mean: self.initial_mean,
+            initial_variance: self.initial_variance,
+            process_variance_prior: self.process_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianSeasonalLocalLevel {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Seasonal(CoreBayesianSeasonalLocalLevelConfig {
+            period: self.period,
+            initial_level: self.initial_level,
+            initial_seasonal_effects: self.initial_seasonal_effects.clone(),
+            initial_level_variance: self.initial_level_variance,
+            initial_seasonal_variance: self.initial_seasonal_variance,
+            level_variance_prior: self.level_variance_prior,
+            seasonal_variance_prior: self.seasonal_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianLocalLinearTrend {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+
+        forecast_batch::Config::Trend(CoreBayesianLocalLinearTrendConfig {
+            initial_mean: self.initial_mean,
+            initial_covariance: self.initial_covariance,
+            level_variance_prior: self.level_variance_prior,
+            slope_variance_prior: self.slope_variance_prior,
+            observation_variance_prior: self.observation_variance_prior,
+            num_chains: chains,
+            num_warmup: warmup,
+            num_draws: draws,
+            thinning: thin,
+            seed,
+        })
+    }
+}
+
+impl PyBayesianAutoRegression {
+    fn batch_config(
+        &self,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        thin: usize,
+    ) -> forecast_batch::Config {
+        let seed = 0;
+        let _ = (warmup, thin);
+        forecast_batch::Config::Ar(CoreBayesianArConfig {
+            order: self.order,
+            prior: self.prior.clone(),
+            num_chains: chains,
+            num_draws: draws,
+            seed,
+        })
+    }
 }

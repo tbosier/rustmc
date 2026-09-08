@@ -1,21 +1,6 @@
 #!/usr/bin/env bash
-# Verify that version in Cargo.toml and pyproject.toml matches the git tag (e.g. v0.6.0 -> 0.6.0).
-# Run from repo root. Usage: bash scripts/verify_version.sh [vX.Y.Z]
-set -e
-TAG="${1:-${GITHUB_REF#refs/tags/}}"
-if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-  echo "No version tag (e.g. v0.6.0). Skipping check."
-  exit 0
-fi
-EXPECTED="${TAG#v}"
-CORE=$(grep '^version = ' rust_core/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-BINDINGS=$(grep '^version = ' python_bindings/Cargo.toml | sed 's/.*"\(.*\)"/\1/')
-PY=$(grep '^version = ' pyproject.toml | head -1 | sed 's/.*= *"\(.*\)"/\1/')
-if [[ "$CORE" != "$EXPECTED" || "$BINDINGS" != "$EXPECTED" || "$PY" != "$EXPECTED" ]]; then
-  echo "Version mismatch: tag=$TAG (expected $EXPECTED)"
-  echo "  rust_core:          $CORE"
-  echo "  python_bindings:    $BINDINGS"
-  echo "  pyproject.toml:     $PY"
-  exit 1
-fi
-echo "Version OK: $EXPECTED"
+# Verify synchronized manifests/dependency/lock and, when supplied, vX.Y.Z tag.
+# Works from any directory; Python 3.9+ requires no third-party dependencies.
+set -euo pipefail
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$SCRIPT_DIR/verify_version.py" "$@"

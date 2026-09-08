@@ -197,9 +197,10 @@ lower, upper = seasonal_forecast.interval(0.95)
 cumulative_lower, cumulative_upper = seasonal_forecast.cumulative_interval(0.95)
 ```
 
-With 24 monthly observations, a period-12 model sees only two cycles. It can be fit, but
-seasonal and variance inference will be prior-sensitive and requires rolling-origin
-comparison against simple seasonal baselines.
+Seasonal models require at least two finite observations, with no full-cycle minimum.
+Short histories can be fit, but seasonal and variance inference can be prior-sensitive;
+compare rolling-origin forecasts against simple seasonal baselines. For exogenous
+regressors and compact Fourier seasonality, see [regression forecasting](regression-forecasting.md).
 
 For a fitted stochastic level and slope:
 

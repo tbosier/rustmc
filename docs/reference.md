@@ -174,8 +174,10 @@ and observation noise. It is not a simultaneous trajectory band.
 
 `NaN` retains a missing time step and infinities are rejected. Fitting requires at
 least two finite observations. This specialized model assumes equally spaced scalar
-Gaussian observations; seasonality, covariates, and irregular timestamps are not part
-of this model. Gibbs output remains finite
+Gaussian observations. Add known covariates with `fit(..., exog=X,
+coefficient_prior=GaussianCoefficientPrior(...))` and supply future `exog` to the
+returned regression fit. See [regression and Fourier forecasting](regression-forecasting.md).
+Irregular timestamps are not modeled automatically. Gibbs output remains finite
 MCMC output, so inspect multiple-chain convergence and effective sample sizes rather
 than treating it as an analytic posterior.
 
@@ -209,8 +211,19 @@ formed inside each posterior draw before quantiles are calculated.
 
 The fitted model is equally spaced, scalar, Gaussian, and single-seasonal. Seasonal
 innovations preserve structural identification but do not force every realized rolling
-cycle to sum exactly to zero. Missing values retain their time positions. With only two
-observed cycles, variance and seasonal inference is necessarily prior-sensitive.
+cycle to sum exactly to zero. Missing values retain their time positions. Fitting
+requires two finite observations, with no full-cycle minimum. Short histories can be
+strongly sensitive to initial-state and variance priors. The regression extension and
+`fourier_design` provide a smaller harmonic model for long periods.
+
+All specialized fits expose `summary()`, `diagnostics()`, and `sampler_stats`.
+Hamiltonian divergences and acceptance are unavailable for Gibbs/FFBS and exact
+conjugate sampling. [Independent batches](forecast-batches.md) preserve cell identity
+and return per-cell fits, errors, diagnostics, and forecasts.
+
+For [sparse amounts](sparse-amounts.md), use `BayesianHurdleLogNormal`; for
+[payment-event triangles](runoff.md), use `DirichletMultinomialRunoff`. Their data,
+prior, and inference contracts are documented separately from Gaussian forecasting.
 
 ## Bayesian local-linear-trend forecasting
 

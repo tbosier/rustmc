@@ -1,19 +1,24 @@
 pub mod autodiff;
 pub mod bayesian_ar;
 pub mod bayesian_forecast;
+pub mod bayesian_regression;
 pub mod bayesian_seasonal;
 pub mod bayesian_trend;
 pub mod compiled_model;
 pub mod data;
 pub mod diagnostics;
 pub mod distributions;
+pub mod forecast_batch;
+pub mod forecast_diagnostics;
 pub mod graph;
 pub mod hierarchical;
 pub mod hmc;
+pub mod hurdle;
 pub mod mass_matrix;
 pub mod nuts;
 pub mod param_ref;
 pub mod progress;
+pub mod runoff;
 pub mod sampler;
 pub mod state_space;
 

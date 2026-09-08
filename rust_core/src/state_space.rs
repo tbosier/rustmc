@@ -86,6 +86,7 @@ pub struct LinearGaussianStateSpace {
     dimension: usize,
     transition: Vec<f64>,
     observation: Vec<f64>,
+    observation_rows: Option<Vec<Vec<f64>>>,
     process_covariance: Vec<f64>,
     observation_variance: f64,
     initial_mean: Vec<f64>,
@@ -143,6 +144,7 @@ impl LinearGaussianStateSpace {
             dimension,
             transition,
             observation,
+            observation_rows: None,
             process_covariance,
             observation_variance,
             initial_mean,
@@ -345,8 +347,109 @@ impl LinearGaussianStateSpace {
         self.dimension
     }
 
+    /// Set one finite observation row per training time. Missing observations
+    /// retain their rows. Forecasting then requires explicit future rows.
+    pub fn with_observation_rows(mut self, rows: Vec<Vec<f64>>) -> Result<Self, StateSpaceError> {
+        self.validate_rows(&rows, rows.len())?;
+        self.observation_rows = Some(rows);
+        Ok(self)
+    }
+
+    fn validate_rows(&self, rows: &[Vec<f64>], count: usize) -> Result<(), StateSpaceError> {
+        check_len("observation row count", rows.len(), count)?;
+        for row in rows {
+            check_len("observation row", row.len(), self.dimension)?;
+            check_finite("observation rows", row)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn transition(&self) -> &[f64] {
+        &self.transition
+    }
+    pub(crate) fn observation(&self) -> &[f64] {
+        &self.observation
+    }
+    pub(crate) fn set_variances(&mut self, indices: &[usize], variances: &[f64], observation: f64) {
+        for (&index, &variance) in indices.iter().zip(variances) {
+            self.process_covariance[index * self.dimension + index] = variance;
+        }
+        self.observation_variance = observation;
+    }
+
+    /// Augment a structural model with static uncertain coefficients. The
+    /// coefficient block has identity transition and exactly zero process noise.
+    pub fn with_static_regression(
+        &self,
+        design: &[Vec<f64>],
+        mean: &[f64],
+        covariance: &[f64],
+    ) -> Result<Self, StateSpaceError> {
+        if self.observation_rows.is_some() {
+            return Err(StateSpaceError::InvalidParameter(
+                "static regression augmentation requires a constant structural observation row"
+                    .into(),
+            ));
+        }
+        let p = mean.len();
+        if p == 0 {
+            return Err(StateSpaceError::InvalidDimension(
+                "coefficient prior must not be empty".into(),
+            ));
+        }
+        check_len(
+            "coefficient covariance",
+            covariance.len(),
+            p.checked_mul(p)
+                .ok_or_else(|| StateSpaceError::InvalidDimension("too many coefficients".into()))?,
+        )?;
+        let n = self.dimension + p;
+        let mut transition = vec![0.0; n * n];
+        let mut process = vec![0.0; n * n];
+        let mut initial = vec![0.0; n * n];
+        for i in 0..self.dimension {
+            for j in 0..self.dimension {
+                transition[i * n + j] = self.transition[i * self.dimension + j];
+                process[i * n + j] = self.process_covariance[i * self.dimension + j];
+                initial[i * n + j] = self.initial_covariance[i * self.dimension + j];
+            }
+        }
+        for i in 0..p {
+            transition[(i + self.dimension) * n + i + self.dimension] = 1.0;
+            for j in 0..p {
+                initial[(i + self.dimension) * n + j + self.dimension] = covariance[i * p + j];
+            }
+        }
+        let mut initial_mean = self.initial_mean.clone();
+        initial_mean.extend_from_slice(mean);
+        let mut observation = self.observation.clone();
+        observation.resize(n, 0.0);
+        let rows = design
+            .iter()
+            .map(|row| {
+                check_len("exog feature count", row.len(), p)?;
+                let mut full = self.observation.clone();
+                full.extend_from_slice(row);
+                Ok(full)
+            })
+            .collect::<Result<Vec<_>, StateSpaceError>>()?;
+        Self::new(
+            n,
+            transition,
+            observation,
+            process,
+            self.observation_variance,
+            initial_mean,
+            initial,
+        )?
+        .with_observation_rows(rows)
+    }
+
     pub fn filter(&self, observations: &[f64]) -> Result<KalmanFilterResult, StateSpaceError> {
         validate_observations(observations)?;
+        if let Some(rows) = &self.observation_rows {
+            self.validate_rows(rows, observations.len())?;
+        }
         let d = self.dimension;
         let mut previous_mean = self.initial_mean.clone();
         let mut previous_covariance = self.initial_covariance.clone();
@@ -357,6 +460,10 @@ impl LinearGaussianStateSpace {
         let mut log_likelihood = 0.0;
 
         for (time, &value) in observations.iter().enumerate() {
+            let observation = self
+                .observation_rows
+                .as_ref()
+                .map_or(self.observation.as_slice(), |rows| rows[time].as_slice());
             let predicted_mean = mat_vec(&self.transition, &previous_mean, d);
             let mut predicted_covariance = mat_mul_transpose_right(
                 &mat_mul(&self.transition, &previous_covariance, d),
@@ -375,14 +482,14 @@ impl LinearGaussianStateSpace {
             let (filtered_mean, filtered_covariance) = if value.is_nan() {
                 (predicted_mean.clone(), predicted_covariance.clone())
             } else {
-                let ph = mat_vec(&predicted_covariance, &self.observation, d);
-                let innovation_variance = dot(&self.observation, &ph) + self.observation_variance;
+                let ph = mat_vec(&predicted_covariance, observation, d);
+                let innovation_variance = dot(observation, &ph) + self.observation_variance;
                 if !innovation_variance.is_finite() || innovation_variance <= 0.0 {
                     return Err(StateSpaceError::NumericalFailure(format!(
                         "innovation variance at time {time} is not finite and positive"
                     )));
                 }
-                let predicted_observation = dot(&self.observation, &predicted_mean);
+                let predicted_observation = dot(observation, &predicted_mean);
                 let innovation = value - predicted_observation;
                 if !innovation.is_finite() {
                     return Err(StateSpaceError::NumericalFailure(format!(
@@ -399,7 +506,7 @@ impl LinearGaussianStateSpace {
                 let mut update = identity(d);
                 for i in 0..d {
                     for j in 0..d {
-                        update[i * d + j] -= gain[i] * self.observation[j];
+                        update[i * d + j] -= gain[i] * observation[j];
                     }
                 }
                 let left = mat_mul(&update, &predicted_covariance, d);
@@ -514,6 +621,23 @@ impl LinearGaussianStateSpace {
         observations: &[f64],
         steps: usize,
     ) -> Result<ForecastResult, StateSpaceError> {
+        if self.observation_rows.is_some() {
+            return Err(StateSpaceError::InvalidParameter(
+                "future observation rows are required for a time-varying design".into(),
+            ));
+        }
+        self.forecast_with_observation_rows(observations, &vec![self.observation.clone(); steps])
+    }
+
+    /// Forecast with a row for each future step, continuing after the final
+    /// training time. Both rows enter each cross-horizon covariance.
+    pub fn forecast_with_observation_rows(
+        &self,
+        observations: &[f64],
+        future_rows: &[Vec<f64>],
+    ) -> Result<ForecastResult, StateSpaceError> {
+        let steps = future_rows.len();
+        self.validate_rows(future_rows, steps)?;
         let filter = self.filter(observations)?;
         let (mut previous_mean, mut previous_covariance) = match (
             filter.filtered_means.last(),
@@ -527,7 +651,7 @@ impl LinearGaussianStateSpace {
         let mut state_covariances = Vec::with_capacity(steps);
         let mut observation_means = Vec::with_capacity(steps);
         let mut observation_variances = Vec::with_capacity(steps);
-        for step in 0..steps {
+        for (step, observation) in future_rows.iter().enumerate() {
             let mean = mat_vec(&self.transition, &previous_mean, d);
             let mut covariance = mat_mul_transpose_right(
                 &mat_mul(&self.transition, &previous_covariance, d),
@@ -537,11 +661,9 @@ impl LinearGaussianStateSpace {
             add_assign(&mut covariance, &self.process_covariance);
             symmetrize(&mut covariance, d);
             check_computed("forecast state", &mean, &covariance, step)?;
-            let observation_mean = dot(&self.observation, &mean);
-            let observation_variance = dot(
-                &self.observation,
-                &mat_vec(&covariance, &self.observation, d),
-            ) + self.observation_variance;
+            let observation_mean = dot(observation, &mean);
+            let observation_variance =
+                dot(observation, &mat_vec(&covariance, observation, d)) + self.observation_variance;
             if !observation_mean.is_finite()
                 || !observation_variance.is_finite()
                 || observation_variance <= 0.0
@@ -570,8 +692,8 @@ impl LinearGaussianStateSpace {
                         mat_mul_transpose_right(&cross_covariance, &self.transition, d);
                 }
                 let mut covariance = dot(
-                    &self.observation,
-                    &mat_vec(&cross_covariance, &self.observation, d),
+                    &future_rows[first],
+                    &mat_vec(&cross_covariance, &future_rows[second], d),
                 );
                 if first == second {
                     covariance += self.observation_variance;
