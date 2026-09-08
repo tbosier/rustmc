@@ -6,6 +6,38 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-08
+
+### Added
+
+- Joint Bayesian exogenous regression for local-level, seasonal, and trend forecasts,
+  with proper Gaussian coefficient priors and paired coefficient/state/variance draws.
+- Time-varying observation rows in fixed Gaussian state-space models and explicit
+  future-design validation, including joint and cumulative forecast covariance.
+- Native independent forecasting batches with stable cell seeds, ragged histories,
+  per-cell models/designs, controlled worker counts, and collected cell errors.
+- Sampler-aware parameter diagnostics for forecasting fits, including coefficients
+  and retained terminal states; Gibbs telemetry does not invent divergences or
+  acceptance rates.
+- Fourier calendar designs with explicit phase and Nyquist handling. Stochastic
+  seasonal fits now accept short histories with at least two finite observations.
+- A hurdle model for nonnegative amounts with static uncertain occurrence
+  probability and dynamic lognormal severity under upper-truncated inverse-gamma
+  variance priors, including exact zeros and all-zero histories.
+- Count-only payment runoff with shared Dirichlet lag probabilities, known or
+  inferred ultimate counts, prefix censoring, and an explicit unscheduled tail.
+  It does not model continuous currency allocations or couple separate accrual fits.
+
+### Fixed
+
+- Guarded oversized forecasting/runoff allocations and sparse large-count binomial
+  draws; strengthened version checks across manifests, dependencies, and the lockfile.
+
+### Packaging
+
+- Prepared synchronized Rust and Python 0.11.0 metadata. Release uploads require
+  verification of the built wheel or source archive before artifact publication.
+
 ## [0.10.0] - 2026-08-04
 
 ### Added
@@ -84,7 +116,8 @@ versioning while the public API is stabilized.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/tbosier/rustmc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tbosier/rustmc/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tbosier/rustmc/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tbosier/rustmc/releases/tag/v0.8.0
