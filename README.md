@@ -214,6 +214,7 @@ the current Gaussian fitted APIs.
 
 Forecasting examples:
 
+- [`examples/payment_triangle_runoff.py`](examples/payment_triangle_runoff.py): integer-event development with known or uncertain ultimates; [model and data contract](docs/runoff.md).
 - [`examples/rebate_accrual_forecast.py`](examples/rebate_accrual_forecast.py)
 - [`examples/bayesian_local_level_forecasting.py`](examples/bayesian_local_level_forecasting.py)
 - [`examples/bayesian_seasonal_forecasting.py`](examples/bayesian_seasonal_forecasting.py)

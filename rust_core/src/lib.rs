@@ -18,6 +18,7 @@ pub mod mass_matrix;
 pub mod nuts;
 pub mod param_ref;
 pub mod progress;
+pub mod runoff;
 pub mod sampler;
 pub mod state_space;
 

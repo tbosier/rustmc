@@ -1,6 +1,7 @@
 mod forecast_batch;
 mod forecast_diagnostics;
 mod regression;
+mod runoff;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2,
@@ -7224,6 +7225,7 @@ fn validate_interval_level(level: f64) -> PyResult<()> {
 #[pymodule]
 fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     regression::register(m)?;
+    runoff::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<ModelBuilder>()?;
     m.add_class::<ModelSpec>()?;
