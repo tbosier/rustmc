@@ -129,6 +129,19 @@ pub(crate) struct PyBayesianRegressionFit {
 }
 #[pymethods]
 impl PyBayesianRegressionFit {
+    fn summary(&self) -> String {
+        self.posterior.diagnostics().to_table_with_sampler(Some(
+            "Sampler: joint conjugate Gibbs/FFBS; acceptance and divergences unavailable",
+        ))
+    }
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+    }
+    #[getter]
+    fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        forecast_diagnostics::sampler_stats(py, "joint conjugate Gibbs/FFBS", self.chains(), self.draws(),
+            "all variance parameters, regression coefficients and terminal structural states; historical states are not retained")
+    }
     #[getter]
     fn chains(&self) -> usize {
         self.posterior.chains.len()

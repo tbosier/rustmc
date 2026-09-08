@@ -218,6 +218,27 @@ pub fn compute_diagnostics(
     let n_draws = if n_chains > 0 { samples[0].len() } else { 0 };
     let n_params = param_names.len();
 
+    // Validate before rank normalization: ragged arrays cannot preserve chain
+    // axes, and empty arrays do not define a sampling distribution.
+    if n_chains == 0
+        || n_draws == 0
+        || samples
+            .iter()
+            .any(|chain| chain.len() != n_draws || chain.iter().any(|draw| draw.len() != n_params))
+    {
+        return DiagnosticsReport {
+            params: param_names
+                .iter()
+                .cloned()
+                .map(unavailable_parameter)
+                .collect(),
+            num_chains: n_chains,
+            num_draws: n_draws,
+            accept_rates: accept_rates.to_vec(),
+            divergences,
+        };
+    }
+
     let mut params = Vec::with_capacity(n_params);
 
     for pidx in 0..n_params {
@@ -226,6 +247,10 @@ pub fn compute_diagnostics(
             .map(|c| samples[c].iter().map(|draw| draw[pidx]).collect())
             .collect();
 
+        if chains.iter().flatten().any(|value| !value.is_finite()) {
+            params.push(unavailable_parameter(param_names[pidx].clone()));
+            continue;
+        }
         let mean = chain_mean_all(&chains);
         let std = chain_std_all(&chains, mean);
         let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
@@ -260,6 +285,20 @@ pub fn compute_diagnostics(
         num_draws: n_draws,
         accept_rates: accept_rates.to_vec(),
         divergences,
+    }
+}
+
+fn unavailable_parameter(name: String) -> ParamDiagnostics {
+    ParamDiagnostics {
+        name,
+        mean: f64::NAN,
+        std: f64::NAN,
+        hdi_3: f64::NAN,
+        hdi_97: f64::NAN,
+        ess_bulk: f64::NAN,
+        ess_tail: f64::NAN,
+        r_hat: f64::NAN,
+        mcse_mean: f64::NAN,
     }
 }
 
@@ -525,7 +564,7 @@ fn rank_normalize(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut ranks = vec![0.0f64; total];
     let mut i = 0;
     while i < total {
-        let mut j = i;
+        let mut j = i + 1;
         while j < total && indexed[j].0 == indexed[i].0 {
             j += 1;
         }

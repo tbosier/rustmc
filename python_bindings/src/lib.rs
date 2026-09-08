@@ -5307,7 +5307,7 @@ struct PyBayesianLocalLevel {
 #[pymethods]
 impl PyBayesianLocalLevel {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -5315,6 +5315,8 @@ impl PyBayesianLocalLevel {
         observations: &Bound<'_, PyAny>,
         ids: Vec<String>,
         models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -5329,6 +5331,8 @@ impl PyBayesianLocalLevel {
             observations,
             ids,
             models,
+            exog,
+            coefficient_priors,
             self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
@@ -5748,7 +5752,7 @@ struct PyBayesianSeasonalLocalLevel {
 #[pymethods]
 impl PyBayesianSeasonalLocalLevel {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -5756,6 +5760,8 @@ impl PyBayesianSeasonalLocalLevel {
         observations: &Bound<'_, PyAny>,
         ids: Vec<String>,
         models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -5770,6 +5776,8 @@ impl PyBayesianSeasonalLocalLevel {
             observations,
             ids,
             models,
+            exog,
+            coefficient_priors,
             self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
@@ -6249,7 +6257,7 @@ struct PyBayesianLocalLinearTrend {
 #[pymethods]
 impl PyBayesianLocalLinearTrend {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -6257,6 +6265,8 @@ impl PyBayesianLocalLinearTrend {
         observations: &Bound<'_, PyAny>,
         ids: Vec<String>,
         models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -6271,6 +6281,8 @@ impl PyBayesianLocalLinearTrend {
             observations,
             ids,
             models,
+            exog,
+            coefficient_priors,
             self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
@@ -6875,7 +6887,7 @@ struct PyBayesianAutoRegression {
 #[pymethods]
 impl PyBayesianAutoRegression {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -6883,6 +6895,8 @@ impl PyBayesianAutoRegression {
         observations: &Bound<'_, PyAny>,
         ids: Vec<String>,
         models: Option<&Bound<'_, PyAny>>,
+        exog: Option<&Bound<'_, PyAny>>,
+        coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -6897,6 +6911,8 @@ impl PyBayesianAutoRegression {
             observations,
             ids,
             models,
+            exog,
+            coefficient_priors,
             self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,

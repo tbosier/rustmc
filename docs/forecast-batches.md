@@ -79,3 +79,22 @@ metrics (`None` in Python). Infinite R-hat is retained when it detects separated
 chains. A one-chain fit can have split diagnostics, but
 `independent_chain_comparison=False` makes clear that it cannot compare independent
 chains. Finite diagnostics do not prove convergence, identification, or model adequacy.
+
+Regression batches accept `exog=[X_cell, ...]` and
+`coefficient_priors=[GaussianCoefficientPrior(...), ...]`. Both lists align with
+`ids`; `None` entries select an ordinary non-regression cell. Designs may differ in
+history length and coefficient count across cells. Supply the corresponding
+`exog=[X_future_cell, ...]` to `batch.forecast(steps, ...)`. Missing or malformed
+future designs are per-cell errors; a design is also rejected for a cell fitted
+without regression. Static Fourier designs from `fourier_design` use this same
+contract, preserving their time origin in the future rows. Regression diagnostics
+include every coefficient, variance, and terminal structural state coordinate.
+
+Batch calls reject more than 25,000,000 retained scalar values (approximately 200 MB
+of raw float storage, excluding containers), using conservative component counts.
+Each cell also checks a conservative dense FFBS workspace estimate against this
+limit. Oversized individual cells produce collected errors; a combined retained
+budget overflow is a batch-level error. Checked products reject counts/horizons
+that would otherwise overflow allocation sizes. These are allocation guards, not
+an exact peak-RSS guarantee. Use smaller caller-managed batches to retain larger
+workloads, and reduce draws or model dimension for a single oversized cell.

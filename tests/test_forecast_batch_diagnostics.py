@@ -166,3 +166,74 @@ def test_batch_is_exactly_single_fit_with_documented_cell_seed(rustmc_module):
                                   batch.forecast(4, seed=84)[cell].observation_samples)
     with pytest.raises(ValueError, match="domain"):
         rmc.forecast_cell_seed(1, cell, "unknown")
+
+
+@pytest.mark.parametrize("model_index", range(3))
+def test_regression_batches_ragged_designs_priors_diagnostics_and_paths(rustmc_module, model_index):
+    rmc = rustmc_module
+    model = models(rmc)[model_index]
+    ys = [np.linspace(0.1, 0.8, 8), np.linspace(-0.2, 0.7, 10)]
+    xs = [np.arange(8, dtype=float)[:, None] / 8,
+          np.column_stack([np.ones(10), np.arange(10, dtype=float) / 10])]
+    priors = [rmc.GaussianCoefficientPrior(np.zeros(1), np.eye(1)),
+              rmc.GaussianCoefficientPrior(np.zeros(2), np.eye(2) * 2)]
+    ids = ["linear", "intercept+linear"]
+    kwargs = dict(chains=2, draws=16, warmup=8, seed=64)
+    batch = model.fit_batch(ys, ids, exog=xs, coefficient_priors=priors, threads=2, **kwargs)
+    reordered = model.fit_batch(ys[::-1], ids[::-1], exog=xs[::-1], coefficient_priors=priors[::-1],
+                                  threads=1, chunk_size=1, **kwargs)
+    for cell, prior, y, x in zip(ids, priors, ys, xs):
+        single = model.fit(y, exog=x, coefficient_prior=prior, chains=2, draws=16, warmup=8,
+                           seed=rmc.forecast_cell_seed(64, cell))
+        for name, values in batch[cell].get_samples_2d().items():
+            np.testing.assert_array_equal(values, reordered[cell].get_samples_2d()[name])
+            np.testing.assert_array_equal(values, single.get_samples_2d()[name])
+        names = {p["name"] for p in batch[cell].diagnostics()}
+        assert "coefficient[0]" in names
+        assert "terminal_state[0]" in names
+        assert "observation_variance" in names
+        assert batch[cell].sampler_stats["divergences"] is None
+        assert "joint conjugate Gibbs" in batch[cell].summary()
+    future = [np.array([[1.], [1.1], [1.2]]), np.array([[1., 1.], [1., 1.1], [1., 1.2]])]
+    forecast = batch.forecast(3, exog=future, seed=87, threads=2)
+    reversed_forecast = reordered.forecast(3, exog=future[::-1], seed=87, threads=1)
+    for cell in ids:
+        np.testing.assert_array_equal(forecast[cell].observation_samples,
+                                      reversed_forecast[cell].observation_samples)
+        np.testing.assert_allclose(forecast[cell].cumulative_observation_samples,
+                                  np.cumsum(forecast[cell].observation_samples, axis=-1))
+    missing = batch.forecast(3, errors="collect")
+    assert set(missing.errors) == set(ids)
+    assert all("future exog" in error for error in missing.errors.values())
+    malformed = batch.forecast(3, exog=[future[0], [[1.]]], errors="collect")
+    assert set(malformed.errors) == {ids[1]}
+
+
+def test_regression_batch_validation_is_per_cell(rustmc_module):
+    rmc = rustmc_module
+    model = models(rmc)[0]
+    y = [0., .1, .2]
+    x = np.ones((3, 1))
+    prior = rmc.GaussianCoefficientPrior(np.zeros(1), np.eye(1))
+    batch = model.fit_batch([y]*5, ["ok", "no_prior", "no_x", "bad_shape", "bad_values"],
+                            exog=[x, x, None, [[1.]], [[float("nan")]]*3],
+                            coefficient_priors=[prior, None, prior, prior, prior],
+                            draws=8, warmup=4, errors="collect")
+    assert set(batch.errors) == {"no_prior", "no_x", "bad_shape", "bad_values"}
+    assert batch["ok"].time_count == 3
+    with pytest.raises(ValueError, match="exog must have one"):
+        model.fit_batch([y], ["ok"], exog=[])
+    with pytest.raises(ValueError, match="coefficient_priors must have one"):
+        model.fit_batch([y], ["ok"], coefficient_priors=[])
+    plain = model.fit_batch([y], ["plain"], draws=8, warmup=4)
+    assert "without regression" in plain.forecast(2, exog=[[[1.], [2.]]], errors="collect").errors["plain"]
+
+
+def test_huge_batch_allocations_return_errors_instead_of_panicking(rustmc_module):
+    model = models(rustmc_module)[0]
+    huge = model.fit_batch([[1., 2., 3.]], ["huge"], chains=1, draws=2**61,
+                           warmup=0, errors="collect")
+    assert "allocation limit" in huge.errors["huge"]
+    tiny = model.fit_batch([[1., 2., 3.]], ["tiny"], chains=1, draws=8, warmup=0)
+    bad_forecast = tiny.forecast(2**61, errors="collect")
+    assert "allocation limit" in bad_forecast.errors["tiny"]
