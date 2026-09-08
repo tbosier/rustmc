@@ -10,6 +10,7 @@ pub mod distributions;
 pub mod graph;
 pub mod hierarchical;
 pub mod hmc;
+pub mod hurdle;
 pub mod mass_matrix;
 pub mod nuts;
 pub mod param_ref;
