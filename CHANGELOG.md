@@ -39,6 +39,8 @@ versioning while the public API is stabilized.
   nonfinite initialization and overflowing allocation counts.
 - Duplicate likelihood/deterministic outputs and incompatible named dimensions are
   rejected instead of silently overwriting or conflating results.
+- Regression expression compilation preserves parameter identity for names resembling
+  internal constant markers; intercepts use explicit constant/parameter variants.
 - Demo WIS uses its standard denominator. The separate baseline single-interval metric
   is named `interval_score_95`; retained scores were corrected without rerunning timing.
 - Persistence support/shape validation and allocation guards cover new model kernels.
