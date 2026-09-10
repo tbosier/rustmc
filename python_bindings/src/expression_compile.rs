@@ -29,13 +29,9 @@ fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<String>)> {
                 true
             }
             MuExpr::Add(a, b) => walk(a, terms, intercept) && walk(b, terms, intercept),
-            MuExpr::Param(name) => {
-                if intercept.is_none() {
-                    *intercept = Some(name.clone());
-                    true
-                } else {
-                    false
-                }
+            MuExpr::Param(name) if intercept.is_none() => {
+                *intercept = Some(name.clone());
+                true
             }
             // MatVec uses faer GEMV — never fuse into scalar linear combination
             _ => false,
