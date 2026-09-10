@@ -5,21 +5,26 @@ use pyo3::prelude::*;
 use rustmc_core::graph::{Graph, NodeId};
 use std::collections::HashMap;
 
-/// Try to decompose a MuExpr tree into a flat linear combination:
-/// ([(param_name, data_key), ...], optional_intercept_param_name)
-fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<String>)> {
-    let mut terms = Vec::new();
-    let mut intercept: Option<String> = None;
+/// A fused intercept retains its expression type independently of parameter names.
+enum LinearIntercept {
+    Constant(f64),
+    Parameter(String),
+}
 
-    fn walk(e: &MuExpr, terms: &mut Vec<(String, String)>, intercept: &mut Option<String>) -> bool {
+/// Try to decompose an expression into data-weighted terms and a typed intercept.
+fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<LinearIntercept>)> {
+    let mut terms = Vec::new();
+    let mut intercept: Option<LinearIntercept> = None;
+
+    fn walk(
+        e: &MuExpr,
+        terms: &mut Vec<(String, String)>,
+        intercept: &mut Option<LinearIntercept>,
+    ) -> bool {
         match e {
-            MuExpr::Const(value) => {
-                if intercept.is_none() {
-                    *intercept = Some(format!("__const__{}", value));
-                    true
-                } else {
-                    false
-                }
+            MuExpr::Const(value) if intercept.is_none() => {
+                *intercept = Some(LinearIntercept::Constant(*value));
+                true
             }
             MuExpr::ParamTimesData {
                 param_name,
@@ -30,7 +35,7 @@ fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<String>)> {
             }
             MuExpr::Add(a, b) => walk(a, terms, intercept) && walk(b, terms, intercept),
             MuExpr::Param(name) if intercept.is_none() => {
-                *intercept = Some(name.clone());
+                *intercept = Some(LinearIntercept::Parameter(name.clone()));
                 true
             }
             // MatVec uses faer GEMV — never fuse into scalar linear combination
@@ -137,7 +142,7 @@ pub(super) fn build_mu_expr(
     value_node_map: &HashMap<String, NodeId>,
 ) -> Result<NodeId, PyErr> {
     // Fast path: fuse linear combinations into a single op
-    if let Some((terms, intercept_name)) = try_extract_linear(expr) {
+    if let Some((terms, intercept)) = try_extract_linear(expr) {
         let mut param_nodes = Vec::with_capacity(terms.len());
         let mut data_indices = Vec::with_capacity(terms.len());
 
@@ -152,21 +157,10 @@ pub(super) fn build_mu_expr(
             data_indices.push(graph.store_named_data_vec(data_key, data_vec));
         }
 
-        let intercept_node = match intercept_name {
-            Some(ref name) if name.starts_with("__const__") => {
-                let value = name
-                    .trim_start_matches("__const__")
-                    .parse::<f64>()
-                    .map_err(|_| {
-                        PyValueError::new_err(format!(
-                            "Invalid constant intercept encoding: {}",
-                            name
-                        ))
-                    })?;
-                Some(graph.add_constant(value))
-            }
-            Some(ref name) => Some(lookup_param_value_node(
-                name,
+        let intercept_node = match intercept {
+            Some(LinearIntercept::Constant(value)) => Some(graph.add_constant(value)),
+            Some(LinearIntercept::Parameter(name)) => Some(lookup_param_value_node(
+                &name,
                 value_node_map,
                 "the intercept of a linear predictor",
             )?),
