@@ -67,6 +67,12 @@ interval width. WIS divides the weighted median/interval numerator by `K + .5` f
 `K` intervals. `interval_score` is a single-interval score. Missing realized outcomes
 produce NaN scores. Coverage and widths are pointwise, not simultaneous bands.
 
+The [retained calibration study](https://github.com/tbosier/rustmc/blob/main/benchmarks/results/2026-09-09-calibration.md)
+uses 32 independently generated datasets per model and reports convergence, coverage,
+CRPS, and Monte Carlo uncertainty. Its companion pilot retains short-run convergence
+failures. These checks average over generating priors under correct specification;
+they do not establish calibration on every dataset or under misspecification.
+
 ## Named predictors, scenarios, and updates
 
 `NamedDesign(array, ("price", "holiday"))` records feature identity and order. Wrap a

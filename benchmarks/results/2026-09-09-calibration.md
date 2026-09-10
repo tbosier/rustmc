@@ -97,5 +97,5 @@ Reproduce against the recorded source revision and rebuilt extension:
 python benchmarks/calibrate_forecasting.py --replicates 32 --chains 2 --draws 20000 --warmup 5000 --history 24 --horizon 4 --seed 20260909 --output benchmarks/results/2026-09-09-calibration
 ```
 
-Recorded source revision: `f4f21a5423a6fbcb993cec997abe82a2a0aa5784`. Backend version: `0.11.0`; NumPy: `2.4.2`. Runtime figures include scoring/diagnostics and are not throughput benchmarks.
-The recorded native implementation snapshot predates the package manifest update to 0.12.0. This artifact validates those model kernels and does not claim it was run against the final packaged 0.12.0 wheel.
+Recorded source revision: `8be5d855da5393aa8758084745809a4a23ce1cfa`. Backend version: `0.12.0`; NumPy: `2.5.3`. Runtime figures include scoring/diagnostics and are not throughput benchmarks.
+The JSON companion records the imported native module location and checksum. Use the matching package and source revision when reproducing the run.
