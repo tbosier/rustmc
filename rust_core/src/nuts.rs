@@ -14,6 +14,7 @@ use crate::graph::Graph;
 use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
+use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
@@ -109,10 +110,21 @@ pub fn run_chain_bound(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> ChainResult {
+    let mut evaluator = Evaluator::with_binding(graph, binding);
+    run_chain_with_evaluator(graph, config, rng, init, progress, &mut evaluator)
+}
+
+pub(crate) fn run_chain_with_evaluator(
+    graph: &Graph,
+    config: &NutsConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+    evaluator: &mut impl GradientEvaluator,
+) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
-    let mut evaluator = Evaluator::with_binding(graph, binding);
     let q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut samples = Vec::with_capacity(config.num_draws);
     let mut transitions = Vec::with_capacity(total_iters);
@@ -141,7 +153,7 @@ pub fn run_chain_bound(
     let mut step_size = if config.step_size > 0.0 {
         config.step_size
     } else {
-        find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng)
+        find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng)
     };
 
     // Dual averaging targets the caller-selected acceptance probability.
@@ -159,11 +171,14 @@ pub fn run_chain_bound(
     let mut current = PhasePoint {
         q: q.clone(),
         p: vec![0.0; dim],
-        grad: evaluator.grad.clone(),
-        logp: evaluator.total_logp,
+        grad: evaluator.gradient().to_vec(),
+        logp: evaluator.log_density(),
     };
 
     for iter in 0..total_iters {
+        if evaluator.has_failed() {
+            break;
+        }
         let is_warmup = iter < config.num_warmup;
         let step_size_used = step_size;
 
@@ -174,7 +189,7 @@ pub fn run_chain_bound(
         // Build the NUTS tree
         let (proposal, tree_stats) = build_tree_iterative(
             graph,
-            &mut evaluator,
+            evaluator,
             &current,
             step_size,
             &mass,
@@ -184,6 +199,10 @@ pub fn run_chain_bound(
             rng,
             &mut scratch,
         );
+
+        if evaluator.has_failed() {
+            break;
+        }
 
         // Multinomial weighting handles candidate selection internally.  A
         // divergence terminates trajectory construction, but does not
@@ -246,14 +265,8 @@ pub fn run_chain_bound(
                 // the old metric's step size is no longer calibrated. Find a
                 // reasonable value under the new geometry before restarting
                 // dual averaging for this window.
-                step_size = find_initial_step_size(
-                    graph,
-                    &mut evaluator,
-                    &current.q,
-                    &mass,
-                    &mut scratch,
-                    rng,
-                );
+                step_size =
+                    find_initial_step_size(graph, evaluator, &current.q, &mass, &mut scratch, rng);
                 da_mu = (10.0 * step_size).ln();
                 log_eps_bar = step_size.ln();
                 adapt_count = 0;
@@ -329,7 +342,7 @@ fn update_current(current: &mut PhasePoint, proposal: &PhasePoint) {
 #[allow(clippy::too_many_arguments)]
 fn build_tree_iterative(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     initial: &PhasePoint,
     eps: f64,
     mass: &MassMatrix,
@@ -430,7 +443,7 @@ fn build_tree_iterative(
 #[allow(clippy::too_many_arguments)]
 fn build_subtree(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     point: &PhasePoint,
     eps: f64,
     mass: &MassMatrix,
@@ -547,7 +560,7 @@ fn build_subtree(
 /// Single leapfrog step (half-step momentum, full-step position, half-step momentum).
 fn leapfrog(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     point: &PhasePoint,
     eps: f64,
     mass: &MassMatrix,
@@ -573,8 +586,8 @@ fn leapfrog(
     }
     // Evaluate gradient at new position
     evaluator.compute(graph, &q_new);
-    let logp_new = evaluator.total_logp;
-    let grad_new = evaluator.grad.clone();
+    let logp_new = evaluator.log_density();
+    let grad_new = evaluator.gradient().to_vec();
     // Half step momentum
     for i in 0..dim {
         p_new[i] += 0.5 * eps * grad_new[i];
@@ -632,15 +645,15 @@ fn normalized_selection_prob(candidate_log_weight: f64, total_log_weight: f64) -
 /// Find initial step size — same algorithm as hmc.rs.
 fn find_initial_step_size(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     q: &[f64],
     mass: &MassMatrix,
     scratch: &mut [f64],
     rng: &mut ChaCha8Rng,
 ) -> f64 {
     evaluator.compute(graph, q);
-    let logp0 = evaluator.total_logp;
-    let grad0: Vec<f64> = evaluator.grad.clone();
+    let logp0 = evaluator.log_density();
+    let grad0: Vec<f64> = evaluator.gradient().to_vec();
     let dim = q.len();
     let mut p0 = vec![0.0; dim];
     mass.sample_momentum_into(rng, &mut p0, scratch);

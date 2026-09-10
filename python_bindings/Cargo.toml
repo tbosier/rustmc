@@ -1,6 +1,6 @@
 [package]
 name = "rustmc"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 license = "MIT"
 description = "Python extension module for rustmc"
@@ -10,14 +10,16 @@ repository = "https://github.com/tbosier/rustmc"
 publish = false
 
 [lib]
-name = "rustmc"
+name = "_rustmc"
 crate-type = ["cdylib"]
 
 [dependencies]
-rustmc_core = { path = "../rust_core", version = "0.11.0" }
+rustmc_core = { path = "../rust_core", version = "0.12.0" }
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
 numpy = "0.25"
 ndarray = "0.16"
 rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip"] }

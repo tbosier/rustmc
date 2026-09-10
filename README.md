@@ -78,6 +78,12 @@ Rust implementation, but its public API should still be considered unstable.
 
 ## Quick start
 
+Version 0.12 adds [custom expressions and future-data prediction](docs/custom-models.md),
+[composable structural forecasts](docs/structural-forecasting.md), and
+[dynamic count, hurdle, and pooled Gaussian models](docs/dynamic-glm.md).
+The [forecasting workflow guide](docs/forecasting-workflows.md) covers backtests,
+scores, named features, scenarios, storage, and updates.
+
 This example fits a Bayesian linear regression with NUTS:
 
 ```python
@@ -286,15 +292,18 @@ misspecification.
 
 - The expression and distribution surface is deliberately finite; arbitrary user-defined
   probability functions and broad tensor algebra are not yet supported.
-- Vector-valued hierarchical priors, group indexing, named dimensions, and coordinates
-  are incomplete.
-- Compile/bind artifacts are in-memory only and are not portable or versioned.
-- Initialization controls remain limited; BFMI and explicit termination reasons are not
-  yet reported.
-- The generic state-space API accepts fixed system matrices rather than inferring them.
-- Specialized forecasting lacks covariates/calendar interventions, multiple
-  seasonalities, positive/robust observations, hierarchical pooling, dated outputs,
-  and rolling backtests.
+- Expressions support scalar and elementwise operations, matrix-vector regression,
+  named dimensions, and group indexing; unrestricted tensor programs remain outside scope.
+- Generic compiled models and fits, structural models/fits, dynamic-family fits, and
+  forecast draws have versioned persistence. These are prediction artifacts, not sampler
+  checkpoints; they do not resume RNG/adaptation state.
+- Explicit unconstrained chain initialization is available. BFMI is not yet reported.
+- Structural AR coefficients, damping, and Student-t degrees of freedom are fixed.
+  Dynamic GLM scales and negative-binomial dispersion are fixed inputs; coefficients and
+  time states are inferred jointly. Learned scales for these GLMs need another kernel.
+- Singular predictive covariance systems are not supported by the structural FFBS solver.
+- Shared-factor dynamics, stochastic volatility, regime switching, and calendar-varying
+  payment lag probabilities remain future extensions.
 - Performance has not been established on a representative, retained benchmark corpus.
 
 See [`ROADMAP.md`](ROADMAP.md) for the ordered engineering plan and differentiated

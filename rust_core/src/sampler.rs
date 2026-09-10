@@ -83,6 +83,71 @@ impl Default for BatchSampleConfig {
     }
 }
 
+impl SamplerConfig {
+    /// Validate controls at the Rust boundary before any allocation or execution.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.num_chains == 0 || self.num_draws == 0 {
+            return Err("chains and draws must be positive".into());
+        }
+        if self.num_warmup == 0 {
+            return Err("warmup must be positive".into());
+        }
+        if !self.step_size.is_finite() || self.step_size < 0.0 {
+            return Err("step_size must be finite and nonnegative".into());
+        }
+        validate_target_accept(self.target_accept)?;
+        if !(1..=63).contains(&self.max_tree_depth) {
+            return Err("max_tree_depth must be between 1 and 63".into());
+        }
+        if self.num_leapfrog_steps == 0 {
+            return Err("num_leapfrog_steps must be positive".into());
+        }
+        self.num_warmup
+            .checked_add(self.num_draws)
+            .and_then(|n| n.checked_mul(self.num_chains))
+            .filter(|n| *n <= isize::MAX as usize / std::mem::size_of::<TransitionStats>())
+            .ok_or_else(|| "sampling allocation size overflow".to_string())?;
+        Ok(())
+    }
+}
+
+impl BatchSampleConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        self.sampler_config(self.seed).validate()
+    }
+    fn sampler_config(&self, seed: u64) -> SamplerConfig {
+        SamplerConfig {
+            sampler: self.sampler,
+            num_chains: self.num_chains,
+            num_draws: self.num_draws,
+            num_warmup: self.num_warmup,
+            step_size: self.step_size,
+            target_accept: self.target_accept,
+            num_leapfrog_steps: self.num_leapfrog_steps,
+            max_tree_depth: self.max_tree_depth,
+            seed,
+            num_threads: 0,
+            show_progress: false,
+        }
+    }
+}
+
+pub(crate) fn validate_initial_values(
+    initial: Option<Vec<Vec<f64>>>,
+    chains: usize,
+    dimension: usize,
+) -> Result<Vec<Vec<f64>>, String> {
+    let positions = initial.unwrap_or_else(|| vec![vec![0.0; dimension]; chains]);
+    if positions.len() != chains
+        || positions
+            .iter()
+            .any(|q| q.len() != dimension || q.iter().any(|x| !x.is_finite()))
+    {
+        return Err("init must contain one finite unconstrained parameter vector per chain".into());
+    }
+    Ok(positions)
+}
+
 #[derive(Debug, Clone)]
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
@@ -149,7 +214,7 @@ impl SampleResult {
     }
 }
 
-fn with_thread_pool<T, F>(num_threads: usize, f: F) -> T
+pub(crate) fn with_thread_pool<T, F>(num_threads: usize, f: F) -> Result<T, String>
 where
     F: FnOnce() -> T + Send,
     T: Send,
@@ -158,20 +223,24 @@ where
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()
-            .expect("failed to build Rayon thread pool");
-        pool.install(f)
+            .map_err(|error| format!("could not build sampler thread pool: {error}"))?;
+        Ok(pool.install(f))
     } else {
-        f()
+        Ok(f())
     }
 }
 
-fn validate_initial_target(graph: &Graph, binding: DataBinding) -> Result<(), String> {
+fn validate_initial_target(
+    graph: &Graph,
+    binding: DataBinding,
+    initial: &[f64],
+) -> Result<(), String> {
     let mut evaluator =
         Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
-    evaluator.compute(graph, &vec![0.0; graph.param_count]);
+    evaluator.compute(graph, initial);
     if !evaluator.total_logp.is_finite() {
         return Err(format!(
-            "initial log density is not finite at the default zero initialization ({})",
+            "initial log density is not finite at the supplied initialization ({})",
             evaluator.total_logp
         ));
     }
@@ -187,7 +256,7 @@ fn validate_initial_target(graph: &Graph, binding: DataBinding) -> Result<(), St
             .get(index)
             .map_or("<unknown>", String::as_str);
         return Err(format!(
-            "initial gradient for parameter '{}' is not finite at the default zero initialization ({})",
+            "initial gradient for parameter '{}' is not finite at the supplied initialization ({})",
             name, value
         ));
     }
@@ -214,9 +283,23 @@ pub fn sample_bound(
     binding: DataBinding,
     config: SamplerConfig,
 ) -> Result<SampleResult, String> {
-    validate_target_accept(config.target_accept)?;
+    sample_bound_with_init(graph, binding, config, None)
+}
+
+/// Sample with one explicit raw (unconstrained) initial vector per chain.
+/// None preserves the legacy zero initialization.
+pub fn sample_bound_with_init(
+    graph: Arc<Graph>,
+    binding: DataBinding,
+    config: SamplerConfig,
+    initial: Option<Vec<Vec<f64>>>,
+) -> Result<SampleResult, String> {
+    config.validate()?;
+    let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
     binding.validate_for(&graph).map_err(|e| e.to_string())?;
-    validate_initial_target(&graph, binding.clone())?;
+    for position in &initial {
+        validate_initial_target(&graph, binding.clone(), position)?;
+    }
     let param_names = graph.param_names.clone();
 
     // For progress bar, leapfrog count is approximate for NUTS
@@ -246,7 +329,7 @@ pub fn sample_bound(
         chain_indices
             .par_iter()
             .map(|&chain_idx| {
-                let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_idx as u64);
+                let mut rng = ChaCha8Rng::seed_from_u64(config.seed.wrapping_add(chain_idx as u64));
                 let prog_ref = progress_state.as_deref();
 
                 match config.sampler {
@@ -263,7 +346,7 @@ pub fn sample_bound(
                             binding.clone(),
                             &nuts_config,
                             &mut rng,
-                            None,
+                            Some(initial[chain_idx].clone()),
                             prog_ref,
                         )
                     }
@@ -280,14 +363,14 @@ pub fn sample_bound(
                             binding.clone(),
                             &hmc_config,
                             &mut rng,
-                            None,
+                            Some(initial[chain_idx].clone()),
                             prog_ref,
                         )
                     }
                 }
             })
             .collect()
-    });
+    })?;
 
     let transforms = &graph.param_transforms;
 
@@ -343,6 +426,113 @@ pub struct BoundBatchResult {
     pub result: BatchModelResult,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BatchSeedPolicy {
+    /// Stable version-one cell IDs, invariant to ordering and chunk boundaries.
+    CellIdV1,
+    /// Compatibility with the original generic batch API.
+    PositionV0,
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundBatchOptions {
+    pub threads: usize,
+    pub chunk_size: usize,
+    pub collect_errors: bool,
+    pub seed_policy: BatchSeedPolicy,
+}
+
+impl Default for BoundBatchOptions {
+    fn default() -> Self {
+        Self {
+            threads: 1,
+            chunk_size: 64,
+            collect_errors: false,
+            seed_policy: BatchSeedPolicy::CellIdV1,
+        }
+    }
+}
+
+/// Execute generic models on the same bounded pool and cell-ID scheme as forecasts.
+/// Bind errors are cell results so callers can retain successful datasets.
+pub fn sample_batch_bound_with_options(
+    graph: Arc<Graph>,
+    bindings: Vec<(String, Result<DataBinding, String>)>,
+    config: BatchSampleConfig,
+    options: BoundBatchOptions,
+) -> Result<Vec<Result<SampleResult, String>>, String> {
+    sample_batch_bound_with_initial(
+        graph,
+        bindings,
+        config,
+        options,
+        std::collections::HashMap::new(),
+    )
+}
+
+/// Batch initialization is keyed by stable dataset ID. Missing IDs use zero starts;
+/// invalid per-cell initial positions follow the selected error collection policy.
+pub fn sample_batch_bound_with_initial(
+    graph: Arc<Graph>,
+    bindings: Vec<(String, Result<DataBinding, String>)>,
+    config: BatchSampleConfig,
+    options: BoundBatchOptions,
+    initial: std::collections::HashMap<String, Vec<Vec<f64>>>,
+) -> Result<Vec<Result<SampleResult, String>>, String> {
+    use crate::forecast_batch::{execute_batch, execute_batch_fail_fast, BatchError};
+    config.validate()?;
+    let ids: std::collections::HashSet<_> = bindings.iter().map(|(id, _)| id.as_str()).collect();
+    if let Some(id) = initial.keys().find(|id| !ids.contains(id.as_str())) {
+        return Err(format!(
+            "initialization supplied for unknown dataset ID '{id}'"
+        ));
+    }
+    let cells: Vec<_> = bindings
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, binding))| {
+            let position = initial.get(&id).cloned();
+            (id, (index, binding, position))
+        })
+        .collect();
+    type InitializedCell = (usize, Result<DataBinding, String>, Option<Vec<Vec<f64>>>);
+    let fit = |(index, binding, initial): &InitializedCell, stable_seed| {
+        let seed = match options.seed_policy {
+            BatchSeedPolicy::CellIdV1 => stable_seed,
+            BatchSeedPolicy::PositionV0 => config.seed.wrapping_add((*index as u64) << 32),
+        };
+        // num_threads=0 reuses the surrounding private pool for chain work.
+        sample_bound_with_init(
+            Arc::clone(&graph),
+            binding.clone()?,
+            config.sampler_config(seed),
+            initial.clone(),
+        )
+    };
+    if options.collect_errors {
+        execute_batch(
+            &cells,
+            config.seed,
+            options.threads,
+            options.chunk_size,
+            fit,
+        )
+    } else {
+        execute_batch_fail_fast(
+            &cells,
+            config.seed,
+            options.threads,
+            options.chunk_size,
+            fit,
+        )
+        .map(|results| results.into_iter().map(Ok).collect())
+        .map_err(|error| match error {
+            BatchError::Configuration(error) => error,
+            BatchError::Cell { id, error } => format!("dataset '{id}': {error}"),
+        })
+    }
+}
+
 /// Fit many validated datasets against one Arc-shared structure. Results are
 /// collected in input order; IDs travel with their originating datasets.
 pub fn sample_batch_bound(
@@ -350,9 +540,10 @@ pub fn sample_batch_bound(
     bindings: Vec<DataBinding>,
     config: BatchSampleConfig,
 ) -> Result<Vec<BoundBatchResult>, String> {
+    config.validate()?;
     let sampler_config = |seed| SamplerConfig {
         sampler: config.sampler,
-        num_chains: config.num_chains.max(1),
+        num_chains: config.num_chains,
         num_draws: config.num_draws,
         num_warmup: config.num_warmup,
         step_size: config.step_size,
@@ -378,7 +569,7 @@ pub fn sample_batch_bound(
                         result: BatchModelResult {
                             samples,
                             param_names: sample.param_names,
-                            num_chains: config.num_chains.max(1),
+                            num_chains: config.num_chains,
                             num_draws: config.num_draws,
                             accept_rates: sample.accept_rates,
                             step_sizes: sample.step_sizes,
@@ -389,7 +580,7 @@ pub fn sample_batch_bound(
                 })
             })
             .collect::<Vec<_>>()
-    });
+    })?;
     outcomes.into_iter().collect()
 }
 
@@ -449,15 +640,23 @@ pub fn batch_sample(
     models: Vec<(Graph, Vec<f64>)>,
     config: BatchSampleConfig,
 ) -> Result<Vec<BatchModelResult>, String> {
-    validate_target_accept(config.target_accept)?;
+    batch_sample_graphs(models.into_iter().map(|(graph, _)| graph).collect(), config)
+}
+
+/// Fit independent data-owning graphs. Prefer bound batches for shared structures.
+pub fn batch_sample_graphs(
+    models: Vec<Graph>,
+    config: BatchSampleConfig,
+) -> Result<Vec<BatchModelResult>, String> {
+    config.validate()?;
     let n_models = models.len();
-    let chains_per_model = config.num_chains.max(1);
+    let chains_per_model = config.num_chains;
     let total_chain_runs = n_models * chains_per_model;
 
-    for (graph, _) in &models {
+    for graph in &models {
         graph.validate_shapes().map_err(|e| e.to_string())?;
         let binding = DataBinding::from_graph(graph).map_err(|e| e.to_string())?;
-        validate_initial_target(graph, binding)?;
+        validate_initial_target(graph, binding, &vec![0.0; graph.param_count])?;
     }
 
     let progress_state = if config.show_progress {
@@ -479,8 +678,7 @@ pub fn batch_sample(
         models
             .into_par_iter()
             .enumerate()
-            .map(|(model_idx, (graph, obs_y))| {
-                let _ = obs_y; // data is already baked into the graph
+            .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
                 let mut samples: Vec<Vec<f64>> = Vec::new();
                 let mut accept_rates = Vec::with_capacity(chains_per_model);
@@ -543,7 +741,7 @@ pub fn batch_sample(
                 }
             })
             .collect()
-    });
+    })?;
 
     Ok(results)
 }
@@ -555,11 +753,66 @@ mod tests {
 
     #[test]
     fn thread_pool_helper_uses_requested_parallelism() {
-        let one = with_thread_pool(1, current_num_threads);
-        let two = with_thread_pool(2, current_num_threads);
+        let one = with_thread_pool(1, current_num_threads).unwrap();
+        let two = with_thread_pool(2, current_num_threads).unwrap();
 
         assert_eq!(one, 1);
         assert_eq!(two, 2);
+    }
+
+    #[test]
+    fn invalid_sampling_controls_are_rejected_in_rust() {
+        let mut graph = Graph::new();
+        crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        let base = SamplerConfig {
+            show_progress: false,
+            ..Default::default()
+        };
+        let invalid = [
+            SamplerConfig {
+                num_chains: 0,
+                ..base.clone()
+            },
+            SamplerConfig {
+                num_draws: 0,
+                ..base.clone()
+            },
+            SamplerConfig {
+                num_leapfrog_steps: 0,
+                ..base.clone()
+            },
+            SamplerConfig {
+                max_tree_depth: 64,
+                ..base.clone()
+            },
+            SamplerConfig {
+                num_draws: usize::MAX,
+                ..base.clone()
+            },
+            SamplerConfig {
+                step_size: f64::NAN,
+                ..base.clone()
+            },
+        ];
+        for config in invalid {
+            assert!(sample(graph.clone(), config).is_err());
+        }
+        let binding = DataBinding::from_graph(&graph).unwrap();
+        let structure = Arc::new(graph.structure_only());
+        assert!(sample_bound_with_init(
+            structure.clone(),
+            binding.clone(),
+            base.clone(),
+            Some(vec![vec![0.0]])
+        )
+        .is_err());
+        assert!(sample_bound_with_init(
+            structure,
+            binding,
+            base,
+            Some(vec![vec![f64::INFINITY]; 4])
+        )
+        .is_err());
     }
 
     #[test]

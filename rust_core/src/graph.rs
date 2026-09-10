@@ -58,6 +58,7 @@ pub enum ObsFamily {
 #[derive(Debug, Clone)]
 pub struct ObservationHead {
     pub name: String,
+    pub dim: String,
     pub family: ObsFamily,
     pub linpred: NodeId,
     pub aux: Option<NodeId>,
@@ -65,9 +66,91 @@ pub struct ObservationHead {
     pub n_obs: usize,
 }
 
+/// Arithmetic with scalar broadcasting and elementwise vector semantics.
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub enum ElementwiseOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Pow,
+    Neg,
+    Exp,
+    Log,
+    Sigmoid,
+    Sqrt,
+    Tanh,
+    Softplus,
+    Sin,
+    Cos,
+}
+impl ElementwiseOp {
+    pub fn value(self, a: f64, b: f64) -> f64 {
+        match self {
+            Self::Add => a + b,
+            Self::Sub => a - b,
+            Self::Mul => a * b,
+            Self::Div => a / b,
+            Self::Pow => a.powf(b),
+            Self::Neg => -a,
+            Self::Exp => a.exp(),
+            Self::Log => a.ln(),
+            Self::Sigmoid => {
+                if a >= 0.0 {
+                    1.0 / (1.0 + (-a).exp())
+                } else {
+                    let e = a.exp();
+                    e / (1.0 + e)
+                }
+            }
+            Self::Sqrt => a.sqrt(),
+            Self::Tanh => a.tanh(),
+            Self::Softplus => a.max(0.0) + (-a.abs()).exp().ln_1p(),
+            Self::Sin => a.sin(),
+            Self::Cos => a.cos(),
+        }
+    }
+    pub fn derivatives(self, a: f64, b: f64) -> (f64, f64) {
+        match self {
+            Self::Add => (1.0, 1.0),
+            Self::Sub => (1.0, -1.0),
+            Self::Mul => (b, a),
+            Self::Div => (1.0 / b, -a / (b * b)),
+            Self::Pow => (b * a.powf(b - 1.0), a.powf(b) * a.ln()),
+            Self::Neg => (-1.0, 0.0),
+            Self::Exp => (a.exp(), 0.0),
+            Self::Log => (1.0 / a, 0.0),
+            Self::Sigmoid => {
+                let v = self.value(a, b);
+                (v * (1.0 - v), 0.0)
+            }
+            Self::Sqrt => (0.5 / a.sqrt(), 0.0),
+            Self::Tanh => (1.0 - a.tanh().powi(2), 0.0),
+            Self::Softplus => (Self::Sigmoid.value(a, 0.0), 0.0),
+            Self::Sin => (a.cos(), 0.0),
+            Self::Cos => (-a.sin(), 0.0),
+        }
+    }
+}
+
 /// Operations supported in the computation graph.
 #[derive(Debug, Clone)]
 pub enum Op {
+    Elementwise {
+        operator: ElementwiseOp,
+        a: NodeId,
+        b: Option<NodeId>,
+    },
+    Gather {
+        param_start: usize,
+        n_params: usize,
+        indices: NodeId,
+    },
+    Sum(NodeId),
+    BroadcastObservation {
+        scalar: NodeId,
+        obs_data_idx: usize,
+    },
     /// A free parameter to be sampled (index into the parameter vector).
     Param(usize),
     /// A constant scalar value baked into the graph.
@@ -278,6 +361,7 @@ pub struct Graph {
     pub param_transforms: Vec<ParamTransform>,
     pub param_spans: Vec<ParamSpan>,
     pub logp_terms: Vec<NodeId>,
+    pub deterministics: Vec<(String, NodeId)>,
     name_to_node: HashMap<String, NodeId>,
 }
 
@@ -294,6 +378,7 @@ impl Graph {
             param_transforms: Vec::new(),
             param_spans: Vec::new(),
             logp_terms: Vec::new(),
+            deterministics: Vec::new(),
             name_to_node: HashMap::new(),
         }
     }
@@ -320,6 +405,31 @@ impl Graph {
         self.add_node(Op::Param(idx), Some(name.to_string()))
     }
 
+    pub fn elementwise(&mut self, operator: ElementwiseOp, a: NodeId, b: Option<NodeId>) -> NodeId {
+        self.add_node(Op::Elementwise { operator, a, b }, None)
+    }
+    pub fn gather(&mut self, param_start: usize, n_params: usize, indices: NodeId) -> NodeId {
+        self.add_node(
+            Op::Gather {
+                param_start,
+                n_params,
+                indices,
+            },
+            None,
+        )
+    }
+    pub fn sum(&mut self, input: NodeId) -> NodeId {
+        self.add_node(Op::Sum(input), None)
+    }
+    pub fn broadcast_observation(&mut self, scalar: NodeId, obs_data_idx: usize) -> NodeId {
+        self.add_node(
+            Op::BroadcastObservation {
+                scalar,
+                obs_data_idx,
+            },
+            None,
+        )
+    }
     pub fn add_constant(&mut self, value: f64) -> NodeId {
         self.add_node(Op::Constant(value), None)
     }
@@ -594,7 +704,20 @@ impl Graph {
                 } = &n.op
                 {
                     Some(ObservationHead {
-                        name: n.name.clone().unwrap_or_default(),
+                        dim: self
+                            .schema
+                            .observations
+                            .get(*obs_data_idx)
+                            .map_or_else(|| "obs".into(), |slot| slot.dim.clone()),
+                        name: self
+                            .schema
+                            .observations
+                            .get(*obs_data_idx)
+                            .and_then(|slot| match &slot.kind {
+                                SlotKind::Observation { likelihood } => Some(likelihood.clone()),
+                                _ => None,
+                            })
+                            .unwrap_or_else(|| n.name.clone().unwrap_or_default()),
                         family: *family,
                         linpred: *linpred_vec,
                         aux: *aux,
@@ -612,6 +735,7 @@ impl Graph {
     }
 
     /// Backward-compatible helper for the current Normal-only API surface.
+    #[deprecated(note = "use observation_heads for all supported families")]
     pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
         self.observation_heads()
             .into_iter()
@@ -894,44 +1018,10 @@ impl Graph {
     /// every data vector, observation vector, and matrix row count is
     /// consistent before any sampling or gradient evaluation occurs.
     pub fn validate_shapes(&self) -> Result<usize, GraphShapeError> {
-        let mut expected_len: Option<usize> = None;
-
-        let mut set_expected =
-            |actual: usize, kind: &str, index: usize| -> Result<(), GraphShapeError> {
-                match expected_len {
-                    None => {
-                        expected_len = Some(actual);
-                        Ok(())
-                    }
-                    Some(expected) if expected == actual => Ok(()),
-                    Some(expected) => Err(GraphShapeError::new(format!(
-                        "{} {} has length {}, expected {}",
-                        kind, index, actual, expected
-                    ))),
-                }
-            };
-
-        for (idx, data) in self.data_vectors.iter().enumerate() {
-            set_expected(data.len(), "data vector", idx)?;
-        }
-
-        for (idx, obs) in self.obs_vectors.iter().enumerate() {
-            set_expected(obs.len(), "observation vector", idx)?;
-        }
-
-        for (idx, matrix) in self.data_matrices.iter().enumerate() {
-            let payload_len = matrix.data.len();
-            let expected_payload_len = matrix.n_rows * matrix.n_cols;
-            if payload_len != expected_payload_len {
-                return Err(GraphShapeError::new(format!(
-                    "matrix {} has shape {}x{} but {} values were provided",
-                    idx, matrix.n_rows, matrix.n_cols, payload_len
-                )));
-            }
-            set_expected(matrix.n_rows, "matrix row count", idx)?;
-        }
-
-        Ok(expected_len.unwrap_or(0))
+        let binding =
+            DataBinding::from_graph(self).map_err(|e| GraphShapeError::new(e.to_string()))?;
+        crate::autodiff::validate_node_lengths(self, &binding)?;
+        Ok(binding.n_obs())
     }
 }
 

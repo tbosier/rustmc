@@ -88,7 +88,9 @@ pub struct LinearGaussianStateSpace {
     observation: Vec<f64>,
     observation_rows: Option<Vec<Vec<f64>>>,
     process_covariance: Vec<f64>,
+    diagonal_process: bool,
     observation_variance: f64,
+    observation_variances: Option<Vec<f64>>,
     initial_mean: Vec<f64>,
     initial_covariance: Vec<f64>,
 }
@@ -140,13 +142,19 @@ impl LinearGaussianStateSpace {
             )
         })?;
 
+        let diagonal_process = process_covariance
+            .iter()
+            .enumerate()
+            .all(|(i, &v)| i / dimension == i % dimension || v == 0.0);
         Ok(Self {
             dimension,
             transition,
             observation,
             observation_rows: None,
             process_covariance,
+            diagonal_process,
             observation_variance,
+            observation_variances: None,
             initial_mean,
             initial_covariance,
         })
@@ -355,6 +363,68 @@ impl LinearGaussianStateSpace {
         Ok(self)
     }
 
+    /// Set per-time Gaussian noise variances, e.g. conditional Student-t mixtures.
+    pub fn with_observation_variances(
+        mut self,
+        variances: Vec<f64>,
+    ) -> Result<Self, StateSpaceError> {
+        if variances.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(StateSpaceError::InvalidVariance(
+                "observation variances must be finite and positive".into(),
+            ));
+        }
+        self.observation_variances = Some(variances);
+        Ok(self)
+    }
+
+    pub(crate) fn has_observation_variances(&self) -> bool {
+        self.observation_variances.is_some()
+    }
+
+    pub(crate) fn process_covariance(&self) -> &[f64] {
+        &self.process_covariance
+    }
+
+    /// Simulate the complete next state, including fixed correlated innovations.
+    pub fn simulate_transition<R: Rng + ?Sized>(
+        &self,
+        state: &[f64],
+        rng: &mut R,
+    ) -> Result<Vec<f64>, StateSpaceError> {
+        check_len("state", state.len(), self.dimension)?;
+        check_finite("state", state)?;
+        let mean = mat_vec(&self.transition, state, self.dimension);
+        // Preset innovations are diagonal, often with many deterministic shift
+        // coordinates. Keep their simulation quadratic in dimension (transition
+        // multiplication), rather than factoring a dense matrix at each horizon.
+        if self.diagonal_process {
+            let draw: Vec<f64> = mean
+                .iter()
+                .enumerate()
+                .map(|(i, &m)| {
+                    let z: f64 = StandardNormal.sample(rng);
+                    m + self.process_covariance[i * self.dimension + i].sqrt() * z
+                })
+                .collect();
+            check_finite("simulated state", &draw)?;
+            Ok(draw)
+        } else {
+            sample_multivariate_normal(&mean, &self.process_covariance, self.dimension, rng)
+        }
+    }
+
+    pub fn simulate_initial<R: Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> Result<Vec<f64>, StateSpaceError> {
+        sample_multivariate_normal(
+            &self.initial_mean,
+            &self.initial_covariance,
+            self.dimension,
+            rng,
+        )
+    }
+
     fn validate_rows(&self, rows: &[Vec<f64>], count: usize) -> Result<(), StateSpaceError> {
         check_len("observation row count", rows.len(), count)?;
         for row in rows {
@@ -433,7 +503,7 @@ impl LinearGaussianStateSpace {
                 Ok(full)
             })
             .collect::<Result<Vec<_>, StateSpaceError>>()?;
-        Self::new(
+        let mut model = Self::new(
             n,
             transition,
             observation,
@@ -442,13 +512,22 @@ impl LinearGaussianStateSpace {
             initial_mean,
             initial,
         )?
-        .with_observation_rows(rows)
+        .with_observation_rows(rows)?;
+        model.observation_variances = self.observation_variances.clone();
+        Ok(model)
     }
 
     pub fn filter(&self, observations: &[f64]) -> Result<KalmanFilterResult, StateSpaceError> {
         validate_observations(observations)?;
         if let Some(rows) = &self.observation_rows {
             self.validate_rows(rows, observations.len())?;
+        }
+        if let Some(variances) = &self.observation_variances {
+            check_len(
+                "observation variance count",
+                variances.len(),
+                observations.len(),
+            )?;
         }
         let d = self.dimension;
         let mut previous_mean = self.initial_mean.clone();
@@ -460,6 +539,10 @@ impl LinearGaussianStateSpace {
         let mut log_likelihood = 0.0;
 
         for (time, &value) in observations.iter().enumerate() {
+            let noise_variance = self
+                .observation_variances
+                .as_ref()
+                .map_or(self.observation_variance, |v| v[time]);
             let observation = self
                 .observation_rows
                 .as_ref()
@@ -483,7 +566,7 @@ impl LinearGaussianStateSpace {
                 (predicted_mean.clone(), predicted_covariance.clone())
             } else {
                 let ph = mat_vec(&predicted_covariance, observation, d);
-                let innovation_variance = dot(observation, &ph) + self.observation_variance;
+                let innovation_variance = dot(observation, &ph) + noise_variance;
                 if !innovation_variance.is_finite() || innovation_variance <= 0.0 {
                     return Err(StateSpaceError::NumericalFailure(format!(
                         "innovation variance at time {time} is not finite and positive"
@@ -513,7 +596,7 @@ impl LinearGaussianStateSpace {
                 let mut covariance = mat_mul_transpose_right(&left, &update, d);
                 for i in 0..d {
                     for j in 0..d {
-                        covariance[i * d + j] += gain[i] * self.observation_variance * gain[j];
+                        covariance[i * d + j] += gain[i] * noise_variance * gain[j];
                     }
                 }
                 symmetrize(&mut covariance, d);
@@ -1080,6 +1163,25 @@ mod tests {
         assert_eq!(result.smoothed_means[1], result.filter.filtered_means[1]);
     }
 
+    #[test]
+    fn varying_observation_noise_matches_precision_weighted_static_posterior() {
+        let model = LinearGaussianStateSpace::local_level(0.0, 1.0, 0.0, 2.0)
+            .unwrap()
+            .with_observation_variances(vec![0.5, 2.0])
+            .unwrap();
+        let filtered = model.filter(&[1.0, 3.0]).unwrap();
+        // precision = 1/2 + 1/.5 + 1/2 = 3; precision-weighted data = 3.5.
+        assert_close(filtered.filtered_means[1][0], 3.5 / 3.0);
+        assert_close(filtered.filtered_covariances[1][0], 1.0 / 3.0);
+        let augmented = model
+            .with_static_regression(&[vec![0.0], vec![0.0]], &[0.0], &[1.0])
+            .unwrap();
+        assert_close(
+            augmented.filter(&[1.0, 3.0]).unwrap().filtered_means[1][0],
+            3.5 / 3.0,
+        );
+        assert!(model.filter(&[1.0]).is_err());
+    }
     #[test]
     fn scalar_forecast_propagates_state_and_observation_variance() {
         let model = LinearGaussianStateSpace::local_level(1.0, 2.0, 0.0, 3.0).unwrap();

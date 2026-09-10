@@ -30,7 +30,7 @@ def test_metrics_reward_exact_covered_forecast():
     metrics = forecast_metrics(observed, observed, observed - 1, observed + 1)
     assert metrics["rmse"] == 0
     assert metrics["coverage_95"] == 1
-    assert metrics["wis_95"] == 2
+    assert metrics["interval_score_95"] == 2
 
 
 def test_gp_returns_ordered_predictive_interval():

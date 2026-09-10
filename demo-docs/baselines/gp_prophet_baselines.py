@@ -107,7 +107,7 @@ def forecast_metrics(
         "smape": float(200.0 * np.mean(np.abs(error) / denominator)),
         "coverage_95": float(np.mean((observed >= lower) & (observed <= upper))),
         "mean_width_95": float(np.mean(upper - lower)),
-        "wis_95": float(np.mean(interval_score)),
+        "interval_score_95": float(np.mean(interval_score)),
     }
 
 

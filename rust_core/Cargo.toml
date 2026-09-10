@@ -1,6 +1,6 @@
 [package]
 name = "rustmc_core"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2021"
 description = "Structure-aware Bayesian inference engine"
 license = "MIT"
@@ -16,7 +16,6 @@ rayon = "1"
 rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
-ndarray = "0.16"
 faer = { version = "0.19", features = ["rayon"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }

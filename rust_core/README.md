@@ -1,5 +1,12 @@
 # rustmc_core
 
+Version 0.12 adds `structural` for composable Gaussian/Student-t state-space models,
+`dynamic_glm` for joint count/hurdle/pooled dynamic inference, and
+`target::{LogDensity, sample_target}` for native custom unconstrained densities and
+gradients. Generic batch options share the stable-ID forecast executor. Graph observation
+simulation and expression dimensions are shared across fitting and prediction.
+The Rust API remains pre-1.0; see the repository model guides for kernel assumptions.
+
 `rustmc_core` is the Rust engine behind the [`rustmc`](https://pypi.org/project/rustmc/)
 Python package. It combines graph-based Bayesian sampling with specialized algorithms
 for model structures that admit more direct inference, including conjugate and linear

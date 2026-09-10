@@ -3,6 +3,7 @@ use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
+use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 
@@ -92,10 +93,21 @@ pub fn run_chain_bound(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> ChainResult {
+    let mut evaluator = Evaluator::with_binding(graph, binding);
+    run_chain_with_evaluator(graph, config, rng, init, progress, &mut evaluator)
+}
+
+pub(crate) fn run_chain_with_evaluator(
+    graph: &Graph,
+    config: &HmcConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+    evaluator: &mut impl GradientEvaluator,
+) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
-    let mut evaluator = Evaluator::with_binding(graph, binding);
     let mut q = init.unwrap_or_else(|| vec![0.0; dim]);
     let mut q_prop = vec![0.0; dim];
     let mut p = vec![0.0; dim];
@@ -121,7 +133,7 @@ pub fn run_chain_bound(
     let mut step_size = if config.step_size > 0.0 {
         config.step_size
     } else {
-        find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng)
+        find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng)
     };
 
     // Dual-averaging state
@@ -134,13 +146,19 @@ pub fn run_chain_bound(
     let mut h_bar = 0.0f64;
     let mut adapt_count = 0u64;
 
-    for iter in 0..total_iters {
+    'iterations: for iter in 0..total_iters {
+        if evaluator.has_failed() {
+            break;
+        }
         let is_warmup = iter < config.num_warmup;
         let step_size_used = step_size;
 
         evaluator.compute(graph, &q);
-        let logp_current = evaluator.total_logp;
-        grad.copy_from_slice(&evaluator.grad);
+        if evaluator.has_failed() {
+            break;
+        }
+        let logp_current = evaluator.log_density();
+        grad.copy_from_slice(evaluator.gradient());
 
         mass.sample_momentum_into(rng, &mut p, &mut scratch);
 
@@ -158,7 +176,10 @@ pub fn run_chain_bound(
             }
 
             evaluator.compute(graph, &q_prop);
-            grad.copy_from_slice(&evaluator.grad);
+            if evaluator.has_failed() {
+                break 'iterations;
+            }
+            grad.copy_from_slice(evaluator.gradient());
 
             if step < config.num_leapfrog_steps - 1 {
                 for i in 0..dim {
@@ -175,7 +196,7 @@ pub fn run_chain_bound(
             *v = -*v;
         }
 
-        let logp_prop = evaluator.total_logp;
+        let logp_prop = evaluator.log_density();
         let ke_current = mass.kinetic_energy(&p, &mut scratch);
         let ke_prop = mass.kinetic_energy(&p_prop, &mut scratch);
         let h_current = -logp_current + ke_current;
@@ -231,7 +252,7 @@ pub fn run_chain_bound(
                 adapt_count = 0;
                 h_bar = 0.0;
                 let new_eps =
-                    find_initial_step_size(graph, &mut evaluator, &q, &mass, &mut scratch, rng);
+                    find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng);
                 step_size = new_eps;
                 log_eps_bar = new_eps.ln();
             }
@@ -276,15 +297,15 @@ pub fn run_chain_bound(
 /// probability. Double or halve ε until the acceptance is near 0.5.
 fn find_initial_step_size(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     q: &[f64],
     mass: &MassMatrix,
     scratch: &mut [f64],
     rng: &mut ChaCha8Rng,
 ) -> f64 {
     evaluator.compute(graph, q);
-    let logp0 = evaluator.total_logp;
-    let grad0: Vec<f64> = evaluator.grad.clone();
+    let logp0 = evaluator.log_density();
+    let grad0: Vec<f64> = evaluator.gradient().to_vec();
     let dim = q.len();
     let mut p0 = vec![0.0; dim];
     let mut p1 = vec![0.0; dim];
@@ -352,7 +373,7 @@ fn find_initial_step_size(
 #[allow(clippy::too_many_arguments)]
 fn one_step_log_ratio(
     graph: &Graph,
-    evaluator: &mut Evaluator,
+    evaluator: &mut impl GradientEvaluator,
     q: &[f64],
     p0: &[f64],
     grad0: &[f64],
@@ -374,10 +395,10 @@ fn one_step_log_ratio(
         q1[i] = q[i] + eps * velocity[i];
     }
     evaluator.compute(graph, q1);
-    for (momentum, &gradient) in p1.iter_mut().zip(evaluator.grad.iter()).take(dim) {
+    for (momentum, &gradient) in p1.iter_mut().zip(evaluator.gradient().iter()).take(dim) {
         *momentum += 0.5 * eps * gradient;
     }
-    let logp1 = evaluator.total_logp;
+    let logp1 = evaluator.log_density();
     let ke1 = mass.kinetic_energy(p1, scratch);
     (logp1 - ke1) - (logp0 - ke0)
 }

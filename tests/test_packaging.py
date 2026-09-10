@@ -118,14 +118,13 @@ def test_python_bridge_cannot_collide_on_crates_io():
     )
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "known packaging gap: no py.typed marker or .pyi stubs are shipped, "
-    "so type checkers see an untyped package"
-))
 def test_wheel_ships_type_information(wheel_path):
     with zipfile.ZipFile(wheel_path) as z:
         names = z.namelist()
-    assert any(n.endswith("py.typed") for n in names) or any(n.endswith(".pyi") for n in names)
+    assert "rustmc/py.typed" in names
+    assert "rustmc/_rustmc.pyi" in names
+    assert "rustmc/evaluation.py" in names
+    assert "rustmc/forecasting.py" in names
 
 
 def test_no_stray_rustmc_shadow_at_repo_root():

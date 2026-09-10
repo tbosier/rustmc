@@ -10,6 +10,7 @@ assert the module was loaded from site-packages rather than the repo --
 CI's wheel job sets this; local dev runs do not need to.
 """
 import os
+from pathlib import Path
 from importlib.metadata import version
 
 import numpy as np
@@ -103,3 +104,11 @@ def test_numpy_interop_and_end_to_end_sampling(rustmc_module, linreg_data):
 
     summary = fit.summary()
     assert "alpha" in summary and "beta" in summary and "sigma" in summary
+def test_editable_source_provenance_when_required(rustmc_module):
+    root = os.environ.get("RUSTMC_REQUIRE_SOURCE_ROOT")
+    if root is None:
+        pytest.skip("editable source provenance not requested")
+    expected = Path(root).resolve() / "python" / "rustmc"
+    assert Path(rustmc_module.__file__).resolve().parent == expected
+    from rustmc import _rustmc
+    assert Path(_rustmc.__file__).resolve().parent == expected

@@ -1,8 +1,23 @@
+mod generic_results;
+use generic_results::StoredBatchFit;
+mod expression_compile;
+mod fit_artifact;
+use expression_compile::{build_mu_expr, collect_matvec_params};
+mod model_artifact;
+mod prediction_binding;
+use prediction_binding::prediction_graph;
+mod expressions;
+use expressions::{
+    collect_expr_param_names, extract_expr, first_param_name, Expr, MuExpr, ParamRef,
+    VectorParamRef,
+};
+mod dynamic_glm;
 mod forecast_batch;
 mod forecast_diagnostics;
 mod hurdle;
 mod regression;
 mod runoff;
+mod structural;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{
     IntoPyArray, PyArray1, PyArray2, PyArray3, PyArray4, PyReadonlyArray1, PyReadonlyArray2,
@@ -120,12 +135,26 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
 }
 
 #[pyclass]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct ModelSpec {
+    dimensions: HashMap<String, String>,
+    potentials: Vec<(String, MuExpr)>,
+    deterministics: Vec<(String, MuExpr)>,
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
+    #[serde(skip)]
     bound_data_1d: HashMap<String, Vec<f64>>,
+    #[serde(skip)]
     bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
+}
+
+impl ModelSpec {
+    fn structure_definition(&self) -> Self {
+        let mut definition = self.clone();
+        definition.bound_data_1d.clear();
+        definition.bound_data_2d.clear();
+        definition
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -160,6 +189,7 @@ struct PyBoundModel {
 #[pyclass(name = "CompiledModel")]
 #[derive(Clone)]
 struct PyCompiledModel {
+    definition: ModelSpec,
     structure: Arc<Graph>,
     likelihood_names: Vec<String>,
     display_params: Vec<DisplayParamSpec>,
@@ -300,8 +330,10 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
         vector_sizes: &HashMap<&str, usize>,
     ) -> PyResult<()> {
         match expr {
-            MuExpr::ParamTimesData { data_key, .. } => {
-                one_d.entry(data_key.clone()).or_insert_with(|| vec![1.0]);
+            MuExpr::ParamTimesData { data_key, .. }
+            | MuExpr::Data(data_key)
+            | MuExpr::Gather { data_key, .. } => {
+                one_d.entry(data_key.clone()).or_insert_with(|| vec![0.0]);
             }
             MuExpr::MatVec {
                 param_name,
@@ -317,10 +349,11 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
                     two_d.insert(data_key.clone(), (vec![1.0; n_cols], 1, n_cols));
                 }
             }
-            MuExpr::Add(a, b) => {
+            MuExpr::Add(a, b) | MuExpr::Binary(_, a, b) => {
                 visit(a, one_d, two_d, vector_sizes)?;
                 visit(b, one_d, two_d, vector_sizes)?;
             }
+            MuExpr::Unary(_, a) | MuExpr::Sum(a) => visit(a, one_d, two_d, vector_sizes)?,
             MuExpr::Const(_) | MuExpr::Param(_) => {}
         }
         Ok(())
@@ -331,19 +364,22 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
             .entry(likelihood.observed_key.clone())
             .or_insert_with(|| vec![1.0]);
     }
+    for (_, expr) in spec.potentials.iter().chain(&spec.deterministics) {
+        visit(expr, &mut one_d, &mut two_d, &vector_sizes)?;
+    }
     Ok((one_d, two_d))
 }
 
 /// A hyperparameter value: either a scalar constant or a reference to another
 /// already-declared parameter (for hierarchical / multilevel models).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum HyperParam {
     Const(f64),
     /// Name of a parameter whose value node (post-transform) is used as the hyperparameter.
     Param(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum PriorSpec {
     Normal {
         name: String,
@@ -400,13 +436,13 @@ enum PriorSpec {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum SigmaSpec {
     Const(f64),
     Param(String),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 enum LikelihoodFamily {
     Normal,
     BernoulliLogit,
@@ -416,7 +452,7 @@ enum LikelihoodFamily {
     NegativeBinomialLog,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct LikelihoodSpec {
     family: LikelihoodFamily,
     name: String,
@@ -425,263 +461,18 @@ struct LikelihoodSpec {
     observed_key: String,
 }
 
-/// Recursive expression tree built on the Python side, compiled to graph
-/// nodes at sampling time.
-#[derive(Debug, Clone)]
-enum MuExpr {
-    Const(f64),
-    ParamTimesData {
-        param_name: String,
-        data_key: String,
-    },
-    /// Element-wise sum of two vector expressions.
-    Add(Box<MuExpr>, Box<MuExpr>),
-    /// Bare parameter broadcast-added to a vector expression.
-    Param(String),
-    /// faer-backed matrix-vector multiply: matrix_data_key @ vector_param.
-    MatVec {
-        param_name: String,
-        data_key: String,
-    },
-}
-
-impl MuExpr {
-    fn is_scalar(&self) -> bool {
-        match self {
-            MuExpr::Const(_) => true,
-            MuExpr::Param(_) => true,
-            MuExpr::ParamTimesData { .. } => false,
-            MuExpr::MatVec { .. } => false,
-            MuExpr::Add(a, b) => a.is_scalar() && b.is_scalar(),
-        }
-    }
-}
-
-#[pyclass]
-#[derive(Debug, Clone)]
-struct VectorParamRef {
-    name: String,
-    _n: usize,
-    /// Id of the `ModelBuilder` that created this reference.
-    owner: u64,
-}
-
-#[pymethods]
-impl VectorParamRef {
-    fn __matmul__(&self, data_key: &str) -> Expr {
-        Expr {
-            inner: MuExpr::MatVec {
-                param_name: self.name.clone(),
-                data_key: data_key.to_string(),
-            },
-            owner: Some(self.owner),
-        }
-    }
-}
-
-/// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
-fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
-    match (a, b) {
-        (Some(x), Some(y)) if x != y => Err(ParameterError::new_err(format!(
-            "expression mixes parameters from two different models \
-             (offending parameter: '{}'). Build the whole linear predictor \
-             from a single ModelBuilder.",
-            a_name
-        ))),
-        (Some(x), _) => Ok(Some(x)),
-        (None, other) => Ok(other),
-    }
-}
-
-/// First parameter name appearing in an expression, for error messages.
-fn first_param_name(expr: &MuExpr) -> String {
-    match expr {
-        MuExpr::Const(_) => "<constant>".to_string(),
-        MuExpr::Param(name) => name.clone(),
-        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
-            param_name.clone()
-        }
-        MuExpr::Add(a, b) => {
-            let left = first_param_name(a);
-            if left == "<constant>" {
-                first_param_name(b)
-            } else {
-                left
-            }
-        }
-    }
-}
-
-/// Collect every parameter name referenced by an expression tree.
-fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
-    match expr {
-        MuExpr::Const(_) => {}
-        MuExpr::Param(name) => out.push(name.clone()),
-        MuExpr::ParamTimesData { param_name, .. } | MuExpr::MatVec { param_name, .. } => {
-            out.push(param_name.clone())
-        }
-        MuExpr::Add(a, b) => {
-            collect_expr_param_names(a, out);
-            collect_expr_param_names(b, out);
-        }
-    }
-}
-
 #[pyclass]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
+    dimensions: HashMap<String, String>,
+    potentials: Vec<(String, MuExpr)>,
+    deterministics: Vec<(String, MuExpr)>,
     id: u64,
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
     param_names: Vec<String>,
     bound_data_1d: HashMap<String, Vec<f64>>,
     bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
-}
-
-#[pyclass]
-#[derive(Debug, Clone)]
-struct ParamRef {
-    name: String,
-    /// Id of the `ModelBuilder` that created this reference.
-    owner: u64,
-}
-
-#[pyclass]
-#[derive(Debug, Clone)]
-struct Expr {
-    inner: MuExpr,
-    /// Id of the `ModelBuilder` whose parameters this expression uses, if any.
-    /// `None` for constant-only expressions.
-    owner: Option<u64>,
-}
-
-#[pymethods]
-impl ParamRef {
-    fn __mul__(&self, data_key: &str) -> Expr {
-        Expr {
-            inner: MuExpr::ParamTimesData {
-                param_name: self.name.clone(),
-                data_key: data_key.to_string(),
-            },
-            owner: Some(self.owner),
-        }
-    }
-
-    fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
-        if let Ok(other_expr) = other.downcast::<Expr>() {
-            let (rhs, rhs_owner) = {
-                let b = other_expr.borrow();
-                (b.inner.clone(), b.owner)
-            };
-            let owner = merge_owners(Some(self.owner), rhs_owner, &self.name)?;
-            Ok(Expr {
-                inner: MuExpr::Add(Box::new(MuExpr::Param(self.name.clone())), Box::new(rhs)),
-                owner,
-            })
-        } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let (rhs_name, rhs_owner) = {
-                let b = other_param.borrow();
-                (b.name.clone(), b.owner)
-            };
-            let owner = merge_owners(Some(self.owner), Some(rhs_owner), &self.name)?;
-            Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(MuExpr::Param(self.name.clone())),
-                    Box::new(MuExpr::Param(rhs_name)),
-                ),
-                owner,
-            })
-        } else if let Ok(value) = other.extract::<f64>() {
-            Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(MuExpr::Param(self.name.clone())),
-                    Box::new(MuExpr::Const(value)),
-                ),
-                owner: Some(self.owner),
-            })
-        } else {
-            Err(PyValueError::new_err(
-                "unsupported operand type for + with ParamRef",
-            ))
-        }
-    }
-
-    fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
-        self.__add__(other)
-    }
-
-    fn __matmul__(&self, data_key: &str) -> Expr {
-        Expr {
-            inner: MuExpr::MatVec {
-                param_name: self.name.clone(),
-                data_key: data_key.to_string(),
-            },
-            owner: Some(self.owner),
-        }
-    }
-}
-
-#[pymethods]
-impl Expr {
-    fn __add__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
-        if let Ok(other_expr) = other.downcast::<Expr>() {
-            let (rhs, rhs_owner) = {
-                let b = other_expr.borrow();
-                (b.inner.clone(), b.owner)
-            };
-            let owner = merge_owners(self.owner, rhs_owner, &first_param_name(&self.inner))?;
-            Ok(Expr {
-                inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(rhs)),
-                owner,
-            })
-        } else if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let (rhs_name, rhs_owner) = {
-                let b = other_param.borrow();
-                (b.name.clone(), b.owner)
-            };
-            let owner = merge_owners(self.owner, Some(rhs_owner), &rhs_name)?;
-            Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(self.inner.clone()),
-                    Box::new(MuExpr::Param(rhs_name)),
-                ),
-                owner,
-            })
-        } else if let Ok(value) = other.extract::<f64>() {
-            Ok(Expr {
-                inner: MuExpr::Add(Box::new(self.inner.clone()), Box::new(MuExpr::Const(value))),
-                owner: self.owner,
-            })
-        } else {
-            Err(PyValueError::new_err(
-                "unsupported operand type for + with Expr",
-            ))
-        }
-    }
-
-    fn __radd__<'py>(&self, other: &Bound<'py, PyAny>) -> PyResult<Expr> {
-        if let Ok(other_param) = other.downcast::<ParamRef>() {
-            let (lhs_name, lhs_owner) = {
-                let b = other_param.borrow();
-                (b.name.clone(), b.owner)
-            };
-            let owner = merge_owners(Some(lhs_owner), self.owner, &lhs_name)?;
-            Ok(Expr {
-                inner: MuExpr::Add(
-                    Box::new(MuExpr::Param(lhs_name)),
-                    Box::new(self.inner.clone()),
-                ),
-                owner,
-            })
-        } else if let Ok(value) = other.extract::<f64>() {
-            Ok(Expr {
-                inner: MuExpr::Add(Box::new(MuExpr::Const(value)), Box::new(self.inner.clone())),
-                owner: self.owner,
-            })
-        } else {
-            self.__add__(other)
-        }
-    }
 }
 
 /// Name a `PriorSpec` declares.
@@ -771,6 +562,18 @@ fn model_reference_set(
 /// built. Fails loudly on unknown names, out-of-order hyperparameters and
 /// duplicate declarations.
 fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec]) -> PyResult<()> {
+    let mut names = std::collections::HashSet::new();
+    for lik in likelihoods {
+        if lik.name.is_empty()
+            || !names.insert(&lik.name)
+            || priors.iter().any(|p| prior_name(p) == lik.name)
+        {
+            return Err(PyValueError::new_err(format!(
+                "observation name '{}' must be unique and distinct from parameter names",
+                lik.name
+            )));
+        }
+    }
     let (declared, refs) = model_reference_set(priors, likelihoods);
     validate_param_references(&declared, &refs).map_err(param_error)
 }
@@ -871,6 +674,9 @@ impl ModelBuilder {
         } else if let Ok(p) = value.downcast::<ParamRef>() {
             let b = p.borrow();
             (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else if let Ok(value) = value.extract::<f64>() {
+            validate_finite(arg_name, value)?;
+            (MuExpr::Const(value), None)
         } else {
             return Err(PyValueError::new_err(format!(
                 "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
@@ -921,13 +727,19 @@ impl ModelBuilder {
 #[pymethods]
 impl ModelBuilder {
     #[new]
-    #[pyo3(signature = (data=None))]
-    fn new(data: Option<&Bound<'_, PyDict>>) -> PyResult<Self> {
+    #[pyo3(signature = (data=None, dims=None))]
+    fn new(
+        data: Option<&Bound<'_, PyDict>>,
+        dims: Option<HashMap<String, String>>,
+    ) -> PyResult<Self> {
         let (bound_data_1d, bound_data_2d) = match data {
             Some(d) => parse_data_dict(d)?,
             None => (HashMap::new(), HashMap::new()),
         };
         Ok(Self {
+            dimensions: dims.unwrap_or_default(),
+            potentials: Vec::new(),
+            deterministics: Vec::new(),
             id: next_model_id(),
             priors: Vec::new(),
             likelihoods: Vec::new(),
@@ -935,6 +747,47 @@ impl ModelBuilder {
             bound_data_1d,
             bound_data_2d,
         })
+    }
+
+    /// Declare a numeric data expression and its observation dimension.
+    #[pyo3(signature = (name, dim=None))]
+    fn data(&mut self, name: &str, dim: Option<&str>) -> Expr {
+        if let Some(dim) = dim {
+            self.dimensions.insert(name.into(), dim.into());
+        }
+        Expr {
+            inner: MuExpr::Data(name.into()),
+            owner: Some(self.id),
+        }
+    }
+    /// Add a scalar custom log-density term; reduce vector expressions with sum().
+    fn potential(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<()> {
+        let expr = extract_expr(expression)?;
+        self.check_owner(expr.owner, &first_param_name(&expr.inner), "potential")?;
+        if !expr.inner.is_scalar() {
+            return Err(PyValueError::new_err(
+                "potential requires a scalar expression; use .sum()",
+            ));
+        }
+        if self.potentials.iter().any(|(n, _)| n == name) {
+            return Err(PyValueError::new_err("duplicate potential name"));
+        }
+        self.potentials.push((name.into(), expr.inner));
+        Ok(())
+    }
+    /// Record a named scalar or vector expression at every posterior draw.
+    fn deterministic(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<Expr> {
+        let expr = extract_expr(expression)?;
+        self.check_owner(expr.owner, &first_param_name(&expr.inner), "deterministic")?;
+        if name.is_empty()
+            || self.deterministics.iter().any(|(n, _)| n == name)
+            || self.priors.iter().any(|p| prior_name(p) == name)
+            || self.likelihoods.iter().any(|l| l.name == name)
+        {
+            return Err(PyValueError::new_err("deterministic name must be unique"));
+        }
+        self.deterministics.push((name.into(), expr.inner.clone()));
+        Ok(expr)
     }
 
     /// Support scoped model construction without changing builder semantics.
@@ -1285,6 +1138,9 @@ impl ModelBuilder {
     fn build(&self) -> PyResult<ModelSpec> {
         validate_model_references(&self.priors, &self.likelihoods)?;
         Ok(ModelSpec {
+            dimensions: self.dimensions.clone(),
+            potentials: self.potentials.clone(),
+            deterministics: self.deterministics.clone(),
             priors: self.priors.clone(),
             likelihoods: self.likelihoods.clone(),
             bound_data_1d: self.bound_data_1d.clone(),
@@ -1300,7 +1156,11 @@ impl ModelBuilder {
         let (template_1d, template_2d) = template_data_for_spec(&spec)?;
         validate_bound_vector_lengths(&template_1d, &template_2d)?;
         let compiled = compile_python_model(&spec, &template_1d, &template_2d)?;
+        let mut definition = spec;
+        definition.bound_data_1d.clear();
+        definition.bound_data_2d.clear();
         Ok(PyCompiledModel {
+            definition,
             structure: Arc::new(compiled.graph.structure_only()),
             likelihood_names: compiled.likelihood_names,
             display_params: compiled.display_params,
@@ -1316,6 +1176,15 @@ fn parse_data_dict(data: &Bound<'_, PyDict>) -> PyResult<(Data1d, Data2d)> {
     let mut data_2d = HashMap::new();
     for (key, value) in data.iter() {
         let key_str: String = key.extract()?;
+        let value = if value.downcast::<PyArray1<f64>>().is_ok()
+            || value.downcast::<PyArray2<f64>>().is_ok()
+        {
+            value
+        } else {
+            data.py()
+                .import("numpy")?
+                .call_method1("ascontiguousarray", (&value, "float64"))?
+        };
         if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
             let shape = arr.shape().to_vec();
             let slice = unsafe { arr.as_slice()? };
@@ -1392,47 +1261,14 @@ fn validate_bound_vector_lengths(
     data_1d: &HashMap<String, Vec<f64>>,
     data_2d: &HashMap<String, (Vec<f64>, usize, usize)>,
 ) -> PyResult<usize> {
-    let mut expected_len: Option<usize> = None;
-    let mut expected_label: Option<String> = None;
-
-    let mut record = |actual_len: usize, label: String| -> PyResult<()> {
-        match expected_len {
-            None => {
-                expected_len = Some(actual_len);
-                expected_label = Some(label);
-                Ok(())
-            }
-            Some(expected) if expected == actual_len => Ok(()),
-            Some(expected) => Err(PyValueError::new_err(format!(
-                "shape mismatch: '{}' has length {}, but '{}' has length {}. \
-                 rustmc currently requires one shared vector length across all \
-                 vectorized data, observations, and matrices.",
-                label,
-                actual_len,
-                expected_label.as_deref().unwrap_or("previous input"),
-                expected
-            ))),
-        }
-    };
-
-    for (key, values) in data_1d {
-        record(values.len(), format!("data key '{}'", key))?;
-    }
-
-    for (key, (values, n_rows, n_cols)) in data_2d {
-        if values.len() != n_rows * n_cols {
+    for (key, (values, rows, cols)) in data_2d {
+        if rows.checked_mul(*cols) != Some(values.len()) {
             return Err(PyValueError::new_err(format!(
-                "matrix key '{}' has shape {}x{} but contains {} values",
-                key,
-                n_rows,
-                n_cols,
-                values.len()
+                "invalid matrix shape for {key}"
             )));
         }
-        record(*n_rows, format!("matrix key '{}'", key))?;
     }
-
-    Ok(expected_len.unwrap_or(0))
+    Ok(data_1d.values().next().map_or(0, Vec::len))
 }
 
 /// Validate that every data key referenced in `expr` and `observed_key` exists in the
@@ -1461,7 +1297,10 @@ fn validate_expr_keys(
 ) -> PyResult<()> {
     match expr {
         MuExpr::Const(_) => Ok(()),
-        MuExpr::ParamTimesData { data_key, .. } => {
+        MuExpr::Unary(_, a) | MuExpr::Sum(a) => validate_expr_keys(a, data_1d, data_2d),
+        MuExpr::ParamTimesData { data_key, .. }
+        | MuExpr::Data(data_key)
+        | MuExpr::Gather { data_key, .. } => {
             if !data_1d.contains_key(data_key) {
                 let available: Vec<&str> = data_1d.keys().map(String::as_str).collect();
                 return Err(PyValueError::new_err(format!(
@@ -1484,7 +1323,7 @@ fn validate_expr_keys(
             Ok(())
         }
         MuExpr::Param(_) => Ok(()),
-        MuExpr::Add(a, b) => {
+        MuExpr::Add(a, b) | MuExpr::Binary(_, a, b) => {
             validate_expr_keys(a, data_1d, data_2d)?;
             validate_expr_keys(b, data_1d, data_2d)
         }
@@ -1560,15 +1399,6 @@ fn validate_count_observations(obs: &[f64], name: &str) -> PyResult<()> {
     Ok(())
 }
 
-fn sigmoid_stable(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let ex = x.exp();
-        ex / (1.0 + ex)
-    }
-}
-
 fn softplus(x: f64) -> f64 {
     if x > 0.0 {
         x + (1.0 + (-x).exp()).ln()
@@ -1578,18 +1408,17 @@ fn softplus(x: f64) -> f64 {
 }
 
 fn logit_stable(p: f64) -> f64 {
-    let p = p.clamp(1e-12, 1.0 - 1e-12);
-    (p / (1.0 - p)).ln()
+    p.ln() - (-p).ln_1p()
 }
 
 fn invert_param_transform(transform: &ParamTransform, value: f64) -> f64 {
     match transform {
         ParamTransform::Identity => value,
-        ParamTransform::Exp => value.max(1e-12).ln(),
+        ParamTransform::Exp => value.ln(),
         ParamTransform::Sigmoid => logit_stable(value),
         ParamTransform::BoundedSigmoid { lower, upper } => {
-            let span = (upper - lower).max(1e-12);
-            logit_stable(((value - lower) / span).clamp(1e-12, 1.0 - 1e-12))
+            let span = upper - lower;
+            logit_stable((value - lower) / span)
         }
     }
 }
@@ -1799,11 +1628,6 @@ fn build_likelihood_into_graph(
         vector_param_map,
         value_node_map,
     )?;
-    let linpred_node = if lik.mu_expr.is_scalar() {
-        graph.scalar_broadcast(linpred_node)
-    } else {
-        linpred_node
-    };
 
     let obs_vec = data_map
         .get(&lik.observed_key)
@@ -1812,6 +1636,12 @@ fn build_likelihood_into_graph(
         })?
         .clone();
     let obs_idx = graph.add_named_obs_data(&lik.observed_key, &lik.name, obs_vec.clone());
+
+    let linpred_node = if lik.mu_expr.is_scalar() {
+        graph.broadcast_observation(linpred_node, obs_idx)
+    } else {
+        linpred_node
+    };
 
     match lik.family {
         LikelihoodFamily::Normal => {
@@ -2104,241 +1934,6 @@ fn resolve_sigma(
     }
 }
 
-/// Try to decompose a MuExpr tree into a flat linear combination:
-/// ([(param_name, data_key), ...], optional_intercept_param_name)
-fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<String>)> {
-    let mut terms = Vec::new();
-    let mut intercept: Option<String> = None;
-
-    fn walk(e: &MuExpr, terms: &mut Vec<(String, String)>, intercept: &mut Option<String>) -> bool {
-        match e {
-            MuExpr::Const(value) => {
-                if intercept.is_none() {
-                    *intercept = Some(format!("__const__{}", value));
-                    true
-                } else {
-                    false
-                }
-            }
-            MuExpr::ParamTimesData {
-                param_name,
-                data_key,
-            } => {
-                terms.push((param_name.clone(), data_key.clone()));
-                true
-            }
-            MuExpr::Add(a, b) => walk(a, terms, intercept) && walk(b, terms, intercept),
-            MuExpr::Param(name) => {
-                if intercept.is_none() {
-                    *intercept = Some(name.clone());
-                    true
-                } else {
-                    false
-                }
-            }
-            // MatVec uses faer GEMV — never fuse into scalar linear combination
-            MuExpr::MatVec { .. } => false,
-        }
-    }
-
-    if walk(expr, &mut terms, &mut intercept) && !terms.is_empty() {
-        Some((terms, intercept))
-    } else {
-        None
-    }
-}
-
-/// Walk all likelihood MuExpr trees and collect param names used in MatVec ops.
-/// Returns a set of param names that should be auto-promoted to vector params.
-fn collect_matvec_params(
-    likelihoods: &[LikelihoodSpec],
-    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
-) -> Result<HashMap<String, usize>, PyErr> {
-    let mut result = HashMap::new();
-
-    fn walk(
-        expr: &MuExpr,
-        matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
-        out: &mut HashMap<String, usize>,
-    ) -> Result<(), PyErr> {
-        match expr {
-            MuExpr::MatVec {
-                param_name,
-                data_key,
-            } => {
-                let (_data, _n_rows, n_cols) =
-                    matrix_map.get(data_key.as_str()).ok_or_else(|| {
-                        PyValueError::new_err(format!(
-                            "Missing matrix key '{}' in data dict",
-                            data_key
-                        ))
-                    })?;
-                out.insert(param_name.clone(), *n_cols);
-                Ok(())
-            }
-            MuExpr::Add(a, b) => {
-                walk(a, matrix_map, out)?;
-                walk(b, matrix_map, out)?;
-                Ok(())
-            }
-            MuExpr::Const(_) | MuExpr::ParamTimesData { .. } | MuExpr::Param(_) => Ok(()),
-        }
-    }
-
-    for lik in likelihoods {
-        walk(&lik.mu_expr, matrix_map, &mut result)?;
-    }
-
-    Ok(result)
-}
-
-/// Look up the post-transform value node for a scalar parameter.
-///
-/// Fails loudly — never substitutes a default — when the name is not a scalar
-/// parameter of this model.
-fn lookup_param_value_node(
-    name: &str,
-    value_node_map: &HashMap<String, NodeId>,
-    context: &str,
-) -> Result<NodeId, PyErr> {
-    value_node_map.get(name).copied().ok_or_else(|| {
-        let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
-        available.sort_unstable();
-        ParameterError::new_err(format!(
-            "parameter '{}' used in {} is not a scalar parameter of this model. \
-             Scalar parameters: [{}]",
-            name,
-            context,
-            available.join(", ")
-        ))
-    })
-}
-
-/// Compile a MuExpr tree into graph nodes.
-///
-/// Parameters are resolved through `value_node_map`, which holds the
-/// *post-transform* value node for every scalar parameter. Resolving via
-/// `Graph::node_by_name` instead would return the unconstrained raw node for
-/// any transformed prior (HalfNormal, Exponential, LogNormal, Uniform, Gamma,
-/// Beta), silently putting a log-scale value into the linear predictor.
-///
-/// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
-/// this emits a single FusedLinearMu op instead of individual
-/// ScalarMulData / VectorAdd / ScalarBroadcastAdd nodes.
-fn build_mu_expr(
-    graph: &mut Graph,
-    expr: &MuExpr,
-    data_map: &HashMap<String, Vec<f64>>,
-    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
-    vector_param_map: &HashMap<String, (usize, usize)>,
-    value_node_map: &HashMap<String, NodeId>,
-) -> Result<NodeId, PyErr> {
-    // Fast path: fuse linear combinations into a single op
-    if let Some((terms, intercept_name)) = try_extract_linear(expr) {
-        let mut param_nodes = Vec::with_capacity(terms.len());
-        let mut data_indices = Vec::with_capacity(terms.len());
-
-        for (param_name, data_key) in &terms {
-            let pn = lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
-            param_nodes.push(pn);
-
-            let data_vec = data_map
-                .get(data_key)
-                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
-                .clone();
-            data_indices.push(graph.store_named_data_vec(data_key, data_vec));
-        }
-
-        let intercept_node = match intercept_name {
-            Some(ref name) if name.starts_with("__const__") => {
-                let value = name
-                    .trim_start_matches("__const__")
-                    .parse::<f64>()
-                    .map_err(|_| {
-                        PyValueError::new_err(format!(
-                            "Invalid constant intercept encoding: {}",
-                            name
-                        ))
-                    })?;
-                Some(graph.add_constant(value))
-            }
-            Some(ref name) => Some(lookup_param_value_node(
-                name,
-                value_node_map,
-                "the intercept of a linear predictor",
-            )?),
-            None => None,
-        };
-
-        return Ok(graph.fused_linear_mu(param_nodes, data_indices, intercept_node));
-    }
-
-    // Fallback: individual ops
-    match expr {
-        MuExpr::Const(value) => Ok(graph.add_constant(*value)),
-        MuExpr::ParamTimesData {
-            param_name,
-            data_key,
-        } => {
-            let param_node =
-                lookup_param_value_node(param_name, value_node_map, "a linear predictor")?;
-            let data_vec = data_map
-                .get(data_key)
-                .ok_or_else(|| PyValueError::new_err(format!("Missing data key: {}", data_key)))?
-                .clone();
-            let data_node = graph.add_data(data_key, data_vec);
-            Ok(graph.scalar_mul_data(param_node, data_node))
-        }
-        MuExpr::Param(name) => lookup_param_value_node(name, value_node_map, "a linear predictor"),
-        MuExpr::MatVec {
-            param_name,
-            data_key,
-        } => {
-            let &(param_start, n_params) =
-                vector_param_map.get(param_name.as_str()).ok_or_else(|| {
-                    PyValueError::new_err(format!(
-                        "Unknown vector param '{}' — did you call vector_normal_prior?",
-                        param_name
-                    ))
-                })?;
-            let (data, n_rows, n_cols) = matrix_map.get(data_key.as_str()).ok_or_else(|| {
-                PyValueError::new_err(format!("Missing matrix key '{}' in data dict", data_key))
-            })?;
-            let matrix_idx = graph.store_named_matrix(data_key, data.clone(), *n_rows, *n_cols);
-            Ok(graph.mat_vec_mul(matrix_idx, param_start, n_params, None))
-        }
-        MuExpr::Add(a, b) => {
-            let na = build_mu_expr(
-                graph,
-                a,
-                data_map,
-                matrix_map,
-                vector_param_map,
-                value_node_map,
-            )?;
-            let nb = build_mu_expr(
-                graph,
-                b,
-                data_map,
-                matrix_map,
-                vector_param_map,
-                value_node_map,
-            )?;
-            let a_scalar = a.is_scalar();
-            let b_scalar = b.is_scalar();
-            if a_scalar && !b_scalar {
-                Ok(graph.scalar_broadcast_add(na, nb))
-            } else if !a_scalar && b_scalar {
-                Ok(graph.scalar_broadcast_add(nb, na))
-            } else if !a_scalar && !b_scalar {
-                Ok(graph.vector_add(na, nb))
-            } else {
-                Ok(graph.add(na, nb))
-            }
-        }
-    }
-}
-
 fn select_posterior_draw_indices(
     total_draws: usize,
     n_samples: Option<usize>,
@@ -2372,7 +1967,7 @@ fn compile_python_model(
     // never becomes a silently-defaulted value at sampling time.
     validate_model_references(&model_spec.priors, &model_spec.likelihoods)?;
 
-    let auto_vector_params = collect_matvec_params(&model_spec.likelihoods, matrix_map)?;
+    let auto_vector_params = collect_matvec_params(model_spec, matrix_map)?;
 
     for prior in &model_spec.priors {
         build_prior_into_graph(
@@ -2396,6 +1991,60 @@ fn compile_python_model(
         )?;
     }
 
+    for (name, expr) in &model_spec.potentials {
+        let node = build_mu_expr(
+            &mut graph,
+            expr,
+            data_map,
+            matrix_map,
+            &vector_param_map,
+            &value_node_map,
+        )?;
+        graph.add_logp_term(node);
+        let _ = name;
+    }
+    for (name, expr) in &model_spec.deterministics {
+        if model_spec.priors.iter().any(|p| prior_name(p) == name)
+            || model_spec.likelihoods.iter().any(|l| l.name == *name)
+        {
+            return Err(PyValueError::new_err(
+                "deterministic name collides with another output",
+            ));
+        }
+        let node = build_mu_expr(
+            &mut graph,
+            expr,
+            data_map,
+            matrix_map,
+            &vector_param_map,
+            &value_node_map,
+        )?;
+        graph.deterministics.push((name.clone(), node));
+    }
+    for slot in graph
+        .schema
+        .vectors
+        .iter_mut()
+        .chain(&mut graph.schema.observations)
+        .chain(&mut graph.schema.matrices)
+    {
+        if let Some(dim) = model_spec.dimensions.get(&slot.key) {
+            slot.dim = dim.clone();
+        }
+    }
+    let mut output_names = std::collections::HashSet::new();
+    for name in graph
+        .param_names
+        .iter()
+        .chain(model_spec.likelihoods.iter().map(|l| &l.name))
+        .chain(graph.deterministics.iter().map(|(n, _)| n))
+    {
+        if !output_names.insert(name) {
+            return Err(PyValueError::new_err(format!(
+                "output name '{name}' is not unique"
+            )));
+        }
+    }
     graph
         .validate_shapes()
         .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -2553,7 +2202,9 @@ fn validate_transition_chain_count(
 }
 
 #[pyclass]
+#[derive(Clone)]
 struct FitResult {
+    definition: ModelSpec,
     raw_result: SampleResult,
     display_result: SampleResult,
     /// A clone of the compiled graph — used for predictive sampling.
@@ -2564,6 +2215,19 @@ struct FitResult {
 
 #[pymethods]
 impl FitResult {
+    /// Versioned JSON including bound training data, stored graph draws, and sampler telemetry.
+    fn to_json(&self) -> PyResult<String> {
+        fit_artifact::encode(self)
+    }
+    #[staticmethod]
+    fn from_json(text: &str) -> PyResult<Self> {
+        fit_artifact::decode(text)
+    }
+    /// Declarative compiled model with the fitted training data available as bind defaults.
+    #[getter]
+    fn model(&self) -> PyResult<PyCompiledModel> {
+        fit_artifact::model(self)
+    }
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         for (pidx, name) in self.display_result.param_names.iter().enumerate() {
@@ -2625,60 +2289,12 @@ impl FitResult {
 
     /// Return per-parameter diagnostics as a list of dicts.
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let report = self.display_result.diagnostics();
-        let items: Vec<Bound<'py, PyDict>> = report
-            .params
-            .iter()
-            .map(|p| {
-                let d = PyDict::new(py);
-                d.set_item("name", &p.name).unwrap();
-                d.set_item("mean", p.mean).unwrap();
-                d.set_item("std", p.std).unwrap();
-                d.set_item("hdi_3%", p.hdi_3).unwrap();
-                d.set_item("hdi_97%", p.hdi_97).unwrap();
-                d.set_item("ess_bulk", p.ess_bulk).unwrap();
-                d.set_item("ess_tail", p.ess_tail).unwrap();
-                d.set_item("r_hat", p.r_hat).unwrap();
-                d.set_item("mcse_mean", p.mcse_mean).unwrap();
-                d
-            })
-            .collect();
-        let list = PyList::new(py, &items)?;
-        Ok(list)
+        generic_results::diagnostics(&self.display_result, py)
     }
 
     /// Structured sampler telemetry, including integrator work and tree depth.
     fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let report = self.raw_result.transition_diagnostics();
-        let result = PyDict::new(py);
-        result.set_item("total_transitions", report.total_transitions)?;
-        result.set_item("total_warmup_transitions", report.total_warmup_transitions)?;
-        result.set_item("total_draw_transitions", report.total_draw_transitions)?;
-        result.set_item("total_divergences", report.total_divergences)?;
-        result.set_item("total_leapfrog_steps", report.total_leapfrog_steps)?;
-        result.set_item("mean_accept_prob", report.mean_accept_prob)?;
-        result.set_item("mean_energy_error", report.mean_energy_error)?;
-        result.set_item("max_abs_energy_error", report.max_abs_energy_error)?;
-
-        let chains = PyList::empty(py);
-        for chain in report.chains {
-            let item = PyDict::new(py);
-            item.set_item("chain", chain.chain_index)?;
-            item.set_item("transitions", chain.num_transitions)?;
-            item.set_item("warmup_transitions", chain.num_warmup_transitions)?;
-            item.set_item("draw_transitions", chain.num_draw_transitions)?;
-            item.set_item("divergences", chain.divergences)?;
-            item.set_item("accepted_transitions", chain.accepted_transitions)?;
-            item.set_item("mean_accept_prob", chain.mean_accept_prob)?;
-            item.set_item("mean_energy_error", chain.mean_energy_error)?;
-            item.set_item("max_abs_energy_error", chain.max_abs_energy_error)?;
-            item.set_item("mean_step_size", chain.mean_step_size)?;
-            item.set_item("max_tree_depth", chain.max_tree_depth)?;
-            item.set_item("total_leapfrog_steps", chain.total_leapfrog_steps)?;
-            chains.append(item)?;
-        }
-        result.set_item("chains", chains)?;
-        Ok(result)
+        generic_results::transition_diagnostics(&self.raw_result, py)
     }
 
     /// Per-chain adapted step sizes.
@@ -2691,6 +2307,99 @@ impl FitResult {
     fn divergences<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let list = PyList::new(py, &self.display_result.divergences)?;
         Ok(list)
+    }
+
+    /// Prediction preserving (chain, draw, observation) axes.
+    #[pyo3(signature = (data=None, seed=42, expected=false, sizes=None))]
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        data: Option<&Bound<'_, PyDict>>,
+        seed: u64,
+        expected: bool,
+        sizes: Option<HashMap<String, usize>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let flat = self.posterior_predictive(py, None, seed, data, expected, sizes)?;
+        let result = PyDict::new(py);
+        let chains = self.raw_result.samples.len();
+        let draws = self.raw_result.samples.first().map_or(0, Vec::len);
+        for (name, value) in flat.iter() {
+            let arr = value.downcast::<PyArray2<f64>>()?;
+            let n = arr.shape()[1];
+            let values = unsafe { arr.as_slice()? }.to_vec();
+            result.set_item(
+                name,
+                Array3::from_shape_vec((chains, draws, n), values)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?
+                    .into_pyarray(py),
+            )?;
+        }
+        Ok(result)
+    }
+    /// Named deterministic draws, with (chain, draw[, observation]) axes.
+    #[pyo3(signature = (data=None, sizes=None))]
+    fn deterministics<'py>(
+        &self,
+        py: Python<'py>,
+        data: Option<&Bound<'_, PyDict>>,
+        sizes: Option<HashMap<String, usize>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let graph = prediction_graph(&self.graph, data, sizes)?;
+        let mut evaluator = Evaluator::new(&graph);
+        let chains = self.raw_result.samples.len();
+        let draws = self.raw_result.samples.first().map_or(0, Vec::len);
+        let result = PyDict::new(py);
+        for (name, node) in &graph.deterministics {
+            let n = evaluator.node_len(*node);
+            let mut values = Vec::with_capacity(chains * draws * n.max(1));
+            for chain in &self.raw_result.samples {
+                for draw in chain {
+                    evaluator.compute(
+                        &graph,
+                        &constrained_draw_to_raw(draw, &graph.param_transforms),
+                    );
+                    for i in 0..n.max(1) {
+                        values.push(evaluator.vec_elem(*node, i, &graph));
+                    }
+                }
+            }
+            if n == 0 {
+                result.set_item(
+                    name,
+                    Array2::from_shape_vec((chains, draws), values)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?
+                        .into_pyarray(py),
+                )?;
+            } else {
+                result.set_item(
+                    name,
+                    Array3::from_shape_vec((chains, draws, n), values)
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?
+                        .into_pyarray(py),
+                )?;
+            }
+        }
+        Ok(result)
+    }
+    #[getter]
+    fn metadata<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("kernel", "graph_mcmc")?;
+        d.set_item("chains", self.raw_result.samples.len())?;
+        d.set_item("draws", self.raw_result.samples.first().map_or(0, Vec::len))?;
+        d.set_item("prediction_axes", ("chain", "draw", "observation"))?;
+        let dimensions = PyDict::new(py);
+        for (slot, obs) in self
+            .graph
+            .schema
+            .observations
+            .iter()
+            .zip(&self.graph.obs_vectors)
+        {
+            dimensions.set_item(&slot.dim, obs.len())?;
+        }
+        d.set_item("dimensions", dimensions)?;
+        Ok(d)
     }
 
     /// Draw samples from the posterior predictive distribution.
@@ -2711,19 +2420,23 @@ impl FitResult {
     /// -------
     /// dict[str, ndarray(n_samples, n_obs)]
     ///     One key per likelihood (the name passed to normal_likelihood).
-    #[pyo3(signature = (n_samples=None, seed=42))]
+    #[pyo3(signature = (n_samples=None, seed=42, data=None, expected=false, sizes=None))]
     fn posterior_predictive<'py>(
         &self,
         py: Python<'py>,
         n_samples: Option<usize>,
         seed: u64,
+        data: Option<&Bound<'_, PyDict>>,
+        expected: bool,
+        sizes: Option<HashMap<String, usize>>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        let graph = prediction_graph(&self.graph, data, sizes)?;
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        self.graph
+        graph
             .validate_shapes()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let mut evaluator = Evaluator::new(&self.graph);
-        let heads = self.graph.observation_heads();
+        let mut evaluator = Evaluator::new(&graph);
+        let heads = graph.observation_heads();
 
         // Flatten all chain draws in order, then subsample without replacement
         // when the caller requests fewer draws than are available.
@@ -2744,84 +2457,20 @@ impl FitResult {
 
         for draw_idx in chosen_indices {
             let draw = all_draws[draw_idx];
-            let raw_draw = constrained_draw_to_raw(draw, &self.graph.param_transforms);
-            evaluator.compute(&self.graph, &raw_draw);
+            let raw_draw = constrained_draw_to_raw(draw, &graph.param_transforms);
+            evaluator.compute(&graph, &raw_draw);
             for (li, head) in heads.iter().enumerate() {
-                match head.family {
-                    rustmc_core::graph::ObsFamily::Normal => {
-                        let sigma_node = head.aux.ok_or_else(|| {
-                            PyValueError::new_err("Normal observation head is missing sigma")
-                        })?;
-                        let sigma = evaluator.scalar_at(sigma_node);
-                        validate_positive_finite("likelihood sigma", sigma)?;
-                        let noise_dist = NormalDist::new(0.0_f64, sigma)
-                            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                        for i in 0..head.n_obs {
-                            let mu = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            preds[li].push(mu + noise_dist.sample(&mut rng));
+                for i in 0..head.n_obs {
+                    let eta = evaluator.vec_elem(head.linpred, i, &graph);
+                    let aux = head.aux.map(|node| evaluator.scalar_at(node));
+                    preds[li].push(
+                        if expected {
+                            rustmc_core::observation::mean(head.family, eta, aux)
+                        } else {
+                            rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
                         }
-                    }
-                    rustmc_core::graph::ObsFamily::BernoulliLogit => {
-                        for i in 0..head.n_obs {
-                            let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let p = sigmoid_stable(eta).clamp(1e-12, 1.0 - 1e-12);
-                            preds[li].push(if rng.gen::<f64>() < p { 1.0 } else { 0.0 });
-                        }
-                    }
-                    rustmc_core::graph::ObsFamily::PoissonLog => {
-                        for i in 0..head.n_obs {
-                            let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let lam = eta.exp();
-                            validate_positive_finite("Poisson posterior predictive rate", lam)?;
-                            let draw = rand_distr::Poisson::new(lam)
-                                .map_err(|e| PyValueError::new_err(e.to_string()))?
-                                .sample(&mut rng);
-                            preds[li].push(draw);
-                        }
-                    }
-                    rustmc_core::graph::ObsFamily::ExponentialLog => {
-                        for i in 0..head.n_obs {
-                            let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let rate = eta.exp().max(1e-12);
-                            let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
-                            preds[li].push((-u.ln() / rate).max(1e-12));
-                        }
-                    }
-                    rustmc_core::graph::ObsFamily::LogNormal => {
-                        let sigma_node = head.aux.ok_or_else(|| {
-                            PyValueError::new_err("LogNormal observation head is missing sigma")
-                        })?;
-                        let sigma = evaluator.scalar_at(sigma_node);
-                        validate_positive_finite("likelihood sigma", sigma)?;
-                        let noise_dist = NormalDist::new(0.0_f64, sigma)
-                            .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                        for i in 0..head.n_obs {
-                            let mu = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            preds[li].push((mu + noise_dist.sample(&mut rng)).exp());
-                        }
-                    }
-                    rustmc_core::graph::ObsFamily::NegativeBinomialLog => {
-                        let alpha_node = head.aux.ok_or_else(|| {
-                            PyValueError::new_err(
-                                "NegativeBinomial observation head is missing alpha",
-                            )
-                        })?;
-                        let alpha = evaluator.scalar_at(alpha_node);
-                        validate_positive_finite("negative-binomial alpha", alpha)?;
-                        for i in 0..head.n_obs {
-                            let eta = evaluator.vec_elem(head.linpred, i, &self.graph);
-                            let mu = eta.exp();
-                            validate_positive_finite("negative-binomial mean", mu)?;
-                            let gamma_scale = mu / alpha;
-                            let lambda = rand_distr::Gamma::new(alpha, gamma_scale)
-                                .map_err(|e| PyValueError::new_err(e.to_string()))?
-                                .sample(&mut rng);
-                            let draw = rand_distr::Poisson::new(lambda)
-                                .map_err(|e| PyValueError::new_err(e.to_string()))?
-                                .sample(&mut rng);
-                            preds[li].push(draw);
-                        }
-                    }
+                        .map_err(PyValueError::new_err)?,
+                    );
                 }
             }
         }
@@ -2973,7 +2622,8 @@ impl FitResult {
         }
 
         if include_ppc && !self.likelihood_names.is_empty() {
-            let ppc_dict = self.posterior_predictive(py, ppc_samples, ppc_seed)?;
+            let ppc_dict =
+                self.posterior_predictive(py, ppc_samples, ppc_seed, None, false, None)?;
             // Reshape (n_samples, n_obs) → (1, n_samples, n_obs) for ArviZ convention
             // ArviZ expects posterior_predictive as (chain, draw, obs)
             // We treat all samples as a single chain.
@@ -3016,7 +2666,7 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -3033,6 +2683,7 @@ fn sample(
     max_tree_depth: usize,
     num_leapfrog_steps: usize,
     show_progress: bool,
+    init: Option<Vec<Vec<f64>>>,
 ) -> PyResult<FitResult> {
     validate_sample_config(
         chains,
@@ -3092,11 +2743,19 @@ fn sample(
     let graph_for_predict = compiled.graph.clone();
 
     let result = py
-        .allow_threads(|| sampler::sample(compiled.graph, config))
+        .allow_threads(|| {
+            sampler::sample_bound_with_init(
+                Arc::new(compiled.graph.structure_only()),
+                CoreDataBinding::from_graph(&compiled.graph).map_err(|e| e.to_string())?,
+                config,
+                init,
+            )
+        })
         .map_err(PyValueError::new_err)?;
     let display_result = derive_display_sample_result(&result, &compiled.display_params)?;
 
     Ok(FitResult {
+        definition: model_spec.structure_definition(),
         raw_result: result,
         display_result,
         graph: graph_for_predict,
@@ -3107,6 +2766,44 @@ fn sample(
 /// Result for a single model in a batch run.
 #[pymethods]
 impl PyCompiledModel {
+    /// Versioned declarative artifact; excludes all bound training data and defaults.
+    fn to_json(&self) -> PyResult<String> {
+        model_artifact::encode(self)
+    }
+    #[staticmethod]
+    fn from_json(text: &str) -> PyResult<Self> {
+        model_artifact::decode(text)
+    }
+
+    /// Evaluate the native graph target and gradient in unconstrained coordinates.
+    fn log_density<'py>(
+        &self,
+        py: Python<'py>,
+        data: &Bound<'_, PyAny>,
+        position: Vec<f64>,
+    ) -> PyResult<(f64, Bound<'py, PyArray1<f64>>)> {
+        if position.len() != self.structure.param_count || position.iter().any(|x| !x.is_finite()) {
+            return Err(PyValueError::new_err(
+                "position must be a finite vector matching the parameter dimension",
+            ));
+        }
+        let binding = self.bind_any(data, "0".into(), None)?;
+        let mut evaluator = Evaluator::try_with_binding(&self.structure, binding)
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        evaluator.compute(&self.structure, &position);
+        Ok((evaluator.total_logp, evaluator.grad.into_pyarray(py)))
+    }
+    #[getter]
+    fn dimensions(&self) -> HashMap<String, String> {
+        self.structure
+            .schema
+            .observations
+            .iter()
+            .chain(&self.structure.schema.vectors)
+            .chain(&self.structure.schema.matrices)
+            .map(|s| (s.key.clone(), s.dim.clone()))
+            .collect()
+    }
     #[getter]
     fn param_names(&self) -> Vec<String> {
         self.structure.param_names.clone()
@@ -3154,7 +2851,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true))]
+    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample(
         &self,
@@ -3171,6 +2868,7 @@ impl PyCompiledModel {
         max_tree_depth: usize,
         num_leapfrog_steps: usize,
         show_progress: bool,
+        init: Option<Vec<Vec<f64>>>,
     ) -> PyResult<FitResult> {
         validate_sample_config(
             chains,
@@ -3198,10 +2896,13 @@ impl PyCompiledModel {
         };
         let hydrated_graph = self.structure.with_binding(&binding);
         let result = py
-            .allow_threads(|| sampler::sample_bound(Arc::clone(&self.structure), binding, config))
+            .allow_threads(|| {
+                sampler::sample_bound_with_init(Arc::clone(&self.structure), binding, config, init)
+            })
             .map_err(PyValueError::new_err)?;
         let display_result = derive_display_sample_result(&result, &self.display_params)?;
         Ok(FitResult {
+            definition: self.definition.clone(),
             raw_result: result,
             display_result,
             graph: hydrated_graph,
@@ -3209,7 +2910,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, threads=1, chunk_size=64, errors="raise", seed_policy="cell_id_v1", init=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample_batch(
         &self,
@@ -3227,6 +2928,11 @@ impl PyCompiledModel {
         max_tree_depth: usize,
         num_leapfrog_steps: usize,
         show_progress: bool,
+        threads: usize,
+        chunk_size: usize,
+        errors: &str,
+        seed_policy: &str,
+        init: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<PyBatchFit> {
         validate_sample_config(
             chains,
@@ -3237,6 +2943,20 @@ impl PyCompiledModel {
             max_tree_depth,
             num_leapfrog_steps,
         )?;
+        let collect_errors = match errors {
+            "raise" => false,
+            "collect" => true,
+            _ => return Err(PyValueError::new_err("errors must be 'raise' or 'collect'")),
+        };
+        let seed_policy = match seed_policy {
+            "cell_id_v1" => sampler::BatchSeedPolicy::CellIdV1,
+            "position_v0" => sampler::BatchSeedPolicy::PositionV0,
+            _ => {
+                return Err(PyValueError::new_err(
+                    "seed_policy must be 'cell_id_v1' or 'position_v0'",
+                ))
+            }
+        };
         let ids = ids.unwrap_or_else(|| (0..datasets.len()).map(|i| i.to_string()).collect());
         if ids.len() != datasets.len() {
             return Err(PyValueError::new_err(
@@ -3246,6 +2966,26 @@ impl PyCompiledModel {
         let mut unique = std::collections::HashSet::new();
         if ids.iter().any(|id| !unique.insert(id)) {
             return Err(PyValueError::new_err("dataset ids must be unique"));
+        }
+        let mut initial_positions = HashMap::new();
+        let mut initial_errors = HashMap::new();
+        if let Some(initial) = init {
+            for (key, value) in initial.iter() {
+                let id: String = key.extract()?;
+                if !ids.contains(&id) {
+                    return Err(PyValueError::new_err(format!(
+                        "initialization supplied for unknown dataset ID '{id}'"
+                    )));
+                }
+                match value.extract::<Vec<Vec<f64>>>() {
+                    Ok(positions) => {
+                        initial_positions.insert(id, positions);
+                    }
+                    Err(error) => {
+                        initial_errors.insert(id, format!("invalid init: {error}"));
+                    }
+                }
+            }
         }
         // Convert defaults/shared payloads once. Cloning this map only clones
         // Arc handles, so a shared design matrix remains one allocation.
@@ -3263,6 +3003,9 @@ impl PyCompiledModel {
             .iter()
             .zip(&ids)
             .map(|(data, id)| {
+                if let Some(error) = initial_errors.get(id) {
+                    return Err(PyValueError::new_err(error.clone()));
+                }
                 if let Ok(bound) = data.downcast::<PyBoundModel>() {
                     let bound = bound.borrow();
                     if !Arc::ptr_eq(&bound.structure, &self.structure) {
@@ -3309,7 +3052,8 @@ impl PyCompiledModel {
                         .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 validate_core_binding(&self.structure, binding)
             })
-            .collect::<PyResult<Vec<_>>>()?;
+            .map(|value| value.map_err(|error| error.to_string()))
+            .collect::<Vec<_>>();
         let config = sampler::BatchSampleConfig {
             sampler: parse_sampler_type(sampler)?,
             num_chains: chains,
@@ -3324,13 +3068,43 @@ impl PyCompiledModel {
         };
         let raw = py
             .allow_threads(|| {
-                sampler::sample_batch_bound(Arc::clone(&self.structure), bindings, config)
+                sampler::sample_batch_bound_with_initial(
+                    Arc::clone(&self.structure),
+                    ids.iter().cloned().zip(bindings.clone()).collect(),
+                    config,
+                    sampler::BoundBatchOptions {
+                        threads,
+                        chunk_size,
+                        collect_errors,
+                        seed_policy,
+                    },
+                    initial_positions,
+                )
             })
             .map_err(PyValueError::new_err)?;
         let mut results = Vec::with_capacity(raw.len());
-        for item in raw {
-            results.push(BatchResult {
-                inner: derive_display_batch_result(&item.result, &self.display_params)?,
+        for (item, binding) in raw.into_iter().zip(bindings) {
+            results.push(match item {
+                Err(error) => Err(error),
+                Ok(raw_result) => {
+                    let display_result =
+                        derive_display_sample_result(&raw_result, &self.display_params)?;
+                    let inner = batch_from_sample(&display_result);
+                    let binding = binding.map_err(PyValueError::new_err)?;
+                    Ok(BatchResult {
+                        inner,
+                        full_fit: Some(StoredBatchFit::Bound(Arc::new(
+                            generic_results::BoundBatchFit {
+                                structure: Arc::clone(&self.structure),
+                                binding,
+                                raw_result,
+                                display_result,
+                                likelihood_names: self.likelihood_names.clone(),
+                                definition: self.definition.clone(),
+                            },
+                        ))),
+                    })
+                }
             });
         }
         Ok(PyBatchFit { ids, results })
@@ -3373,10 +3147,76 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 #[derive(Clone)]
 struct BatchResult {
     inner: sampler::BatchModelResult,
+    full_fit: Option<StoredBatchFit>,
 }
 
+fn batch_from_sample(sample: &SampleResult) -> sampler::BatchModelResult {
+    sampler::BatchModelResult {
+        samples: sample.samples.iter().flatten().cloned().collect(),
+        param_names: sample.param_names.clone(),
+        num_chains: sample.samples.len(),
+        num_draws: sample.samples.first().map_or(0, Vec::len),
+        accept_rates: sample.accept_rates.clone(),
+        step_sizes: sample.step_sizes.clone(),
+        divergences: sample.divergences.clone(),
+        transitions: sample.transitions.clone(),
+    }
+}
+
+impl BatchResult {
+    fn stored_fit(&self) -> PyResult<&StoredBatchFit> {
+        self.full_fit
+            .as_ref()
+            .ok_or_else(|| PyValueError::new_err("legacy batch result has no retained fit"))
+    }
+}
 #[pymethods]
 impl BatchResult {
+    /// Internal regression-test hook: compare immutable payload ownership without exposing addresses.
+    fn _shares_data(&self, other: &BatchResult, key: &str) -> bool {
+        match (self.full_fit.as_ref(), other.full_fit.as_ref()) {
+            (Some(StoredBatchFit::Bound(a)), Some(StoredBatchFit::Bound(b))) => {
+                a.binding.shares_payload_with(&b.binding, key)
+            }
+            _ => false,
+        }
+    }
+    #[getter]
+    fn fit(&self) -> PyResult<FitResult> {
+        self.full_fit
+            .as_ref()
+            .map(StoredBatchFit::materialize)
+            .ok_or_else(|| {
+                PyValueError::new_err(
+                    "legacy batch result has no prediction graph; use CompiledModel.sample_batch",
+                )
+            })
+    }
+
+    fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        generic_results::diagnostics(self.stored_fit()?.display(), py)
+    }
+
+    fn summary(&self) -> PyResult<String> {
+        Ok(self.stored_fit()?.display().diagnostics().to_table())
+    }
+
+    fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        generic_results::transition_diagnostics(self.stored_fit()?.raw(), py)
+    }
+
+    #[pyo3(signature = (data=None, seed=42, expected=false, sizes=None))]
+    fn predict<'py>(
+        &self,
+        py: Python<'py>,
+        data: Option<&Bound<'_, PyDict>>,
+        seed: u64,
+        expected: bool,
+        sizes: Option<HashMap<String, usize>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        self.fit()?.predict(py, data, seed, expected, sizes)
+    }
+
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         let n_chains = self.inner.num_chains;
@@ -3473,7 +3313,7 @@ impl BatchResult {
 #[pyclass(name = "BatchFit")]
 struct PyBatchFit {
     ids: Vec<String>,
-    results: Vec<BatchResult>,
+    results: Vec<Result<BatchResult, String>>,
 }
 
 #[pymethods]
@@ -3481,6 +3321,29 @@ impl PyBatchFit {
     #[getter]
     fn ids(&self) -> Vec<String> {
         self.ids.clone()
+    }
+
+    #[getter]
+    fn errors(&self) -> HashMap<String, String> {
+        self.ids
+            .iter()
+            .zip(&self.results)
+            .filter_map(|(id, value)| {
+                value
+                    .as_ref()
+                    .err()
+                    .map(|error| (id.clone(), error.clone()))
+            })
+            .collect()
+    }
+
+    fn get(&self, py: Python<'_>, id: &str) -> PyResult<Py<BatchResult>> {
+        let index = self
+            .ids
+            .iter()
+            .position(|value| value == id)
+            .ok_or_else(|| PyValueError::new_err(format!("unknown dataset ID '{id}'")))?;
+        self.__getitem__(py, index as isize)
     }
 
     fn __len__(&self) -> usize {
@@ -3498,6 +3361,12 @@ impl PyBatchFit {
             .get(normalized as usize)
             .cloned()
             .ok_or_else(|| PyIndexError::new_err("batch index out of range"))?;
+        let result = result.map_err(|error| {
+            PyValueError::new_err(format!(
+                "dataset '{}': {error}",
+                self.ids[normalized as usize]
+            ))
+        })?;
         Py::new(py, result)
     }
 
@@ -3515,7 +3384,11 @@ impl PyBatchFit {
     }
 
     fn __repr__(&self) -> String {
-        format!("BatchFit({} datasets, 0 failed)", self.results.len())
+        format!(
+            "BatchFit({} datasets, {} failed)",
+            self.results.len(),
+            self.errors().len()
+        )
     }
 }
 
@@ -3593,21 +3466,42 @@ fn batch_sample(
         show_progress,
     };
 
-    let graphs: Vec<(Graph, Vec<f64>)> = compiled_models
+    let graphs: Vec<Graph> = compiled_models
         .iter()
-        .map(|compiled| (compiled.graph.clone(), vec![]))
+        .map(|compiled| compiled.graph.clone())
         .collect();
 
     let results = py
-        .allow_threads(|| sampler::batch_sample(graphs, config))
+        .allow_threads(|| sampler::batch_sample_graphs(graphs, config))
         .map_err(PyValueError::new_err)?;
 
     results
         .into_iter()
         .zip(compiled_models.iter())
-        .map(|(raw_result, compiled)| {
+        .zip(models.iter())
+        .map(|((raw_result, compiled), (spec, _))| {
+            let raw = SampleResult {
+                samples: raw_result
+                    .samples
+                    .chunks(raw_result.num_draws)
+                    .map(|chain| chain.to_vec())
+                    .collect(),
+                param_names: raw_result.param_names.clone(),
+                accept_rates: raw_result.accept_rates.clone(),
+                step_sizes: raw_result.step_sizes.clone(),
+                divergences: raw_result.divergences.clone(),
+                transitions: raw_result.transitions.clone(),
+            };
+            let display_result = derive_display_sample_result(&raw, &compiled.display_params)?;
             Ok(BatchResult {
                 inner: derive_display_batch_result(&raw_result, &compiled.display_params)?,
+                full_fit: Some(StoredBatchFit::Ready(Arc::new(FitResult {
+                    raw_result: raw,
+                    display_result,
+                    graph: compiled.graph.clone(),
+                    likelihood_names: compiled.likelihood_names.clone(),
+                    definition: spec.borrow().structure_definition(),
+                }))),
             })
         })
         .collect()
@@ -3647,6 +3541,9 @@ fn sample_prior_predictive<'py>(
     if n_samples == 0 {
         return Err(PyValueError::new_err("n_samples must be >= 1"));
     }
+    if !model_spec.potentials.is_empty() {
+        return Err(PyValueError::new_err("prior predictive simulation is not defined for models with potentials; custom density terms do not supply a prior random generator"));
+    }
     // ── Build data maps ───────────────────────────────────────────────────────
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
@@ -3675,6 +3572,11 @@ fn sample_prior_predictive<'py>(
         .map(|head| Vec::with_capacity(n_samples * head.n_obs))
         .collect();
 
+    let mut deterministic_draws: Vec<Vec<f64>> = graph
+        .deterministics
+        .iter()
+        .map(|(_, node)| Vec::with_capacity(n_samples * evaluator.node_len(*node).max(1)))
+        .collect();
     for _ in 0..n_samples {
         // Sample raw parameters from priors (in declaration order)
         let raw = sample_prior_raw(&model_spec.priors, &compiled.auto_vector_params, &mut rng)?;
@@ -3697,80 +3599,19 @@ fn sample_prior_predictive<'py>(
 
         // Forward pass to get predictions
         evaluator.compute(&graph, &raw);
+        for (j, (_, node)) in graph.deterministics.iter().enumerate() {
+            for i in 0..evaluator.node_len(*node).max(1) {
+                deterministic_draws[j].push(evaluator.vec_elem(*node, i, &graph));
+            }
+        }
         for (li, head) in heads.iter().enumerate() {
-            match head.family {
-                rustmc_core::graph::ObsFamily::Normal => {
-                    let sigma_node = head.aux.ok_or_else(|| {
-                        PyValueError::new_err("Normal observation head is missing sigma")
-                    })?;
-                    let sigma = evaluator.scalar_at(sigma_node);
-                    validate_positive_finite("likelihood sigma", sigma)?;
-                    let noise_dist = NormalDist::new(0.0_f64, sigma)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for i in 0..head.n_obs {
-                        let mu = evaluator.vec_elem(head.linpred, i, &graph);
-                        preds[li].push(mu + noise_dist.sample(&mut rng));
-                    }
-                }
-                rustmc_core::graph::ObsFamily::BernoulliLogit => {
-                    for i in 0..head.n_obs {
-                        let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let p = sigmoid_stable(eta).clamp(1e-12, 1.0 - 1e-12);
-                        preds[li].push(if rng.gen::<f64>() < p { 1.0 } else { 0.0 });
-                    }
-                }
-                rustmc_core::graph::ObsFamily::PoissonLog => {
-                    for i in 0..head.n_obs {
-                        let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let lam = eta.exp();
-                        validate_positive_finite("Poisson prior predictive rate", lam)?;
-                        let draw = rand_distr::Poisson::new(lam)
-                            .map_err(|e| PyValueError::new_err(e.to_string()))?
-                            .sample(&mut rng);
-                        preds[li].push(draw);
-                    }
-                }
-                rustmc_core::graph::ObsFamily::ExponentialLog => {
-                    for i in 0..head.n_obs {
-                        let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let rate = eta.exp().max(1e-12);
-                        let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
-                        preds[li].push((-u.ln() / rate).max(1e-12));
-                    }
-                }
-                rustmc_core::graph::ObsFamily::LogNormal => {
-                    let sigma_node = head.aux.ok_or_else(|| {
-                        PyValueError::new_err("LogNormal observation head is missing sigma")
-                    })?;
-                    let sigma = evaluator.scalar_at(sigma_node);
-                    validate_positive_finite("likelihood sigma", sigma)?;
-                    let noise_dist = NormalDist::new(0.0_f64, sigma)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for i in 0..head.n_obs {
-                        let mu = evaluator.vec_elem(head.linpred, i, &graph);
-                        preds[li].push((mu + noise_dist.sample(&mut rng)).exp());
-                    }
-                }
-                rustmc_core::graph::ObsFamily::NegativeBinomialLog => {
-                    let alpha_node = head.aux.ok_or_else(|| {
-                        PyValueError::new_err("NegativeBinomial observation head is missing alpha")
-                    })?;
-                    let alpha = evaluator.scalar_at(alpha_node);
-                    validate_positive_finite("negative-binomial alpha", alpha)?;
-                    for i in 0..head.n_obs {
-                        let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                        let mu = eta.exp();
-                        validate_positive_finite("negative-binomial mean", mu)?;
-                        let gamma_scale = mu / alpha;
-                        let lambda = rand_distr::Gamma::new(alpha, gamma_scale)
-                            .map_err(|e| PyValueError::new_err(e.to_string()))?
-                            .sample(&mut rng);
-                        let draw = rand_distr::Poisson::new(lambda)
-                            .map_err(|e| PyValueError::new_err(e.to_string()))?
-                            .sample(&mut rng);
-                        preds[li].push(draw);
-                    }
-                }
+            for i in 0..head.n_obs {
+                let eta = evaluator.vec_elem(head.linpred, i, &graph);
+                let aux = head.aux.map(|node| evaluator.scalar_at(node));
+                preds[li].push(
+                    rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
+                        .map_err(PyValueError::new_err)?,
+                );
             }
         }
     }
@@ -3790,6 +3631,19 @@ fn sample_prior_predictive<'py>(
         let arr = Array2::from_shape_vec((n_samples, n_obs), preds[li].clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         dict.set_item(name, arr.into_pyarray(py))?;
+    }
+    for (j, (name, node)) in graph.deterministics.iter().enumerate() {
+        let n = evaluator.node_len(*node);
+        if n == 0 {
+            dict.set_item(name, PyArray1::from_vec(py, deterministic_draws[j].clone()))?;
+        } else {
+            dict.set_item(
+                name,
+                Array2::from_shape_vec((n_samples, n), deterministic_draws[j].clone())
+                    .map_err(|e| PyValueError::new_err(e.to_string()))?
+                    .into_pyarray(py),
+            )?;
+        }
     }
     Ok(dict)
 }
@@ -7240,9 +7094,11 @@ fn validate_interval_level(level: f64) -> PyResult<()> {
 }
 
 #[pymodule]
-fn rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    dynamic_glm::register(m)?;
     hurdle::register(m)?;
     regression::register(m)?;
+    structural::register(m)?;
     runoff::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<ModelBuilder>()?;

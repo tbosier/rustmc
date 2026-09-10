@@ -1,3 +1,4 @@
+//! Legacy data-owning JSON artifacts. The Python compile/bind API is a separate structural model interface.
 use crate::graph::{Graph, NodeId, Op, ParamTransform};
 use crate::sampler::{self, SampleResult, SamplerConfig};
 use serde::{Deserialize, Serialize};
@@ -577,6 +578,14 @@ impl CompiledModelArtifact {
                             lower: *lower,
                             upper: *upper,
                         },
+                        Op::Elementwise { .. }
+                        | Op::Gather { .. }
+                        | Op::Sum(_)
+                        | Op::BroadcastObservation { .. } => {
+                            return Err(ArtifactError::invalid(
+                                "legacy artifacts do not support dimension-aware expression nodes",
+                            ))
+                        }
                         Op::Param(_) => unreachable!("parameter nodes are handled separately"),
                     };
 

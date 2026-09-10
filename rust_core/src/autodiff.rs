@@ -23,7 +23,7 @@ enum NodeKind {
 /// and are overwritten in place on each call.
 pub struct Evaluator {
     binding: DataBinding,
-    vec_len: usize,
+    node_lengths: Vec<usize>,
     node_kind: Vec<NodeKind>,
     /// Scalar value per node (unused slots for vector/data nodes).
     scalars: Vec<f64>,
@@ -75,6 +75,186 @@ fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), Gr
     Ok(())
 }
 
+/// Derive every vector length from its inputs; scalars have length zero.
+pub(crate) fn validate_node_lengths(
+    graph: &Graph,
+    binding: &DataBinding,
+) -> Result<Vec<usize>, GraphShapeError> {
+    let mut output_names: std::collections::HashSet<&str> =
+        graph.param_names.iter().map(String::as_str).collect();
+    for name in graph
+        .schema
+        .observations
+        .iter()
+        .filter_map(|slot| match &slot.kind {
+            crate::data::SlotKind::Observation { likelihood } => Some(likelihood.as_str()),
+            _ => None,
+        })
+        .chain(graph.deterministics.iter().map(|(name, _)| name.as_str()))
+    {
+        if name.is_empty() || !output_names.insert(name) {
+            return Err(GraphShapeError::new(format!(
+                "output name '{name}' must be unique"
+            )));
+        }
+    }
+    let mut lengths: Vec<usize> = Vec::with_capacity(graph.nodes.len());
+    let mut dimensions: Vec<Option<&str>> = Vec::with_capacity(graph.nodes.len());
+    for node in &graph.nodes {
+        let merge = |a: NodeId, b: NodeId| -> Result<usize, GraphShapeError> {
+            let (x, y) = (lengths[a.0], lengths[b.0]);
+            if x != 0 && y != 0 && x != y {
+                Err(GraphShapeError::new(format!(
+                    "expression shape mismatch: lengths {x} and {y}"
+                )))
+            } else {
+                Ok(x.max(y))
+            }
+        };
+        let len = match &node.op {
+            Op::Data(i) => binding.vectors[*i].len(),
+            Op::Elementwise { a, b, .. } => {
+                if let Some(b) = b {
+                    merge(*a, *b)?
+                } else {
+                    lengths[a.0]
+                }
+            }
+            Op::ScalarMulData(_, v) | Op::ScalarBroadcastAdd(_, v) => lengths[v.0],
+            Op::VectorAdd(a, b) => merge(*a, *b)?,
+            Op::ScalarBroadcast(_) => binding.n_obs(),
+            Op::BroadcastObservation { obs_data_idx, .. } => {
+                binding.observations[*obs_data_idx].len()
+            }
+            Op::Gather {
+                param_start,
+                n_params,
+                indices,
+            } => {
+                if param_start
+                    .checked_add(*n_params)
+                    .is_none_or(|end| end > graph.param_count)
+                {
+                    return Err(GraphShapeError::new("invalid parameter span"));
+                }
+                let Op::Data(di) = graph.nodes[indices.0].op else {
+                    return Err(GraphShapeError::new("group indices must be data"));
+                };
+                if binding.vectors[di].iter().any(|x| {
+                    !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
+                }) {
+                    return Err(GraphShapeError::new(format!(
+                        "group indices must be integers in [0, {n_params})"
+                    )));
+                }
+                lengths[indices.0]
+            }
+            Op::FusedLinearMu { data_indices, .. } => {
+                let n = data_indices
+                    .first()
+                    .map_or(0, |i| binding.vectors[*i].len());
+                if data_indices.iter().any(|i| binding.vectors[*i].len() != n) {
+                    return Err(GraphShapeError::new("linear predictor data lengths differ"));
+                }
+                n
+            }
+            Op::MatVecMul {
+                matrix_idx,
+                n_params,
+                ..
+            } => {
+                let m = &binding.matrices[*matrix_idx];
+                if m.n_cols != *n_params || m.n_rows.checked_mul(m.n_cols) != Some(m.data.len()) {
+                    return Err(GraphShapeError::new(
+                        "matrix shape does not match parameter span",
+                    ));
+                }
+                m.n_rows
+            }
+            Op::ObsLogP {
+                linpred_vec,
+                obs_data_idx,
+                ..
+            } => {
+                if lengths[linpred_vec.0] != binding.observations[*obs_data_idx].len() {
+                    return Err(GraphShapeError::new(
+                        "observation and predictor lengths differ",
+                    ));
+                }
+                0
+            }
+            _ => 0,
+        };
+        let vector_dim = |i: usize| {
+            graph
+                .schema
+                .vectors
+                .get(i)
+                .map_or("obs", |s| s.dim.as_str())
+        };
+        let obs_dim = |i: usize| {
+            graph
+                .schema
+                .observations
+                .get(i)
+                .map_or("obs", |s| s.dim.as_str())
+        };
+        let merge_dim = |a: NodeId, b: NodeId| -> Result<Option<&str>, GraphShapeError> {
+            match (dimensions[a.0], dimensions[b.0]) {
+                (Some(x), Some(y)) if x != y => Err(GraphShapeError::new(format!(
+                    "expression dimensions '{x}' and '{y}' differ"
+                ))),
+                (a, b) => Ok(a.or(b)),
+            }
+        };
+        let dimension = match &node.op {
+            Op::Data(i) => Some(vector_dim(*i)),
+            Op::Elementwise { a, b, .. } => {
+                if let Some(b) = b {
+                    merge_dim(*a, *b)?
+                } else {
+                    dimensions[a.0]
+                }
+            }
+            Op::VectorAdd(a, b) => merge_dim(*a, *b)?,
+            Op::ScalarMulData(_, v) | Op::ScalarBroadcastAdd(_, v) => dimensions[v.0],
+            Op::ScalarBroadcast(_) => Some(obs_dim(0)),
+            Op::BroadcastObservation { obs_data_idx, .. } => Some(obs_dim(*obs_data_idx)),
+            Op::Gather { indices, .. } => dimensions[indices.0],
+            Op::FusedLinearMu { data_indices, .. } => {
+                let dim = data_indices.first().map(|i| vector_dim(*i));
+                if data_indices.iter().any(|i| Some(vector_dim(*i)) != dim) {
+                    return Err(GraphShapeError::new("linear predictor dimensions differ"));
+                }
+                dim
+            }
+            Op::MatVecMul { matrix_idx, .. } => Some(
+                graph
+                    .schema
+                    .matrices
+                    .get(*matrix_idx)
+                    .map_or("obs", |s| s.dim.as_str()),
+            ),
+            Op::ObsLogP {
+                linpred_vec,
+                obs_data_idx,
+                ..
+            } => {
+                if dimensions[linpred_vec.0] != Some(obs_dim(*obs_data_idx)) {
+                    return Err(GraphShapeError::new(
+                        "observation and predictor dimensions differ",
+                    ));
+                }
+                None
+            }
+            _ => None,
+        };
+        dimensions.push(dimension);
+        lengths.push(len);
+    }
+    Ok(lengths)
+}
+
 impl Evaluator {
     pub fn try_new(graph: &Graph) -> Result<Self, GraphShapeError> {
         let binding =
@@ -85,27 +265,22 @@ impl Evaluator {
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
-        let vec_len = binding.n_obs();
+        let node_lengths = validate_node_lengths(graph, &binding)?;
 
         validate_binding_slots(graph, &binding)?;
 
         let mut node_kind = Vec::with_capacity(n);
-        let mut vec_slot_count = 0usize;
-
+        let mut vec_buffer_len = 0usize;
         for node in &graph.nodes {
-            let kind = match &node.op {
-                Op::Data(idx) => NodeKind::DataRef(*idx),
-                Op::ScalarMulData(_, _)
-                | Op::VectorAdd(_, _)
-                | Op::ScalarBroadcastAdd(_, _)
-                | Op::ScalarBroadcast(_)
-                | Op::FusedLinearMu { .. }
-                | Op::MatVecMul { .. } => {
-                    let offset = vec_slot_count * vec_len;
-                    vec_slot_count += 1;
-                    NodeKind::ComputedVec(offset)
-                }
-                _ => NodeKind::Scalar,
+            let len = node_lengths[node.id.0];
+            let kind = if let Op::Data(idx) = node.op {
+                NodeKind::DataRef(idx)
+            } else if len > 0 {
+                let offset = vec_buffer_len;
+                vec_buffer_len += len;
+                NodeKind::ComputedVec(offset)
+            } else {
+                NodeKind::Scalar
             };
             node_kind.push(kind);
         }
@@ -119,12 +294,12 @@ impl Evaluator {
 
         Ok(Self {
             binding,
-            vec_len,
+            node_lengths,
             node_kind,
             scalars: vec![0.0; n],
-            vec_buf: vec![0.0; vec_slot_count * vec_len],
+            vec_buf: vec![0.0; vec_buffer_len],
             adj_scalars: vec![0.0; n],
-            adj_vec_buf: vec![0.0; vec_slot_count * vec_len],
+            adj_vec_buf: vec![0.0; vec_buffer_len],
             grad: vec![0.0; graph.param_count],
             total_logp: 0.0,
             param_node_ids,
@@ -143,26 +318,11 @@ impl Evaluator {
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
         validate_binding_slots(graph, &binding)?;
-        self.vec_len = binding.n_obs();
-        let mut slot = 0usize;
-        for (kind, node) in self.node_kind.iter_mut().zip(&graph.nodes) {
-            if matches!(
-                node.op,
-                Op::ScalarMulData(_, _)
-                    | Op::VectorAdd(_, _)
-                    | Op::ScalarBroadcastAdd(_, _)
-                    | Op::ScalarBroadcast(_)
-                    | Op::FusedLinearMu { .. }
-                    | Op::MatVecMul { .. }
-            ) {
-                *kind = NodeKind::ComputedVec(slot * self.vec_len);
-                slot += 1;
-            }
+        if validate_node_lengths(graph, &binding)? == self.node_lengths {
+            self.binding = binding;
+        } else {
+            *self = Self::try_with_binding(graph, binding)?;
         }
-        let need = slot * self.vec_len;
-        self.vec_buf.resize(need, 0.0);
-        self.adj_vec_buf.resize(need, 0.0);
-        self.binding = binding;
         Ok(())
     }
 
@@ -173,8 +333,19 @@ impl Evaluator {
         match self.node_kind[node_id] {
             NodeKind::DataRef(di) => self.binding.vectors[di][i],
             NodeKind::ComputedVec(off) => self.vec_buf[off + i],
-            NodeKind::Scalar => unreachable!(),
+            NodeKind::Scalar => self.scalars[node_id],
         }
+    }
+
+    fn accumulate(&mut self, node: NodeId, i: usize, value: f64) {
+        match self.node_kind[node.0] {
+            NodeKind::Scalar => self.adj_scalars[node.0] += value,
+            NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i] += value,
+            NodeKind::DataRef(_) => {}
+        }
+    }
+    pub fn node_len(&self, node: NodeId) -> usize {
+        self.node_lengths[node.0]
     }
 
     /// Read the scalar value of a node after `compute()`.
@@ -188,8 +359,9 @@ impl Evaluator {
     }
 
     /// Copy a full vector node into a Vec after `compute()`.
+    #[deprecated(note = "prefer node_len and vec_elem to avoid allocation")]
     pub fn vec_to_owned(&self, node: NodeId, graph: &Graph) -> Vec<f64> {
-        (0..self.vec_len)
+        (0..self.node_lengths[node.0])
             .map(|i| self.read_vec(node.0, i, graph))
             .collect()
     }
@@ -197,12 +369,49 @@ impl Evaluator {
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
-        let vl = self.vec_len;
-
         // === Forward pass ===
         for node in &graph.nodes {
             let idx = node.id.0;
+            let vl = match &node.op {
+                Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
+                _ => self.node_lengths[idx],
+            };
             match &node.op {
+                Op::Elementwise { operator, a, b } => {
+                    for i in 0..vl.max(1) {
+                        let av = self.read_vec(a.0, i, graph);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let value = operator.value(av, bv);
+                        match self.node_kind[idx] {
+                            NodeKind::ComputedVec(off) => self.vec_buf[off + i] = value,
+                            _ => self.scalars[idx] = value,
+                        }
+                    }
+                }
+                Op::Gather {
+                    param_start,
+                    indices,
+                    ..
+                } => {
+                    let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+                        unreachable!()
+                    };
+                    for i in 0..vl {
+                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        self.vec_buf[off + i] = graph.param_transforms[k].apply(params[k]);
+                    }
+                }
+                Op::Sum(a) => {
+                    self.scalars[idx] = (0..self.node_lengths[a.0].max(1))
+                        .map(|i| self.read_vec(a.0, i, graph))
+                        .sum()
+                }
+                Op::BroadcastObservation { scalar, .. } => {
+                    let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+                        unreachable!()
+                    };
+                    self.vec_buf[off..off + vl].fill(self.scalars[scalar.0]);
+                }
                 Op::Param(pidx) => self.scalars[idx] = params[*pidx],
                 Op::Constant(c) => self.scalars[idx] = *c,
                 Op::Data(_) => {}
@@ -573,14 +782,59 @@ impl Evaluator {
 
         // Seed
         for &id in &graph.logp_terms {
-            self.adj_scalars[id.0] = 1.0;
+            self.adj_scalars[id.0] += 1.0;
         }
 
         for node in graph.nodes.iter().rev() {
             let idx = node.id.0;
+            let vl = match &node.op {
+                Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
+                _ => self.node_lengths[idx],
+            };
             let a_s = self.adj_scalars[idx];
 
             match &node.op {
+                Op::Elementwise { operator, a, b } => {
+                    for i in 0..vl.max(1) {
+                        let av = self.read_vec(a.0, i, graph);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let (da, db) = operator.derivatives(av, bv);
+                        let upstream = match self.node_kind[idx] {
+                            NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i],
+                            _ => a_s,
+                        };
+                        self.accumulate(*a, i, upstream * da);
+                        if let Some(b) = b {
+                            self.accumulate(*b, i, upstream * db);
+                        }
+                    }
+                }
+                Op::Gather {
+                    param_start,
+                    indices,
+                    ..
+                } => {
+                    let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+                        unreachable!()
+                    };
+                    for i in 0..vl {
+                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        self.grad[k] += self.adj_vec_buf[off + i]
+                            * graph.param_transforms[k].derivative(params[k]);
+                    }
+                }
+                Op::Sum(a) => {
+                    for i in 0..self.node_lengths[a.0].max(1) {
+                        self.accumulate(*a, i, a_s);
+                    }
+                }
+                Op::BroadcastObservation { scalar, .. } => {
+                    let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+                        unreachable!()
+                    };
+                    self.adj_scalars[scalar.0] +=
+                        self.adj_vec_buf[off..off + vl].iter().sum::<f64>();
+                }
                 Op::Param(_) | Op::Constant(_) | Op::Data(_) => {}
 
                 Op::Add(a, b) => {
@@ -1051,695 +1305,9 @@ impl Evaluator {
 // Original free functions (kept for tests and simple use)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
-pub enum Value {
-    Scalar(f64),
-    Vector(Vec<f64>),
-}
-
-impl Value {
-    pub fn as_scalar(&self) -> f64 {
-        match self {
-            Value::Scalar(v) => *v,
-            Value::Vector(_) => panic!("expected scalar, got vector"),
-        }
-    }
-
-    pub fn as_vector(&self) -> &[f64] {
-        match self {
-            Value::Vector(v) => v,
-            Value::Scalar(_) => panic!("expected vector, got scalar"),
-        }
-    }
-}
-
-pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
-    let mut values: Vec<Value> = Vec::with_capacity(graph.nodes.len());
-
-    for node in &graph.nodes {
-        let val = match &node.op {
-            Op::Param(idx) => Value::Scalar(params[*idx]),
-            Op::Constant(c) => Value::Scalar(*c),
-            Op::Data(idx) => Value::Vector(graph.data_vectors[*idx].clone()),
-            Op::Add(a, b) => Value::Scalar(values[a.0].as_scalar() + values[b.0].as_scalar()),
-            Op::Sub(a, b) => Value::Scalar(values[a.0].as_scalar() - values[b.0].as_scalar()),
-            Op::Mul(a, b) => Value::Scalar(values[a.0].as_scalar() * values[b.0].as_scalar()),
-            Op::Div(a, b) => Value::Scalar(values[a.0].as_scalar() / values[b.0].as_scalar()),
-            Op::Neg(a) => Value::Scalar(-values[a.0].as_scalar()),
-            Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
-            Op::Log(a) => Value::Scalar(values[a.0].as_scalar().ln()),
-            Op::Sigmoid(a) => {
-                let v = values[a.0].as_scalar();
-                Value::Scalar(1.0 / (1.0 + (-v).exp()))
-            }
-            Op::Square(a) => {
-                let v = values[a.0].as_scalar();
-                Value::Scalar(v * v)
-            }
-            Op::ScalarMulData(scalar, data) => {
-                let s = values[scalar.0].as_scalar();
-                let d = values[data.0].as_vector();
-                Value::Vector(d.iter().map(|x| s * x).collect())
-            }
-            Op::VectorAdd(a, b) => {
-                let va = values[a.0].as_vector();
-                let vb = values[b.0].as_vector();
-                Value::Vector(va.iter().zip(vb.iter()).map(|(x, y)| x + y).collect())
-            }
-            Op::ScalarBroadcastAdd(scalar, vec) => {
-                let s = values[scalar.0].as_scalar();
-                let v = values[vec.0].as_vector();
-                Value::Vector(v.iter().map(|x| s + x).collect())
-            }
-            Op::ScalarBroadcast(scalar) => {
-                let s = values[scalar.0].as_scalar();
-                let n = graph
-                    .obs_vectors
-                    .first()
-                    .or_else(|| graph.data_vectors.first())
-                    .map_or(0, |v| v.len());
-                Value::Vector(vec![s; n])
-            }
-            Op::NormalLogP { x, mu, sigma } => Value::Scalar(normal_logp_scalar(
-                values[x.0].as_scalar(),
-                values[mu.0].as_scalar(),
-                values[sigma.0].as_scalar(),
-            )),
-            Op::HalfNormalLogP { x, sigma } => Value::Scalar(half_normal_logp_scalar(
-                values[x.0].as_scalar(),
-                values[sigma.0].as_scalar(),
-            )),
-            Op::StudentTLogP { x, nu, mu, sigma } => Value::Scalar(student_t_logp_scalar(
-                values[x.0].as_scalar(),
-                values[nu.0].as_scalar(),
-                values[mu.0].as_scalar(),
-                values[sigma.0].as_scalar(),
-            )),
-            Op::UniformLogP { x, lower, upper } => Value::Scalar(uniform_logp_scalar(
-                values[x.0].as_scalar(),
-                values[lower.0].as_scalar(),
-                values[upper.0].as_scalar(),
-            )),
-            Op::BernoulliLogP { x, p } => Value::Scalar(bernoulli_logp_scalar(
-                values[x.0].as_scalar(),
-                values[p.0].as_scalar(),
-            )),
-            Op::PoissonLogP { x, lam } => Value::Scalar(poisson_logp_scalar(
-                values[x.0].as_scalar(),
-                values[lam.0].as_scalar(),
-            )),
-            Op::GammaLogP { x, alpha, beta } => Value::Scalar(gamma_logp_scalar(
-                values[x.0].as_scalar(),
-                values[alpha.0].as_scalar(),
-                values[beta.0].as_scalar(),
-            )),
-            Op::BetaLogP { x, alpha, beta } => Value::Scalar(beta_logp_scalar(
-                values[x.0].as_scalar(),
-                values[alpha.0].as_scalar(),
-                values[beta.0].as_scalar(),
-            )),
-            Op::ObsLogP {
-                family,
-                linpred_vec,
-                aux,
-                obs_data_idx,
-            } => {
-                let obs = &graph.obs_vectors[*obs_data_idx];
-                match family {
-                    crate::graph::ObsFamily::Normal => {
-                        let mu = values[linpred_vec.0].as_vector();
-                        let sigma_node = aux.expect("Normal obs logp requires sigma");
-                        let sv = values[sigma_node.0].as_scalar();
-                        Value::Scalar(normal_obs_logp_sum(mu, sv, obs))
-                    }
-                    crate::graph::ObsFamily::BernoulliLogit => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        Value::Scalar(bernoulli_logit_obs_logp_sum(eta, obs))
-                    }
-                    crate::graph::ObsFamily::PoissonLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        Value::Scalar(poisson_log_obs_logp_sum(eta, obs))
-                    }
-                    crate::graph::ObsFamily::ExponentialLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        Value::Scalar(exponential_log_obs_logp_sum(eta, obs))
-                    }
-                    crate::graph::ObsFamily::LogNormal => {
-                        let mu = values[linpred_vec.0].as_vector();
-                        let sigma_node = aux.expect("LogNormal obs logp requires sigma");
-                        let sv = values[sigma_node.0].as_scalar();
-                        Value::Scalar(log_normal_obs_logp_sum(mu, sv, obs))
-                    }
-                    crate::graph::ObsFamily::NegativeBinomialLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
-                        let av = values[alpha_node.0].as_scalar();
-                        Value::Scalar(negative_binomial_log_obs_logp_sum(eta, av, obs))
-                    }
-                }
-            }
-            Op::FusedLinearMu {
-                param_nodes,
-                data_indices,
-                intercept,
-            } => {
-                let vl = graph.data_vectors[data_indices[0]].len();
-                let base = intercept.map_or(0.0, |n| values[n.0].as_scalar());
-                let mut result = vec![base; vl];
-                for (k, &pn) in param_nodes.iter().enumerate() {
-                    let beta = values[pn.0].as_scalar();
-                    let data = &graph.data_vectors[data_indices[k]];
-                    for i in 0..vl {
-                        result[i] += beta * data[i];
-                    }
-                }
-                Value::Vector(result)
-            }
-            Op::MatVecMul {
-                matrix_idx,
-                param_start,
-                n_params,
-                intercept,
-            } => {
-                let matrix = &graph.data_matrices[*matrix_idx];
-                let base = intercept.map_or(0.0, |n| values[n.0].as_scalar());
-                let mut result = vec![base; matrix.n_rows];
-                for (i, value) in result.iter_mut().enumerate().take(matrix.n_rows) {
-                    for j in 0..*n_params {
-                        *value += matrix.data[i * matrix.n_cols + j]
-                            * graph.param_transforms[param_start + j]
-                                .apply(params[param_start + j]);
-                    }
-                }
-                Value::Vector(result)
-            }
-            Op::VectorNormalLogP {
-                param_start,
-                n_params,
-                mu,
-                sigma,
-            } => {
-                let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-                let s2 = sigma * sigma;
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let d = params[param_start + k] - mu;
-                        log_norm - 0.5 * d * d / s2
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-            Op::VectorHalfNormalLogP {
-                param_start,
-                n_params,
-                sigma,
-            } => {
-                let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
-                let s2 = sigma * sigma;
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-            Op::VectorStudentTLogP {
-                param_start,
-                n_params,
-                nu,
-                mu,
-                sigma,
-            } => {
-                let log_norm = ln_gamma(0.5 * (nu + 1.0))
-                    - ln_gamma(0.5 * nu)
-                    - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let v = params[param_start + k];
-                        let z = (v - mu) / sigma;
-                        log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-            Op::VectorGammaLogP {
-                param_start,
-                n_params,
-                alpha,
-                beta,
-            } => {
-                let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        log_norm + alpha * raw - beta * raw.exp()
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-            Op::VectorBetaLogP {
-                param_start,
-                n_params,
-                alpha,
-                beta,
-            } => {
-                let log_norm = ln_gamma(alpha + beta) - ln_gamma(*alpha) - ln_gamma(*beta);
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-            Op::VectorUniformLogP {
-                param_start,
-                n_params,
-                ..
-            } => {
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        s.ln() + (1.0 - s).ln()
-                    })
-                    .sum();
-                Value::Scalar(sum)
-            }
-        };
-        values.push(val);
-    }
-    values
-}
-
-pub fn eval_logp(graph: &Graph, params: &[f64]) -> f64 {
-    let values = forward(graph, params);
-    graph
-        .logp_terms
-        .iter()
-        .map(|id| values[id.0].as_scalar())
-        .sum()
-}
-
-pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
-    let values = forward(graph, params);
-    let n = graph.nodes.len();
-
-    let total_logp: f64 = graph
-        .logp_terms
-        .iter()
-        .map(|id| values[id.0].as_scalar())
-        .sum();
-
-    let mut adj_scalar = vec![0.0f64; n];
-    let mut adj_vector: Vec<Option<Vec<f64>>> = vec![None; n];
-    let mut grad = vec![0.0f64; graph.param_count];
-
-    for &id in &graph.logp_terms {
-        adj_scalar[id.0] += 1.0;
-    }
-
-    for node in graph.nodes.iter().rev() {
-        let idx = node.id.0;
-        let a_s = adj_scalar[idx];
-
-        match &node.op {
-            Op::Param(_) | Op::Constant(_) | Op::Data(_) => {}
-            Op::Add(a, b) => {
-                adj_scalar[a.0] += a_s;
-                adj_scalar[b.0] += a_s;
-            }
-            Op::Sub(a, b) => {
-                adj_scalar[a.0] += a_s;
-                adj_scalar[b.0] -= a_s;
-            }
-            Op::Mul(a, b) => {
-                adj_scalar[a.0] += a_s * values[b.0].as_scalar();
-                adj_scalar[b.0] += a_s * values[a.0].as_scalar();
-            }
-            Op::Div(a, b) => {
-                let va = values[a.0].as_scalar();
-                let vb = values[b.0].as_scalar();
-                adj_scalar[a.0] += a_s / vb;
-                adj_scalar[b.0] -= a_s * va / (vb * vb);
-            }
-            Op::Neg(a) => adj_scalar[a.0] -= a_s,
-            Op::Exp(a) => adj_scalar[a.0] += a_s * values[a.0].as_scalar().exp(),
-            Op::Log(a) => adj_scalar[a.0] += a_s / values[a.0].as_scalar(),
-            Op::Sigmoid(a) => {
-                let s = values[idx].as_scalar();
-                adj_scalar[a.0] += a_s * s * (1.0 - s);
-            }
-            Op::Square(a) => adj_scalar[a.0] += a_s * 2.0 * values[a.0].as_scalar(),
-            Op::ScalarMulData(scalar, data) => {
-                let s = values[scalar.0].as_scalar();
-                let d = values[data.0].as_vector();
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    let ds: f64 = uv.iter().zip(d.iter()).map(|(u, di)| u * di).sum();
-                    adj_scalar[scalar.0] += ds;
-                    let dd: Vec<f64> = uv.iter().map(|u| u * s).collect();
-                    merge_vec_adj(&mut adj_vector[data.0], &dd);
-                }
-            }
-            Op::VectorAdd(a, b) => {
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    merge_vec_adj(&mut adj_vector[a.0], uv);
-                    merge_vec_adj(&mut adj_vector[b.0], uv);
-                }
-            }
-            Op::ScalarBroadcastAdd(scalar, vec) => {
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    adj_scalar[scalar.0] += uv.iter().sum::<f64>();
-                    merge_vec_adj(&mut adj_vector[vec.0], uv);
-                }
-            }
-            Op::ScalarBroadcast(scalar) => {
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    adj_scalar[scalar.0] += uv.iter().sum::<f64>();
-                }
-            }
-            Op::NormalLogP { x, mu, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let mv = values[mu.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                let diff = xv - mv;
-                let s2 = sv * sv;
-                adj_scalar[x.0] += a_s * (-diff / s2);
-                adj_scalar[mu.0] += a_s * (diff / s2);
-                adj_scalar[sigma.0] += a_s * (diff * diff / (s2 * sv) - 1.0 / sv);
-            }
-            Op::HalfNormalLogP { x, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                if xv >= 0.0 {
-                    adj_scalar[x.0] += a_s * (-xv / (sv * sv));
-                    adj_scalar[sigma.0] += a_s * (xv * xv / (sv * sv * sv) - 1.0 / sv);
-                }
-            }
-            Op::StudentTLogP { x, nu, mu, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let nv = values[nu.0].as_scalar();
-                let mv = values[mu.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                let z = (xv - mv) / sv;
-                let z2 = z * z;
-                let denom = 1.0 + z2 / nv;
-                adj_scalar[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
-                adj_scalar[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
-                adj_scalar[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
-                adj_scalar[nu.0] += a_s
-                    * (0.5 * digamma(0.5 * (nv + 1.0))
-                        - 0.5 * digamma(0.5 * nv)
-                        - 0.5 / nv
-                        - 0.5 * denom.ln()
-                        + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
-            }
-            Op::UniformLogP { x: _, lower, upper } => {
-                let lv = values[lower.0].as_scalar();
-                let uv = values[upper.0].as_scalar();
-                let range = uv - lv;
-                if range > 0.0 {
-                    adj_scalar[lower.0] += a_s / range;
-                    adj_scalar[upper.0] -= a_s / range;
-                }
-            }
-            Op::BernoulliLogP { x, p } => {
-                let xv = values[x.0].as_scalar();
-                let pv = values[p.0].as_scalar().clamp(1e-12, 1.0 - 1e-12);
-                adj_scalar[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
-            }
-            Op::PoissonLogP { x, lam } => {
-                let xv = values[x.0].as_scalar();
-                let lv = values[lam.0].as_scalar();
-                adj_scalar[lam.0] += a_s * (xv / lv - 1.0);
-            }
-            Op::GammaLogP { x, alpha, beta } => {
-                let xv = values[x.0].as_scalar();
-                let av = values[alpha.0].as_scalar();
-                let bv = values[beta.0].as_scalar();
-                if xv > 0.0 {
-                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - bv);
-                    adj_scalar[alpha.0] += a_s * (bv.ln() - digamma(av) + xv.ln());
-                    adj_scalar[beta.0] += a_s * (av / bv - xv);
-                }
-            }
-            Op::BetaLogP { x, alpha, beta } => {
-                let xv = values[x.0].as_scalar();
-                let av = values[alpha.0].as_scalar();
-                let bv = values[beta.0].as_scalar();
-                if xv > 0.0 && xv < 1.0 {
-                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
-                    adj_scalar[alpha.0] += a_s * (digamma(av + bv) - digamma(av) + xv.ln());
-                    adj_scalar[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
-                }
-            }
-            Op::ObsLogP {
-                family,
-                linpred_vec,
-                aux,
-                obs_data_idx,
-            } => {
-                let obs = &graph.obs_vectors[*obs_data_idx];
-                match family {
-                    crate::graph::ObsFamily::Normal => {
-                        let mu = values[linpred_vec.0].as_vector();
-                        let sigma_node = aux.expect("Normal obs logp requires sigma");
-                        let sv = values[sigma_node.0].as_scalar();
-                        let s2 = sv * sv;
-                        let dmu: Vec<f64> = mu
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(m, o)| a_s * (o - m) / s2)
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
-                        let dsigma: f64 = mu
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(m, o)| {
-                                let diff = o - m;
-                                diff * diff / (s2 * sv) - 1.0 / sv
-                            })
-                            .sum::<f64>();
-                        adj_scalar[sigma_node.0] += a_s * dsigma;
-                    }
-                    crate::graph::ObsFamily::BernoulliLogit => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        let deta: Vec<f64> = eta
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(e, y)| a_s * (y - sigmoid_stable(*e)))
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
-                    }
-                    crate::graph::ObsFamily::PoissonLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        let deta: Vec<f64> = eta
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(e, y)| a_s * (y - e.exp()))
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
-                    }
-                    crate::graph::ObsFamily::ExponentialLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        let deta: Vec<f64> = eta
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(e, y)| a_s * (1.0 - y * e.exp()))
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
-                    }
-                    crate::graph::ObsFamily::LogNormal => {
-                        let mu = values[linpred_vec.0].as_vector();
-                        let sigma_node = aux.expect("LogNormal obs logp requires sigma");
-                        let sv = values[sigma_node.0].as_scalar();
-                        let s2 = sv * sv;
-                        let dmu: Vec<f64> = mu
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(m, y)| {
-                                let ly = y.max(1e-300).ln();
-                                a_s * (ly - m) / s2
-                            })
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
-                        let dsigma: f64 = mu
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(m, y)| {
-                                let ly = y.max(1e-300).ln();
-                                let d = ly - m;
-                                d * d / (s2 * sv) - 1.0 / sv
-                            })
-                            .sum::<f64>();
-                        adj_scalar[sigma_node.0] += a_s * dsigma;
-                    }
-                    crate::graph::ObsFamily::NegativeBinomialLog => {
-                        let eta = values[linpred_vec.0].as_vector();
-                        let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
-                        let av = values[alpha_node.0].as_scalar();
-                        let deta: Vec<f64> = eta
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                a_s * av * (y - mu) / (av + mu)
-                            })
-                            .collect();
-                        merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
-                        let dalpha: f64 = eta
-                            .iter()
-                            .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                let denom = av + mu;
-                                digamma(y + av) - digamma(av) + av.ln() + 1.0
-                                    - denom.ln()
-                                    - (y + av) / denom
-                            })
-                            .sum::<f64>();
-                        adj_scalar[alpha_node.0] += a_s * dalpha;
-                    }
-                }
-            }
-            Op::FusedLinearMu {
-                param_nodes,
-                data_indices,
-                intercept,
-            } => {
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    for (k, &pn) in param_nodes.iter().enumerate() {
-                        let data = &graph.data_vectors[data_indices[k]];
-                        let ds: f64 = uv.iter().zip(data.iter()).map(|(u, d)| u * d).sum();
-                        adj_scalar[pn.0] += ds;
-                    }
-                    if let Some(n) = *intercept {
-                        adj_scalar[n.0] += uv.iter().sum::<f64>();
-                    }
-                }
-            }
-            Op::MatVecMul {
-                matrix_idx,
-                param_start,
-                n_params,
-                intercept,
-            } => {
-                if let Some(ref uv) = adj_vector[idx].take() {
-                    let matrix = &graph.data_matrices[*matrix_idx];
-                    // grad[param_start + k] += sum_i X[i,k] * adj[i]
-                    for k in 0..*n_params {
-                        let mut ds = 0.0f64;
-                        ds += uv
-                            .iter()
-                            .enumerate()
-                            .take(matrix.n_rows)
-                            .map(|(i, u)| u * matrix.data[i * matrix.n_cols + k])
-                            .sum::<f64>();
-                        grad[param_start + k] += ds
-                            * graph.param_transforms[param_start + k]
-                                .derivative(params[param_start + k]);
-                    }
-                    if let Some(n) = *intercept {
-                        adj_scalar[n.0] += uv.iter().sum::<f64>();
-                    }
-                }
-            }
-            Op::VectorNormalLogP {
-                param_start,
-                n_params,
-                mu,
-                sigma,
-            } => {
-                let s2 = sigma * sigma;
-                for k in 0..*n_params {
-                    let v = params[param_start + k];
-                    grad[param_start + k] += a_s * (-(v - mu) / s2);
-                }
-            }
-            Op::VectorHalfNormalLogP {
-                param_start,
-                n_params,
-                sigma,
-            } => {
-                let s2 = sigma * sigma;
-                for k in 0..*n_params {
-                    let raw = params[param_start + k];
-                    grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
-                }
-            }
-            Op::VectorStudentTLogP {
-                param_start,
-                n_params,
-                nu,
-                mu,
-                sigma,
-            } => {
-                for k in 0..*n_params {
-                    let v = params[param_start + k];
-                    let z = (v - mu) / sigma;
-                    grad[param_start + k] +=
-                        a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
-                }
-            }
-            Op::VectorGammaLogP {
-                param_start,
-                n_params,
-                alpha,
-                beta,
-            } => {
-                for k in 0..*n_params {
-                    let raw = params[param_start + k];
-                    grad[param_start + k] += a_s * (alpha - beta * raw.exp());
-                }
-            }
-            Op::VectorBetaLogP {
-                param_start,
-                n_params,
-                alpha,
-                beta,
-            } => {
-                for k in 0..*n_params {
-                    let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
-                }
-            }
-            Op::VectorUniformLogP {
-                param_start,
-                n_params,
-                ..
-            } => {
-                for k in 0..*n_params {
-                    let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    grad[param_start + k] += a_s * (1.0 - 2.0 * s);
-                }
-            }
-        }
-    }
-
-    for node in &graph.nodes {
-        if let Op::Param(pidx) = node.op {
-            grad[pidx] = adj_scalar[node.id.0];
-        }
-    }
-    (total_logp, grad)
-}
-
-fn merge_vec_adj(slot: &mut Option<Vec<f64>>, incoming: &[f64]) {
-    match slot {
-        Some(ref mut existing) => {
-            for (e, i) in existing.iter_mut().zip(incoming.iter()) {
-                *e += i;
-            }
-        }
-        None => {
-            *slot = Some(incoming.to_vec());
-        }
-    }
-}
+pub use reference::{eval_logp, forward, grad_logp, Value};
+#[path = "autodiff_reference.rs"]
+pub mod reference;
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     let diff = x - mu;
@@ -2403,5 +1971,47 @@ mod tests {
         g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);
+    }
+}
+
+#[cfg(test)]
+mod expression_tests {
+    use super::*;
+    use crate::graph::ElementwiseOp as E;
+    #[test]
+    fn grouped_ragged_gradients_match_reference_and_finite_differences() {
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", 2);
+        g.vector_normal_logp(start, 2, 0.0, 1.0);
+        let indices = g.add_data("group", vec![0.0, 1.0, 0.0]);
+        let grouped = g.gather(start, 2, indices);
+        let mu = g.elementwise(E::Tanh, grouped, None);
+        let y = g.add_named_obs_data("y", "amount", vec![1.0, 2.0, 3.0]);
+        let sigma = g.add_constant(1.0);
+        g.normal_obs_logp(mu, sigma, y);
+        let z = g.add_named_obs_data("z", "other", vec![0.0; 5]);
+        g.schema.observations[1].dim = "other".into();
+        let c = g.add_constant(0.3);
+        let eta = g.broadcast_observation(c, z);
+        g.obs_logp_bernoulli_logit(eta, z);
+        let squared = g.elementwise(E::Mul, grouped, Some(grouped));
+        let sum = g.sum(squared);
+        let weight = g.add_constant(-0.1);
+        let potential = g.mul(sum, weight);
+        g.add_logp_term(potential);
+        let q = vec![0.2, -0.4];
+        let mut eval = Evaluator::new(&g);
+        eval.compute(&g, &q);
+        let (lp, grad) = grad_logp(&g, &q);
+        assert!((lp - eval.total_logp).abs() < 1e-10);
+        for i in 0..2 {
+            assert!((grad[i] - eval.grad[i]).abs() < 1e-10);
+            let mut plus = q.clone();
+            let mut minus = q.clone();
+            plus[i] += 1e-6;
+            minus[i] -= 1e-6;
+            let fd = (eval_logp(&g, &plus) - eval_logp(&g, &minus)) / 2e-6;
+            assert!((fd - eval.grad[i]).abs() < 1e-6);
+        }
     }
 }

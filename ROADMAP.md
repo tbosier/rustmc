@@ -4,6 +4,30 @@ This document describes direction, not release commitments. Items are ordered by
 dependency and user value. Correctness evidence and a coherent public API take priority
 over feature count.
 
+## Implemented in 0.12
+
+The [September review](docs/repo-review-2026-09-09.md) led to custom expression and
+prediction APIs, named dimensions/group indexing, declarative model and fit persistence,
+stable-ID batches with collected failures, explicit initial positions, a native custom
+log-density interface, composable structural models, dynamic count/hurdle/pooled Gaussian
+models, and reusable forecast evaluation/scenario/update tools. See the new
+[workflow guide](docs/forecasting-workflows.md) and changelog for supported boundaries.
+The sections below retain longer-term direction; implemented items are foundations to
+extend rather than missing features. In particular, the remaining priorities are:
+
+- Learned dynamic-GLM scales, dispersion and pooling strengths, with posterior geometry
+  and repeated-simulation checks before adding automatic inference selection.
+- Stationarity-aware learned AR priors, learned damping, richer initial/process
+  covariance structures, and support for singular state systems.
+- Streaming batch inputs/results and bounded retention; chunked dispatch currently
+  retains all datasets and results.
+- Further separation of the remaining Python model/sampler/preset binding code;
+  the new expression, prediction, persistence and model-family modules are already split.
+- BFMI/termination telemetry, larger calibration/misspecification studies, and useful
+  inference throughput measured only with acceptable convergence.
+- Shared-factor multivariate dynamics, stochastic volatility, changepoints/regimes,
+  calendar/cohort-dependent runoff and continuous payment severity/composition.
+
 ## Product direction
 
 rustmc should grow as a **practical, extensible, general Bayesian toolkit**. It should
@@ -22,7 +46,7 @@ Forecasting is an important proving ground for these ideas, but it is one applic
 Regression, GLMs, hierarchical models, experiments, reliability models, and other
 repeated Bayesian analyses should use the same foundations.
 
-## 1. Trustworthy 0.9 release
+## 1. Continuing correctness and release gates
 
 This is the release gate for everything below.
 

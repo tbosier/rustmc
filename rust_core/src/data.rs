@@ -220,33 +220,24 @@ impl DataBinding {
                 n_cols: m.n_cols,
             })
             .collect::<Vec<_>>();
-        let mut lengths = observations
-            .iter()
-            .map(|v| v.len())
-            .chain(vectors.iter().map(|v| v.len()))
-            .chain(matrices.iter().map(|m| m.n_rows));
-        let n_obs = lengths.next().unwrap_or(1);
-        if n_obs == 0 {
-            return Err(BindError::Empty {
-                key: "dataset".to_string(),
-            });
-        }
-        if lengths.any(|len| len != n_obs) {
-            return Err(BindError::LengthMismatch {
-                key: "dataset".to_string(),
-                len: 0,
-                expected: n_obs,
-                expected_from: "first data slot".to_string(),
-            });
-        }
-        Ok(Self {
+        let n_obs = observations.first().map_or_else(
+            || {
+                vectors
+                    .first()
+                    .map_or_else(|| matrices.first().map_or(1, |m| m.n_rows), |v| v.len())
+            },
+            |v| v.len(),
+        );
+        let binding = Self {
             vectors,
             observations,
             matrices,
             schema: graph.schema.clone(),
             n_obs,
             id: "0".to_string(),
-        })
+        };
+        binding.validate_for(graph)?;
+        Ok(binding)
     }
 
     pub fn bind(
@@ -311,39 +302,37 @@ impl DataBinding {
             }
         }
 
-        let mut n_obs = None;
-        let mut source = String::new();
-        let mut validate_len = |key: &str, len: usize| -> Result<(), BindError> {
+        let mut dimensions: HashMap<String, (usize, String)> = HashMap::new();
+        let mut validate_len = |slot: &DataSlot, len: usize| -> Result<(), BindError> {
             if len == 0 {
                 return Err(BindError::Empty {
-                    key: key.to_string(),
+                    key: slot.key.clone(),
                 });
             }
-            if let Some(expected) = n_obs {
-                if len != expected {
+            if let Some((expected, source)) = dimensions.get(&slot.dim) {
+                if len != *expected {
                     return Err(BindError::LengthMismatch {
-                        key: key.to_string(),
+                        key: slot.key.clone(),
                         len,
-                        expected,
+                        expected: *expected,
                         expected_from: source.clone(),
                     });
                 }
             } else {
-                n_obs = Some(len);
-                source = key.to_string();
+                dimensions.insert(slot.dim.clone(), (len, slot.key.clone()));
             }
             Ok(())
         };
         let mut observations = Vec::with_capacity(schema.observations.len());
         for slot in &schema.observations {
             let v = Arc::clone(&inputs.vectors[&slot.key]);
-            validate_len(&slot.key, v.len())?;
+            validate_len(slot, v.len())?;
             observations.push(v);
         }
         let mut vectors = Vec::with_capacity(schema.vectors.len());
         for slot in &schema.vectors {
             let v = Arc::clone(&inputs.vectors[&slot.key]);
-            validate_len(&slot.key, v.len())?;
+            validate_len(slot, v.len())?;
             vectors.push(v);
         }
         let mut matrices = Vec::with_capacity(schema.matrices.len());
@@ -366,7 +355,7 @@ impl DataBinding {
                     });
                 }
             }
-            validate_len(&slot.key, m.n_rows)?;
+            validate_len(slot, m.n_rows)?;
             matrices.push(m);
         }
         if check_finite {
@@ -405,16 +394,85 @@ impl DataBinding {
                 }
             }
         }
+        let n_obs = observations.first().map_or_else(
+            || {
+                vectors
+                    .first()
+                    .map_or_else(|| matrices.first().map_or(1, |m| m.n_rows), |v| v.len())
+            },
+            |v| v.len(),
+        );
         Ok(Self {
             vectors,
             observations,
             matrices,
             schema: schema.clone(),
-            n_obs: n_obs.unwrap_or(1),
+            n_obs,
             id: id.into(),
         })
     }
 
+    /// Whether two bindings share the immutable allocation for a named payload.
+    /// Equal copied data returns false; no allocation addresses are exposed.
+    pub fn shares_payload_with(&self, other: &Self, key: &str) -> bool {
+        let vector = |binding: &Self| {
+            binding
+                .schema
+                .vectors
+                .iter()
+                .zip(&binding.vectors)
+                .chain(
+                    binding
+                        .schema
+                        .observations
+                        .iter()
+                        .zip(&binding.observations),
+                )
+                .find(|(slot, _)| slot.key == key)
+                .map(|(_, values)| Arc::clone(values))
+        };
+        if let (Some(a), Some(b)) = (vector(self), vector(other)) {
+            return Arc::ptr_eq(&a, &b);
+        }
+        let matrix = |binding: &Self| {
+            binding
+                .schema
+                .matrices
+                .iter()
+                .zip(&binding.matrices)
+                .find(|(slot, _)| slot.key == key)
+                .map(|(_, matrix)| Arc::clone(&matrix.data))
+        };
+        match (matrix(self), matrix(other)) {
+            (Some(a), Some(b)) => Arc::ptr_eq(&a, &b),
+            _ => false,
+        }
+    }
+
+    /// Row counts keyed by declared dimension. Use this for multi-population models.
+    pub fn dimension_sizes(&self) -> HashMap<String, usize> {
+        self.schema
+            .observations
+            .iter()
+            .zip(&self.observations)
+            .map(|(s, v)| (s.dim.clone(), v.len()))
+            .chain(
+                self.schema
+                    .vectors
+                    .iter()
+                    .zip(&self.vectors)
+                    .map(|(s, v)| (s.dim.clone(), v.len())),
+            )
+            .chain(
+                self.schema
+                    .matrices
+                    .iter()
+                    .zip(&self.matrices)
+                    .map(|(s, m)| (s.dim.clone(), m.n_rows)),
+            )
+            .collect()
+    }
+    /// Compatibility row count for the first observation population.
     pub fn n_obs(&self) -> usize {
         self.n_obs
     }
@@ -434,25 +492,40 @@ impl DataBinding {
         if self.schema != graph.schema {
             return Err(BindError::SchemaMismatch);
         }
-        for (index, values) in self.observations.iter().chain(&self.vectors).enumerate() {
-            if values.len() != self.n_obs {
-                return Err(BindError::LengthMismatch {
-                    key: format!("binding vector slot {index}"),
-                    len: values.len(),
-                    expected: self.n_obs,
-                    expected_from: "binding row count".into(),
-                });
+        let mut dimensions: HashMap<&str, usize> = HashMap::new();
+        for (slot, len) in self
+            .schema
+            .observations
+            .iter()
+            .zip(&self.observations)
+            .map(|(s, v)| (s, v.len()))
+            .chain(
+                self.schema
+                    .vectors
+                    .iter()
+                    .zip(&self.vectors)
+                    .map(|(s, v)| (s, v.len())),
+            )
+            .chain(
+                self.schema
+                    .matrices
+                    .iter()
+                    .zip(&self.matrices)
+                    .map(|(s, m)| (s, m.n_rows)),
+            )
+        {
+            if let Some(expected) = dimensions.insert(&slot.dim, len) {
+                if expected != len {
+                    return Err(BindError::LengthMismatch {
+                        key: slot.key.clone(),
+                        len,
+                        expected,
+                        expected_from: slot.dim.clone(),
+                    });
+                }
             }
         }
         for (index, matrix) in self.matrices.iter().enumerate() {
-            if matrix.n_rows != self.n_obs {
-                return Err(BindError::LengthMismatch {
-                    key: format!("binding matrix slot {index}"),
-                    len: matrix.n_rows,
-                    expected: self.n_obs,
-                    expected_from: "binding row count".into(),
-                });
-            }
             if matrix.n_rows.checked_mul(matrix.n_cols) != Some(matrix.data.len()) {
                 return Err(BindError::RaggedMatrix {
                     key: format!("binding matrix slot {index}"),

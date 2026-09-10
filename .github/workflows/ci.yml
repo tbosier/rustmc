@@ -62,7 +62,7 @@ jobs:
         run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=1,<2'"
       - name: Verify current-source provenance and Python integration
         env:
-          RUSTMC_REQUIRE_SITE_PACKAGES: "1"
+          RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
 
   python-wheel-install:

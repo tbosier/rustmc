@@ -32,6 +32,7 @@ theme:
 nav:
   - Home: index.md
   - Getting Started: getting-started.md
+  - Custom Models: custom-models.md
   - Examples:
     - Linear Regression: examples/linear-regression.md
     - Hierarchical Models: examples/hierarchical.md
@@ -40,6 +41,9 @@ nav:
     - High-Dimensional Regression: examples/high-dimensional.md
   - API Reference: reference.md
   - Forecasting:
+    - Evaluation and workflows: forecasting-workflows.md
+    - Structural composition: structural-forecasting.md
+    - Dynamic counts, amounts, and pooling: dynamic-glm.md
     - Regression and Fourier terms: regression-forecasting.md
     - Independent batches and diagnostics: forecast-batches.md
     - Sparse amounts: sparse-amounts.md

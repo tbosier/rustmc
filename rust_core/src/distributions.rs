@@ -1,5 +1,8 @@
 use crate::graph::{Graph, NodeId, ParamTransform};
 
+#[deprecated(
+    note = "unused abstraction; use graph log-probability terms or the native LogDensity interface"
+)]
 pub trait Distribution {
     fn logp(&self, graph: &mut Graph) -> NodeId;
 }
