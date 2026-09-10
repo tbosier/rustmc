@@ -149,7 +149,7 @@ def weighted_interval_score(paths: np.ndarray, truth: np.ndarray) -> float:
     for alpha in (0.20, 0.05):
         lower, upper = np.quantile(paths, [alpha / 2.0, 1.0 - alpha / 2.0], axis=0)
         total += (alpha / 2.0) * interval_score(truth, lower, upper, alpha)
-        denominator += alpha / 2.0
+        denominator += 1.0
     return float(np.mean(total / denominator))
 
 

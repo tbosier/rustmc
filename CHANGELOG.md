@@ -6,6 +6,55 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-09
+
+### Added
+
+- Scalar/elementwise expression arithmetic and transforms, named deterministics,
+  potentials, independent observation dimensions, grouped parameter indexing, and
+  posterior prediction on new predictor rows without dummy responses.
+- Versioned declarative compiled-model artifacts and validated generic fit artifacts
+  that preserve posterior draws, training data, telemetry, and seeded prediction.
+- Composable structural level, damped trend, harmonic seasonal, stable fixed AR, and
+  static/dynamic regression blocks, with joint Gaussian FFBS/Gibbs, optional Student-t
+  observation errors, component histories, prior prediction, and persistence.
+- Native dynamic Poisson, negative-binomial, hurdle-lognormal, and pooled Gaussian
+  models with exposure, group coefficients, latent trajectories and optional shared
+  shocks using elliptical slice sampling. These infer coefficients and states with
+  explicitly fixed scale/dispersion inputs.
+- Rolling-origin backtests, CRPS/WIS/coverage/width scores, seasonal-naive bootstrap
+  baselines, labeled forecast draws, named feature checks, scenario mixtures, portable
+  forecast archives, and full-refit update sessions.
+- A native `LogDensity`/gradient interface reusing HMC/NUTS and explicit unconstrained
+  chain initialization. Generic compiled batches use stable cell IDs, bounded pools,
+  collected failures, diagnostics and predictive results.
+- A mixed Python/native package with maintained API type information.
+
+### Fixed
+
+- Forecast simulation now propagates the full configured process covariance, including
+  fixed regression-state innovations; invalid conjugate covariance updates are rejected.
+- Native observation simulation no longer clips exponential rates or probabilities.
+- Core sampler configuration rejects empty chains/draws, invalid integration controls,
+  nonfinite initialization and overflowing allocation counts.
+- Duplicate likelihood/deterministic outputs and incompatible named dimensions are
+  rejected instead of silently overwriting or conflating results.
+- Regression expression compilation preserves parameter identity for names resembling
+  internal constant markers; intercepts use explicit constant/parameter variants.
+- Demo WIS uses its standard denominator. The separate baseline single-interval metric
+  is named `interval_score_95`; retained scores were corrected without rerunning timing.
+- Persistence support/shape validation and allocation guards cover new model kernels.
+
+### Changed
+
+- `CompiledModel.sample_batch` defaults to `cell_id_v1` seeds. Use `position_v0` for
+  previous positional replay; the legacy global `batch_sample` keeps its old seeds.
+- Extracted expression compilation, prediction binding, observation simulation and
+  artifact code into focused modules; isolated the legacy Rust compiled-model format
+  and reference autodiff while preserving their public import paths.
+- Structural Student-t forecasts require `df > 1`, so their conditional means exist.
+  Damping/AR/df and dynamic-GLM scales/dispersion remain fixed model inputs.
+
 ## [0.11.0] - 2026-09-08
 
 ### Added

@@ -10,7 +10,7 @@ Before publishing, synchronize the package versions in `rust_core/Cargo.toml`,
 Update the changelog and crate README dependency example. Check the release tag:
 
 ```bash
-python3 scripts/verify_version.py v0.11.0
+python3 scripts/verify_version.py v0.12.0
 cargo metadata --locked --offline --no-deps --format-version 1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

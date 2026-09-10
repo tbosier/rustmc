@@ -77,3 +77,5 @@ state transitions. Drift and seasonal regression uncertainty must be propagated 
 the posterior rather than in preprocessing. Robust or heavy-tailed observation models
 would address the hard-series outliers, and rolling-origin scoring should become a
 first-class library feature.
+
+Score correction (9 September 2026): retained `rolling_candidate_wis` values were divided by four to match the standard WIS denominator K + 0.5 for the original two-interval grid. This algebraic correction leaves all candidate rankings unchanged. The GP/Prophet single-interval metric is named `interval_score_95`; it is not WIS. Forecasts and timings were not rerun.

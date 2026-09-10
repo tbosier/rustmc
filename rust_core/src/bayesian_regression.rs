@@ -199,12 +199,26 @@ pub fn fit_regression(
         .checked_mul(config.thinning)
         .and_then(|n| n.checked_add(config.num_warmup))
         .ok_or_else(|| invalid("too many iterations"))?;
+    if config.structural_model.has_observation_variances() {
+        return Err(invalid(
+            "regression variance inference requires a constant observation variance",
+        ));
+    }
     let d = config.structural_model.dimension();
     if config.innovation_indices.len() != config.variance_priors.len()
         || config.variance_names.len() != config.variance_priors.len()
         || config.innovation_indices.iter().any(|&i| i >= d)
     {
         return Err(invalid("innovation indices, priors and names must align"));
+    }
+    let mut unique = std::collections::HashSet::new();
+    for &i in &config.innovation_indices {
+        if !unique.insert(i)
+            || (0..d)
+                .any(|j| j != i && config.structural_model.process_covariance()[i * d + j] != 0.0)
+        {
+            return Err(invalid("inferred innovation indices must be unique and uncorrelated with all other innovations for inverse-gamma conjugacy"));
+        }
     }
     for prior in config
         .variance_priors
@@ -363,21 +377,18 @@ impl RegressionPosterior {
                     mut cumulative,
                 ) = (vec![], vec![], vec![], vec![], vec![], vec![]);
                 for draw in draws {
+                    let mut simulation = self.config.structural_model.clone();
+                    simulation.set_variances(
+                        &self.config.innovation_indices,
+                        &draw.variances,
+                        draw.observation_variance,
+                    );
                     let mut state = draw.terminal_state.clone();
                     let (mut l, mut s, mut r, mut m, mut o, mut c) =
                         (vec![], vec![], vec![], vec![], vec![], vec![]);
                     let mut total = 0.0;
                     for row in design {
-                        let mut next: Vec<f64> = self
-                            .config
-                            .structural_model
-                            .transition()
-                            .chunks(d)
-                            .map(|a| a.iter().zip(&state).map(|(a, b)| a * b).sum())
-                            .collect();
-                        for (&i, &v) in self.config.innovation_indices.iter().zip(&draw.variances) {
-                            next[i] += normal(&mut rng) * v.sqrt();
-                        }
+                        let next = simulation.simulate_transition(&state, &mut rng)?;
                         let reg: f64 = row.iter().zip(&draw.coefficients).map(|(a, b)| a * b).sum();
                         let mean = reg
                             + self
@@ -615,6 +626,62 @@ mod tests {
                 assert!((means[h] - reg[h] - levels[h]).abs() < 1e-12);
             }
         }
+    }
+    #[test]
+    fn forecast_keeps_fixed_correlated_process_noise() {
+        let mut c = config();
+        c.structural_model = LinearGaussianStateSpace::new(
+            2,
+            vec![1.0, 0.0, 0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![0.8, 0.3, 0.3, 0.6],
+            1.0,
+            vec![0.0; 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        c.innovation_indices.clear();
+        c.variance_priors.clear();
+        c.variance_names.clear();
+        let draw = RegressionDraw {
+            variances: vec![],
+            observation_variance: 1.0,
+            coefficients: vec![0.0],
+            terminal_state: vec![0.0; 2],
+        };
+        let post = RegressionPosterior {
+            config: c,
+            chains: vec![vec![draw; 15000]],
+        };
+        let paths = post.forecast(&[vec![0.0], vec![0.0]], 81).unwrap();
+        let product = |a: &Vec<Vec<f64>>, b: &Vec<Vec<f64>>, i: usize, j: usize| {
+            a.iter().zip(b).map(|(x, y)| x[i] * y[j]).sum::<f64>() / a.len() as f64
+        };
+        assert!((product(&paths.level_paths[0], &paths.level_paths[0], 0, 0) - 0.8).abs() < 0.035);
+        assert!(
+            (product(&paths.level_paths[0], &paths.secondary_paths[0], 0, 0) - 0.3).abs() < 0.035
+        );
+        assert!((product(&paths.level_paths[0], &paths.level_paths[0], 0, 1) - 0.8).abs() < 0.045);
+    }
+    #[test]
+    fn independent_inverse_gamma_updates_reject_correlations_and_duplicate_indices() {
+        let mut c = config();
+        c.innovation_indices = vec![0, 0];
+        c.variance_priors.push(c.variance_priors[0]);
+        c.variance_names.push("duplicate".into());
+        assert!(fit_regression(&[1.0, 2.0], &[vec![1.0], vec![1.0]], &c).is_err());
+        let mut c = config();
+        c.structural_model = LinearGaussianStateSpace::new(
+            2,
+            vec![1.0, 0.0, 0.0, 1.0],
+            vec![1.0, 0.0],
+            vec![1.0, 0.3, 0.3, 1.0],
+            1.0,
+            vec![0.0; 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        assert!(fit_regression(&[1.0, 2.0], &[vec![1.0], vec![1.0]], &c).is_err());
     }
     #[test]
     fn fourier_phase_and_nyquist() {

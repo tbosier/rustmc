@@ -920,7 +920,7 @@ checksum = "357703d41365b4b27c590e3ed91eabb1b663f07c4c084095e60cbed4362dff0d"
 
 [[package]]
 name = "rustmc"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "ndarray",
  "numpy",
@@ -929,14 +929,15 @@ dependencies = [
  "rand_chacha",
  "rand_distr",
  "rustmc_core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "rustmc_core"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "faer",
- "ndarray",
  "rand",
  "rand_chacha",
  "rand_distr",
