@@ -957,6 +957,7 @@ class CompiledModel:
         init: ArrayLike | None = None,
         metric: Literal["auto", "diag", "dense"] = "auto",
     ) -> FitResult: ...
+    def sample_iter(self, datasets: Any, **options: Any) -> Any: ...
     def sample_batch(
         self,
         datasets: Sequence[_Data | BoundModel],
