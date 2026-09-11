@@ -1,10 +1,4 @@
-"""Reusable hierarchical-model helpers.
-
-This module captures the centered partial-pooling pattern that rustmc can
-already express today. It gives users a stable template boundary now, while
-the future non-centered API can slot in behind the same conceptual surface
-once the DSL grows parameter-to-parameter transforms.
-"""
+"""Scalar Normal partial pooling; the compiler noncenters supported hierarchies."""
 
 from dataclasses import dataclass
 from typing import Sequence
@@ -32,9 +26,8 @@ def build_centered_normal_partial_pooling(
 ) -> CenteredNormalHierarchy:
     """Build the centered 8-schools style hierarchy used by the examples.
 
-    The current rustmc DSL can represent scalar hyperpriors and scalar
-    hierarchical group means. This helper keeps that pattern reusable and
-    isolates the eventual non-centered API change to one place.
+    The model is written conditionally. rustmc compiles supported scalar
+    hierarchies into noncentered sampling coordinates.
     """
 
     mu_global = builder.normal_prior(mu_global_name, mu=mu_global_mu, sigma=mu_global_sigma)

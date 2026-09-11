@@ -33,19 +33,16 @@ from hierarchical_templates import build_centered_normal_partial_pooling
 
 # ── 1. Simulate data ─────────────────────────────────────────────────────────
 
-np.random.seed(42)
+rng = np.random.default_rng(42)
 
 J = 8                                       # number of groups
 sigma_obs = 2.0                             # known within-group noise
 N_per_group = 30                            # observations per group
 
-# True group means — deliberately spread across a wide range
-mu_true = np.array([5.0, -1.0, 3.0, 0.0, 8.0, 2.0, -3.0, 6.0])
-# True hyperparameters
-mu_global_true   = mu_true.mean()           # ≈ 2.5
-sigma_group_true = mu_true.std()            # ≈ 3.7
-
-ys = [np.random.normal(mu_true[j], sigma_obs, N_per_group) for j in range(J)]
+mu_global_true = 2.5
+sigma_group_true = 3.0
+mu_true = rng.normal(mu_global_true, sigma_group_true, J)
+ys = [rng.normal(mu_true[j], sigma_obs, N_per_group) for j in range(J)]
 data = {f"y_{j}": ys[j] for j in range(J)}
 
 print("Simulated data")

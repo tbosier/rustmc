@@ -10,8 +10,7 @@ Demonstrates the full Bayesian workflow:
   3. Posterior predictive     — generate replicated data from the posterior
 
 Both the slope (beta) and the observation noise (sigma) are inferred
-from data.  sigma gets a HalfNormal(2) prior — the standard choice for
-a positive scale parameter.
+from data.  sigma gets a HalfNormal(2) prior chosen for this example’s units.
 """
 
 import numpy as np
@@ -70,4 +69,4 @@ print(f"  y_rep mean:   {y_rep.mean():.4f}  (data mean: {y.mean():.4f})")
 print(f"  y_rep std:    {y_rep.std():.4f}   (data std:  {y.std():.4f})")
 # Simple posterior predictive p-value: fraction of reps where std > observed std
 ppc_p = (y_rep.std(axis=1) > y.std()).mean()
-print(f"  PPC p-value (std): {ppc_p:.3f}  (0.5 = perfect calibration)")
+print(f"  PPC p-value (std): {ppc_p:.3f}")

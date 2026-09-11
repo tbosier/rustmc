@@ -1,5 +1,5 @@
 site_name: rustmc
-site_description: Fast Bayesian inference in Rust with a Python API.
+site_description: Bayesian models in Python. Inference in Rust.
 site_url: https://tbosier.github.io/rustmc
 repo_url: https://github.com/tbosier/rustmc
 repo_name: tbosier/rustmc
@@ -34,6 +34,8 @@ nav:
   - Getting Started: getting-started.md
   - Custom Models: custom-models.md
   - Examples:
+    - Repeated Calibration: examples/repeated-calibration.md
+    - Site Effects: examples/site-effects.md
     - Linear Regression: examples/linear-regression.md
     - Hierarchical Models: examples/hierarchical.md
     - Hierarchical Templates: examples/hierarchical-templates.md
