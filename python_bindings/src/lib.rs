@@ -2045,6 +2045,19 @@ impl PyCompiledModel {
         })
     }
 
+    /// Lazily fit stable-ID datasets; the Python stream bounds chunk retention.
+    #[pyo3(signature = (datasets, **options))]
+    fn sample_iter<'py>(
+        slf: PyRef<'py, Self>,
+        datasets: &Bound<'py, PyAny>,
+        options: Option<&Bound<'py, PyDict>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let py = slf.py();
+        py.import("rustmc.batch")?
+            .getattr("sample_iter")?
+            .call((slf, datasets), options)
+    }
+
     #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, threads=1, chunk_size=64, errors="raise", seed_policy="cell_id_v1", init=None))]
     #[allow(clippy::too_many_arguments)]
     fn sample_batch(

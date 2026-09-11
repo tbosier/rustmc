@@ -900,6 +900,7 @@ class CompiledModel:
         show_progress: bool = True,
         init: ArrayLike | None = None,
     ) -> FitResult: ...
+    def sample_iter(self, datasets: Any, **options: Any) -> Any: ...
     def sample_batch(
         self,
         datasets: Sequence[_Data | BoundModel],

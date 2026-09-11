@@ -33,6 +33,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Custom Models: custom-models.md
+  - Streaming Batches: streaming-batches.md
   - Native Rust Models: native-models.md
   - Examples:
     - Repeated Calibration: examples/repeated-calibration.md
