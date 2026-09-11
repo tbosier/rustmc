@@ -64,6 +64,16 @@ jobs:
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
+      - name: Check reference posteriors and repeated simulations
+        if: matrix.python-version == '3.11'
+        run: >-
+          ${{ runner.temp }}/source-env/bin/python -m benchmarks.validate_posteriors
+          --replicates 32 --output "${{ runner.temp }}/posterior-validation.json"
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.python-version == '3.11'
+        with:
+          name: posterior-validation
+          path: ${{ runner.temp }}/posterior-validation.json
 
   python-wheel-install:
     name: Python wheel install (${{ matrix.python-version }}, ${{ matrix.os }})
