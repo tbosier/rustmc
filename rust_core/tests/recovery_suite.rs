@@ -9,9 +9,9 @@ use rustmc_core::graph::Graph;
 use rustmc_core::sampler::{sample as run_sample, SamplerConfig, SamplerType};
 
 const CHAIN_COUNT: usize = 4;
-const DEFAULT_DRAWS: usize = 600;
-const DEFAULT_WARMUP: usize = 600;
-const FUNNEL_DRAWS: usize = 400;
+const DEFAULT_DRAWS: usize = 2000;
+const DEFAULT_WARMUP: usize = 1000;
+const FUNNEL_DRAWS: usize = 2000;
 const FUNNEL_WARMUP: usize = 1200;
 
 fn sample_graph(
@@ -26,10 +26,11 @@ fn sample_graph(
         SamplerConfig {
             sampler: SamplerType::Nuts,
             num_chains: CHAIN_COUNT,
-            num_draws: draws,
-            num_warmup: warmup,
+            // Positive reference cases need enough retained draws for the release gate.
+            num_draws: draws.max(2000),
+            num_warmup: warmup.max(1000),
             step_size: 0.0,
-            target_accept: 0.80,
+            target_accept: 0.999,
             num_leapfrog_steps: 15,
             max_tree_depth,
             seed,
@@ -68,10 +69,10 @@ fn assert_health(report: &DiagnosticsReport, max_rhat: f64, min_ess: f64, max_di
             .collect::<Vec<_>>()
     );
     assert!(
-        report
-            .params
-            .iter()
-            .all(|p| p.ess_bulk.is_finite() && p.ess_bulk >= min_ess),
+        report.params.iter().all(|p| p.ess_bulk.is_finite()
+            && p.ess_bulk >= min_ess
+            && p.ess_tail.is_finite()
+            && p.ess_tail >= min_ess),
         "some ESS values fell below {min_ess}: {:?}",
         report
             .params
@@ -145,7 +146,7 @@ fn intercept_only_gaussian_recovers_location_and_scale() {
 
     let result = sample_graph(graph, 101, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.02, 100.0, 15);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "mu", mu_true, 0.15);
     assert_scalar(&report, "sigma", sigma_true, 0.15);
 }
@@ -175,7 +176,7 @@ fn linear_regression_recovers_coefficients() {
 
     let result = sample_graph(graph, 102, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.02, 100.0, 25);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.15);
     assert_scalar(&report, "beta", beta_true, 0.15);
     assert_scalar(&report, "sigma", sigma_true, 0.15);
@@ -206,7 +207,7 @@ fn logistic_regression_recovers_linear_predictor() {
 
     let result = sample_graph(graph, 103, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.03, 80.0, 15);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.25);
     assert_scalar(&report, "beta", beta_true, 0.4);
 }
@@ -236,7 +237,7 @@ fn poisson_glm_recovers_rate_coefficients() {
 
     let result = sample_graph(graph, 104, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.03, 80.0, 20);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.25);
     assert_scalar(&report, "beta", beta_true, 0.25);
 }
@@ -267,7 +268,7 @@ fn ar1_style_regression_recovers_lag_coefficient() {
 
     let result = sample_graph(graph, 105, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.03, 80.0, 20);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.15);
     assert_scalar(&report, "phi", phi_true, 0.15);
     assert_scalar(&report, "sigma", sigma_true, 0.15);
@@ -317,12 +318,12 @@ fn ridge_regression_recovers_high_dimensional_coefficients() {
 
     let result = sample_graph(graph, 106, 200, 200, 8);
     let report = result.diagnostics();
-    assert_health(&report, 1.08, 40.0, 20);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_vector_rmse(&report, "beta", &beta_true, 0.20);
 }
 
 #[test]
-fn partial_pooling_panel_recovers_group_effects() {
+fn noncentered_partial_pooling_panel_recovers_group_effects() {
     let mut rng = ChaCha8Rng::seed_from_u64(77);
     let groups = 5;
     let per_group = 30;
@@ -353,7 +354,11 @@ fn partial_pooling_panel_recovers_group_effects() {
     let mu_alpha = Normal::prior(&mut graph, "mu_alpha", 0.0, 5.0);
     let sigma_alpha = HalfNormal::prior(&mut graph, "sigma_alpha", 1.0);
     let alpha_nodes: Vec<_> = (0..groups)
-        .map(|g| Normal::prior_with_nodes(&mut graph, &format!("alpha_{g}"), mu_alpha, sigma_alpha))
+        .map(|g| {
+            let z = Normal::prior(&mut graph, &format!("z_{g}"), 0.0, 1.0);
+            let scaled = graph.mul(sigma_alpha, z);
+            graph.add(mu_alpha, scaled)
+        })
         .collect();
     let beta = Normal::prior(&mut graph, "beta", 0.0, 2.0);
     let sigma = HalfNormal::prior(&mut graph, "sigma", 1.0);
@@ -367,12 +372,26 @@ fn partial_pooling_panel_recovers_group_effects() {
 
     let result = sample_graph(graph, 107, 2000, 1000, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.50, 20.0, 40);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "mu_alpha", mu_alpha_true, 0.6);
     assert_scalar(&report, "sigma_alpha", sigma_alpha_true, 0.4);
     assert_scalar(&report, "beta", beta_true, 0.25);
     assert_scalar(&report, "sigma", sigma_true, 0.15);
-    assert_vector_rmse(&report, "alpha", &alpha_true, 0.7);
+    for (g, truth) in alpha_true.iter().enumerate() {
+        let names = &result.param_names;
+        let index = |name: &str| names.iter().position(|n| n == name).unwrap();
+        let recovered = result
+            .samples
+            .iter()
+            .flatten()
+            .map(|draw| {
+                draw[index("mu_alpha")]
+                    + draw[index("sigma_alpha")] * draw[index(&format!("z_{g}"))]
+            })
+            .sum::<f64>()
+            / result.samples.iter().map(Vec::len).sum::<usize>() as f64;
+        assert!((recovered - truth).abs() < 0.7);
+    }
 }
 
 #[test]
@@ -421,9 +440,9 @@ fn noncentered_hierarchical_poisson_recovers_partial_pooling_counts() {
     let obs_idx = graph.add_obs_data(y);
     graph.obs_logp_poisson_log(eta, obs_idx);
 
-    let result = sample_graph(graph, 108, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(graph, 108, 4000, 5000, 12);
     let report = result.diagnostics();
-    assert_health(&report, 1.02, 80.0, 20);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "mu_alpha", mu_alpha_true, 0.35);
     assert_scalar(&report, "sigma_alpha", sigma_alpha_true, 0.45);
     assert_scalar(&report, "beta", beta_true, 0.20);
@@ -521,7 +540,7 @@ fn eight_schools_noncentered_recovers_hyperparameters() {
 
     let result = sample_graph(graph, 110, 800, 800, 10);
     let report = result.diagnostics();
-    assert_health(&report, 1.04, 60.0, 30);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "mu", mu_true, 0.75);
     assert_scalar(&report, "tau", tau_true, 1.3);
     for i in 0..8 {
@@ -579,7 +598,7 @@ fn noncentered_funnel_is_stable_and_recovers_latent_scale() {
 
     let result = sample_graph(graph, 112, FUNNEL_DRAWS, FUNNEL_WARMUP, 12);
     let report = result.diagnostics();
-    assert_health(&report, 1.05, 50.0, 25);
+    assert_health(&report, 1.01, 400.0, 0);
     assert_scalar(&report, "y", 0.0, 0.5);
     assert_scalar(&report, "z", 0.0, 0.35);
     let y_diag = diag(&report, "y");

@@ -1,16 +1,21 @@
+use rustmc_core::model::{
+    prior_name, CompiledDefinition as CompiledPythonModel, DisplayParamSpec, HyperParam,
+    LikelihoodFamily, LikelihoodSpec, MuExpr, PriorSpec, SigmaSpec,
+};
+fn model_error(error: rustmc_core::model::ModelError) -> PyErr {
+    match error {
+        rustmc_core::model::ModelError::Invalid(s) => PyValueError::new_err(s),
+        rustmc_core::model::ModelError::Parameter(s) => ParameterError::new_err(s),
+    }
+}
 mod generic_results;
 use generic_results::StoredBatchFit;
-mod expression_compile;
 mod fit_artifact;
-use expression_compile::{build_mu_expr, collect_matvec_params};
 mod model_artifact;
 mod prediction_binding;
 use prediction_binding::prediction_graph;
 mod expressions;
-use expressions::{
-    collect_expr_param_names, extract_expr, first_param_name, Expr, MuExpr, ParamRef,
-    VectorParamRef,
-};
+use expressions::{extract_expr, first_param_name, Expr, ParamRef, VectorParamRef};
 mod dynamic_glm;
 mod forecast_batch;
 mod forecast_diagnostics;
@@ -61,11 +66,7 @@ use rustmc_core::bayesian_trend::{
 };
 use rustmc_core::data::{DataBinding as CoreDataBinding, DataInputs, MatrixBinding};
 use rustmc_core::diagnostics::inv_normal_cdf;
-use rustmc_core::distributions::{
-    Bernoulli, BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Poisson, StudentT,
-    Uniform,
-};
-use rustmc_core::graph::{Graph, NodeId, ParamTransform};
+use rustmc_core::graph::{Graph, ParamTransform};
 use rustmc_core::hierarchical::{
     fit_hierarchical_mean, HierarchicalMeanConfig as CoreHierarchicalMeanConfig,
     HierarchicalMeanForecast as CoreHierarchicalMeanForecast,
@@ -86,7 +87,7 @@ use std::sync::Arc;
 
 type Data1d = HashMap<String, Vec<f64>>;
 type Data2d = HashMap<String, (Vec<f64>, usize, usize)>;
-type LinearTerms = Vec<(String, String)>;
+
 type PyIntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
 type PyIntervalMatrices<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
 
@@ -136,16 +137,18 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
 
 #[pyclass]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct ModelSpec {
-    dimensions: HashMap<String, String>,
-    potentials: Vec<(String, MuExpr)>,
-    deterministics: Vec<(String, MuExpr)>,
-    priors: Vec<PriorSpec>,
-    likelihoods: Vec<LikelihoodSpec>,
-    #[serde(skip)]
-    bound_data_1d: HashMap<String, Vec<f64>>,
-    #[serde(skip)]
-    bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
+#[serde(transparent)]
+struct ModelSpec(rustmc_core::model::ModelSpec);
+impl std::ops::Deref for ModelSpec {
+    type Target = rustmc_core::model::ModelSpec;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for ModelSpec {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
 }
 
 impl ModelSpec {
@@ -155,28 +158,6 @@ impl ModelSpec {
         definition.bound_data_2d.clear();
         definition
     }
-}
-
-#[derive(Debug, Clone)]
-enum DisplayParamSpec {
-    Raw {
-        name: String,
-        raw_index: usize,
-    },
-    DerivedNonCenteredNormal {
-        name: String,
-        raw_index: usize,
-        mu: HyperParam,
-        sigma: HyperParam,
-    },
-}
-
-#[derive(Debug, Clone)]
-struct CompiledPythonModel {
-    graph: Graph,
-    likelihood_names: Vec<String>,
-    display_params: Vec<DisplayParamSpec>,
-    auto_vector_params: HashMap<String, usize>,
 }
 
 #[pyclass(name = "BoundModel")]
@@ -313,152 +294,7 @@ impl PyBoundModel {
 }
 
 fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
-    let mut one_d = spec.bound_data_1d.clone();
-    let mut two_d = spec.bound_data_2d.clone();
-    let vector_sizes: HashMap<&str, usize> = spec
-        .priors
-        .iter()
-        .filter_map(|prior| match prior {
-            PriorSpec::VectorNormal { name, n, .. } => Some((name.as_str(), *n)),
-            _ => None,
-        })
-        .collect();
-    fn visit(
-        expr: &MuExpr,
-        one_d: &mut Data1d,
-        two_d: &mut Data2d,
-        vector_sizes: &HashMap<&str, usize>,
-    ) -> PyResult<()> {
-        match expr {
-            MuExpr::ParamTimesData { data_key, .. }
-            | MuExpr::Data(data_key)
-            | MuExpr::Gather { data_key, .. } => {
-                one_d.entry(data_key.clone()).or_insert_with(|| vec![0.0]);
-            }
-            MuExpr::MatVec {
-                param_name,
-                data_key,
-            } => {
-                if !two_d.contains_key(data_key) {
-                    let n_cols = vector_sizes.get(param_name.as_str()).copied().ok_or_else(|| {
-                        PyValueError::new_err(format!(
-                            "cannot compile matrix '{}' without bound data: declare '{}' with vector_normal_prior so its column count is structural",
-                            data_key, param_name
-                        ))
-                    })?;
-                    two_d.insert(data_key.clone(), (vec![1.0; n_cols], 1, n_cols));
-                }
-            }
-            MuExpr::Add(a, b) | MuExpr::Binary(_, a, b) => {
-                visit(a, one_d, two_d, vector_sizes)?;
-                visit(b, one_d, two_d, vector_sizes)?;
-            }
-            MuExpr::Unary(_, a) | MuExpr::Sum(a) => visit(a, one_d, two_d, vector_sizes)?,
-            MuExpr::Const(_) | MuExpr::Param(_) => {}
-        }
-        Ok(())
-    }
-    for likelihood in &spec.likelihoods {
-        visit(&likelihood.mu_expr, &mut one_d, &mut two_d, &vector_sizes)?;
-        one_d
-            .entry(likelihood.observed_key.clone())
-            .or_insert_with(|| vec![1.0]);
-    }
-    for (_, expr) in spec.potentials.iter().chain(&spec.deterministics) {
-        visit(expr, &mut one_d, &mut two_d, &vector_sizes)?;
-    }
-    Ok((one_d, two_d))
-}
-
-/// A hyperparameter value: either a scalar constant or a reference to another
-/// already-declared parameter (for hierarchical / multilevel models).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-enum HyperParam {
-    Const(f64),
-    /// Name of a parameter whose value node (post-transform) is used as the hyperparameter.
-    Param(String),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-enum PriorSpec {
-    Normal {
-        name: String,
-        mu: HyperParam,
-        sigma: HyperParam,
-    },
-    HalfNormal {
-        name: String,
-        sigma: HyperParam,
-    },
-    Exponential {
-        name: String,
-        rate: HyperParam,
-    },
-    LogNormal {
-        name: String,
-        mu: HyperParam,
-        sigma: HyperParam,
-    },
-    StudentT {
-        name: String,
-        nu: f64,
-        mu: f64,
-        sigma: f64,
-    },
-    Uniform {
-        name: String,
-        lower: f64,
-        upper: f64,
-    },
-    Bernoulli {
-        name: String,
-        p: f64,
-    },
-    Poisson {
-        name: String,
-        lam: f64,
-    },
-    Gamma {
-        name: String,
-        alpha: f64,
-        beta: f64,
-    },
-    Beta {
-        name: String,
-        alpha: f64,
-        beta: f64,
-    },
-    VectorNormal {
-        name: String,
-        n: usize,
-        mu: f64,
-        sigma: f64,
-    },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-enum SigmaSpec {
-    Const(f64),
-    Param(String),
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-enum LikelihoodFamily {
-    Normal,
-    BernoulliLogit,
-    PoissonLog,
-    ExponentialLog,
-    LogNormal,
-    NegativeBinomialLog,
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct LikelihoodSpec {
-    family: LikelihoodFamily,
-    name: String,
-    mu_expr: MuExpr,
-    sigma: Option<SigmaSpec>,
-    observed_key: String,
+    rustmc_core::model::template_data_for_spec(&spec.0).map_err(model_error)
 }
 
 #[pyclass]
@@ -475,107 +311,11 @@ struct ModelBuilder {
     bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
 
-/// Name a `PriorSpec` declares.
-fn prior_name(prior: &PriorSpec) -> &str {
-    match prior {
-        PriorSpec::Normal { name, .. }
-        | PriorSpec::HalfNormal { name, .. }
-        | PriorSpec::Exponential { name, .. }
-        | PriorSpec::LogNormal { name, .. }
-        | PriorSpec::StudentT { name, .. }
-        | PriorSpec::Uniform { name, .. }
-        | PriorSpec::Bernoulli { name, .. }
-        | PriorSpec::Poisson { name, .. }
-        | PriorSpec::Gamma { name, .. }
-        | PriorSpec::Beta { name, .. }
-        | PriorSpec::VectorNormal { name, .. } => name,
-    }
-}
-
-/// Hyperparameter references a `PriorSpec` makes, as `(role, name)` pairs.
-fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
-    let mut out = Vec::new();
-    fn push<'a>(out: &mut Vec<(&'static str, &'a str)>, role: &'static str, hp: &'a HyperParam) {
-        if let HyperParam::Param(name) = hp {
-            out.push((role, name.as_str()));
-        }
-    }
-    match prior {
-        PriorSpec::Normal { mu, sigma, .. } | PriorSpec::LogNormal { mu, sigma, .. } => {
-            push(&mut out, "mu", mu);
-            push(&mut out, "sigma", sigma);
-        }
-        PriorSpec::HalfNormal { sigma, .. } => push(&mut out, "sigma", sigma),
-        PriorSpec::Exponential { rate, .. } => push(&mut out, "rate", rate),
-        PriorSpec::StudentT { .. }
-        | PriorSpec::Uniform { .. }
-        | PriorSpec::Bernoulli { .. }
-        | PriorSpec::Poisson { .. }
-        | PriorSpec::Gamma { .. }
-        | PriorSpec::Beta { .. }
-        | PriorSpec::VectorNormal { .. } => {}
-    }
-    out
-}
-
-/// The ordered list of parameter names a model declares, plus the full set of
-/// references into it. This is the single source of truth for reference
-/// validation, shared by `ModelBuilder.build()` and `compile_python_model`.
-fn model_reference_set(
-    priors: &[PriorSpec],
-    likelihoods: &[LikelihoodSpec],
-) -> (Vec<String>, Vec<ParamReference>) {
-    let declared: Vec<String> = priors.iter().map(|p| prior_name(p).to_string()).collect();
-    let mut refs = Vec::new();
-
-    for (idx, prior) in priors.iter().enumerate() {
-        for (role, name) in prior_hyper_refs(prior) {
-            refs.push(ParamReference::ordered(
-                name,
-                format!("prior '{}' hyperparameter {}", prior_name(prior), role),
-                idx,
-            ));
-        }
-    }
-
-    for lik in likelihoods {
-        let mut names = Vec::new();
-        collect_expr_param_names(&lik.mu_expr, &mut names);
-        for name in names {
-            refs.push(ParamReference::unordered(
-                name,
-                format!("the linear predictor of likelihood '{}'", lik.name),
-            ));
-        }
-        if let Some(SigmaSpec::Param(name)) = &lik.sigma {
-            refs.push(ParamReference::unordered(
-                name.clone(),
-                format!("the scale parameter of likelihood '{}'", lik.name),
-            ));
-        }
-    }
-
-    (declared, refs)
-}
-
 /// Validate every parameter reference in a model up front, before any graph is
 /// built. Fails loudly on unknown names, out-of-order hyperparameters and
 /// duplicate declarations.
 fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec]) -> PyResult<()> {
-    let mut names = std::collections::HashSet::new();
-    for lik in likelihoods {
-        if lik.name.is_empty()
-            || !names.insert(&lik.name)
-            || priors.iter().any(|p| prior_name(p) == lik.name)
-        {
-            return Err(PyValueError::new_err(format!(
-                "observation name '{}' must be unique and distinct from parameter names",
-                lik.name
-            )));
-        }
-    }
-    let (declared, refs) = model_reference_set(priors, likelihoods);
-    validate_param_references(&declared, &refs).map_err(param_error)
+    rustmc_core::model::validate_model_references(priors, likelihoods).map_err(model_error)
 }
 
 /// HMC and NUTS evolve a continuous Euclidean state.  Discrete latent
@@ -584,25 +324,7 @@ fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec
 /// Keep these priors available for prior-predictive simulation, but reject
 /// every posterior-sampling entry point until such a kernel exists.
 fn reject_discrete_priors_for_gradient_sampling(priors: &[PriorSpec]) -> PyResult<()> {
-    let discrete: Vec<&str> = priors
-        .iter()
-        .filter_map(|prior| match prior {
-            PriorSpec::Bernoulli { name, .. } | PriorSpec::Poisson { name, .. } => {
-                Some(name.as_str())
-            }
-            _ => None,
-        })
-        .collect();
-    if discrete.is_empty() {
-        return Ok(());
-    }
-    Err(PyValueError::new_err(format!(
-        "Discrete prior parameter(s) [{}] cannot be sampled with HMC/NUTS. \
-         Bernoulli and Poisson priors are currently supported only by \
-         sample_prior_predictive(); posterior inference requires continuous \
-         parameters or explicit marginalisation.",
-        discrete.join(", ")
-    )))
+    rustmc_core::model::reject_discrete_priors_for_gradient_sampling(priors).map_err(model_error)
 }
 
 impl ModelBuilder {
@@ -1137,7 +859,7 @@ impl ModelBuilder {
     /// unresolvable name fails here rather than mid-sample.
     fn build(&self) -> PyResult<ModelSpec> {
         validate_model_references(&self.priors, &self.likelihoods)?;
-        Ok(ModelSpec {
+        Ok(ModelSpec(rustmc_core::model::ModelSpec {
             dimensions: self.dimensions.clone(),
             potentials: self.potentials.clone(),
             deterministics: self.deterministics.clone(),
@@ -1145,7 +867,7 @@ impl ModelBuilder {
             likelihoods: self.likelihoods.clone(),
             bound_data_1d: self.bound_data_1d.clone(),
             bound_data_2d: self.bound_data_2d.clone(),
-        })
+        }))
     }
 
     /// Compile immutable model structure once. Dataset payloads supplied here
@@ -1330,75 +1052,6 @@ fn validate_expr_keys(
     }
 }
 
-fn validate_binary_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    if let Some((idx, value)) = obs
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, v)| !v.is_finite() || (*v != 0.0 && *v != 1.0))
-    {
-        return Err(PyValueError::new_err(format!(
-            "Bernoulli-logit likelihood '{}' requires binary observed values; found {} at index {}",
-            name, value, idx
-        )));
-    }
-    Ok(())
-}
-
-fn validate_positive_observations(obs: &[f64], name: &str, strict: bool) -> PyResult<()> {
-    if let Some((idx, value)) = obs
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, v)| !v.is_finite() || if strict { *v <= 0.0 } else { *v < 0.0 })
-    {
-        let relation = if strict {
-            "strictly positive"
-        } else {
-            "non-negative"
-        };
-        return Err(PyValueError::new_err(format!(
-            "{} likelihood '{}' requires {} observed values; found {} at index {}",
-            if strict { "LogNormal" } else { "Exponential" },
-            name,
-            relation,
-            value,
-            idx
-        )));
-    }
-    Ok(())
-}
-
-fn validate_integer_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    if let Some((idx, value)) = obs
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, v)| !v.is_finite() || *v < 0.0 || v.fract() != 0.0)
-    {
-        return Err(PyValueError::new_err(format!(
-            "NegativeBinomial likelihood '{}' requires non-negative integer observed values; found {} at index {}",
-            name, value, idx
-        )));
-    }
-    Ok(())
-}
-
-fn validate_count_observations(obs: &[f64], name: &str) -> PyResult<()> {
-    if let Some((idx, value)) = obs
-        .iter()
-        .copied()
-        .enumerate()
-        .find(|(_, v)| !v.is_finite() || *v < 0.0 || v.fract() != 0.0)
-    {
-        return Err(PyValueError::new_err(format!(
-            "Poisson-log likelihood '{}' requires non-negative integer observed values; found {} at index {}",
-            name, value, idx
-        )));
-    }
-    Ok(())
-}
-
 fn softplus(x: f64) -> f64 {
     if x > 0.0 {
         x + (1.0 + (-x).exp()).ln()
@@ -1543,25 +1196,6 @@ fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam>
     }
 }
 
-/// Resolve a HyperParam to a graph NodeId.
-/// Constant → adds a constant node; Param → looks up the value node for a prior parameter.
-fn resolve_hyper(
-    hp: &HyperParam,
-    graph: &mut Graph,
-    value_node_map: &HashMap<String, NodeId>,
-) -> Result<NodeId, PyErr> {
-    match hp {
-        HyperParam::Const(v) => Ok(graph.add_constant(*v)),
-        HyperParam::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-            ParameterError::new_err(format!(
-                "hyperparameter '{}' has no value node. Declare it before the prior \
-                 that references it.",
-                name
-            ))
-        }),
-    }
-}
-
 /// Resolve a `HyperParam` against already-computed parameter values.
 ///
 /// `context` names the model location doing the referencing, so the error can
@@ -1571,22 +1205,8 @@ fn resolve_hyper_value(
     hp: &HyperParam,
     values: &HashMap<String, f64>,
     context: &str,
-) -> Result<f64, PyErr> {
-    match hp {
-        HyperParam::Const(v) => Ok(*v),
-        HyperParam::Param(name) => values.get(name).copied().ok_or_else(|| {
-            let mut available: Vec<&str> = values.keys().map(String::as_str).collect();
-            available.sort_unstable();
-            ParameterError::new_err(format!(
-                "parameter '{}' referenced by {} has no value yet. It must be \
-                 declared before the parameter that depends on it. \
-                 Available at this point: [{}]",
-                name,
-                context,
-                available.join(", ")
-            ))
-        }),
-    }
+) -> PyResult<f64> {
+    rustmc_core::model::resolve_hyper_value(hp, values, context).map_err(model_error)
 }
 
 fn should_auto_noncenter(prior: &PriorSpec, auto_vector_params: &HashMap<String, usize>) -> bool {
@@ -1596,341 +1216,6 @@ fn should_auto_noncenter(prior: &PriorSpec, auto_vector_params: &HashMap<String,
                 && (matches!(mu, HyperParam::Param(_)) || matches!(sigma, HyperParam::Param(_)))
         }
         _ => false,
-    }
-}
-
-fn append_raw_display_params(
-    display_params: &mut Vec<DisplayParamSpec>,
-    graph: &Graph,
-    start_idx: usize,
-) {
-    for raw_index in start_idx..graph.param_count {
-        display_params.push(DisplayParamSpec::Raw {
-            name: graph.param_names[raw_index].clone(),
-            raw_index,
-        });
-    }
-}
-
-fn build_likelihood_into_graph(
-    graph: &mut Graph,
-    lik: &LikelihoodSpec,
-    data_map: &HashMap<String, Vec<f64>>,
-    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
-    vector_param_map: &HashMap<String, (usize, usize)>,
-    value_node_map: &HashMap<String, NodeId>,
-) -> PyResult<()> {
-    let linpred_node = build_mu_expr(
-        graph,
-        &lik.mu_expr,
-        data_map,
-        matrix_map,
-        vector_param_map,
-        value_node_map,
-    )?;
-
-    let obs_vec = data_map
-        .get(&lik.observed_key)
-        .ok_or_else(|| {
-            PyValueError::new_err(format!("Missing observed data key: {}", lik.observed_key))
-        })?
-        .clone();
-    let obs_idx = graph.add_named_obs_data(&lik.observed_key, &lik.name, obs_vec.clone());
-
-    let linpred_node = if lik.mu_expr.is_scalar() {
-        graph.broadcast_observation(linpred_node, obs_idx)
-    } else {
-        linpred_node
-    };
-
-    match lik.family {
-        LikelihoodFamily::Normal => {
-            let sigma_spec = lik.sigma.as_ref().ok_or_else(|| {
-                PyValueError::new_err(format!("Normal likelihood '{}' is missing sigma", lik.name))
-            })?;
-            let sigma_node = resolve_sigma(sigma_spec, graph, value_node_map)?;
-            graph.normal_obs_logp(linpred_node, sigma_node, obs_idx);
-        }
-        LikelihoodFamily::BernoulliLogit => {
-            validate_binary_observations(&obs_vec, &lik.name)?;
-            graph.obs_logp_bernoulli_logit(linpred_node, obs_idx);
-        }
-        LikelihoodFamily::PoissonLog => {
-            validate_count_observations(&obs_vec, &lik.name)?;
-            graph.obs_logp_poisson_log(linpred_node, obs_idx);
-        }
-        LikelihoodFamily::ExponentialLog => {
-            validate_positive_observations(&obs_vec, &lik.name, false)?;
-            graph.obs_logp_exponential_log(linpred_node, obs_idx);
-        }
-        LikelihoodFamily::LogNormal => {
-            validate_positive_observations(&obs_vec, &lik.name, true)?;
-            let sigma_spec = lik.sigma.as_ref().ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "LogNormal likelihood '{}' is missing sigma",
-                    lik.name
-                ))
-            })?;
-            let sigma_node = resolve_sigma(sigma_spec, graph, value_node_map)?;
-            graph.obs_logp_lognormal(linpred_node, sigma_node, obs_idx);
-        }
-        LikelihoodFamily::NegativeBinomialLog => {
-            validate_integer_observations(&obs_vec, &lik.name)?;
-            let alpha_spec = lik.sigma.as_ref().ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "NegativeBinomial likelihood '{}' is missing alpha",
-                    lik.name
-                ))
-            })?;
-            let alpha_node = resolve_sigma(alpha_spec, graph, value_node_map)?;
-            graph.obs_logp_negative_binomial_log(linpred_node, alpha_node, obs_idx);
-        }
-    }
-    Ok(())
-}
-
-/// Build a single prior into the graph. Used by both `sample()` and `batch_sample()`
-/// to avoid duplicating the large match.
-fn build_prior_into_graph(
-    prior: &PriorSpec,
-    graph: &mut Graph,
-    vector_param_map: &mut HashMap<String, (usize, usize)>,
-    value_node_map: &mut HashMap<String, NodeId>,
-    auto_vector_params: &HashMap<String, usize>,
-    display_params: &mut Vec<DisplayParamSpec>,
-) -> Result<(), PyErr> {
-    match prior {
-        PriorSpec::Normal { name, mu, sigma } => {
-            let start_idx = graph.param_count;
-            if should_auto_noncenter(prior, auto_vector_params) {
-                let raw_name = format!("{}__raw", name);
-                let raw = graph.add_param(&raw_name);
-                let zero = graph.add_constant(0.0);
-                let one = graph.add_constant(1.0);
-                graph.normal_logp(raw, zero, one);
-                let mu_node = resolve_hyper(mu, graph, value_node_map)?;
-                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
-                let scaled = graph.mul(sigma_node, raw);
-                let v = graph.add(mu_node, scaled);
-                value_node_map.insert(name.clone(), v);
-                display_params.push(DisplayParamSpec::DerivedNonCenteredNormal {
-                    name: name.clone(),
-                    raw_index: start_idx,
-                    mu: mu.clone(),
-                    sigma: sigma.clone(),
-                });
-            } else if let Some(&n) = auto_vector_params.get(name) {
-                // MatVec auto-promotion: constant hyperparams only
-                let (mu_f, sigma_f) = match (mu, sigma) {
-                    (HyperParam::Const(m), HyperParam::Const(s)) => (*m, *s),
-                    _ => {
-                        return Err(PyValueError::new_err(format!(
-                            "Parameter '{}' is used in a matrix multiply (@) but has hierarchical \
-                         hyperparameters. Hierarchical vector params are not yet supported.",
-                            name
-                        )))
-                    }
-                };
-                let param_start = graph.add_vector_params(name, n);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_normal_logp(param_start, n, mu_f, sigma_f);
-                append_raw_display_params(display_params, graph, start_idx);
-            } else {
-                let mu_node = resolve_hyper(mu, graph, value_node_map)?;
-                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
-                let v = Normal::prior_with_nodes(graph, name, mu_node, sigma_node);
-                value_node_map.insert(name.clone(), v);
-                append_raw_display_params(display_params, graph, start_idx);
-            }
-        }
-        PriorSpec::HalfNormal { name, sigma } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let sigma_f = match sigma {
-                    HyperParam::Const(s) => *s,
-                    _ => {
-                        return Err(PyValueError::new_err(format!(
-                        "Parameter '{}' is used in a matrix multiply (@) but has a hierarchical \
-                         sigma. Hierarchical vector params are not yet supported.",
-                        name
-                    )))
-                    }
-                };
-                let param_start =
-                    graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_half_normal_logp(param_start, n, sigma_f);
-            } else {
-                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
-                let v = HalfNormal::prior_with_node_sigma(graph, name, sigma_node);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Exponential { name, rate } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let rate_f = match rate {
-                    HyperParam::Const(r) => *r,
-                    _ => {
-                        return Err(PyValueError::new_err(format!(
-                        "Parameter '{}' is used in a matrix multiply (@) but has a hierarchical \
-                         rate. Hierarchical vector params are not yet supported.",
-                        name
-                    )))
-                    }
-                };
-                let param_start =
-                    graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_gamma_logp(param_start, n, 1.0, rate_f);
-            } else {
-                let rate_node = resolve_hyper(rate, graph, value_node_map)?;
-                let v = Exponential::prior_with_node_rate(graph, name, rate_node);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::LogNormal { name, mu, sigma } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let (mu_f, sigma_f) = match (mu, sigma) {
-                    (HyperParam::Const(m), HyperParam::Const(s)) => (*m, *s),
-                    _ => return Err(PyValueError::new_err(format!(
-                        "Parameter '{}' is used in a matrix multiply (@) but has hierarchical \
-                         LogNormal hyperparameters. Hierarchical vector params are not yet supported.",
-                        name
-                    ))),
-                };
-                let param_start =
-                    graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_normal_logp(param_start, n, mu_f, sigma_f);
-            } else {
-                let mu_node = resolve_hyper(mu, graph, value_node_map)?;
-                let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
-                let v = LogNormal::prior_with_nodes(graph, name, mu_node, sigma_node);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::StudentT {
-            name,
-            nu,
-            mu,
-            sigma,
-        } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let param_start = graph.add_vector_params(name, n);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_student_t_logp(param_start, n, *nu, *mu, *sigma);
-            } else {
-                let v = StudentT::prior(graph, name, *nu, *mu, *sigma);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Uniform { name, lower, upper } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let param_start = graph.add_vector_params_with_transform(
-                    name,
-                    n,
-                    ParamTransform::BoundedSigmoid {
-                        lower: *lower,
-                        upper: *upper,
-                    },
-                );
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_uniform_logp(param_start, n, *lower, *upper);
-            } else {
-                let v = Uniform::prior(graph, name, *lower, *upper);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Bernoulli { name, p } => {
-            let start_idx = graph.param_count;
-            if auto_vector_params.contains_key(name) {
-                return Err(PyValueError::new_err(format!(
-                    "Parameter '{}' is used with @ but has a Bernoulli prior. \
-                     Discrete distributions cannot be auto-promoted to vector params.",
-                    name
-                )));
-            }
-            let v = Bernoulli::prior(graph, name, *p);
-            value_node_map.insert(name.clone(), v);
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Poisson { name, lam } => {
-            let start_idx = graph.param_count;
-            if auto_vector_params.contains_key(name) {
-                return Err(PyValueError::new_err(format!(
-                    "Parameter '{}' is used with @ but has a Poisson prior. \
-                     Discrete distributions cannot be auto-promoted to vector params.",
-                    name
-                )));
-            }
-            let v = Poisson::prior(graph, name, *lam);
-            value_node_map.insert(name.clone(), v);
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Gamma { name, alpha, beta } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let param_start =
-                    graph.add_vector_params_with_transform(name, n, ParamTransform::Exp);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_gamma_logp(param_start, n, *alpha, *beta);
-            } else {
-                let v = Gamma::prior(graph, name, *alpha, *beta);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::Beta { name, alpha, beta } => {
-            let start_idx = graph.param_count;
-            if let Some(&n) = auto_vector_params.get(name) {
-                let param_start =
-                    graph.add_vector_params_with_transform(name, n, ParamTransform::Sigmoid);
-                vector_param_map.insert(name.clone(), (param_start, n));
-                graph.vector_beta_logp(param_start, n, *alpha, *beta);
-            } else {
-                let v = BetaDist::prior(graph, name, *alpha, *beta);
-                value_node_map.insert(name.clone(), v);
-            }
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-        PriorSpec::VectorNormal { name, n, mu, sigma } => {
-            let start_idx = graph.param_count;
-            let param_start = graph.add_vector_params(name, *n);
-            vector_param_map.insert(name.clone(), (param_start, *n));
-            graph.vector_normal_logp(param_start, *n, *mu, *sigma);
-            append_raw_display_params(display_params, graph, start_idx);
-        }
-    }
-    Ok(())
-}
-
-/// Resolve a SigmaSpec to a graph NodeId.
-fn resolve_sigma(
-    spec: &SigmaSpec,
-    graph: &mut Graph,
-    value_node_map: &HashMap<String, NodeId>,
-) -> Result<NodeId, PyErr> {
-    match spec {
-        SigmaSpec::Const(v) => Ok(graph.add_constant(*v)),
-        SigmaSpec::Param(name) => value_node_map.get(name.as_str()).copied().ok_or_else(|| {
-            let mut available: Vec<&str> = value_node_map.keys().map(String::as_str).collect();
-            available.sort_unstable();
-            ParameterError::new_err(format!(
-                "scale parameter '{}' is not a scalar parameter of this model. \
-                 Scalar parameters: [{}]",
-                name,
-                available.join(", ")
-            ))
-        }),
     }
 }
 
@@ -1952,172 +1237,22 @@ fn select_posterior_draw_indices(
 }
 
 fn compile_python_model(
-    model_spec: &ModelSpec,
-    data_map: &HashMap<String, Vec<f64>>,
-    matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
+    spec: &ModelSpec,
+    data: &Data1d,
+    matrices: &Data2d,
 ) -> PyResult<CompiledPythonModel> {
-    let mut graph = Graph::new();
-    let mut vector_param_map: HashMap<String, (usize, usize)> = HashMap::new();
-    let mut value_node_map: HashMap<String, NodeId> = HashMap::new();
-    let mut display_params = Vec::new();
-
-    // Defence in depth: `ModelBuilder.build()` already validated these, but a
-    // `ModelSpec` can reach here by other routes (pickling, batch_sample).
-    // Validating before touching the graph guarantees an unresolvable reference
-    // never becomes a silently-defaulted value at sampling time.
-    validate_model_references(&model_spec.priors, &model_spec.likelihoods)?;
-
-    let auto_vector_params = collect_matvec_params(model_spec, matrix_map)?;
-
-    for prior in &model_spec.priors {
-        build_prior_into_graph(
-            prior,
-            &mut graph,
-            &mut vector_param_map,
-            &mut value_node_map,
-            &auto_vector_params,
-            &mut display_params,
-        )?;
-    }
-
-    for lik in &model_spec.likelihoods {
-        build_likelihood_into_graph(
-            &mut graph,
-            lik,
-            data_map,
-            matrix_map,
-            &vector_param_map,
-            &value_node_map,
-        )?;
-    }
-
-    for (name, expr) in &model_spec.potentials {
-        let node = build_mu_expr(
-            &mut graph,
-            expr,
-            data_map,
-            matrix_map,
-            &vector_param_map,
-            &value_node_map,
-        )?;
-        graph.add_logp_term(node);
-        let _ = name;
-    }
-    for (name, expr) in &model_spec.deterministics {
-        if model_spec.priors.iter().any(|p| prior_name(p) == name)
-            || model_spec.likelihoods.iter().any(|l| l.name == *name)
-        {
-            return Err(PyValueError::new_err(
-                "deterministic name collides with another output",
-            ));
-        }
-        let node = build_mu_expr(
-            &mut graph,
-            expr,
-            data_map,
-            matrix_map,
-            &vector_param_map,
-            &value_node_map,
-        )?;
-        graph.deterministics.push((name.clone(), node));
-    }
-    for slot in graph
-        .schema
-        .vectors
-        .iter_mut()
-        .chain(&mut graph.schema.observations)
-        .chain(&mut graph.schema.matrices)
-    {
-        if let Some(dim) = model_spec.dimensions.get(&slot.key) {
-            slot.dim = dim.clone();
-        }
-    }
-    let mut output_names = std::collections::HashSet::new();
-    for name in graph
-        .param_names
-        .iter()
-        .chain(model_spec.likelihoods.iter().map(|l| &l.name))
-        .chain(graph.deterministics.iter().map(|(n, _)| n))
-    {
-        if !output_names.insert(name) {
-            return Err(PyValueError::new_err(format!(
-                "output name '{name}' is not unique"
-            )));
-        }
-    }
-    graph
-        .validate_shapes()
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-
-    Ok(CompiledPythonModel {
-        graph,
-        likelihood_names: model_spec
-            .likelihoods
-            .iter()
-            .map(|l| l.name.clone())
-            .collect(),
-        display_params,
-        auto_vector_params,
-    })
+    rustmc_core::model::compile(&spec.0, data, matrices).map_err(model_error)
 }
 
-fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> PyResult<Vec<f64>> {
-    let mut values = HashMap::new();
-    let mut out = Vec::with_capacity(specs.len());
-    for spec in specs {
-        let value = match spec {
-            DisplayParamSpec::Raw { name, raw_index } => {
-                let value = raw_draw[*raw_index];
-                values.insert(name.clone(), value);
-                value
-            }
-            DisplayParamSpec::DerivedNonCenteredNormal {
-                name,
-                raw_index,
-                mu,
-                sigma,
-            } => {
-                let context = format!("non-centered parameter '{}'", name);
-                let mu_v = resolve_hyper_value(mu, &values, &context)?;
-                let sigma_v = resolve_hyper_value(sigma, &values, &context)?;
-                let value = mu_v + sigma_v * raw_draw[*raw_index];
-                values.insert(name.clone(), value);
-                value
-            }
-        };
-        out.push(value);
-    }
-    Ok(out)
+fn derive_display_draw(draw: &[f64], specs: &[DisplayParamSpec]) -> PyResult<Vec<f64>> {
+    rustmc_core::model::derive_display_draw(draw, specs).map_err(model_error)
 }
 
 fn derive_display_sample_result(
     raw_result: &SampleResult,
     specs: &[DisplayParamSpec],
 ) -> PyResult<SampleResult> {
-    let mut samples = Vec::with_capacity(raw_result.samples.len());
-    for chain in &raw_result.samples {
-        let mut chain_out = Vec::with_capacity(chain.len());
-        for draw in chain {
-            chain_out.push(derive_display_draw(draw, specs)?);
-        }
-        samples.push(chain_out);
-    }
-    let param_names = specs
-        .iter()
-        .map(|spec| match spec {
-            DisplayParamSpec::Raw { name, .. } => name.clone(),
-            DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name.clone(),
-        })
-        .collect();
-
-    Ok(SampleResult {
-        samples,
-        accept_rates: raw_result.accept_rates.clone(),
-        step_sizes: raw_result.step_sizes.clone(),
-        divergences: raw_result.divergences.clone(),
-        transitions: raw_result.transitions.clone(),
-        param_names,
-    })
+    rustmc_core::model::derive_display_sample_result(raw_result, specs).map_err(model_error)
 }
 
 fn derive_display_batch_result(

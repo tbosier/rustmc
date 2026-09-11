@@ -1,0 +1,5135 @@
+{
+  "format": "rustmc.posterior-validation",
+  "version": 1,
+  "revision": "554f972e91c3cc9a041e5a7a6aec84d835001022",
+  "dirty": false,
+  "python": "3.12.9 (main, Mar 17 2025, 21:01:58) [Clang 20.1.0 ]",
+  "platform": "Linux-6.18.50-1-lts-x86_64-with-glibc2.44",
+  "numpy": "2.4.2",
+  "rustmc": "0.12.0",
+  "native_path": "/tmp/rustmc-review-2026-09-11-package/rustmc/_rustmc.abi3.so",
+  "native_sha256": "03e9265258b4e7885c1be3bd72c71dc1679c5fd71791babc85687995127f8a17",
+  "command": [
+    "/tmp/rustmc-gates-20260911/benchmarks/validate_posteriors.py",
+    "--replicates",
+    "64",
+    "--output",
+    "/tmp/rustmc-posterior-release.json"
+  ],
+  "seed": 20260911,
+  "sampling": {
+    "chains": 4,
+    "draws": 2000,
+    "warmup": 1000,
+    "target_accept": 0.95,
+    "show_progress": false
+  },
+  "records": [
+    {
+      "case": "normal_location",
+      "seed": 20260911,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0004558411941582,
+        "min_ess_bulk": 2928.2246348721883,
+        "min_ess_tail": 2670.823398331719,
+        "divergences": 0,
+        "max_mean_error_sd": 0.01366020525234996,
+        "max_covariance_error_sd": 0.009526813215620955
+      },
+      "reference_mean": [
+        0.5238095238095237
+      ],
+      "reference_covariance": [
+        [
+          0.19047619047619047
+        ]
+      ],
+      "posterior_mean": [
+        0.5178477214688069
+      ],
+      "diagnostics": [
+        {
+          "name": "mu",
+          "mean": 0.5178477214688072,
+          "std": 0.4343518842914123,
+          "hdi_3%": -0.2691790081609507,
+          "hdi_97%": 1.3562408113022628,
+          "ess_bulk": 2928.2246348721883,
+          "ess_tail": 2670.823398331719,
+          "r_hat": 1.0004558411941582,
+          "mcse_mean": 0.008041591829926562
+        }
+      ]
+    },
+    {
+      "case": "normal_location",
+      "seed": 20260912,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007286158221915,
+        "min_ess_bulk": 2980.734340090396,
+        "min_ess_tail": 2690.04236628052,
+        "divergences": 0,
+        "max_mean_error_sd": 0.007034718734983204,
+        "max_covariance_error_sd": 0.029084761866479653
+      },
+      "reference_mean": [
+        0.5238095238095237
+      ],
+      "reference_covariance": [
+        [
+          0.19047619047619047
+        ]
+      ],
+      "posterior_mean": [
+        0.5207393208480204
+      ],
+      "diagnostics": [
+        {
+          "name": "mu",
+          "mean": 0.5207393208480219,
+          "std": 0.4300421326276719,
+          "hdi_3%": -0.27380284458492177,
+          "hdi_97%": 1.3367533349240248,
+          "ess_bulk": 2980.734340090396,
+          "ess_tail": 2690.04236628052,
+          "r_hat": 1.0007286158221915,
+          "mcse_mean": 0.00789230776468023
+        }
+      ]
+    },
+    {
+      "case": "normal_location",
+      "seed": 20260913,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000759003871278,
+        "min_ess_bulk": 3018.0439273988636,
+        "min_ess_tail": 2776.719885726144,
+        "divergences": 0,
+        "max_mean_error_sd": 0.00032572651023089283,
+        "max_covariance_error_sd": 0.00734113335402232
+      },
+      "reference_mean": [
+        0.5238095238095237
+      ],
+      "reference_covariance": [
+        [
+          0.19047619047619047
+        ]
+      ],
+      "posterior_mean": [
+        0.5239516825132368
+      ],
+      "diagnostics": [
+        {
+          "name": "mu",
+          "mean": 0.5239516825132363,
+          "std": 0.4380348177842056,
+          "hdi_3%": -0.28487124873064673,
+          "hdi_97%": 1.3746685564146421,
+          "ess_bulk": 3018.0439273988636,
+          "ess_tail": 2776.719885726144,
+          "r_hat": 1.000759003871278,
+          "mcse_mean": 0.007993036873501167
+        }
+      ]
+    },
+    {
+      "case": "correlated_regression",
+      "seed": 20261011,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000480150456036,
+        "min_ess_bulk": 5233.364444386576,
+        "min_ess_tail": 4060.461878462526,
+        "divergences": 0,
+        "max_mean_error_sd": 0.012811001425746467,
+        "max_covariance_error_sd": 0.01631803213469855
+      },
+      "reference_mean": [
+        0.17133175916473026,
+        0.8519081052981003
+      ],
+      "reference_covariance": [
+        [
+          0.10403918301902153,
+          -0.035293528162794914
+        ],
+        [
+          -0.035293528162794914,
+          0.084244117223367
+        ]
+      ],
+      "posterior_mean": [
+        0.16719955714049223,
+        0.8534170329432648
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.16719955714049223,
+          "std": 0.3218635538838939,
+          "hdi_3%": -0.452409524154596,
+          "hdi_97%": 0.7542543576188476,
+          "ess_bulk": 5335.867877940603,
+          "ess_tail": 4878.457305973825,
+          "r_hat": 1.000480150456036,
+          "mcse_mean": 0.004402741003786535
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8534170329432648,
+          "std": 0.29064254108709825,
+          "hdi_3%": 0.3216416735317438,
+          "hdi_97%": 1.4195480594283685,
+          "ess_bulk": 5233.364444386576,
+          "ess_tail": 4060.461878462526,
+          "r_hat": 1.0002854551067317,
+          "mcse_mean": 0.004020817035183304
+        }
+      ]
+    },
+    {
+      "case": "correlated_regression",
+      "seed": 20261012,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000636782742975,
+        "min_ess_bulk": 4956.294293476729,
+        "min_ess_tail": 4523.751325042201,
+        "divergences": 0,
+        "max_mean_error_sd": 0.008212186854921465,
+        "max_covariance_error_sd": 0.04094825936881675
+      },
+      "reference_mean": [
+        0.17133175916473026,
+        0.8519081052981003
+      ],
+      "reference_covariance": [
+        [
+          0.10403918301902153,
+          -0.035293528162794914
+        ],
+        [
+          -0.035293528162794914,
+          0.084244117223367
+        ]
+      ],
+      "posterior_mean": [
+        0.16930502799759614,
+        0.8542916791601141
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.16930502799759614,
+          "std": 0.32151923699286616,
+          "hdi_3%": -0.4278170052793795,
+          "hdi_97%": 0.7794261158070384,
+          "ess_bulk": 5272.8529431990955,
+          "ess_tail": 4666.0403245565,
+          "r_hat": 1.000636782742975,
+          "mcse_mean": 0.004426160923402946
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8542916791601141,
+          "std": 0.2885254752356907,
+          "hdi_3%": 0.3147357984785243,
+          "hdi_97%": 1.397030286957468,
+          "ess_bulk": 4956.294293476729,
+          "ess_tail": 4523.751325042201,
+          "r_hat": 1.0004293683019552,
+          "mcse_mean": 0.004097209216762767
+        }
+      ]
+    },
+    {
+      "case": "correlated_regression",
+      "seed": 20261013,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0004556987966078,
+        "min_ess_bulk": 4778.612492800453,
+        "min_ess_tail": 4394.009218392566,
+        "divergences": 0,
+        "max_mean_error_sd": 0.02270928119075508,
+        "max_covariance_error_sd": 0.02556047440376206
+      },
+      "reference_mean": [
+        0.17133175916473026,
+        0.8519081052981003
+      ],
+      "reference_covariance": [
+        [
+          0.10403918301902153,
+          -0.035293528162794914
+        ],
+        [
+          -0.035293528162794914,
+          0.084244117223367
+        ]
+      ],
+      "posterior_mean": [
+        0.16400685656056394,
+        0.8546251551381152
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.16400685656056394,
+          "std": 0.32292307857612307,
+          "hdi_3%": -0.43075241868533387,
+          "hdi_97%": 0.7754798361496251,
+          "ess_bulk": 5037.758322698878,
+          "ess_tail": 4526.916796943447,
+          "r_hat": 1.0004556987966078,
+          "mcse_mean": 0.004552301541194221
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8546251551381152,
+          "std": 0.28651491692652153,
+          "hdi_3%": 0.32374200059641844,
+          "hdi_97%": 1.3898760112592328,
+          "ess_bulk": 4778.612492800453,
+          "ess_tail": 4394.009218392566,
+          "r_hat": 1.0003116579054085,
+          "mcse_mean": 0.004141598612890749
+        }
+      ]
+    },
+    {
+      "case": "beta_bernoulli",
+      "seed": 20261111,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0019268501388632,
+        "min_ess_bulk": 2295.9436310729766,
+        "min_ess_tail": 2045.3653636844922,
+        "divergences": 0,
+        "max_mean_error_sd": 0.013850423281745253,
+        "max_covariance_error_sd": 0.03301326894904616
+      },
+      "reference_mean": [
+        0.5454545454545454
+      ],
+      "reference_covariance": [
+        [
+          0.02066115702479339
+        ]
+      ],
+      "posterior_mean": [
+        0.5474454038239881
+      ],
+      "diagnostics": [
+        {
+          "name": "p",
+          "mean": 0.5474454038239863,
+          "std": 0.14609328991590084,
+          "hdi_3%": 0.28970942954016826,
+          "hdi_97%": 0.8243952335061607,
+          "ess_bulk": 2295.9436310729766,
+          "ess_tail": 2045.3653636844922,
+          "r_hat": 1.0019268501388632,
+          "mcse_mean": 0.003006826978526119
+        }
+      ]
+    },
+    {
+      "case": "beta_bernoulli",
+      "seed": 20261112,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0019909623801702,
+        "min_ess_bulk": 2344.8923580594806,
+        "min_ess_tail": 2022.35208529728,
+        "divergences": 0,
+        "max_mean_error_sd": 0.008373625705137245,
+        "max_covariance_error_sd": 0.03939141321776126
+      },
+      "reference_mean": [
+        0.5454545454545454
+      ],
+      "reference_covariance": [
+        [
+          0.02066115702479339
+        ]
+      ],
+      "posterior_mean": [
+        0.5442509213862742
+      ],
+      "diagnostics": [
+        {
+          "name": "p",
+          "mean": 0.5442509213862737,
+          "std": 0.14654360852222142,
+          "hdi_3%": 0.27761332300307734,
+          "hdi_97%": 0.8155518186789599,
+          "ess_bulk": 2344.8923580594806,
+          "ess_tail": 2022.35208529728,
+          "r_hat": 1.0019909623801702,
+          "mcse_mean": 0.0029851915047938806
+        }
+      ]
+    },
+    {
+      "case": "beta_bernoulli",
+      "seed": 20261113,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.002095260641206,
+        "min_ess_bulk": 2356.178541330986,
+        "min_ess_tail": 2091.2775165877724,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0040747871459534315,
+        "max_covariance_error_sd": 0.04499732541687438
+      },
+      "reference_mean": [
+        0.5454545454545454
+      ],
+      "reference_covariance": [
+        [
+          0.02066115702479339
+        ]
+      ],
+      "posterior_mean": [
+        0.5448688359835641
+      ],
+      "diagnostics": [
+        {
+          "name": "p",
+          "mean": 0.5448688359835616,
+          "std": 0.14693826537334376,
+          "hdi_3%": 0.2800432129828651,
+          "hdi_97%": 0.8191435790638851,
+          "ess_bulk": 2356.178541330986,
+          "ess_tail": 2091.2775165877724,
+          "r_hat": 1.002095260641206,
+          "mcse_mean": 0.002989009038749556
+        }
+      ]
+    },
+    {
+      "case": "gamma_poisson",
+      "seed": 20261211,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000776690726882,
+        "min_ess_bulk": 2547.9320073684635,
+        "min_ess_tail": 1709.1029994197888,
+        "divergences": 0,
+        "max_mean_error_sd": 0.007192860708012262,
+        "max_covariance_error_sd": 0.01344983087898242
+      },
+      "reference_mean": [
+        1.5384615384615385
+      ],
+      "reference_covariance": [
+        [
+          0.23668639053254437
+        ]
+      ],
+      "posterior_mean": [
+        1.5419608958045616
+      ],
+      "diagnostics": [
+        {
+          "name": "rate",
+          "mean": 1.5419608958045645,
+          "std": 0.4832214798707988,
+          "hdi_3%": 0.6713268790025193,
+          "hdi_97%": 2.440317994959652,
+          "ess_bulk": 2547.9320073684635,
+          "ess_tail": 1709.1029994197888,
+          "r_hat": 1.000776690726882,
+          "mcse_mean": 0.009303520159857007
+        }
+      ]
+    },
+    {
+      "case": "gamma_poisson",
+      "seed": 20261212,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008902954171917,
+        "min_ess_bulk": 2765.7905182800578,
+        "min_ess_tail": 2645.4190916287853,
+        "divergences": 0,
+        "max_mean_error_sd": 0.008832385288667602,
+        "max_covariance_error_sd": 0.008691652700767723
+      },
+      "reference_mean": [
+        1.5384615384615385
+      ],
+      "reference_covariance": [
+        [
+          0.23668639053254437
+        ]
+      ],
+      "posterior_mean": [
+        1.5427585314899006
+      ],
+      "diagnostics": [
+        {
+          "name": "rate",
+          "mean": 1.5427585314898997,
+          "std": 0.4843853782135023,
+          "hdi_3%": 0.7230791339811401,
+          "hdi_97%": 2.4945741891137563,
+          "ess_bulk": 2765.7905182800578,
+          "ess_tail": 2645.4190916287853,
+          "r_hat": 1.0008902954171917,
+          "mcse_mean": 0.009116475494533939
+        }
+      ]
+    },
+    {
+      "case": "gamma_poisson",
+      "seed": 20261213,
+      "kind": "fixed_reference",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009369755948758,
+        "min_ess_bulk": 2850.136138591511,
+        "min_ess_tail": 2408.5302085368785,
+        "divergences": 0,
+        "max_mean_error_sd": 0.007489315226941335,
+        "max_covariance_error_sd": 0.01030828388107076
+      },
+      "reference_mean": [
+        1.5384615384615385
+      ],
+      "reference_covariance": [
+        [
+          0.23668639053254437
+        ]
+      ],
+      "posterior_mean": [
+        1.5421051221895563
+      ],
+      "diagnostics": [
+        {
+          "name": "rate",
+          "mean": 1.5421051221895528,
+          "std": 0.48900533845443855,
+          "hdi_3%": 0.7081475583500566,
+          "hdi_97%": 2.488179648070118,
+          "ess_bulk": 2850.136138591511,
+          "ess_tail": 2408.5302085368785,
+          "r_hat": 1.0009369755948758,
+          "mcse_mean": 0.009028700866899308
+        }
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 0,
+      "seed": 20261911,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.6253505394778575,
+        0.8156476387819698
+      ],
+      "data_sha256": "686311f1014fa46f1ce6486de4f4d103f657934f3db5826acc2596e8dd3a0d72",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0006890373715462,
+        "min_ess_bulk": 4650.169131957142,
+        "min_ess_tail": 4193.279900488519,
+        "divergences": 0,
+        "max_mean_error_sd": 0.011139723193285711,
+        "max_covariance_error_sd": 0.01882636963426257
+      },
+      "reference_mean": [
+        -0.4902042083099177,
+        0.7545154249932401
+      ],
+      "reference_covariance": [
+        [
+          0.01607115613649865,
+          -7.13087278051957e-05
+        ],
+        [
+          -7.13087278051957e-05,
+          0.016233496103779835
+        ]
+      ],
+      "posterior_mean": [
+        -0.48879200261158157,
+        0.7539076307296254
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.48879200261158157,
+          "std": 0.1278709029508173,
+          "hdi_3%": -0.7279445872300272,
+          "hdi_97%": -0.2518832565834727,
+          "ess_bulk": 4650.169131957142,
+          "ess_tail": 4193.279900488519,
+          "r_hat": 1.0006890373715462,
+          "mcse_mean": 0.0018738088040086255
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.7539076307296254,
+          "std": 0.1286044863209909,
+          "hdi_3%": 0.5186866487284476,
+          "hdi_97%": 1.0029280624980623,
+          "ess_bulk": 5055.347967185857,
+          "ess_tail": 4196.438178364019,
+          "r_hat": 1.000097322265484,
+          "mcse_mean": 0.0018098089634563663
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.14575,
+        0.6875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 1,
+      "seed": 20261912,
+      "kind": "calibration",
+      "generating_beta": [
+        1.3970052689041885,
+        0.5829416757178341
+      ],
+      "data_sha256": "24e63b003ce6cc565e6ae8ab0bfdc84e310fe582ead1ad618f0c973cbec61a8d",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0003985715923087,
+        "min_ess_bulk": 5305.299871413669,
+        "min_ess_tail": 4521.260852100808,
+        "divergences": 0,
+        "max_mean_error_sd": 0.016348250017766963,
+        "max_covariance_error_sd": 0.033179786146779265
+      },
+      "reference_mean": [
+        1.2281085510203178,
+        0.5993600222896456
+      ],
+      "reference_covariance": [
+        [
+          0.0160840521710959,
+          0.00043417281575536357
+        ],
+        [
+          0.00043417281575536357,
+          0.014270736268746156
+        ]
+      ],
+      "posterior_mean": [
+        1.2270272603051398,
+        0.5974070572860387
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.2270272603051398,
+          "std": 0.12890972648526772,
+          "hdi_3%": 0.9791302902176455,
+          "hdi_97%": 1.4655654009207943,
+          "ess_bulk": 5369.174408653657,
+          "ess_tail": 4521.260852100808,
+          "r_hat": 0.9999823466170655,
+          "mcse_mean": 0.001759848261007629
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.5974070572860387,
+          "std": 0.12021961876039784,
+          "hdi_3%": 0.3695890513873297,
+          "hdi_97%": 0.8227458406543413,
+          "ess_bulk": 5305.299871413669,
+          "ess_tail": 4569.842756299557,
+          "r_hat": 1.0003985715923087,
+          "mcse_mean": 0.0016533675654855477
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.907875,
+        0.4525
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 2,
+      "seed": 20261913,
+      "kind": "calibration",
+      "generating_beta": [
+        0.12542802092309838,
+        0.3527823348655292
+      ],
+      "data_sha256": "9c11a78bd27e3042444554be505baec0e308d17aa9a32de6fe719249534b757c",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008756009250352,
+        "min_ess_bulk": 4749.740409347965,
+        "min_ess_tail": 4621.76328942345,
+        "divergences": 0,
+        "max_mean_error_sd": 0.009561379400054882,
+        "max_covariance_error_sd": 0.02421024035919776
+      },
+      "reference_mean": [
+        0.007393200441296765,
+        0.40211479144361056
+      ],
+      "reference_covariance": [
+        [
+          0.017675601165065398,
+          -0.005337130298589078
+        ],
+        [
+          -0.005337130298589078,
+          0.01775031195164536
+        ]
+      ],
+      "posterior_mean": [
+        0.007158844719704919,
+        0.40084092602953564
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.007158844719704919,
+          "std": 0.1313303872390767,
+          "hdi_3%": -0.23643136402382706,
+          "hdi_97%": 0.25821530226149036,
+          "ess_bulk": 4749.740409347965,
+          "ess_tail": 4621.76328942345,
+          "r_hat": 1.0008756009250352,
+          "mcse_mean": 0.001907413260271797
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.40084092602953564,
+          "std": 0.1341275914495227,
+          "hdi_3%": 0.1408902412606202,
+          "hdi_97%": 0.639539629359408,
+          "ess_bulk": 4847.688376369796,
+          "ess_tail": 4678.756511095622,
+          "r_hat": 1.0007419871213903,
+          "mcse_mean": 0.001926842862908896
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.81475,
+        0.360625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 3,
+      "seed": 20261914,
+      "kind": "calibration",
+      "generating_beta": [
+        0.6566873814625384,
+        0.5478955423038007
+      ],
+      "data_sha256": "b5f2413c6b9a2e8afb5ad11abcc3f1dc3da00cfceddc66adeb7a2f1db713bf20",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0004478704888555,
+        "min_ess_bulk": 4790.914565131874,
+        "min_ess_tail": 4795.965183059982,
+        "divergences": 0,
+        "max_mean_error_sd": 0.009488066526309439,
+        "max_covariance_error_sd": 0.020663881573896693
+      },
+      "reference_mean": [
+        0.7719314326819295,
+        0.8059234912539264
+      ],
+      "reference_covariance": [
+        [
+          0.016117367874100164,
+          0.0008691011028080367
+        ],
+        [
+          0.0008691011028080367,
+          0.016235080842688928
+        ]
+      ],
+      "posterior_mean": [
+        0.7707268828247829,
+        0.8053436876889747
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.7707268828247829,
+          "std": 0.1282591722066436,
+          "hdi_3%": 0.5343204460870068,
+          "hdi_97%": 1.0147726334089047,
+          "ess_bulk": 5653.1257905651855,
+          "ess_tail": 5282.7955641947,
+          "r_hat": 1.000362016080649,
+          "mcse_mean": 0.0017050790247934138
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8053436876889747,
+          "std": 0.12733821886022512,
+          "hdi_3%": 0.5766407565289855,
+          "hdi_97%": 1.0527769207170412,
+          "ess_bulk": 4790.914565131874,
+          "ess_tail": 4795.965183059982,
+          "r_hat": 1.0004478704888555,
+          "mcse_mean": 0.0018408931555240452
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.188,
+        0.019375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 4,
+      "seed": 20261915,
+      "kind": "calibration",
+      "generating_beta": [
+        1.611575469449681,
+        1.1768764187520666
+      ],
+      "data_sha256": "640fd5ab952c8f0cbd2d5a6195f05a9043ec7396d540214cc6c9b182205ffcc3",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007489372235114,
+        "min_ess_bulk": 5438.196518307282,
+        "min_ess_tail": 4833.476722915354,
+        "divergences": 0,
+        "max_mean_error_sd": 0.001549510867570141,
+        "max_covariance_error_sd": 0.023249528977730093
+      },
+      "reference_mean": [
+        1.4912885016056003,
+        1.0078585563809859
+      ],
+      "reference_covariance": [
+        [
+          0.01608408678430833,
+          -0.00046765281075869113
+        ],
+        [
+          -0.00046765281075869113,
+          0.016513217342091945
+        ]
+      ],
+      "posterior_mean": [
+        1.4913316371518615,
+        1.0076594384022652
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.4913316371518615,
+          "std": 0.12677772610824375,
+          "hdi_3%": 1.2472884165135885,
+          "hdi_97%": 1.721259544070465,
+          "ess_bulk": 5454.923014821862,
+          "ess_tail": 4833.476722915354,
+          "r_hat": 1.0007489372235114,
+          "mcse_mean": 0.0017150991197803765
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.0076594384022652,
+          "std": 0.12700115281752927,
+          "hdi_3%": 0.7775534562370471,
+          "hdi_97%": 1.2598184528821228,
+          "ess_bulk": 5438.196518307282,
+          "ess_tail": 4981.642923840041,
+          "r_hat": 1.0002534214891365,
+          "mcse_mean": 0.001722253199241792
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.832,
+        0.9165
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 5,
+      "seed": 20261916,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.12569093089258065,
+        -0.7711196291628581
+      ],
+      "data_sha256": "366330299633fc863cfc40a32ba00f568c6566ac34a79088c8d7fd46f4e75d61",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0010464051167594,
+        "min_ess_bulk": 4881.89057711443,
+        "min_ess_tail": 4523.79215358386,
+        "divergences": 0,
+        "max_mean_error_sd": 0.024807014757265298,
+        "max_covariance_error_sd": 0.016002979699222493
+      },
+      "reference_mean": [
+        -0.1441234840069979,
+        -0.7741809444602805
+      ],
+      "reference_covariance": [
+        [
+          0.01765469496455007,
+          -0.005826187168268224
+        ],
+        [
+          -0.005826187168268224,
+          0.021431582951893253
+        ]
+      ],
+      "posterior_mean": [
+        -0.14233214134372013,
+        -0.7705493141699037
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.14233214134372013,
+          "std": 0.13352434315077044,
+          "hdi_3%": -0.3880126702446108,
+          "hdi_97%": 0.11379004741529103,
+          "ess_bulk": 4881.89057711443,
+          "ess_tail": 4523.79215358386,
+          "r_hat": 1.0010464051167594,
+          "mcse_mean": 0.0019086265917858342
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.7705493141699037,
+          "std": 0.14521919213723739,
+          "hdi_3%": -1.0329925485670604,
+          "hdi_97%": -0.4881735455085061,
+          "ess_bulk": 5531.170342081576,
+          "ess_tail": 5290.648602087874,
+          "r_hat": 1.0007902716076318,
+          "mcse_mean": 0.0019518655802204638
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.55075,
+        0.49875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 6,
+      "seed": 20261917,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.4835386267385244,
+        -0.7747491580295445
+      ],
+      "data_sha256": "0afd47a1927a72932d6de40daaa9bfa267703b9d85552490af212a5633ad4d5d",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009015503334984,
+        "min_ess_bulk": 5007.980398527549,
+        "min_ess_tail": 4698.879950812175,
+        "divergences": 0,
+        "max_mean_error_sd": 0.019234462914880613,
+        "max_covariance_error_sd": 0.031247728879781292
+      },
+      "reference_mean": [
+        -1.2279609080757903,
+        -0.7516797952041729
+      ],
+      "reference_covariance": [
+        [
+          0.016344844769807715,
+          0.0018053523167438658
+        ],
+        [
+          0.001805352316743866,
+          0.011895163276319625
+        ]
+      ],
+      "posterior_mean": [
+        -1.22550184049584,
+        -0.7520845945002355
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.22550184049584,
+          "std": 0.1258336421306267,
+          "hdi_3%": -1.4585130291727733,
+          "hdi_97%": -0.9868362345264758,
+          "ess_bulk": 5007.980398527549,
+          "ess_tail": 4698.879950812175,
+          "r_hat": 1.0009015503334984,
+          "mcse_mean": 0.001778315573664021
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.7520845945002355,
+          "std": 0.10940209860288497,
+          "hdi_3%": -0.9583365040870596,
+          "hdi_97%": -0.5445649362145151,
+          "ess_bulk": 5791.404063671372,
+          "ess_tail": 4987.19208628591,
+          "r_hat": 1.0001134530850821,
+          "mcse_mean": 0.0014359757262883176
+        }
+      ],
+      "covered_90": [
+        false,
+        true
+      ],
+      "posterior_quantile": [
+        0.019,
+        0.422
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 7,
+      "seed": 20261918,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.16145391242256812,
+        1.1408669316692273
+      ],
+      "data_sha256": "d77af4c0837cb32e11664be2b27c6c9aa1f79f5e96a85cf50d23bcd8b67bd4e5",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009092754173567,
+        "min_ess_bulk": 5072.535223565196,
+        "min_ess_tail": 4611.127638065106,
+        "divergences": 0,
+        "max_mean_error_sd": 0.015436637217846282,
+        "max_covariance_error_sd": 0.02117099528062271
+      },
+      "reference_mean": [
+        -0.2096378736899591,
+        1.0482440186037751
+      ],
+      "reference_covariance": [
+        [
+          0.018281818091204837,
+          0.006799623752589501
+        ],
+        [
+          0.0067996237525895014,
+          0.020911534125890148
+        ]
+      ],
+      "posterior_mean": [
+        -0.2117250656318888,
+        1.0478932684608733
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.2117250656318888,
+          "std": 0.13377134897531198,
+          "hdi_3%": -0.45583117557535,
+          "hdi_97%": 0.04697430897562899,
+          "ess_bulk": 5450.231207805972,
+          "ess_tail": 4947.919715468522,
+          "r_hat": 1.0009092754173567,
+          "mcse_mean": 0.0018111239853789642
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.0478932684608733,
+          "std": 0.14454464847733792,
+          "hdi_3%": 0.7809416556203246,
+          "hdi_97%": 1.3172837738506629,
+          "ess_bulk": 5072.535223565196,
+          "ess_tail": 4611.127638065106,
+          "r_hat": 1.0008559354744435,
+          "mcse_mean": 0.0020286392286060335
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.6435,
+        0.741375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 8,
+      "seed": 20261919,
+      "kind": "calibration",
+      "generating_beta": [
+        0.8077082955474405,
+        1.2590323408623538
+      ],
+      "data_sha256": "82465aca5bdfdb58605fc09f4440a1dbfb20494632599c58206ecf547d5d2a62",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007786938110321,
+        "min_ess_bulk": 4470.421802202352,
+        "min_ess_tail": 4180.081833782257,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0034179708417809824,
+        "max_covariance_error_sd": 0.020944266777826324
+      },
+      "reference_mean": [
+        0.8089210701101511,
+        1.0309755650316201
+      ],
+      "reference_covariance": [
+        [
+          0.016314428469396982,
+          0.0017087252350009615
+        ],
+        [
+          0.0017087252350009615,
+          0.011986514339504794
+        ]
+      ],
+      "posterior_mean": [
+        0.8087224724286067,
+        1.0313497745311544
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.8087224724286067,
+          "std": 0.12895272535350366,
+          "hdi_3%": 0.567552758392392,
+          "hdi_97%": 1.0548924663319124,
+          "ess_bulk": 4470.421802202352,
+          "ess_tail": 4180.081833782257,
+          "r_hat": 1.0000175236932194,
+          "mcse_mean": 0.0019296826272069384
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.0313497745311544,
+          "std": 0.11029798805034821,
+          "hdi_3%": 0.826454647222048,
+          "hdi_97%": 1.238410143212231,
+          "ess_bulk": 5188.291124285274,
+          "ess_tail": 5221.156318484518,
+          "r_hat": 1.0007786938110321,
+          "mcse_mean": 0.00152931642822904
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.495375,
+        0.97825
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 9,
+      "seed": 20261920,
+      "kind": "calibration",
+      "generating_beta": [
+        0.34406729032339567,
+        -0.4052912080537909
+      ],
+      "data_sha256": "467d7686265ea0a0ab782a42c8df73dc5beb5c31cf15a125868c5de800e8ca9c",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000982495737421,
+        "min_ess_bulk": 5296.145946807507,
+        "min_ess_tail": 4466.46496873114,
+        "divergences": 0,
+        "max_mean_error_sd": 0.03317609422917536,
+        "max_covariance_error_sd": 0.03301526315648564
+      },
+      "reference_mean": [
+        0.17621335236533756,
+        -0.503316598525391
+      ],
+      "reference_covariance": [
+        [
+          0.01630275880117399,
+          0.001732844675685301
+        ],
+        [
+          0.0017328446756853006,
+          0.012947584214505762
+        ]
+      ],
+      "posterior_mean": [
+        0.17809337080460377,
+        -0.49954157529838666
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.17809337080460377,
+          "std": 0.12618921800245547,
+          "hdi_3%": -0.06786258236201752,
+          "hdi_97%": 0.4097934043798508,
+          "ess_bulk": 5457.314301518135,
+          "ess_tail": 5019.717164702681,
+          "r_hat": 1.000982495737421,
+          "mcse_mean": 0.0017082323298515533
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.49954157529838666,
+          "std": 0.11189332560266098,
+          "hdi_3%": -0.7035030574489001,
+          "hdi_97%": -0.28764846285736373,
+          "ess_bulk": 5296.145946807507,
+          "ess_tail": 4466.46496873114,
+          "r_hat": 1.000298550446437,
+          "mcse_mean": 0.0015392750121326463
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.90925,
+        0.803625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 10,
+      "seed": 20261921,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.245479594474486,
+        -0.7425960330936857
+      ],
+      "data_sha256": "63bb746e4a5d5c1ea2f0baf3ad9a689fab63ba541ca8bfc3a8a05b97e988c78b",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009079733456079,
+        "min_ess_bulk": 5292.080625357838,
+        "min_ess_tail": 4620.54585157112,
+        "divergences": 0,
+        "max_mean_error_sd": 0.00828315084561404,
+        "max_covariance_error_sd": 0.028776632756425585
+      },
+      "reference_mean": [
+        -0.19395571307157147,
+        -1.0175066220070306
+      ],
+      "reference_covariance": [
+        [
+          0.017066293451814197,
+          -0.00445708588258507
+        ],
+        [
+          -0.00445708588258507,
+          0.019956405182346124
+        ]
+      ],
+      "posterior_mean": [
+        -0.19287361860825725,
+        -1.0175396084471058
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.19287361860825725,
+          "std": 0.1300901985266996,
+          "hdi_3%": -0.4338591412602343,
+          "hdi_97%": 0.05059450969104597,
+          "ess_bulk": 5404.648258558661,
+          "ess_tail": 4765.779742903307,
+          "r_hat": 1.0006826019897086,
+          "mcse_mean": 0.001765828937216859
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.0175396084471058,
+          "std": 0.14328532138853875,
+          "hdi_3%": -1.279817079706011,
+          "hdi_97%": -0.7413465942658294,
+          "ess_bulk": 5292.080625357838,
+          "ess_tail": 4620.54585157112,
+          "r_hat": 1.0009079733456079,
+          "mcse_mean": 0.0019709033329476655
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.34025,
+        0.970875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 11,
+      "seed": 20261922,
+      "kind": "calibration",
+      "generating_beta": [
+        1.3235420585075375,
+        0.7662252635805138
+      ],
+      "data_sha256": "bbdc8fddb807a324c56db0133220c02b70ab42758d7c282a43536a335175ea9c",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0012850907782527,
+        "min_ess_bulk": 4794.3953297191765,
+        "min_ess_tail": 4479.8011519670645,
+        "divergences": 0,
+        "max_mean_error_sd": 0.023452490167319772,
+        "max_covariance_error_sd": 0.023670129365043875
+      },
+      "reference_mean": [
+        1.441514910877328,
+        0.7105100355636111
+      ],
+      "reference_covariance": [
+        [
+          0.016685331800920786,
+          -0.0032095841993969765
+        ],
+        [
+          -0.003209584199396976,
+          0.016764225856701568
+        ]
+      ],
+      "posterior_mean": [
+        1.4384855125154765,
+        0.7116735751738096
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.4384855125154765,
+          "std": 0.12812827159396295,
+          "hdi_3%": 1.2016577304411413,
+          "hdi_97%": 1.6828792033426039,
+          "ess_bulk": 5345.746480690228,
+          "ess_tail": 5050.8931955998805,
+          "r_hat": 1.0005230006053862,
+          "mcse_mean": 0.0017504717662744946
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.7116735751738096,
+          "std": 0.12837592460579683,
+          "hdi_3%": 0.4807175552272892,
+          "hdi_97%": 0.9640623182778261,
+          "ess_bulk": 4794.3953297191765,
+          "ess_tail": 4479.8011519670645,
+          "r_hat": 1.0012850907782527,
+          "mcse_mean": 0.0018572428353930332
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.187125,
+        0.670375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 12,
+      "seed": 20261923,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.2703694448106286,
+        0.31437406731238354
+      ],
+      "data_sha256": "6814710aff83b77d8b6589b9198835cd7793ca0f4066f1478ed2dd98314566aa",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001457762089544,
+        "min_ess_bulk": 5699.635095524161,
+        "min_ess_tail": 4748.923134783914,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014520368992650778,
+        "max_covariance_error_sd": 0.018559737668025413
+      },
+      "reference_mean": [
+        -1.4082972168942895,
+        0.43353877502490296
+      ],
+      "reference_covariance": [
+        [
+          0.01673674247263655,
+          0.003919420865304387
+        ],
+        [
+          0.003919420865304387,
+          0.02306933437826202
+        ]
+      ],
+      "posterior_mean": [
+        -1.41017572520032,
+        0.4321547183346399
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.41017572520032,
+          "std": 0.12972105656483018,
+          "hdi_3%": -1.6443777852595372,
+          "hdi_97%": -1.1539422955500922,
+          "ess_bulk": 5815.311475846315,
+          "ess_tail": 5157.909558850361,
+          "r_hat": 1.0011415688683147,
+          "mcse_mean": 0.0017017822707286084
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4321547183346399,
+          "std": 0.15264005395372432,
+          "hdi_3%": 0.1550726392898826,
+          "hdi_97%": 0.7237302788267086,
+          "ess_bulk": 5699.635095524161,
+          "ess_tail": 4748.923134783914,
+          "r_hat": 1.001457762089544,
+          "mcse_mean": 0.002024325182644911
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.86,
+        0.221875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 13,
+      "seed": 20261924,
+      "kind": "calibration",
+      "generating_beta": [
+        0.4027750429146818,
+        0.21857078909105804
+      ],
+      "data_sha256": "6534b2804205da0237189752676497b70adbc0f75768eddadbd4d7329ed0b337",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008596704268142,
+        "min_ess_bulk": 4675.670010832802,
+        "min_ess_tail": 4149.003274971698,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0019519941343383673,
+        "max_covariance_error_sd": 0.025717868533677968
+      },
+      "reference_mean": [
+        0.5083106854061201,
+        0.2916970338346843
+      ],
+      "reference_covariance": [
+        [
+          0.016658408221248363,
+          0.00313915967361589
+        ],
+        [
+          0.00313915967361589,
+          0.016771451766363646
+        ]
+      ],
+      "posterior_mean": [
+        0.5085626243233395,
+        0.29145989984504816
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.5085626243233395,
+          "std": 0.12901616408553424,
+          "hdi_3%": 0.26808631067362054,
+          "hdi_97%": 0.7524619246038264,
+          "ess_bulk": 4675.670010832802,
+          "ess_tail": 4149.003274971698,
+          "r_hat": 1.0005119797555828,
+          "mcse_mean": 0.0018852554915360841
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.29145989984504816,
+          "std": 0.13115936016163654,
+          "hdi_3%": 0.04784210124239345,
+          "hdi_97%": 0.5394301499872062,
+          "ess_bulk": 4804.230260171938,
+          "ess_tail": 4810.461613648059,
+          "r_hat": 1.0008596704268142,
+          "mcse_mean": 0.0018943052548118372
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.210375,
+        0.2895
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 14,
+      "seed": 20261925,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.205156597269596,
+        0.7659107488122401
+      ],
+      "data_sha256": "ba2a97cda7b21ceba89838e2f73320ce158413d1824d5e6e15cebc82444f3ccb",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001484208978467,
+        "min_ess_bulk": 5357.864704502367,
+        "min_ess_tail": 4290.794432453487,
+        "divergences": 0,
+        "max_mean_error_sd": 0.012967282659046522,
+        "max_covariance_error_sd": 0.028595192798348504
+      },
+      "reference_mean": [
+        -1.2255562401580307,
+        0.9151040314257742
+      ],
+      "reference_covariance": [
+        [
+          0.016211689533493775,
+          -0.0017456746312889905
+        ],
+        [
+          -0.0017456746312889905,
+          0.021636157200439363
+        ]
+      ],
+      "posterior_mean": [
+        -1.2239051791667808,
+        0.9160546205061284
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.2239051791667808,
+          "std": 0.1287037451570648,
+          "hdi_3%": -1.474505247104068,
+          "hdi_97%": -0.989204212055304,
+          "ess_bulk": 5357.864704502367,
+          "ess_tail": 4649.5683207135235,
+          "r_hat": 1.001484208978467,
+          "mcse_mean": 0.0017579559995138242
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.9160546205061284,
+          "std": 0.14497402220355698,
+          "hdi_3%": 0.6451968399815886,
+          "hdi_97%": 1.1857060576545853,
+          "ess_bulk": 5802.5693839776195,
+          "ess_tail": 4290.794432453487,
+          "r_hat": 1.001202234892229,
+          "mcse_mean": 0.0019089829554384164
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.558625,
+        0.15025
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 15,
+      "seed": 20261926,
+      "kind": "calibration",
+      "generating_beta": [
+        1.5304635900311236,
+        0.8882394074717047
+      ],
+      "data_sha256": "2ef47468c03a6cd82afb6d4b5e9f36b81bb44c56242813adfdea064374b40b3c",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007940839612315,
+        "min_ess_bulk": 4865.116919215281,
+        "min_ess_tail": 4423.717398366361,
+        "divergences": 0,
+        "max_mean_error_sd": 0.011937596018681274,
+        "max_covariance_error_sd": 0.04503153687195069
+      },
+      "reference_mean": [
+        1.5962045441242776,
+        0.9366410006918854
+      ],
+      "reference_covariance": [
+        [
+          0.016088312149401464,
+          0.0005643321727779046
+        ],
+        [
+          0.0005643321727779046,
+          0.01823036476022365
+        ]
+      ],
+      "posterior_mean": [
+        1.5977187053468673,
+        0.9374154172781488
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.5977187053468673,
+          "std": 0.12395092064054314,
+          "hdi_3%": 1.3605359465664333,
+          "hdi_97%": 1.8229968224500233,
+          "ess_bulk": 5487.228613200315,
+          "ess_tail": 4884.530420272365,
+          "r_hat": 1.0003608795809182,
+          "mcse_mean": 0.0016721024233725143
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.9374154172781488,
+          "std": 0.13342748529677365,
+          "hdi_3%": 0.6926689465036542,
+          "hdi_97%": 1.1832369985386446,
+          "ess_bulk": 4865.116919215281,
+          "ess_tail": 4423.717398366361,
+          "r_hat": 1.0007940839612315,
+          "mcse_mean": 0.0019106589478683261
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.291,
+        0.358625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 16,
+      "seed": 20261927,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.9157815150951365,
+        -0.7614555350962809
+      ],
+      "data_sha256": "f817ce22ed82a1cbcb5d7cf950c48c1b34732d218985046d44e95ab6ac8284fe",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008246506475746,
+        "min_ess_bulk": 4284.283950331533,
+        "min_ess_tail": 4463.672727875248,
+        "divergences": 0,
+        "max_mean_error_sd": 0.008879722950719897,
+        "max_covariance_error_sd": 0.022823473985643813
+      },
+      "reference_mean": [
+        -0.9401534848017247,
+        -0.9152776513656611
+      ],
+      "reference_covariance": [
+        [
+          0.016183667483157034,
+          0.001259664165265211
+        ],
+        [
+          0.001259664165265211,
+          0.014063901280789956
+        ]
+      ],
+      "posterior_mean": [
+        -0.9410218495496712,
+        -0.9163307094354193
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.9410218495496712,
+          "std": 0.12842208863901403,
+          "hdi_3%": -1.1796843506135388,
+          "hdi_97%": -0.7009830694979595,
+          "ess_bulk": 4284.283950331533,
+          "ess_tail": 4463.672727875248,
+          "r_hat": 1.0008246506475746,
+          "mcse_mean": 0.0019638202137148677
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.9163307094354193,
+          "std": 0.11855607198339187,
+          "hdi_3%": -1.1490504127514118,
+          "hdi_97%": -0.7046381803115236,
+          "ess_bulk": 5270.354175553766,
+          "ess_tail": 4957.777539517805,
+          "r_hat": 1.000334085903265,
+          "mcse_mean": 0.001632645287977295
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.572375,
+        0.905375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 17,
+      "seed": 20261928,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.5669396089291215,
+        0.21592652463490067
+      ],
+      "data_sha256": "20fa1970ea63f14edf400d9e7878ca61e12ad1b7c956706a668e63717fa96481",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0016054974134108,
+        "min_ess_bulk": 5353.224055665569,
+        "min_ess_tail": 4469.6259191362005,
+        "divergences": 0,
+        "max_mean_error_sd": 0.015393568314579678,
+        "max_covariance_error_sd": 0.05161391185828929
+      },
+      "reference_mean": [
+        -0.3821874306723099,
+        0.04915896738120598
+      ],
+      "reference_covariance": [
+        [
+          0.016070876700535565,
+          2.0331673687841734e-05
+        ],
+        [
+          2.0331673687841734e-05,
+          0.012229644438612774
+        ]
+      ],
+      "posterior_mean": [
+        -0.38076000343895267,
+        0.047456627715215575
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.38076000343895267,
+          "std": 0.12868193393972402,
+          "hdi_3%": -0.6199395341170053,
+          "hdi_97%": -0.13884131489117352,
+          "ess_bulk": 5456.722406730362,
+          "ess_tail": 5000.8750918026435,
+          "r_hat": 1.0016054974134108,
+          "mcse_mean": 0.0017435812670187878
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.047456627715215575,
+          "std": 0.11225736886882198,
+          "hdi_3%": -0.16239621513960467,
+          "hdi_97%": 0.25835414353162844,
+          "ess_bulk": 5353.224055665569,
+          "ess_tail": 4469.6259191362005,
+          "r_hat": 1.000200248596924,
+          "mcse_mean": 0.001536323200117954
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.075625,
+        0.936375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 18,
+      "seed": 20261929,
+      "kind": "calibration",
+      "generating_beta": [
+        0.03998614716435988,
+        0.7275863606492067
+      ],
+      "data_sha256": "4198505922cd9d3dab3d219915befcb9ad92c6a7d0a78ee76350a579b9401bae",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0006985666005868,
+        "min_ess_bulk": 5402.056694687974,
+        "min_ess_tail": 4545.862987940195,
+        "divergences": 0,
+        "max_mean_error_sd": 0.012648803781368359,
+        "max_covariance_error_sd": 0.020419507741883638
+      },
+      "reference_mean": [
+        -0.19662362892677426,
+        0.6983120771190356
+      ],
+      "reference_covariance": [
+        [
+          0.01644639030582429,
+          0.0029155697697621236
+        ],
+        [
+          0.0029155697697621236,
+          0.022635083973228214
+        ]
+      ],
+      "posterior_mean": [
+        -0.19502531669357362,
+        0.6964090695725942
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.19502531669357362,
+          "std": 0.12748170005788886,
+          "hdi_3%": -0.4395070193151581,
+          "hdi_97%": 0.03861695406388318,
+          "ess_bulk": 5402.056694687974,
+          "ess_tail": 4545.862987940195,
+          "r_hat": 1.0006985666005868,
+          "mcse_mean": 0.0017360825574406278
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.6964090695725942,
+          "std": 0.15181372050922332,
+          "hdi_3%": 0.4188724619637319,
+          "hdi_97%": 0.9878536574099408,
+          "ess_bulk": 5758.529220338531,
+          "ess_tail": 5241.905711319656,
+          "r_hat": 1.0001251263798068,
+          "mcse_mean": 0.00200413609934111
+        }
+      ],
+      "covered_90": [
+        false,
+        true
+      ],
+      "posterior_quantile": [
+        0.966,
+        0.5755
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 19,
+      "seed": 20261930,
+      "kind": "calibration",
+      "generating_beta": [
+        1.464234957573688,
+        -0.9394872227396363
+      ],
+      "data_sha256": "974e56e6a7c44e0d9fd7bf9a85eedafa8d104f5327c53f9b963873bf98b65086",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001299015342978,
+        "min_ess_bulk": 5536.419735081016,
+        "min_ess_tail": 4803.699057472886,
+        "divergences": 0,
+        "max_mean_error_sd": 0.005450675886036168,
+        "max_covariance_error_sd": 0.029548833122356705
+      },
+      "reference_mean": [
+        1.2643265478887713,
+        -0.8448299400633562
+      ],
+      "reference_covariance": [
+        [
+          0.01633696431849484,
+          -0.0022302388703686823
+        ],
+        [
+          -0.0022302388703686823,
+          0.01869058655316988
+        ]
+      ],
+      "posterior_mean": [
+        1.2636298635649006,
+        -0.8450116543669114
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.2636298635649006,
+          "std": 0.12591356593362663,
+          "hdi_3%": 1.0247077708296415,
+          "hdi_97%": 1.4964424540407317,
+          "ess_bulk": 5945.215176011953,
+          "ess_tail": 5079.540451011102,
+          "r_hat": 1.0002918413313826,
+          "mcse_mean": 0.0016343623034487363
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.8450116543669114,
+          "std": 0.13661102067268233,
+          "hdi_3%": -1.1036911040446868,
+          "hdi_97%": -0.5865464314979039,
+          "ess_bulk": 5536.419735081016,
+          "ess_tail": 4803.699057472886,
+          "r_hat": 1.001299015342978,
+          "mcse_mean": 0.0018377358199646791
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.9465,
+        0.247625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 20,
+      "seed": 20261931,
+      "kind": "calibration",
+      "generating_beta": [
+        0.9843521050924083,
+        1.303332032442064
+      ],
+      "data_sha256": "88227baa50f6945efacad7665b7a39a9eb22942eb28db823093be7379d673317",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0003671566125858,
+        "min_ess_bulk": 5047.2504265360685,
+        "min_ess_tail": 4490.67340215774,
+        "divergences": 0,
+        "max_mean_error_sd": 0.018760550013922385,
+        "max_covariance_error_sd": 0.021030623973273547
+      },
+      "reference_mean": [
+        0.9926424323985755,
+        1.3267354700954626
+      ],
+      "reference_covariance": [
+        [
+          0.01615051677388683,
+          0.0012238209740296447
+        ],
+        [
+          0.001223820974029645,
+          0.01879835497461714
+        ]
+      ],
+      "posterior_mean": [
+        0.9950266109589078,
+        1.324583685834046
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.9950266109589078,
+          "std": 0.12841406550348164,
+          "hdi_3%": 0.7483389917734254,
+          "hdi_97%": 1.2286139224623716,
+          "ess_bulk": 5312.797375198957,
+          "ess_tail": 4490.67340215774,
+          "r_hat": 1.00015361306628,
+          "mcse_mean": 0.0017612017347469061
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.324583685834046,
+          "std": 0.1367532491925724,
+          "hdi_3%": 1.0703401443725125,
+          "hdi_97%": 1.5787895731554797,
+          "ess_bulk": 5047.2504265360685,
+          "ess_tail": 4608.833903281854,
+          "r_hat": 1.0003671566125858,
+          "mcse_mean": 0.0019249024491845197
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.47225,
+        0.43775
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 21,
+      "seed": 20261932,
+      "kind": "calibration",
+      "generating_beta": [
+        1.20041947208286,
+        -0.07044116401581522
+      ],
+      "data_sha256": "5689495c4547e7aa9500356fc588165164d9870d9f9fa9ef058ee7d679d59ea2",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0003489123954947,
+        "min_ess_bulk": 4655.687337572514,
+        "min_ess_tail": 4066.0374599047473,
+        "divergences": 0,
+        "max_mean_error_sd": 0.015813438452900876,
+        "max_covariance_error_sd": 0.05577499698320322
+      },
+      "reference_mean": [
+        1.1947170375152394,
+        0.029026226548548386
+      ],
+      "reference_covariance": [
+        [
+          0.020283965013615717,
+          -0.007846048821863334
+        ],
+        [
+          -0.007846048821863334,
+          0.01461160641559659
+        ]
+      ],
+      "posterior_mean": [
+        1.1951498192358692,
+        0.02711472217824654
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.1951498192358692,
+          "std": 0.1446933864183589,
+          "hdi_3%": 0.9198882556556325,
+          "hdi_97%": 1.4587645720147495,
+          "ess_bulk": 5089.412568007914,
+          "ess_tail": 4583.898143260566,
+          "r_hat": 0.9999263132604181,
+          "mcse_mean": 0.002027974383901225
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.02711472217824654,
+          "std": 0.12417929401818656,
+          "hdi_3%": -0.213803704705529,
+          "hdi_97%": 0.25652307139291586,
+          "ess_bulk": 4655.687337572514,
+          "ess_tail": 4066.0374599047473,
+          "r_hat": 1.0003489123954947,
+          "mcse_mean": 0.0018276324350372398
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.507,
+        0.208125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 22,
+      "seed": 20261933,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.1031127233031178,
+        -1.0497442261202399
+      ],
+      "data_sha256": "fb9ba13bec174d3d2b7600c3a5254731d7e2309f0ffe97e27328d3bdd4e391bf",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0014914267119432,
+        "min_ess_bulk": 4970.436057625242,
+        "min_ess_tail": 4600.205524647855,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014285725485834073,
+        "max_covariance_error_sd": 0.022949239192908748
+      },
+      "reference_mean": [
+        -0.17774285934347253,
+        -1.1224061536516592
+      ],
+      "reference_covariance": [
+        [
+          0.016462663154306813,
+          0.00313637599753632
+        ],
+        [
+          0.00313637599753632,
+          0.025105528038700496
+        ]
+      ],
+      "posterior_mean": [
+        -0.1759099020492458,
+        -1.124558902210148
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.1759099020492458,
+          "std": 0.12900420455742018,
+          "hdi_3%": -0.4129281102736417,
+          "hdi_97%": 0.06498166781819051,
+          "ess_bulk": 5089.814534788063,
+          "ess_tail": 4732.023565254862,
+          "r_hat": 1.0002172877102276,
+          "mcse_mean": 0.0018094401783906135
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.124558902210148,
+          "std": 0.16025504923940756,
+          "hdi_3%": -1.4311154980539178,
+          "hdi_97%": -0.8292998654005921,
+          "ess_bulk": 4970.436057625242,
+          "ess_tail": 4600.205524647855,
+          "r_hat": 1.0014914267119432,
+          "mcse_mean": 0.0022682849599061027
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.71025,
+        0.678125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 23,
+      "seed": 20261934,
+      "kind": "calibration",
+      "generating_beta": [
+        0.7177446513230465,
+        1.6273785802087677
+      ],
+      "data_sha256": "0fd1bc655b4977154d37db446a0864e83c5dcb2befb04d8289a5cf4fe8dffbbe",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0002905779454008,
+        "min_ess_bulk": 5307.3248834491715,
+        "min_ess_tail": 4644.153776936624,
+        "divergences": 0,
+        "max_mean_error_sd": 0.011669958386480585,
+        "max_covariance_error_sd": 0.04768038942029251
+      },
+      "reference_mean": [
+        0.6708338633473323,
+        1.5541723672235723
+      ],
+      "reference_covariance": [
+        [
+          0.016084480873365243,
+          0.0005133004099911699
+        ],
+        [
+          0.0005133004099911699,
+          0.01931938789837723
+        ]
+      ],
+      "posterior_mean": [
+        0.6703588085389108,
+        1.5525503106824965
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.6703588085389108,
+          "std": 0.12745037947381752,
+          "hdi_3%": 0.4436903692818525,
+          "hdi_97%": 0.9203361052804205,
+          "ess_bulk": 5307.3248834491715,
+          "ess_tail": 4644.153776936624,
+          "r_hat": 1.0002905779454008,
+          "mcse_mean": 0.0017475101542587413
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.5525503106824965,
+          "std": 0.13564008242411596,
+          "hdi_3%": 1.2986628286689208,
+          "hdi_97%": 1.8011154388190416,
+          "ess_bulk": 5616.734636720909,
+          "ess_tail": 5203.784205454053,
+          "r_hat": 1.0002762469833861,
+          "mcse_mean": 0.0018103426180418071
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.6415,
+        0.709875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 24,
+      "seed": 20261935,
+      "kind": "calibration",
+      "generating_beta": [
+        0.43708391905394073,
+        -0.8645136241924568
+      ],
+      "data_sha256": "f68c59c37cdb264afce0669f3d1720e11d319a107ee390fe7cb889e3ce1202bf",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.00105194077869,
+        "min_ess_bulk": 4676.0776841494435,
+        "min_ess_tail": 4452.96370183244,
+        "divergences": 0,
+        "max_mean_error_sd": 0.027220206578075445,
+        "max_covariance_error_sd": 0.013235737525587375
+      },
+      "reference_mean": [
+        0.492572653659515,
+        -1.0790321919192138
+      ],
+      "reference_covariance": [
+        [
+          0.0172479283079872,
+          0.0050681293815212185
+        ],
+        [
+          0.0050681293815212185,
+          0.0218216411812729
+        ]
+      ],
+      "posterior_mean": [
+        0.49614752063569667,
+        -1.0800182703200831
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.49614752063569667,
+          "std": 0.13045933947419222,
+          "hdi_3%": 0.26539182741615247,
+          "hdi_97%": 0.7509188086249808,
+          "ess_bulk": 5220.391233499862,
+          "ess_tail": 4654.093750950972,
+          "r_hat": 1.00105194077869,
+          "mcse_mean": 0.0018045479173230286
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.0800182703200831,
+          "std": 0.1469167381352997,
+          "hdi_3%": -1.3531605977430918,
+          "hdi_97%": -0.7978977521270456,
+          "ess_bulk": 4676.0776841494435,
+          "ess_tail": 4452.96370183244,
+          "r_hat": 1.000336611727488,
+          "mcse_mean": 0.0021466082069669886
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.332125,
+        0.92775
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 25,
+      "seed": 20261936,
+      "kind": "calibration",
+      "generating_beta": [
+        1.0705804711084235,
+        -0.44460741677391075
+      ],
+      "data_sha256": "6ff8cc6c92693dd2155fceacf7da6cc0c35202ec376d72eb0533c074b91949d5",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001032563299661,
+        "min_ess_bulk": 5265.251071619643,
+        "min_ess_tail": 4799.180694436203,
+        "divergences": 0,
+        "max_mean_error_sd": 0.006369270105609363,
+        "max_covariance_error_sd": 0.031244699941665725
+      },
+      "reference_mean": [
+        1.2225119223999117,
+        -0.4332685363622569
+      ],
+      "reference_covariance": [
+        [
+          0.01682965874266211,
+          -0.003401237451389035
+        ],
+        [
+          -0.0034012374513890356,
+          0.015245354063307803
+        ]
+      ],
+      "posterior_mean": [
+        1.2229609506010581,
+        -0.43248210934651826
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.2229609506010581,
+          "std": 0.13041102497558746,
+          "hdi_3%": 0.9808554684521874,
+          "hdi_97%": 1.4670514813470927,
+          "ess_bulk": 5265.251071619643,
+          "ess_tail": 4806.664043757054,
+          "r_hat": 1.001032563299661,
+          "mcse_mean": 0.0017992134982628906
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.43248210934651826,
+          "std": 0.12164968288079502,
+          "hdi_3%": -0.6582946642864367,
+          "hdi_97%": -0.1989396537795201,
+          "ess_bulk": 5362.422842049479,
+          "ess_tail": 4799.180694436203,
+          "r_hat": 1.0000456597003935,
+          "mcse_mean": 0.0016645820239621202
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.121125,
+        0.451875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 26,
+      "seed": 20261937,
+      "kind": "calibration",
+      "generating_beta": [
+        1.1817172179255004,
+        1.0542596963575113
+      ],
+      "data_sha256": "35fb83765e360b663bd8fd93486e88fb9087b8a6df69aa8ed19781a8ad547be5",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0030608391302978,
+        "min_ess_bulk": 4243.768476988227,
+        "min_ess_tail": 3865.59941704067,
+        "divergences": 0,
+        "max_mean_error_sd": 0.006997028130863247,
+        "max_covariance_error_sd": 0.015150435296446298
+      },
+      "reference_mean": [
+        1.3456996536389036,
+        0.8824334180900253
+      ],
+      "reference_covariance": [
+        [
+          0.01709234700494355,
+          0.00476924787274849
+        ],
+        [
+          0.00476924787274849,
+          0.022266895596701107
+        ]
+      ],
+      "posterior_mean": [
+        1.345109629892525,
+        0.8813893148189345
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.345109629892525,
+          "std": 0.13172434665735258,
+          "hdi_3%": 1.0955343889762295,
+          "hdi_97%": 1.5911613575329895,
+          "ess_bulk": 4243.768476988227,
+          "ess_tail": 3865.59941704067,
+          "r_hat": 1.0030608391302978,
+          "mcse_mean": 0.002026247480125785
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8813893148189345,
+          "std": 0.14868303033688487,
+          "hdi_3%": 0.6170794456204829,
+          "hdi_97%": 1.182181092711778,
+          "ess_bulk": 5307.427937913566,
+          "ess_tail": 4901.075539545861,
+          "r_hat": 1.0009465079726767,
+          "mcse_mean": 0.0020400959990833525
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.1055,
+        0.879125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 27,
+      "seed": 20261938,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.10389190800592904,
+        -1.1774219737836127
+      ],
+      "data_sha256": "695bc39a1824aa878b27298023bd55b40f801c951fc44df70e564eea9b786e53",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0002904689230445,
+        "min_ess_bulk": 5209.173086860626,
+        "min_ess_tail": 4497.676182512592,
+        "divergences": 0,
+        "max_mean_error_sd": 0.039982064709284455,
+        "max_covariance_error_sd": 0.030031258202699137
+      },
+      "reference_mean": [
+        -0.2808861938668517,
+        -1.2591567117704354
+      ],
+      "reference_covariance": [
+        [
+          0.01701912409890061,
+          0.004813316898739446
+        ],
+        [
+          0.004813316898739446,
+          0.024431592208854568
+        ]
+      ],
+      "posterior_mean": [
+        -0.27567023905514304,
+        -1.2558608829933857
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.27567023905514304,
+          "std": 0.12848353353135455,
+          "hdi_3%": -0.5186054812313599,
+          "hdi_97%": -0.04064845642500856,
+          "ess_bulk": 5323.281992794576,
+          "ess_tail": 4527.565594768785,
+          "r_hat": 0.9999706118773283,
+          "mcse_mean": 0.0017594050629086597
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.2558608829933857,
+          "std": 0.15642781317707277,
+          "hdi_3%": -1.5461900089292437,
+          "hdi_97%": -0.9596400753904069,
+          "ess_bulk": 5209.173086860626,
+          "ess_tail": 4497.676182512592,
+          "r_hat": 1.0002904689230445,
+          "mcse_mean": 0.0021694004608945297
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.908875,
+        0.69575
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 28,
+      "seed": 20261939,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.12940642218731813,
+        -0.0977988605229624
+      ],
+      "data_sha256": "25e5ddab245b8ff1c2928cab64065b2e315ebcff25cb0dc8c6e9e48de82cd13e",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000332716748235,
+        "min_ess_bulk": 5046.3509089559475,
+        "min_ess_tail": 4262.402819782601,
+        "divergences": 0,
+        "max_mean_error_sd": 0.017535352137341226,
+        "max_covariance_error_sd": 0.0416842052600872
+      },
+      "reference_mean": [
+        -0.25536864755704713,
+        0.05778203513940213
+      ],
+      "reference_covariance": [
+        [
+          0.01619966535864891,
+          -0.001532938345305248
+        ],
+        [
+          -0.001532938345305248,
+          0.018241384170036557
+        ]
+      ],
+      "posterior_mean": [
+        -0.2576005104582606,
+        0.057744618001721676
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.2576005104582606,
+          "std": 0.12459693087188885,
+          "hdi_3%": -0.48081682324669556,
+          "hdi_97%": -0.018140268128344062,
+          "ess_bulk": 5046.3509089559475,
+          "ess_tail": 4870.27924361882,
+          "r_hat": 1.000332716748235,
+          "mcse_mean": 0.001754015174769573
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.057744618001721676,
+          "std": 0.13573969581852818,
+          "hdi_3%": -0.20039225288955526,
+          "hdi_97%": 0.3080218285525852,
+          "ess_bulk": 5079.536941239955,
+          "ess_tail": 4262.402819782601,
+          "r_hat": 1.000217266236825,
+          "mcse_mean": 0.0019072076095661668
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.8485,
+        0.127125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 29,
+      "seed": 20261940,
+      "kind": "calibration",
+      "generating_beta": [
+        0.6083623324037298,
+        1.0422031802642844
+      ],
+      "data_sha256": "db2b1696a383b5e626a0b7c1f018f27e395ff36a8ca8e577966def7a82a406e8",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001023345277999,
+        "min_ess_bulk": 4963.79113184742,
+        "min_ess_tail": 4513.29323262126,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0019384744817491331,
+        "max_covariance_error_sd": 0.001693849738412822
+      },
+      "reference_mean": [
+        0.449787747777877,
+        0.9527707538617755
+      ],
+      "reference_covariance": [
+        [
+          0.019123523007250412,
+          0.008463803317815523
+        ],
+        [
+          0.008463803317815523,
+          0.023466581518436877
+        ]
+      ],
+      "posterior_mean": [
+        0.45005581520102833,
+        0.9527637193768451
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.45005581520102833,
+          "std": 0.13840107726727788,
+          "hdi_3%": 0.1961606374518121,
+          "hdi_97%": 0.7130791026736356,
+          "ess_bulk": 5016.096175107993,
+          "ess_tail": 4894.805175742748,
+          "r_hat": 1.0002542089355797,
+          "mcse_mean": 0.001953414496028071
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.9527637193768451,
+          "std": 0.15331774320476843,
+          "hdi_3%": 0.6634647862722983,
+          "hdi_97%": 1.2390162884962443,
+          "ess_bulk": 4963.79113184742,
+          "ess_tail": 4513.29323262126,
+          "r_hat": 1.001023345277999,
+          "mcse_mean": 0.002175116886313377
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.873625,
+        0.7225
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 30,
+      "seed": 20261941,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.09574100890666032,
+        0.5939230250519296
+      ],
+      "data_sha256": "b5214e7b5350dde4a282bc8e58d7460b877ab8845fe4b761b9ae464a33b9dbbe",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008693110930387,
+        "min_ess_bulk": 5194.6392107342435,
+        "min_ess_tail": 4534.740535221099,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0036024305319077785,
+        "max_covariance_error_sd": 0.036750947339852943
+      },
+      "reference_mean": [
+        -0.03673502081423257,
+        0.7334882402335189
+      ],
+      "reference_covariance": [
+        [
+          0.018954898649189887,
+          -0.008131998266687862
+        ],
+        [
+          -0.008131998266687862,
+          0.022929305653053733
+        ]
+      ],
+      "posterior_mean": [
+        -0.03673454147002839,
+        0.734033735600743
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.03673454147002839,
+          "std": 0.13652818876291087,
+          "hdi_3%": -0.28505388676649257,
+          "hdi_97%": 0.22601614904923067,
+          "ess_bulk": 5194.6392107342435,
+          "ess_tail": 4534.740535221099,
+          "r_hat": 1.0006450079523341,
+          "mcse_mean": 0.001893729191893195
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.734033735600743,
+          "std": 0.15418164403601525,
+          "hdi_3%": 0.4309894629751383,
+          "hdi_97%": 1.013067125057624,
+          "ess_bulk": 5290.697714842815,
+          "ess_tail": 4611.904294663722,
+          "r_hat": 1.0008693110930387,
+          "mcse_mean": 0.0021247959661224894
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.334875,
+        0.17675
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 31,
+      "seed": 20261942,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.599019751080388,
+        0.6321899453203915
+      ],
+      "data_sha256": "e9ab829e17d03598d164de8ca36d9ce650051b5224bb5c8c4f2737e6f2d3cc59",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0017127494346527,
+        "min_ess_bulk": 4872.476324320274,
+        "min_ess_tail": 4508.6746275595415,
+        "divergences": 0,
+        "max_mean_error_sd": 0.029990395406147414,
+        "max_covariance_error_sd": 0.02731675409571045
+      },
+      "reference_mean": [
+        -0.5975324102012763,
+        0.6510352702778692
+      ],
+      "reference_covariance": [
+        [
+          0.016584086007801556,
+          -0.0034325052438344454
+        ],
+        [
+          -0.003432505243834445,
+          0.02295616259438475
+        ]
+      ],
+      "posterior_mean": [
+        -0.6013945497549749,
+        0.6532695848949013
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.6013945497549749,
+          "std": 0.12817591121435706,
+          "hdi_3%": -0.8413605059428558,
+          "hdi_97%": -0.36267854322793097,
+          "ess_bulk": 5090.547873647816,
+          "ess_tail": 4793.853570447366,
+          "r_hat": 1.0008785228110986,
+          "mcse_mean": 0.0018057400717340526
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.6532695848949013,
+          "std": 0.15075262052125593,
+          "hdi_3%": 0.3846208658970357,
+          "hdi_97%": 0.9446004628966074,
+          "ess_bulk": 4872.476324320274,
+          "ess_tail": 4508.6746275595415,
+          "r_hat": 1.0017127494346527,
+          "mcse_mean": 0.0021618915691254317
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.502875,
+        0.449625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 32,
+      "seed": 20261943,
+      "kind": "calibration",
+      "generating_beta": [
+        1.72662697703301,
+        -0.058494569738184746
+      ],
+      "data_sha256": "da0ca7d628cc2db85c601419217b55c951f07f58b6681bf13e7c9315d294207a",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.001206571065275,
+        "min_ess_bulk": 4987.870455260859,
+        "min_ess_tail": 4470.574761628828,
+        "divergences": 0,
+        "max_mean_error_sd": 0.015902513915709404,
+        "max_covariance_error_sd": 0.031182052283560517
+      },
+      "reference_mean": [
+        1.5518755430738025,
+        -0.034570665475027886
+      ],
+      "reference_covariance": [
+        [
+          0.016092272818119563,
+          0.0005444264070790145
+        ],
+        [
+          0.0005444264070790145,
+          0.013831135590209986
+        ]
+      ],
+      "posterior_mean": [
+        1.5538928616033567,
+        -0.03634375775996099
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.5538928616033567,
+          "std": 0.12681860597818476,
+          "hdi_3%": 1.3140130918313437,
+          "hdi_97%": 1.7908229671331315,
+          "ess_bulk": 5473.782373116982,
+          "ess_tail": 4470.574761628828,
+          "r_hat": 1.0011696446664522,
+          "mcse_mean": 0.001713894642057703
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.03634375775996099,
+          "std": 0.11789540720316315,
+          "hdi_3%": -0.2627532088536314,
+          "hdi_97%": 0.1758100714041147,
+          "ess_bulk": 4987.870455260859,
+          "ess_tail": 4547.91547122204,
+          "r_hat": 1.001206571065275,
+          "mcse_mean": 0.0016694971101257948
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.913,
+        0.427375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 33,
+      "seed": 20261944,
+      "kind": "calibration",
+      "generating_beta": [
+        0.8508987063529904,
+        -2.951058542442779
+      ],
+      "data_sha256": "fa8b51d6979febdb078188c896ec8c40c1d40b432aeadc0966c8da96c30d98c9",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008707080438273,
+        "min_ess_bulk": 5179.643674505973,
+        "min_ess_tail": 4463.166437589135,
+        "divergences": 0,
+        "max_mean_error_sd": 0.003861458119454567,
+        "max_covariance_error_sd": 0.01866918017245149
+      },
+      "reference_mean": [
+        0.8363593670936385,
+        -2.8189924738810737
+      ],
+      "reference_covariance": [
+        [
+          0.01631610728454353,
+          -0.0017805616972477174
+        ],
+        [
+          -0.0017805616972477174,
+          0.01292645874656063
+        ]
+      ],
+      "posterior_mean": [
+        0.8368526085882645,
+        -2.8192417708474826
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.8368526085882645,
+          "std": 0.12892135444196864,
+          "hdi_3%": 0.5895073998660344,
+          "hdi_97%": 1.0748931401791957,
+          "ess_bulk": 5179.643674505973,
+          "ess_tail": 4463.166437589135,
+          "r_hat": 1.0008707080438273,
+          "mcse_mean": 0.001794573573691017
+        },
+        {
+          "name": "beta[1]",
+          "mean": -2.8192417708474826,
+          "std": 0.11381395323273877,
+          "hdi_3%": -3.03863418789464,
+          "hdi_97%": -2.610024139236981,
+          "ess_bulk": 5380.479504001531,
+          "ess_tail": 4986.594276170703,
+          "r_hat": 1.0007463156005592,
+          "mcse_mean": 0.0015510250489391324
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.538875,
+        0.12475
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 34,
+      "seed": 20261945,
+      "kind": "calibration",
+      "generating_beta": [
+        0.029059226812350597,
+        0.19477701103213715
+      ],
+      "data_sha256": "0cc62863f467a310811a3bc3ebd82c061ec4dd6c70437cb27a98f7adada08781",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0005550739653322,
+        "min_ess_bulk": 5352.198691925512,
+        "min_ess_tail": 4806.155529030287,
+        "divergences": 0,
+        "max_mean_error_sd": 0.02410897529918529,
+        "max_covariance_error_sd": 0.029452645694826023
+      },
+      "reference_mean": [
+        -0.01082041121785157,
+        0.3265868900789921
+      ],
+      "reference_covariance": [
+        [
+          0.017984365339491132,
+          -0.005747004959563074
+        ],
+        [
+          -0.005747004959563074,
+          0.017260349453825975
+        ]
+      ],
+      "posterior_mean": [
+        -0.010556882697895693,
+        0.3234194854716708
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.010556882697895693,
+          "std": 0.13410970815040607,
+          "hdi_3%": -0.2700372874986055,
+          "hdi_97%": 0.2266203717694434,
+          "ess_bulk": 5352.198691925512,
+          "ess_tail": 5057.715548034435,
+          "r_hat": 1.0005550739653322,
+          "mcse_mean": 0.0018382912764961198
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.3234194854716708,
+          "std": 0.13329933387252318,
+          "hdi_3%": 0.07711899980343545,
+          "hdi_97%": 0.576073843489988,
+          "ess_bulk": 5670.938475348029,
+          "ess_tail": 4806.155529030287,
+          "r_hat": 1.0001797902204344,
+          "mcse_mean": 0.001771502339333895
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.6085,
+        0.168375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 35,
+      "seed": 20261946,
+      "kind": "calibration",
+      "generating_beta": [
+        0.7257190648201074,
+        1.0088478654220716
+      ],
+      "data_sha256": "1db287dd1c4528882965acc8f44c3895ad518f426bd13972a231f51a277f9c17",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009560330601508,
+        "min_ess_bulk": 5431.680073227901,
+        "min_ess_tail": 4788.117180616044,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0032438612962881436,
+        "max_covariance_error_sd": 0.032685041670827045
+      },
+      "reference_mean": [
+        0.7752483592440612,
+        0.9015835265185819
+      ],
+      "reference_covariance": [
+        [
+          0.016186670364419346,
+          0.0011109953743772376
+        ],
+        [
+          0.0011109953743772376,
+          0.010656459767428324
+        ]
+      ],
+      "posterior_mean": [
+        0.7755580007032242,
+        0.9012486622948302
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.7755580007032242,
+          "std": 0.1274524895250307,
+          "hdi_3%": 0.5427689271390264,
+          "hdi_97%": 1.0157721252505818,
+          "ess_bulk": 5538.5006733358105,
+          "ess_tail": 4961.737807208566,
+          "r_hat": 1.0009560330601508,
+          "mcse_mean": 0.001715900398902806
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.9012486622948302,
+          "std": 0.10490360622490624,
+          "hdi_3%": 0.6988853414624704,
+          "hdi_97%": 1.0908533180595756,
+          "ess_bulk": 5431.680073227901,
+          "ess_tail": 4788.117180616044,
+          "r_hat": 1.0008606093082544,
+          "mcse_mean": 0.001423880243910952
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.34575,
+        0.8465
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 36,
+      "seed": 20261947,
+      "kind": "calibration",
+      "generating_beta": [
+        1.5598714848928925,
+        -1.0554996550082862
+      ],
+      "data_sha256": "66e1413a9f22f8da2fdbb6f2ca78545eec8e9a024933c8a9454a91adaf00cd95",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0006076302297846,
+        "min_ess_bulk": 5079.752042677113,
+        "min_ess_tail": 4673.3300958485,
+        "divergences": 0,
+        "max_mean_error_sd": 0.008793019876145572,
+        "max_covariance_error_sd": 0.015603460669448631
+      },
+      "reference_mean": [
+        1.7275845828078353,
+        -0.9132020504130756
+      ],
+      "reference_covariance": [
+        [
+          0.016276007078886483,
+          0.002194257020030221
+        ],
+        [
+          0.0021942570200302208,
+          0.023467858180313224
+        ]
+      ],
+      "posterior_mean": [
+        1.7287063739072803,
+        -0.9130223576654468
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.7287063739072803,
+          "std": 0.1266479938110899,
+          "hdi_3%": 1.485562588831222,
+          "hdi_97%": 1.9578955388397041,
+          "ess_bulk": 5343.6813268796695,
+          "ess_tail": 4673.3300958485,
+          "r_hat": 1.0006076302297846,
+          "mcse_mean": 0.0017319813109514617
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.9130223576654468,
+          "std": 0.1531025377277673,
+          "hdi_3%": -1.2004522422378612,
+          "hdi_97%": -0.6309739505007476,
+          "ess_bulk": 5079.752042677113,
+          "ess_tail": 4961.0538665661925,
+          "r_hat": 1.0000404089413562,
+          "mcse_mean": 0.002151872969542622
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.090375,
+        0.179
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 37,
+      "seed": 20261948,
+      "kind": "calibration",
+      "generating_beta": [
+        0.7322831060522351,
+        1.8117557787047556
+      ],
+      "data_sha256": "df36011ca548a824230ce1d59127a656350a47f89d12a2c103ec32ef774b28d1",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 0.9999921648320655,
+        "min_ess_bulk": 4860.9228615605825,
+        "min_ess_tail": 4938.530699001245,
+        "divergences": 0,
+        "max_mean_error_sd": 0.005846212608285172,
+        "max_covariance_error_sd": 0.021737444023951637
+      },
+      "reference_mean": [
+        0.7356155995407018,
+        1.8030737481405512
+      ],
+      "reference_covariance": [
+        [
+          0.016698157231378068,
+          0.002961093035630706
+        ],
+        [
+          0.002961093035630706,
+          0.013977158686574922
+        ]
+      ],
+      "posterior_mean": [
+        0.7361788137789269,
+        1.8037649168254877
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.7361788137789269,
+          "std": 0.12967742003064653,
+          "hdi_3%": 0.49265565516726095,
+          "hdi_97%": 0.9747017967415976,
+          "ess_bulk": 5313.064287766827,
+          "ess_tail": 4938.530699001245,
+          "r_hat": 0.9996775786118591,
+          "mcse_mean": 0.001780416696654235
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.8037649168254877,
+          "std": 0.11693301921190408,
+          "hdi_3%": 1.5824173786767364,
+          "hdi_97%": 2.0235235641425238,
+          "ess_bulk": 4860.9228615605825,
+          "ess_tail": 4993.304630627646,
+          "r_hat": 0.9999921648320655,
+          "mcse_mean": 0.0016780640353394444
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.485625,
+        0.532125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 38,
+      "seed": 20261949,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.606756913387706,
+        -1.349408168081246
+      ],
+      "data_sha256": "2c672770bdf7538f05c1daa354fd89a58026f57720b6e31e9c1473649b4d04d6",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0010636552323489,
+        "min_ess_bulk": 5498.794206314652,
+        "min_ess_tail": 4311.219786276421,
+        "divergences": 0,
+        "max_mean_error_sd": 0.01486720211734288,
+        "max_covariance_error_sd": 0.014118262237132122
+      },
+      "reference_mean": [
+        -0.4297385105671198,
+        -1.2854536233921
+      ],
+      "reference_covariance": [
+        [
+          0.01634927458949596,
+          0.0018621802697121968
+        ],
+        [
+          0.0018621802697121965,
+          0.012454456439943752
+        ]
+      ],
+      "posterior_mean": [
+        -0.43163949468993074,
+        -1.2861177961797152
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.43163949468993074,
+          "std": 0.12695846266970368,
+          "hdi_3%": -0.6699767852503211,
+          "hdi_97%": -0.19222884472387497,
+          "ess_bulk": 5498.794206314652,
+          "ess_tail": 4896.000251289959,
+          "r_hat": 1.0010636552323489,
+          "mcse_mean": 0.0017132618560400535
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.2861177961797152,
+          "std": 0.11187824151592748,
+          "hdi_3%": -1.506199808595983,
+          "hdi_97%": -1.0840569186124718,
+          "ess_bulk": 5632.540964443406,
+          "ess_tail": 4311.219786276421,
+          "r_hat": 1.0001499085391028,
+          "mcse_mean": 0.0014954258865319547
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.08425,
+        0.289
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 39,
+      "seed": 20261950,
+      "kind": "calibration",
+      "generating_beta": [
+        0.6432927389266176,
+        0.8103217594418698
+      ],
+      "data_sha256": "2d8f2694ff41b673df8dcb8a0a337e76c7d84f7597fb529be0d435e7a9b9abc2",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008931540846815,
+        "min_ess_bulk": 4938.3501767425,
+        "min_ess_tail": 4470.818268155367,
+        "divergences": 0,
+        "max_mean_error_sd": 0.028201557269476703,
+        "max_covariance_error_sd": 0.009250392500810039
+      },
+      "reference_mean": [
+        0.6462372817185816,
+        0.927797174708341
+      ],
+      "reference_covariance": [
+        [
+          0.01644423257932162,
+          0.0027624650723122005
+        ],
+        [
+          0.0027624650723122,
+          0.020437665217562677
+        ]
+      ],
+      "posterior_mean": [
+        0.6445988139486079,
+        0.92376546986085
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.6445988139486079,
+          "std": 0.12882681469730958,
+          "hdi_3%": 0.40208393522927544,
+          "hdi_97%": 0.8810385054140293,
+          "ess_bulk": 4938.3501767425,
+          "ess_tail": 4470.818268155367,
+          "r_hat": 1.0005204996244443,
+          "mcse_mean": 0.001834728326826121
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.92376546986085,
+          "std": 0.14284042892090523,
+          "hdi_3%": 0.6537705932303994,
+          "hdi_97%": 1.188501891059607,
+          "ess_bulk": 5291.733156865942,
+          "ess_tail": 4601.372516874452,
+          "r_hat": 1.0008931540846815,
+          "mcse_mean": 0.001965980850137505
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.498375,
+        0.213875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 40,
+      "seed": 20261951,
+      "kind": "calibration",
+      "generating_beta": [
+        0.7002783640571572,
+        1.515228850169566
+      ],
+      "data_sha256": "bbc602eb37eeebb9da4aa482f019a738d5b65b33545207b6877ade716aaafdcb",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0014093555856165,
+        "min_ess_bulk": 4604.561117811656,
+        "min_ess_tail": 4643.825863575518,
+        "divergences": 0,
+        "max_mean_error_sd": 0.0013014899951246759,
+        "max_covariance_error_sd": 0.01651526779331649
+      },
+      "reference_mean": [
+        0.6745626440593933,
+        1.4901818916005773
+      ],
+      "reference_covariance": [
+        [
+          0.016175975665104137,
+          -0.0013441664969726275
+        ],
+        [
+          -0.0013441664969726275,
+          0.017185732325762513
+        ]
+      ],
+      "posterior_mean": [
+        0.6747281738159652,
+        1.490327353155588
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.6747281738159652,
+          "std": 0.1276225048438093,
+          "hdi_3%": 0.43599474805642074,
+          "hdi_97%": 0.9195718211401873,
+          "ess_bulk": 5574.072660388252,
+          "ess_tail": 4704.131514781155,
+          "r_hat": 1.000362616615107,
+          "mcse_mean": 0.0017105950437939096
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.490327353155588,
+          "std": 0.13000732807875984,
+          "hdi_3%": 1.2392153562319226,
+          "hdi_97%": 1.7256757360860442,
+          "ess_bulk": 4604.561117811656,
+          "ess_tail": 4643.825863575518,
+          "r_hat": 1.0014093555856165,
+          "mcse_mean": 0.0019162176010080949
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.587,
+        0.573125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 41,
+      "seed": 20261952,
+      "kind": "calibration",
+      "generating_beta": [
+        0.8642547282973965,
+        0.49993194147039693
+      ],
+      "data_sha256": "78ee08580ecb6f80c8de5c0e6563ba68ef5cf24ade3b7e6031d44bbc54ea13dc",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0005417208382201,
+        "min_ess_bulk": 5319.707010919216,
+        "min_ess_tail": 4099.379979072235,
+        "divergences": 0,
+        "max_mean_error_sd": 0.03125024721401969,
+        "max_covariance_error_sd": 0.028841825245205885
+      },
+      "reference_mean": [
+        0.8076269767674765,
+        0.45377460252441026
+      ],
+      "reference_covariance": [
+        [
+          0.01807973902715948,
+          -0.0058644044016401735
+        ],
+        [
+          -0.005864404401640174,
+          0.01711947099167033
+        ]
+      ],
+      "posterior_mean": [
+        0.809329654581009,
+        0.4496857765434988
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.809329654581009,
+          "std": 0.13494033697688915,
+          "hdi_3%": 0.563597521935924,
+          "hdi_97%": 1.0688423100315463,
+          "ess_bulk": 5319.707010919216,
+          "ess_tail": 4968.6867764204135,
+          "r_hat": 1.0002014172184228,
+          "mcse_mean": 0.0018505689007354879
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4496857765434988,
+          "std": 0.12894073910536652,
+          "hdi_3%": 0.20958285235350907,
+          "hdi_97%": 0.6988292670260629,
+          "ess_bulk": 5488.547649444237,
+          "ess_tail": 4099.379979072235,
+          "r_hat": 1.0005417208382201,
+          "mcse_mean": 0.001743753116563569
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.66,
+        0.654375
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 42,
+      "seed": 20261953,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.276593801146517,
+        0.2827470583036178
+      ],
+      "data_sha256": "f0b31238d5b1adf8d6c5270c291284f334927eae6ffa917345fa15ac3785a38f",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000293919692007,
+        "min_ess_bulk": 5399.93859936097,
+        "min_ess_tail": 4626.837527932613,
+        "divergences": 0,
+        "max_mean_error_sd": 0.03185961467877115,
+        "max_covariance_error_sd": 0.0439713942275951
+      },
+      "reference_mean": [
+        -1.1766579325605584,
+        0.40798160233207387
+      ],
+      "reference_covariance": [
+        [
+          0.01686411374138169,
+          -0.004823877288302578
+        ],
+        [
+          -0.004823877288302578,
+          0.02933398135732203
+        ]
+      ],
+      "posterior_mean": [
+        -1.1774227824022914,
+        0.4134382514100154
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.1774227824022914,
+          "std": 0.12697470278665898,
+          "hdi_3%": -1.4152048992625552,
+          "hdi_97%": -0.9406135185729835,
+          "ess_bulk": 5529.519234998785,
+          "ess_tail": 4892.25945482498,
+          "r_hat": 1.0000887711579773,
+          "mcse_mean": 0.0017051925617027016
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4134382514100154,
+          "std": 0.17046344251281012,
+          "hdi_3%": 0.08036796360378712,
+          "hdi_97%": 0.7200644603346625,
+          "ess_bulk": 5399.93859936097,
+          "ess_tail": 4626.837527932613,
+          "r_hat": 1.000293919692007,
+          "mcse_mean": 0.0023255224373988936
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.22175,
+        0.224
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 43,
+      "seed": 20261954,
+      "kind": "calibration",
+      "generating_beta": [
+        1.063016994537493,
+        -0.6676573788120737
+      ],
+      "data_sha256": "0519b0fc569334527b02cdda616b0e73e066eddeffc2efc6202bd2f44fa91b95",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.00077217596668,
+        "min_ess_bulk": 4430.857291017786,
+        "min_ess_tail": 4333.937268395814,
+        "divergences": 0,
+        "max_mean_error_sd": 0.009546715660211041,
+        "max_covariance_error_sd": 0.05021416398128808
+      },
+      "reference_mean": [
+        1.1364291285413217,
+        -0.515719014110182
+      ],
+      "reference_covariance": [
+        [
+          0.01689126911779743,
+          0.0034758293589574425
+        ],
+        [
+          0.0034758293589574425,
+          0.014725747983630575
+        ]
+      ],
+      "posterior_mean": [
+        1.1374173072890699,
+        -0.5168775051244093
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.1374173072890699,
+          "std": 0.12969864508791112,
+          "hdi_3%": 0.9099488425009754,
+          "hdi_97%": 1.3963195850287626,
+          "ess_bulk": 4532.856020960635,
+          "ess_tail": 4333.937268395814,
+          "r_hat": 1.00033354614157,
+          "mcse_mean": 0.001925022071844727
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.5168775051244093,
+          "std": 0.11826371742691584,
+          "hdi_3%": -0.7346194342813696,
+          "hdi_97%": -0.29312052519548765,
+          "ess_bulk": 4430.857291017786,
+          "ess_tail": 4720.631712535068,
+          "r_hat": 1.00077217596668,
+          "mcse_mean": 0.0017807629003287768
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.285,
+        0.09875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 44,
+      "seed": 20261955,
+      "kind": "calibration",
+      "generating_beta": [
+        1.1477264969759744,
+        -0.8610825574513787
+      ],
+      "data_sha256": "6fde89ac4b77c5fc7a6f482fad4bf10de1a7e8ca57aa11f1994c002c8e0dbf3a",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.002192632678576,
+        "min_ess_bulk": 5399.823973918752,
+        "min_ess_tail": 4419.784266950086,
+        "divergences": 0,
+        "max_mean_error_sd": 0.01414600476646131,
+        "max_covariance_error_sd": 0.025057963026310148
+      },
+      "reference_mean": [
+        1.228833095813932,
+        -0.8627752214205109
+      ],
+      "reference_covariance": [
+        [
+          0.019266714940753507,
+          0.009510526750805203
+        ],
+        [
+          0.009510526750805205,
+          0.02830217164669785
+        ]
+      ],
+      "posterior_mean": [
+        1.2268695653846973,
+        -0.8633450597455808
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.2268695653846973,
+          "std": 0.1396796258116285,
+          "hdi_3%": 0.973927089640693,
+          "hdi_97%": 1.4929615677932773,
+          "ess_bulk": 5399.823973918752,
+          "ess_tail": 4419.784266950086,
+          "r_hat": 1.002192632678576,
+          "mcse_mean": 0.001903127599463593
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.8633450597455808,
+          "std": 0.16861690285737488,
+          "hdi_3%": -1.1928686757151805,
+          "hdi_97%": -0.5629703018883533,
+          "ess_bulk": 5618.169467018506,
+          "ess_tail": 4737.267307446961,
+          "r_hat": 1.0003665542565898,
+          "mcse_mean": 0.0022517841747897796
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.286,
+        0.504
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 45,
+      "seed": 20261956,
+      "kind": "calibration",
+      "generating_beta": [
+        1.626521900740009,
+        0.29860709980908523
+      ],
+      "data_sha256": "61a4270639f16c5bc482b152034fef87faafe2d854a6e7552197d5461de2f1b4",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0006318427953507,
+        "min_ess_bulk": 5177.082736700023,
+        "min_ess_tail": 4885.1622257924455,
+        "divergences": 0,
+        "max_mean_error_sd": 0.022193234557209986,
+        "max_covariance_error_sd": 0.02414003095699238
+      },
+      "reference_mean": [
+        1.559202748070144,
+        0.4641469179367803
+      ],
+      "reference_covariance": [
+        [
+          0.016299240838868675,
+          0.0017234585421854116
+        ],
+        [
+          0.0017234585421854116,
+          0.013004974354792908
+        ]
+      ],
+      "posterior_mean": [
+        1.5620361245969843,
+        0.4647532949423759
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.5620361245969843,
+          "std": 0.12818139577952053,
+          "hdi_3%": 1.331575034959033,
+          "hdi_97%": 1.8144829074824393,
+          "ess_bulk": 5549.180467042786,
+          "ess_tail": 4885.1622257924455,
+          "r_hat": 1.0003336211474587,
+          "mcse_mean": 0.0017209114766659867
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4647532949423759,
+          "std": 0.11265448890866885,
+          "hdi_3%": 0.24934849656525415,
+          "hdi_97%": 0.6687897042315698,
+          "ess_bulk": 5177.082736700023,
+          "ess_tail": 5331.952465272328,
+          "r_hat": 1.0006318427953507,
+          "mcse_mean": 0.0015672517325558324
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.696125,
+        0.073625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 46,
+      "seed": 20261957,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.8553226699864194,
+        -2.0427193263420276
+      ],
+      "data_sha256": "f2ee14a069f757e541f8017dbe637f42db74f44b0b596fc255b4075a509f8bf2",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0014354042662388,
+        "min_ess_bulk": 4977.075588748445,
+        "min_ess_tail": 4643.915925369959,
+        "divergences": 0,
+        "max_mean_error_sd": 0.020896174948193943,
+        "max_covariance_error_sd": 0.008023166794486097
+      },
+      "reference_mean": [
+        -0.6607640740700493,
+        -2.2223428922259565
+      ],
+      "reference_covariance": [
+        [
+          0.01885546532227386,
+          -0.007357594859827589
+        ],
+        [
+          -0.007357594859827588,
+          0.019440410188095433
+        ]
+      ],
+      "posterior_mean": [
+        -0.6636334366014128,
+        -2.2214417591157463
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.6636334366014128,
+          "std": 0.13711588628180876,
+          "hdi_3%": -0.914168273100425,
+          "hdi_97%": -0.4056288182445929,
+          "ess_bulk": 5060.6910068408,
+          "ess_tail": 4671.756176502069,
+          "r_hat": 1.0014354042662388,
+          "mcse_mean": 0.001927230190549272
+        },
+        {
+          "name": "beta[1]",
+          "mean": -2.2214417591157463,
+          "std": 0.13927106850341217,
+          "hdi_3%": -2.4763622543778596,
+          "hdi_97%": -1.9499389012947284,
+          "ess_bulk": 4977.075588748445,
+          "ess_tail": 4643.915925369959,
+          "r_hat": 1.00044546628266,
+          "mcse_mean": 0.001975223044797383
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.08225,
+        0.90125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 47,
+      "seed": 20261958,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.20764738504087224,
+        0.20745667117542657
+      ],
+      "data_sha256": "416bf90dbe4592452b5492c2ad8c7ae587edcf6a5fb1de05e79596f71ada27fe",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008896037970831,
+        "min_ess_bulk": 5356.207358235963,
+        "min_ess_tail": 4744.182217484945,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014168261246977391,
+        "max_covariance_error_sd": 0.019101094769248497
+      },
+      "reference_mean": [
+        -0.388921156699597,
+        0.42541021804824014
+      ],
+      "reference_covariance": [
+        [
+          0.017945512412422614,
+          -0.0051793452198832315
+        ],
+        [
+          -0.0051793452198832315,
+          0.014309517874542663
+        ]
+      ],
+      "posterior_mean": [
+        -0.38702316421706884,
+        0.4252689800944334
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.38702316421706884,
+          "std": 0.1340840280799305,
+          "hdi_3%": -0.6372490208589767,
+          "hdi_97%": -0.13733109986743575,
+          "ess_bulk": 5356.207358235963,
+          "ess_tail": 4744.182217484945,
+          "r_hat": 1.0001441332611858,
+          "mcse_mean": 0.0018318133210293232
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4252689800944334,
+          "std": 0.12075945234873561,
+          "hdi_3%": 0.21248351574780272,
+          "hdi_97%": 0.660709227968178,
+          "ess_bulk": 5617.750593945196,
+          "ess_tail": 4826.8250434165075,
+          "r_hat": 1.0008896037970831,
+          "mcse_mean": 0.0016091841406896204
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.91225,
+        0.03125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 48,
+      "seed": 20261959,
+      "kind": "calibration",
+      "generating_beta": [
+        0.34338090464344556,
+        0.21787726362668774
+      ],
+      "data_sha256": "4c6fd45f4839c2936cd0a601fc7f86abe3a6ce8f135c77209bc69532d44cf277",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0021112791470386,
+        "min_ess_bulk": 5271.199217005695,
+        "min_ess_tail": 4547.06298537689,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014610339920195496,
+        "max_covariance_error_sd": 0.02499892040351006
+      },
+      "reference_mean": [
+        0.4479066018475983,
+        -0.057111998615773506
+      ],
+      "reference_covariance": [
+        [
+          0.01710983096193102,
+          0.004532708379733144
+        ],
+        [
+          0.004532708379733143,
+          0.019774476719105344
+        ]
+      ],
+      "posterior_mean": [
+        0.4459955028720618,
+        -0.057412168041521876
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.4459955028720618,
+          "std": 0.12942085699699232,
+          "hdi_3%": 0.19690936028163813,
+          "hdi_97%": 0.6834364008961487,
+          "ess_bulk": 5271.199217005695,
+          "ess_tail": 4547.06298537689,
+          "r_hat": 1.0021112791470386,
+          "mcse_mean": 0.001784490184428734
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.057412168041521876,
+          "std": 0.1401777136757883,
+          "hdi_3%": -0.32205692695858185,
+          "hdi_97%": 0.20013082801703902,
+          "ess_bulk": 5483.856077650862,
+          "ess_tail": 4785.796660927577,
+          "r_hat": 0.9999750080283026,
+          "mcse_mean": 0.0018921551591041072
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.208875,
+        0.975125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 49,
+      "seed": 20261960,
+      "kind": "calibration",
+      "generating_beta": [
+        1.8839695445215368,
+        0.6120470011688249
+      ],
+      "data_sha256": "cbd9b4ab082be1ea65e474a18eb13249628b70e6a24f9255ced66f89e5ff4b7a",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0016335092292485,
+        "min_ess_bulk": 4428.98093937452,
+        "min_ess_tail": 4296.821825288264,
+        "divergences": 0,
+        "max_mean_error_sd": 0.017889707913477024,
+        "max_covariance_error_sd": 0.039210176197015945
+      },
+      "reference_mean": [
+        1.794316365366898,
+        0.4621130606912716
+      ],
+      "reference_covariance": [
+        [
+          0.01663508464010296,
+          -0.003498876955764594
+        ],
+        [
+          -0.003498876955764594,
+          0.021696622327875063
+        ]
+      ],
+      "posterior_mean": [
+        1.7966237274805013,
+        0.4636893633830194
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.7966237274805013,
+          "std": 0.1275291442034046,
+          "hdi_3%": 1.553406655220124,
+          "hdi_97%": 2.0337107642067043,
+          "ess_bulk": 5470.857735156753,
+          "ess_tail": 5005.5586431033225,
+          "r_hat": 1.0016335092292485,
+          "mcse_mean": 0.00172471765964685
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.4636893633830194,
+          "std": 0.14710786367242185,
+          "hdi_3%": 0.1935889788339643,
+          "hdi_97%": 0.7486634311571649,
+          "ess_bulk": 4428.98093937452,
+          "ess_tail": 4296.821825288264,
+          "r_hat": 1.0007470956338687,
+          "mcse_mean": 0.002215717418125366
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.757,
+        0.843125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 50,
+      "seed": 20261961,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.5747862879519061,
+        -0.3107547453732576
+      ],
+      "data_sha256": "542c05b2cf011f08d1d9bf382219a5f1679371d1724cb30198fb0e0c51f955f8",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000478247719841,
+        "min_ess_bulk": 5228.0033198358715,
+        "min_ess_tail": 4359.373155861847,
+        "divergences": 0,
+        "max_mean_error_sd": 0.006602712030742035,
+        "max_covariance_error_sd": 0.022648380682493197
+      },
+      "reference_mean": [
+        -1.4588714172419197,
+        -0.3772764527888407
+      ],
+      "reference_covariance": [
+        [
+          0.016095021043972466,
+          0.0006120336564062926
+        ],
+        [
+          0.0006120336564062925,
+          0.015492718809600244
+        ]
+      ],
+      "posterior_mean": [
+        -1.458033756560266,
+        -0.37668171530501926
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.458033756560266,
+          "std": 0.1278713941604794,
+          "hdi_3%": -1.6855817202873253,
+          "hdi_97%": -1.207925978847888,
+          "ess_bulk": 5228.0033198358715,
+          "ess_tail": 4555.90166077794,
+          "r_hat": 1.000478247719841,
+          "mcse_mean": 0.0017797092158353236
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.37668171530501926,
+          "std": 0.12467085194529454,
+          "hdi_3%": -0.6039441059995413,
+          "hdi_97%": -0.13580856883605133,
+          "ess_bulk": 5629.626516235774,
+          "ess_tail": 4359.373155861847,
+          "r_hat": 1.0003966850439656,
+          "mcse_mean": 0.0016601946790112023
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.174875,
+        0.70325
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 51,
+      "seed": 20261962,
+      "kind": "calibration",
+      "generating_beta": [
+        0.9500191103706419,
+        1.781771164508581
+      ],
+      "data_sha256": "c50655c523c6d0df698869ad6af0cb6128683d3807abdc1b25636e9a968e1582",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0010328626037197,
+        "min_ess_bulk": 4142.131690878635,
+        "min_ess_tail": 4576.5692049977215,
+        "divergences": 0,
+        "max_mean_error_sd": 0.03786070059801735,
+        "max_covariance_error_sd": 0.026386545917650384
+      },
+      "reference_mean": [
+        0.9981461586510101,
+        1.8141967842133149
+      ],
+      "reference_covariance": [
+        [
+          0.016412142043682996,
+          0.0026111089597564852
+        ],
+        [
+          0.0026111089597564852,
+          0.01997628799295926
+        ]
+      ],
+      "posterior_mean": [
+        1.0003316413677354,
+        1.8195479208617635
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.0003316413677354,
+          "std": 0.12978906650148014,
+          "hdi_3%": 0.7585488397219567,
+          "hdi_97%": 1.242999510264031,
+          "ess_bulk": 5476.431016212374,
+          "ess_tail": 5110.027613255291,
+          "r_hat": 1.0010328626037197,
+          "mcse_mean": 0.0017536093135503339
+        },
+        {
+          "name": "beta[1]",
+          "mean": 1.8195479208617635,
+          "std": 0.13970845802537524,
+          "hdi_3%": 1.5628568854562646,
+          "hdi_97%": 2.0875609995643045,
+          "ess_bulk": 4142.131690878635,
+          "ess_tail": 4576.5692049977215,
+          "r_hat": 1.000547445257672,
+          "mcse_mean": 0.0021695099741970984
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.35075,
+        0.393875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 52,
+      "seed": 20261963,
+      "kind": "calibration",
+      "generating_beta": [
+        1.1216689298511333,
+        0.7363717158369683
+      ],
+      "data_sha256": "920c0b3dbc5027ab6a73bc2771b4a7feb6408a1ef7e75b02decd63630afa0ebc",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0009523515508059,
+        "min_ess_bulk": 5476.96525399219,
+        "min_ess_tail": 4780.999095771242,
+        "divergences": 0,
+        "max_mean_error_sd": 0.027705241502687966,
+        "max_covariance_error_sd": 0.030168567985391286
+      },
+      "reference_mean": [
+        1.1057249090622048,
+        0.8779537820843478
+      ],
+      "reference_covariance": [
+        [
+          0.016117674092887786,
+          -0.000795995956862335
+        ],
+        [
+          -0.000795995956862335,
+          0.01352964797503337
+        ]
+      ],
+      "posterior_mean": [
+        1.109242239134239,
+        0.8788713812419454
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.109242239134239,
+          "std": 0.12734247463911094,
+          "hdi_3%": 0.8801341821831979,
+          "hdi_97%": 1.3594858512221415,
+          "ess_bulk": 5476.96525399219,
+          "ess_tail": 4780.999095771242,
+          "r_hat": 1.0006342044643362,
+          "mcse_mean": 0.0017218203803036328
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.8788713812419454,
+          "std": 0.1168783730372953,
+          "hdi_3%": 0.6607502618925277,
+          "hdi_97%": 1.097307788252276,
+          "ess_bulk": 5521.93303826138,
+          "ess_tail": 5098.2769040718795,
+          "r_hat": 1.0009523515508059,
+          "mcse_mean": 0.001572607602871159
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.54,
+        0.109125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 53,
+      "seed": 20261964,
+      "kind": "calibration",
+      "generating_beta": [
+        0.6359880281803346,
+        0.10810094345334614
+      ],
+      "data_sha256": "6f7116cfa23bfe202dc0c9744ae89857991017d7d5132b9bb8068878428961e4",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0004684034912412,
+        "min_ess_bulk": 4705.43534434677,
+        "min_ess_tail": 4515.042981191263,
+        "divergences": 0,
+        "max_mean_error_sd": 0.030458656975880367,
+        "max_covariance_error_sd": 0.023779175453665535
+      },
+      "reference_mean": [
+        0.6250852771619159,
+        0.12101503697147654
+      ],
+      "reference_covariance": [
+        [
+          0.01607192928461936,
+          -0.00018912687078948383
+        ],
+        [
+          -0.0001891268707894838,
+          0.03292475789899288
+        ]
+      ],
+      "posterior_mean": [
+        0.6274838191912235,
+        0.11548825865500861
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.6274838191912235,
+          "std": 0.12796240480559354,
+          "hdi_3%": 0.39227183057959203,
+          "hdi_97%": 0.8716752017364375,
+          "ess_bulk": 4705.43534434677,
+          "ess_tail": 4515.042981191263,
+          "r_hat": 1.0003354482474636,
+          "mcse_mean": 0.0018685006917301527
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.11548825865500861,
+          "std": 0.18359651819640374,
+          "hdi_3%": -0.22888504851616318,
+          "hdi_97%": 0.4595488114905335,
+          "ess_bulk": 5630.977731146394,
+          "ess_tail": 5112.2518517498975,
+          "r_hat": 1.0004684034912412,
+          "mcse_mean": 0.0024470204913648527
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.526875,
+        0.48625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 54,
+      "seed": 20261965,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.3276951379778311,
+        -1.8625985354600971
+      ],
+      "data_sha256": "5cbae16fb0efe6f5926c910dc8db5eb52d5c806c0272db71d4014c8880147532",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000608537522,
+        "min_ess_bulk": 4690.237591344319,
+        "min_ess_tail": 4789.625689726664,
+        "divergences": 0,
+        "max_mean_error_sd": 0.020796120308452397,
+        "max_covariance_error_sd": 0.010042387259837261
+      },
+      "reference_mean": [
+        -0.371032883348051,
+        -1.899347889027002
+      ],
+      "reference_covariance": [
+        [
+          0.016231171500322474,
+          0.0018352857471804266
+        ],
+        [
+          0.0018352857471804266,
+          0.021008564613919412
+        ]
+      ],
+      "posterior_mean": [
+        -0.36838342403536967,
+        -1.8979175858415749
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.36838342403536967,
+          "std": 0.1271779053559138,
+          "hdi_3%": -0.615423164031405,
+          "hdi_97%": -0.133887608207982,
+          "ess_bulk": 4690.237591344319,
+          "ess_tail": 4789.625689726664,
+          "r_hat": 1.00058026948328,
+          "mcse_mean": 0.0018569718530589865
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.8979175858415749,
+          "std": 0.14421369030814346,
+          "hdi_3%": -2.1730027673484367,
+          "hdi_97%": -1.6379951993326047,
+          "ess_bulk": 5130.203323378398,
+          "ess_tail": 4885.735154651488,
+          "r_hat": 1.000608537522,
+          "mcse_mean": 0.002010890684919669
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.6215,
+        0.595
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 55,
+      "seed": 20261966,
+      "kind": "calibration",
+      "generating_beta": [
+        -1.31768909583666,
+        -0.16091147773309747
+      ],
+      "data_sha256": "b57107dc6b301ff5cacddffd0261d0909276c01efa74a1abdf43f45a96ec1ccc",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.000924925175989,
+        "min_ess_bulk": 4801.366986735558,
+        "min_ess_tail": 4571.57346941654,
+        "divergences": 0,
+        "max_mean_error_sd": 0.02052125561847151,
+        "max_covariance_error_sd": 0.03541312997678899
+      },
+      "reference_mean": [
+        -1.2991803511440232,
+        -0.24427112713328697
+      ],
+      "reference_covariance": [
+        [
+          0.016224111089101437,
+          -0.0018288605815162395
+        ],
+        [
+          -0.0018288605815162395,
+          0.02182273458832259
+        ]
+      ],
+      "posterior_mean": [
+        -1.301794223560458,
+        -0.24345065713986574
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -1.301794223560458,
+          "std": 0.12705217722963014,
+          "hdi_3%": -1.542389970780919,
+          "hdi_97%": -1.0669760571484657,
+          "ess_bulk": 5000.566898567373,
+          "ess_tail": 4571.57346941654,
+          "r_hat": 1.0006679531663722,
+          "mcse_mean": 0.0018022153730549763
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.24345065713986574,
+          "std": 0.1503181490198299,
+          "hdi_3%": -0.529348022044176,
+          "hdi_97%": 0.03479472147971352,
+          "ess_bulk": 4801.366986735558,
+          "ess_tail": 4656.306327524619,
+          "r_hat": 1.000924925175989,
+          "mcse_mean": 0.0021693566845798155
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.447125,
+        0.704625
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 56,
+      "seed": 20261967,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.6975830771742739,
+        -1.1250059611441665
+      ],
+      "data_sha256": "432ca61505225787b84a4c75d7893c89e92d4660065f24e61ee4727fd25e348e",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0011970120886087,
+        "min_ess_bulk": 5036.217504463293,
+        "min_ess_tail": 4215.6795462752925,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014111691133556,
+        "max_covariance_error_sd": 0.028195605693864388
+      },
+      "reference_mean": [
+        -0.606568985646677,
+        -1.57971749837627
+      ],
+      "reference_covariance": [
+        [
+          0.017331906777142626,
+          -0.004726656280025388
+        ],
+        [
+          -0.004726656280025388,
+          0.017716215635264418
+        ]
+      ],
+      "posterior_mean": [
+        -0.6061688831365447,
+        -1.5778392001809665
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.6061688831365447,
+          "std": 0.13349378407459186,
+          "hdi_3%": -0.8558090822677016,
+          "hdi_97%": -0.35219306405591544,
+          "ess_bulk": 5036.217504463293,
+          "ess_tail": 4301.729587622543,
+          "r_hat": 1.0003802854201058,
+          "mcse_mean": 0.0018826535013100262
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.5778392001809665,
+          "std": 0.1325608415592617,
+          "hdi_3%": -1.828084951667239,
+          "hdi_97%": -1.330930898891204,
+          "ess_bulk": 5264.79091750241,
+          "ess_tail": 4215.6795462752925,
+          "r_hat": 1.0011970120886087,
+          "mcse_mean": 0.0018264556194543867
+        }
+      ],
+      "covered_90": [
+        true,
+        false
+      ],
+      "posterior_quantile": [
+        0.247,
+        0.99975
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 57,
+      "seed": 20261968,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.5700385799316545,
+        -0.6521114343754048
+      ],
+      "data_sha256": "2550d258fc13ed3a94034afc7a8d6ba410ca4c69ceff97ed5a398be0ba0000d7",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0006959323190308,
+        "min_ess_bulk": 4913.423202141091,
+        "min_ess_tail": 4437.258345416964,
+        "divergences": 0,
+        "max_mean_error_sd": 0.011964951954554446,
+        "max_covariance_error_sd": 0.019352272000242615
+      },
+      "reference_mean": [
+        -0.4830020286704611,
+        -0.5551698698043007
+      ],
+      "reference_covariance": [
+        [
+          0.016856938935945365,
+          -0.003952483115368971
+        ],
+        [
+          -0.003952483115368971,
+          0.01987304610282374
+        ]
+      ],
+      "posterior_mean": [
+        -0.4845554895315621,
+        -0.554624529246688
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.4845554895315621,
+          "std": 0.12927242060876679,
+          "hdi_3%": -0.7301361409530369,
+          "hdi_97%": -0.24289232574153063,
+          "ess_bulk": 5886.761308311505,
+          "ess_tail": 5152.2571262233305,
+          "r_hat": 1.0000884914629051,
+          "mcse_mean": 0.0016816512008349302
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.554624529246688,
+          "std": 0.14232931776861346,
+          "hdi_3%": -0.8123911191529102,
+          "hdi_97%": -0.28386064245573134,
+          "ess_bulk": 4913.423202141091,
+          "ess_tail": 4437.258345416964,
+          "r_hat": 1.0006959323190308,
+          "mcse_mean": 0.0020304617854266563
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.258875,
+        0.25
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 58,
+      "seed": 20261969,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.8882320416269677,
+        2.1775759426611416
+      ],
+      "data_sha256": "becd9a3012872b3511707a5397fcdfb74d6a5464bdd82ea68fc7d7268b16eb56",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0010125967743482,
+        "min_ess_bulk": 4562.672541156038,
+        "min_ess_tail": 4105.05965261356,
+        "divergences": 0,
+        "max_mean_error_sd": 0.014024655510453036,
+        "max_covariance_error_sd": 0.011177102646716595
+      },
+      "reference_mean": [
+        -0.784412762039831,
+        2.2013549421780927
+      ],
+      "reference_covariance": [
+        [
+          0.017366275090609173,
+          -0.004629702338352065
+        ],
+        [
+          -0.0046297023383520645,
+          0.016545940332289587
+        ]
+      ],
+      "posterior_mean": [
+        -0.785294356597624,
+        2.203158947977486
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.785294356597624,
+          "std": 0.13241608790701653,
+          "hdi_3%": -1.0365599477305998,
+          "hdi_97%": -0.5430449496189553,
+          "ess_bulk": 4562.672541156038,
+          "ess_tail": 4105.05965261356,
+          "r_hat": 1.0010125967743482,
+          "mcse_mean": 0.001961986320500798
+        },
+        {
+          "name": "beta[1]",
+          "mean": 2.203158947977486,
+          "std": 0.12901880035858396,
+          "hdi_3%": 1.9642539913542014,
+          "hdi_97%": 2.444541947841019,
+          "ess_bulk": 5062.207554313483,
+          "ess_tail": 4617.04602088841,
+          "r_hat": 1.000707591326823,
+          "mcse_mean": 0.0018131739609946191
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.22025,
+        0.420875
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 59,
+      "seed": 20261970,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.10973643831712974,
+        0.6273403715208977
+      ],
+      "data_sha256": "acbb7b0252d7752e83f94f95c5dd50f3351473959cdcf610b48c22f23f341186",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0003284843813918,
+        "min_ess_bulk": 4713.4047644772,
+        "min_ess_tail": 4588.042236563865,
+        "divergences": 0,
+        "max_mean_error_sd": 0.011401926997913375,
+        "max_covariance_error_sd": 0.02355704836767178
+      },
+      "reference_mean": [
+        -0.1747188091298802,
+        0.6558335022577904
+      ],
+      "reference_covariance": [
+        [
+          0.01607539573610263,
+          0.00027488964792190987
+        ],
+        [
+          0.0002748896479219098,
+          0.016597194671607623
+        ]
+      ],
+      "posterior_mean": [
+        -0.17475591395219775,
+        0.6573024136533719
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.17475591395219775,
+          "std": 0.12789973404333654,
+          "hdi_3%": -0.42811268901095434,
+          "hdi_97%": 0.05078439969177439,
+          "ess_bulk": 5190.0471673592265,
+          "ess_tail": 4699.232442427146,
+          "r_hat": 0.9999176157547667,
+          "mcse_mean": 0.0017733068122640044
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.6573024136533719,
+          "std": 0.12730362820423025,
+          "hdi_3%": 0.42261413934512476,
+          "hdi_97%": 0.899922635753079,
+          "ess_bulk": 4713.4047644772,
+          "ess_tail": 4588.042236563865,
+          "r_hat": 1.0003284843813918,
+          "mcse_mean": 0.0018543923924333185
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.69275,
+        0.406
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 60,
+      "seed": 20261971,
+      "kind": "calibration",
+      "generating_beta": [
+        -0.6763191512936234,
+        -1.2640405907452064
+      ],
+      "data_sha256": "af59b8d78945329822082c5720d113f9b8b596cdeaaacda86091d60a17152789",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007029821824154,
+        "min_ess_bulk": 4647.78683591388,
+        "min_ess_tail": 4478.577218281822,
+        "divergences": 0,
+        "max_mean_error_sd": 0.021970884505544883,
+        "max_covariance_error_sd": 0.0250171552518776
+      },
+      "reference_mean": [
+        -0.9661731383680832,
+        -1.1888537625423312
+      ],
+      "reference_covariance": [
+        [
+          0.016079665857313116,
+          0.00031240462431731466
+        ],
+        [
+          0.00031240462431731466,
+          0.011061669938150876
+        ]
+      ],
+      "posterior_mean": [
+        -0.9676892170997002,
+        -1.1911645387590226
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": -0.9676892170997002,
+          "std": 0.1252094180170262,
+          "hdi_3%": -1.2009009030010327,
+          "hdi_97%": -0.7342261545531594,
+          "ess_bulk": 4647.78683591388,
+          "ess_tail": 4478.577218281822,
+          "r_hat": 1.0007029821824154,
+          "mcse_mean": 0.0018380017432445023
+        },
+        {
+          "name": "beta[1]",
+          "mean": -1.1911645387590226,
+          "std": 0.10531242166903788,
+          "hdi_3%": -1.3908637850840107,
+          "hdi_97%": -0.9956284258701271,
+          "ess_bulk": 5259.177022610988,
+          "ess_tail": 4506.436692973341,
+          "r_hat": 0.9999955985736463,
+          "mcse_mean": 0.0014547850082247769
+        }
+      ],
+      "covered_90": [
+        false,
+        true
+      ],
+      "posterior_quantile": [
+        0.99075,
+        0.24125
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 61,
+      "seed": 20261972,
+      "kind": "calibration",
+      "generating_beta": [
+        0.2868249977275967,
+        0.08186377270803807
+      ],
+      "data_sha256": "a90aef97fcd6677aefdb4d46c12ddf8781cce23cdec04c4827cbee3a60def7e0",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0008874876778266,
+        "min_ess_bulk": 4571.372823797845,
+        "min_ess_tail": 3796.901849162546,
+        "divergences": 0,
+        "max_mean_error_sd": 0.017409311059347142,
+        "max_covariance_error_sd": 0.012043346151052558
+      },
+      "reference_mean": [
+        0.423040852720337,
+        0.02339971655268372
+      ],
+      "reference_covariance": [
+        [
+          0.016315276214939715,
+          0.0022607330742511395
+        ],
+        [
+          0.0022607330742511395,
+          0.020909236614788957
+        ]
+      ],
+      "posterior_mean": [
+        0.4214457775397719,
+        0.02591710754393126
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.4214457775397719,
+          "std": 0.12695977983571466,
+          "hdi_3%": 0.1831055753582639,
+          "hdi_97%": 0.6626518469187399,
+          "ess_bulk": 5067.525788753808,
+          "ess_tail": 4603.257330898125,
+          "r_hat": 1.0008874876778266,
+          "mcse_mean": 0.0017843081455451225
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.02591710754393126,
+          "std": 0.14515409529585635,
+          "hdi_3%": -0.23635664606929913,
+          "hdi_97%": 0.308581991358443,
+          "ess_bulk": 4571.372823797845,
+          "ess_tail": 3796.901849162546,
+          "r_hat": 1.0003796059771186,
+          "mcse_mean": 0.002150185848863579
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.14175,
+        0.65575
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 62,
+      "seed": 20261973,
+      "kind": "calibration",
+      "generating_beta": [
+        0.8763368349888183,
+        -0.7315293887077177
+      ],
+      "data_sha256": "f776edda68ddad2f3f0acb3d8715e2622a98f10874c707bf5fcfc98211beaa5f",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0005577441514892,
+        "min_ess_bulk": 4978.264797997963,
+        "min_ess_tail": 3857.0136945006666,
+        "divergences": 0,
+        "max_mean_error_sd": 0.015795789467726137,
+        "max_covariance_error_sd": 0.027778261520122617
+      },
+      "reference_mean": [
+        0.9958041110729782,
+        -0.755316443130692
+      ],
+      "reference_covariance": [
+        [
+          0.01610334974101423,
+          0.0008513733986970641
+        ],
+        [
+          0.0008513733986970642,
+          0.022297972550886235
+        ]
+      ],
+      "posterior_mean": [
+        0.9938360889795069,
+        -0.757675150288181
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 0.9938360889795069,
+          "std": 0.12751688509465403,
+          "hdi_3%": 0.741577974965081,
+          "hdi_97%": 1.2211117224288857,
+          "ess_bulk": 4978.264797997963,
+          "ess_tail": 3857.0136945006666,
+          "r_hat": 1.0005577441514892,
+          "mcse_mean": 0.0018134409500824952
+        },
+        {
+          "name": "beta[1]",
+          "mean": -0.757675150288181,
+          "std": 0.15138484555520518,
+          "hdi_3%": -1.0310600241499672,
+          "hdi_97%": -0.4642897084908188,
+          "ess_bulk": 5106.059167123039,
+          "ess_tail": 4632.602710677369,
+          "r_hat": 1.0001362736480641,
+          "mcse_mean": 0.00211843654044264
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.18025,
+        0.57475
+      ]
+    },
+    {
+      "case": "prior_simulated_regression",
+      "replicate": 63,
+      "seed": 20261974,
+      "kind": "calibration",
+      "generating_beta": [
+        1.1008490224599987,
+        0.3947828197916558
+      ],
+      "data_sha256": "1083b7a622d1fe79d3dede67f7279845403054e7ddb0d3834f20f1ce11118fb1",
+      "passed": true,
+      "failed_metrics": [],
+      "metrics": {
+        "max_rhat": 1.0007062276635998,
+        "min_ess_bulk": 4680.06892101607,
+        "min_ess_tail": 4197.502493300418,
+        "divergences": 0,
+        "max_mean_error_sd": 0.028689596733523767,
+        "max_covariance_error_sd": 0.02978089326520675
+      },
+      "reference_mean": [
+        1.0857581505239402,
+        0.5176202723649753
+      ],
+      "reference_covariance": [
+        [
+          0.017022307682485166,
+          -0.004200209645636399
+        ],
+        [
+          -0.004200209645636399,
+          0.018541685808325232
+        ]
+      ],
+      "posterior_mean": [
+        1.0820150312860757,
+        0.5157809976671448
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "mean": 1.0820150312860757,
+          "std": 0.1304821574038954,
+          "hdi_3%": 0.836341640771704,
+          "hdi_97%": 1.3227564466248891,
+          "ess_bulk": 4680.06892101607,
+          "ess_tail": 4604.925211560982,
+          "r_hat": 1.0007062276635998,
+          "mcse_mean": 0.0019089868423859718
+        },
+        {
+          "name": "beta[1]",
+          "mean": 0.5157809976671448,
+          "std": 0.1381805839267588,
+          "hdi_3%": 0.2566699582699101,
+          "hdi_97%": 0.769845191453547,
+          "ess_bulk": 4951.738986710812,
+          "ess_tail": 4197.502493300418,
+          "r_hat": 1.0001468142439274,
+          "mcse_mean": 0.001961724380218576
+        }
+      ],
+      "covered_90": [
+        true,
+        true
+      ],
+      "posterior_quantile": [
+        0.5545,
+        0.194375
+      ]
+    }
+  ],
+  "calibration": {
+    "nominal": 0.9,
+    "coverage": [
+      0.953125,
+      0.90625
+    ],
+    "replicates": 64,
+    "family_error_bound": 0.001,
+    "coverage_tolerance": 0.2545530648279393,
+    "passed": true,
+    "rank_histograms": [
+      [
+        5,
+        8,
+        9,
+        5,
+        5,
+        10,
+        7,
+        2,
+        5,
+        8
+      ],
+      [
+        4,
+        8,
+        9,
+        3,
+        10,
+        6,
+        6,
+        5,
+        4,
+        9
+      ]
+    ],
+    "rank_note": "Exploratory ranks use autocorrelated posterior draws; no iid uniform-rank test is applied."
+  },
+  "seconds": 1.66404657199746,
+  "passed": true
+}
