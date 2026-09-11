@@ -53,10 +53,11 @@ variance uncertainty with time-varying designs. `forecast_batch` provides indepe
 cell execution with stable ID seeds. `hurdle` fits sparse nonnegative amounts, and
 `runoff` provides censored payment-count development with known or uncertain ultimates.
 
-Current limitations include no automatic inference planner, no stable serialized
-deployment format, and no stability guarantee for the alpha Rust API. See the
+Current limitations include no automatic inference planner, no stability guarantee for the alpha Rust API. See the
 [repository](https://github.com/tbosier/rustmc) for Python documentation, examples, and the
 ordered roadmap.
 
 The crates.io package named `rustmc` is unrelated. Use `rustmc_core` from Rust and
 `rustmc` from PyPI/Python.
+
+Load Python-authored graph artifacts through `model::GraphModel`; see `examples/load_model.rs` and the repository’s native-models guide.

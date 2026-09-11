@@ -18,6 +18,7 @@ pub mod hierarchical;
 pub mod hmc;
 pub mod hurdle;
 pub mod mass_matrix;
+pub mod model;
 pub mod nuts;
 pub mod observation;
 pub mod param_ref;
