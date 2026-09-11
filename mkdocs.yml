@@ -33,6 +33,7 @@ nav:
   - Home: index.md
   - Getting Started: getting-started.md
   - Custom Models: custom-models.md
+  - Streaming Batches: streaming-batches.md
   - Examples:
     - Repeated Calibration: examples/repeated-calibration.md
     - Site Effects: examples/site-effects.md
