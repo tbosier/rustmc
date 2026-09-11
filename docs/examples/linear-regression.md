@@ -194,7 +194,7 @@ plt.tight_layout()
 plt.show()
 
 ppc_p = (y_rep.std(axis=1) > y.std()).mean()
-print(f"PPC p-value (std): {ppc_p:.3f}  (0.5 = perfect calibration)")
+print(f"PPC p-value (std): {ppc_p:.3f}")
 ```
 
 
@@ -203,4 +203,4 @@ print(f"PPC p-value (std): {ppc_p:.3f}  (0.5 = perfect calibration)")
     
 
 
-    PPC p-value (std): 1.000  (0.5 = perfect calibration)
+    PPC p-value (std): 1.000

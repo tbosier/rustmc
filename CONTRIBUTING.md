@@ -1,7 +1,7 @@
 # Contributing to rustmc
 
-rustmc welcomes focused contributions that improve correctness, forecasting quality,
-reproducibility, or deployment ergonomics.
+rustmc welcomes focused contributions that improve correctness, repeated inference,
+partial pooling, and deployment.
 
 ## Development setup
 
@@ -49,3 +49,10 @@ Keep each pull request narrow enough to review. Include:
 
 Generated files, local worktrees, editor logs, and internal review notes do not belong in
 the repository.
+
+## Documentation
+
+Lead with what the reader can do. Use short paragraphs, familiar words, and runnable
+examples. Cut repeated claims and promotional language. Keep limitations next to
+the behavior they qualify. See [Google’s technical writing guide](https://developers.google.com/style/tone)
+and [GOV.UK’s plain-language guidance](https://guidance.publishing.service.gov.uk/writing-to-gov-uk-standards/writing-guidelines/clear-language/).
