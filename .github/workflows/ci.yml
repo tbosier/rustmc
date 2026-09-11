@@ -60,6 +60,14 @@ jobs:
       - name: Install ArviZ 1.x integration dependency
         if: matrix.python-version == '3.12'
         run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=1,<2'"
+      - name: Build standalone model runtime example
+        if: matrix.python-version == '3.11'
+        run: cargo build -p rustmc_core --release --example load_model
+      - name: Compare Python and standalone Rust model execution
+        if: matrix.python-version == '3.11'
+        env:
+          RUSTMC_NATIVE_ARTIFACT_EXAMPLE: ${{ github.workspace }}/target/release/examples/load_model
+        run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests/test_native_artifact_runtime.py
       - name: Verify current-source provenance and Python integration
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}

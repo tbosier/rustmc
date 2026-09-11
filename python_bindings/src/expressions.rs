@@ -1,50 +1,11 @@
-//! Python expression construction; compilation and evaluation live outside this module.
+use rustmc_core::model::MuExpr;
+// Python expression construction; compilation and evaluation live outside this module.
 use super::{validate_finite, ParameterError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
 /// Recursive expression tree built on the Python side, compiled to graph
 /// nodes at sampling time.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub(super) enum MuExpr {
-    Data(String),
-    Gather {
-        param_name: String,
-        data_key: String,
-    },
-    Unary(rustmc_core::graph::ElementwiseOp, Box<MuExpr>),
-    Binary(rustmc_core::graph::ElementwiseOp, Box<MuExpr>, Box<MuExpr>),
-    Sum(Box<MuExpr>),
-    Const(f64),
-    ParamTimesData {
-        param_name: String,
-        data_key: String,
-    },
-    /// Element-wise sum of two vector expressions.
-    Add(Box<MuExpr>, Box<MuExpr>),
-    /// Bare parameter broadcast-added to a vector expression.
-    Param(String),
-    /// faer-backed matrix-vector multiply: matrix_data_key @ vector_param.
-    MatVec {
-        param_name: String,
-        data_key: String,
-    },
-}
-
-impl MuExpr {
-    pub(super) fn is_scalar(&self) -> bool {
-        match self {
-            MuExpr::Const(_) | MuExpr::Sum(_) => true,
-            MuExpr::Data(_) | MuExpr::Gather { .. } => false,
-            MuExpr::Unary(_, a) => a.is_scalar(),
-            MuExpr::Binary(_, a, b) => a.is_scalar() && b.is_scalar(),
-            MuExpr::Param(_) => true,
-            MuExpr::ParamTimesData { .. } => false,
-            MuExpr::MatVec { .. } => false,
-            MuExpr::Add(a, b) => a.is_scalar() && b.is_scalar(),
-        }
-    }
-}
 
 #[pyclass]
 #[derive(Debug, Clone)]
@@ -112,20 +73,6 @@ pub(super) fn first_param_name(expr: &MuExpr) -> String {
 }
 
 /// Collect every parameter name referenced by an expression tree.
-pub(super) fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
-    match expr {
-        MuExpr::Const(_) | MuExpr::Data(_) => {}
-        MuExpr::Unary(_, a) | MuExpr::Sum(a) => collect_expr_param_names(a, out),
-        MuExpr::Param(name) => out.push(name.clone()),
-        MuExpr::ParamTimesData { param_name, .. }
-        | MuExpr::MatVec { param_name, .. }
-        | MuExpr::Gather { param_name, .. } => out.push(param_name.clone()),
-        MuExpr::Add(a, b) | MuExpr::Binary(_, a, b) => {
-            collect_expr_param_names(a, out);
-            collect_expr_param_names(b, out);
-        }
-    }
-}
 
 #[pyclass]
 #[derive(Debug, Clone)]

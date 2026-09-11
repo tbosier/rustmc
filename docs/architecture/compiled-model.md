@@ -49,8 +49,9 @@ and posterior results; it is not a streaming memory guarantee.
 
 ## Native kernel boundaries
 
-The Python expression layer, expression compiler, prediction binder, and artifact
-loaders live in separate modules. The core evaluator owns per-node lengths so that
+The declarative model definition, expression compiler, prediction binder, and artifact
+loader live in `rustmc_core::model`. Python provides construction and input adapters.
+See [standalone Rust execution](../native-models.md). The core evaluator owns per-node lengths so that
 named dimensions affect computation. One native observation simulator supplies prior
 and posterior generation. Reference autodiff and the older data-owning artifact remain
 isolated for validation and compatibility.

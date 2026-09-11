@@ -222,7 +222,8 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     }
     artifact
         .model
-        .validate_parameter_limit(artifact.posterior.param_names.len())?;
+        .validate_parameter_limit(artifact.posterior.param_names.len())
+        .map_err(super::model_error)?;
     let compiled = model_artifact::reconstruct(artifact.model)?;
     let binding = core_binding_from_maps(
         &compiled.structure.schema,
