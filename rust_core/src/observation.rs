@@ -18,6 +18,69 @@ fn sigmoid(x: f64) -> f64 {
         e / (1.0 + e)
     }
 }
+
+/// Pointwise log likelihood on the same parameter scales as observation sampling.
+/// Invalid observations/parameters are errors; an unrepresentably small density
+/// may legitimately have log probability negative infinity.
+pub fn log_density(
+    family: ObsFamily,
+    observed: f64,
+    eta: f64,
+    aux: Option<f64>,
+) -> Result<f64, String> {
+    if !observed.is_finite() || !eta.is_finite() {
+        return Err("observation and linear predictor must be finite".into());
+    }
+    let logp = match family {
+        ObsFamily::Normal | ObsFamily::LogNormal => {
+            let sigma = positive(aux.ok_or("missing sigma")?, "sigma")?;
+            let (response, jacobian) = if family == ObsFamily::LogNormal {
+                let response = positive(observed, "LogNormal observation")?.ln();
+                (response, response)
+            } else {
+                (observed, 0.0)
+            };
+            let z = (response - eta) / sigma;
+            -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - jacobian - 0.5 * z * z
+        }
+        ObsFamily::BernoulliLogit => {
+            if observed != 0.0 && observed != 1.0 {
+                return Err("Bernoulli observation must be zero or one".into());
+            }
+            if observed == 1.0 {
+                -crate::autodiff::softplus(-eta)
+            } else {
+                -crate::autodiff::softplus(eta)
+            }
+        }
+        ObsFamily::PoissonLog | ObsFamily::NegativeBinomialLog => {
+            if observed < 0.0 || observed.fract() != 0.0 {
+                return Err("count observation must be a nonnegative integer".into());
+            }
+            if family == ObsFamily::PoissonLog {
+                observed * eta - eta.exp() - crate::autodiff::ln_gamma(observed + 1.0)
+            } else {
+                let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
+                crate::autodiff::ln_gamma(observed + alpha)
+                    - crate::autodiff::ln_gamma(alpha)
+                    - crate::autodiff::ln_gamma(observed + 1.0)
+                    - alpha * crate::autodiff::softplus(eta - alpha.ln())
+                    - observed * crate::autodiff::softplus(alpha.ln() - eta)
+            }
+        }
+        ObsFamily::ExponentialLog => {
+            if observed < 0.0 {
+                return Err("Exponential observation must be nonnegative".into());
+            }
+            eta - observed * eta.exp()
+        }
+    };
+    if logp.is_nan() {
+        Err("observation log likelihood is not representable".into())
+    } else {
+        Ok(logp)
+    }
+}
 /// Expected response, on the observation scale.
 pub fn mean(family: ObsFamily, eta: f64, aux: Option<f64>) -> Result<f64, String> {
     let value = match family {

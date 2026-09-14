@@ -23,6 +23,7 @@ pub mod model;
 pub mod nuts;
 pub mod observation;
 pub mod param_ref;
+pub mod prior_sampling;
 pub mod progress;
 pub mod runoff;
 pub mod sampler;

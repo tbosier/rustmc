@@ -1509,7 +1509,7 @@ fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
         + (beta - 1.0) * (1.0 - x).ln()
 }
 
-fn softplus(x: f64) -> f64 {
+pub(crate) fn softplus(x: f64) -> f64 {
     if x > 0.0 {
         x + (-x).exp().ln_1p()
     } else {
