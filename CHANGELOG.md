@@ -23,6 +23,15 @@ versioning while the public API is stabilized.
   adapters; reject empty potential names before creating an unreadable model artifact.
 - Preserve Jacobian/potential terms and the new support constraints in legacy graph
   exports, and reject overflowing Uniform ranges or nonfinite sampled outputs.
+- Correct Poisson simulation at tiny and large rates across generic observations,
+  dynamic count models and payment runoff.
+- Preserve Poisson and negative-binomial likelihood curvature at large counts and
+  dispersion, sharing stable densities across inference and pointwise diagnostics.
+- Preserve Gamma, Exponential and HalfNormal prior tails in unconstrained inference
+  and analytic prior draws; avoid scale overflow in Normal and Student-t densities.
+- Match pointwise observation likelihoods to the fitted model without arbitrary
+  scale or response floors, including very small positive LogNormal observations.
+- Apply unit-independent covariance symmetry checks to specialized Gaussian models.
 
 ## [0.12.0] - 2026-09-09
 

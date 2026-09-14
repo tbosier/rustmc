@@ -2,7 +2,6 @@
 //! Gaussian prior scales and NB dispersion are fixed model specifications.
 //! Group coefficients equal an uncertain population coefficient plus a Gaussian
 //! deviation; group random walks can additionally share a common random walk.
-use crate::autodiff::ln_gamma;
 use crate::bayesian_forecast::BayesianForecastError as Error;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
