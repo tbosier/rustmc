@@ -221,11 +221,7 @@ fn data_inputs_from_maps(data_1d: &Data1d, data_2d: &Data2d) -> DataInputs {
 }
 
 impl PyCompiledModel {
-    fn bind_any(
-        &self,
-        value: &Bound<'_, PyAny>,
-        id: String,
-    ) -> PyResult<CoreDataBinding> {
+    fn bind_any(&self, value: &Bound<'_, PyAny>, id: String) -> PyResult<CoreDataBinding> {
         if let Ok(bound) = value.downcast::<PyBoundModel>() {
             let bound = bound.borrow();
             if !Arc::ptr_eq(&bound.structure, &self.structure) {
@@ -952,9 +948,7 @@ fn merge_data_overrides(
 }
 
 /// Validate that each matrix's row-major storage matches its shape.
-fn validate_matrix_storage(
-    data_2d: &HashMap<String, (Vec<f64>, usize, usize)>,
-) -> PyResult<()> {
+fn validate_matrix_storage(data_2d: &HashMap<String, (Vec<f64>, usize, usize)>) -> PyResult<()> {
     for (key, (values, rows, cols)) in data_2d {
         if rows.checked_mul(*cols) != Some(values.len()) {
             return Err(PyValueError::new_err(format!(
@@ -1479,7 +1473,8 @@ impl FitResult {
             let mut values = Vec::with_capacity(chains * draws * n.max(1));
             for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
                 for draw_idx in 0..chain.len() {
-                    let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
+                    let position =
+                        posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
                     evaluator.compute(&graph, &position);
                     for i in 0..n.max(1) {
                         values.push(evaluator.vec_elem(*node, i, &graph));
@@ -1568,7 +1563,9 @@ impl FitResult {
             .samples
             .iter()
             .enumerate()
-            .flat_map(|(chain_idx, chain)| (0..chain.len()).map(move |draw_idx| (chain_idx, draw_idx)))
+            .flat_map(|(chain_idx, chain)| {
+                (0..chain.len()).map(move |draw_idx| (chain_idx, draw_idx))
+            })
             .collect();
         let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
         let n = chosen_indices.len();
@@ -1629,7 +1626,8 @@ impl FitResult {
 
         for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
             for draw_idx in 0..chain.len() {
-                let position = posterior_position(&self.raw_result, &self.graph, chain_idx, draw_idx);
+                let position =
+                    posterior_position(&self.raw_result, &self.graph, chain_idx, draw_idx);
                 let per_head = pointwise_log_likelihood_for_draw(&self.graph, &position, &heads)?;
                 for (li, values) in per_head.iter().enumerate() {
                     for (obs_idx, &value) in values.iter().enumerate() {

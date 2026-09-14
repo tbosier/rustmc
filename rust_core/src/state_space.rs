@@ -1378,8 +1378,8 @@ mod tests {
             for _ in 0..draws {
                 let states = model.sample_states_ffbs(&observations, &mut rng).unwrap();
                 for pair in states.windows(2) {
-                    for i in 0..2 {
-                        assert!(((pair[0][i] - pair[1][i]) / scales[i]).abs() < 1e-8);
+                    for (i, scale) in scales.iter().enumerate() {
+                        assert!(((pair[0][i] - pair[1][i]) / scale).abs() < 1e-8);
                     }
                 }
                 let last = states.last().unwrap();
