@@ -465,7 +465,11 @@ fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError
             "initial covariance must contain only finite values",
         ));
     }
-    let scale = 1.0_f64.max(covariance[1].abs()).max(covariance[2].abs());
+    // Measure asymmetry relative to these state variances, without an
+    // absolute floor that changes validation when the state units change.
+    let scale = (covariance[0].abs().sqrt() * covariance[3].abs().sqrt())
+        .max(covariance[1].abs())
+        .max(covariance[2].abs());
     if (covariance[1] - covariance[2]).abs() > SYMMETRY_TOLERANCE * scale {
         return Err(invalid_config("initial covariance must be symmetric"));
     }
@@ -711,6 +715,23 @@ fn numerical(message: &str) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn initial_covariance_symmetry_is_independent_of_state_units() {
+        for scale in [1e-20, 1e-14, 1.0, 1e20] {
+            let mut config = config(12);
+            config.initial_covariance = [scale, 0.0, 0.5 * scale, scale];
+            assert!(matches!(
+                config.validate(),
+                Err(BayesianForecastError::InvalidConfiguration(_))
+            ));
+            config.initial_covariance = [scale, 0.5 * scale, 0.5 * scale, scale];
+            config.validate().unwrap();
+        }
+        let mut config = config(12);
+        config.initial_covariance = [1e-14, 5e-8, 5e-8, 1.0];
+        config.validate().unwrap();
+    }
 
     #[test]
     fn fit_and_forecast_seed_domains_are_distinct() {

@@ -1,4 +1,3 @@
-mod count_sampling;
 pub mod autodiff;
 pub mod bayesian_ar;
 pub mod bayesian_forecast;
@@ -7,6 +6,7 @@ pub mod bayesian_seasonal;
 pub mod bayesian_trend;
 #[path = "legacy/compiled_model.rs"]
 pub mod compiled_model;
+mod count_sampling;
 pub mod data;
 pub mod diagnostics;
 pub mod distributions;
