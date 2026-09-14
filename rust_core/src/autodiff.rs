@@ -479,6 +479,10 @@ impl Evaluator {
                     let sv = self.scalars[sigma.0];
                     self.scalars[idx] = normal_logp_scalar(xv, mv, sv);
                 }
+                Op::LogHalfNormalLogP { x, sigma } => {
+                    self.scalars[idx] =
+                        log_half_normal_logp(self.scalars[x.0], self.scalars[sigma.0]);
+                }
                 Op::HalfNormalLogP { x, sigma } => {
                     self.scalars[idx] =
                         half_normal_logp_scalar(self.scalars[x.0], self.scalars[sigma.0]);
@@ -512,6 +516,13 @@ impl Evaluator {
                 Op::PoissonLogP { x, lam } => {
                     self.scalars[idx] = poisson_logp_scalar(self.scalars[x.0], self.scalars[lam.0]);
                 }
+                Op::LogGammaLogP { x, alpha, beta } => {
+                    self.scalars[idx] = log_gamma_logp(
+                        self.scalars[x.0],
+                        self.scalars[alpha.0],
+                        self.scalars[beta.0],
+                    );
+                }
                 Op::GammaLogP { x, alpha, beta } => {
                     self.scalars[idx] = gamma_logp_scalar(
                         self.scalars[x.0],
@@ -537,16 +548,16 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
-                            let s2 = sv * sv;
+
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let n = obs.len() as f64;
                             let mut sum_sq = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i, graph);
-                                let d = y - m;
+                                let d = (y - m) / sv;
                                 sum_sq += d * d;
                             }
-                            self.scalars[idx] = n * log_norm - 0.5 * sum_sq / s2;
+                            self.scalars[idx] = n * log_norm - 0.5 * sum_sq;
                         }
                         crate::graph::ObsFamily::BernoulliLogit => {
                             let mut sum = 0.0f64;
@@ -560,7 +571,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += y * eta - eta.exp() - ln_gamma(y + 1.0);
+                                sum += crate::count_sampling::log_mass_from_log_rate(y, eta);
                             }
                             self.scalars[idx] = sum;
                         }
@@ -575,15 +586,15 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
-                            let s2 = sv * sv;
+
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let mut sum = 0.0f64;
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation.max(1e-300);
+                                let y = observation;
                                 let m = self.read_vec(linpred_vec.0, i, graph);
                                 let ly = y.ln();
-                                let d = ly - m;
-                                sum += log_norm - ly - 0.5 * d * d / s2;
+                                let d = (ly - m) / sv;
+                                sum += log_norm - ly - 0.5 * d * d;
                             }
                             self.scalars[idx] = sum;
                         }
@@ -593,10 +604,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let mu = eta.exp();
-                                sum += ln_gamma(y + av) - ln_gamma(av) - ln_gamma(y + 1.0)
-                                    + av * (av.ln() - (av + mu).ln())
-                                    + y * (eta - (av + mu).ln());
+                                sum += crate::negative_binomial::log_mass(y, eta, av);
                             }
                             self.scalars[idx] = sum;
                         }
@@ -683,12 +691,12 @@ impl Evaluator {
                     sigma,
                 } => {
                     let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-                    let s2 = sigma * sigma;
+
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        let d = v - mu;
-                        sum += log_norm - 0.5 * d * d / s2;
+                        let z = (v - mu) / sigma;
+                        sum += log_norm - 0.5 * z * z;
                     }
                     self.scalars[idx] = sum;
                 }
@@ -697,14 +705,11 @@ impl Evaluator {
                     n_params,
                     sigma,
                 } => {
-                    // Combined logp(exp(raw), sigma) + raw (Jacobian)
-                    let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
-                    let s2 = sigma * sigma;
+                    // Combine density and Jacobian using the log scale ratio.
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        // log(sqrt(2/π)/σ) - exp(2·raw)/(2σ²) + raw
-                        sum += log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw;
+                        sum += log_half_normal_logp(raw, *sigma);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -715,14 +720,10 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
-                    let log_norm = ln_gamma(0.5 * (nu + 1.0))
-                        - ln_gamma(0.5 * nu)
-                        - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        let z = (v - mu) / sigma;
-                        sum += log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln();
+                        sum += student_t_logp_scalar(v, *nu, *mu, *sigma);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -732,13 +733,11 @@ impl Evaluator {
                     alpha,
                     beta,
                 } => {
-                    // Combined logp(exp(raw), alpha, beta) + raw (Jacobian = exp(raw), log = raw)
-                    // = α·log(β) - lnΓ(α) + α·raw - β·exp(raw)
-                    let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
+                    // Combine density and Jacobian before exponentiation.
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        sum += log_norm + alpha * raw - beta * raw.exp();
+                        sum += log_gamma_logp(raw, *alpha, *beta);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -955,42 +954,39 @@ impl Evaluator {
                     let xv = self.scalars[x.0];
                     let mv = self.scalars[mu.0];
                     let sv = self.scalars[sigma.0];
-                    let diff = xv - mv;
-                    let s2 = sv * sv;
-                    self.adj_scalars[x.0] += a_s * (-diff / s2);
-                    self.adj_scalars[mu.0] += a_s * (diff / s2);
-                    self.adj_scalars[sigma.0] += a_s * (diff * diff / (s2 * sv) - 1.0 / sv);
+                    let z = (xv - mv) / sv;
+                    self.adj_scalars[x.0] += a_s * (-z / sv);
+                    self.adj_scalars[mu.0] += a_s * (z / sv);
+                    self.adj_scalars[sigma.0] += a_s * ((z * z - 1.0) / sv);
+                }
+                Op::LogHalfNormalLogP { x, sigma } => {
+                    let raw = self.scalars[x.0];
+                    let scale = self.scalars[sigma.0];
+                    if scale.is_finite() && scale > 0.0 {
+                        let z2 = (2.0 * (raw - scale.ln())).exp();
+                        self.adj_scalars[x.0] += a_s * (1.0 - z2);
+                        self.adj_scalars[sigma.0] += a_s * ((z2 - 1.0) / scale);
+                    }
                 }
                 Op::HalfNormalLogP { x, sigma } => {
                     let xv = self.scalars[x.0];
                     let sv = self.scalars[sigma.0];
                     if xv >= 0.0 {
-                        self.adj_scalars[x.0] += a_s * (-xv / (sv * sv));
-                        self.adj_scalars[sigma.0] += a_s * (xv * xv / (sv * sv * sv) - 1.0 / sv);
+                        self.adj_scalars[x.0] += a_s * (-(xv / sv) / sv);
+                        self.adj_scalars[sigma.0] += a_s * (((xv / sv).powi(2) - 1.0) / sv);
                     }
                 }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
-                    let xv = self.scalars[x.0];
-                    let nv = self.scalars[nu.0];
-                    let mv = self.scalars[mu.0];
-                    let sv = self.scalars[sigma.0];
-                    let z = (xv - mv) / sv;
-                    let z2 = z * z;
-                    let denom = 1.0 + z2 / nv;
-                    // d/dx
-                    self.adj_scalars[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
-                    // d/dmu
-                    self.adj_scalars[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
-                    // d/dsigma
-                    self.adj_scalars[sigma.0] +=
-                        a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
-                    // d/dnu
-                    self.adj_scalars[nu.0] += a_s
-                        * (0.5 * digamma(0.5 * (nv + 1.0))
-                            - 0.5 * digamma(0.5 * nv)
-                            - 0.5 / nv
-                            - 0.5 * (1.0 + z2 / nv).ln()
-                            + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
+                    let (dx, dsigma, dnu) = student_t_derivatives(
+                        self.scalars[x.0],
+                        self.scalars[nu.0],
+                        self.scalars[mu.0],
+                        self.scalars[sigma.0],
+                    );
+                    self.adj_scalars[x.0] += a_s * dx;
+                    self.adj_scalars[mu.0] -= a_s * dx;
+                    self.adj_scalars[sigma.0] += a_s * dsigma;
+                    self.adj_scalars[nu.0] += a_s * dnu;
                 }
                 Op::PositiveSupport { .. } => {}
                 Op::UniformLogP { x: _, lower, upper } => {
@@ -1011,6 +1007,18 @@ impl Evaluator {
                     let xv = self.scalars[x.0];
                     let lv = self.scalars[lam.0];
                     self.adj_scalars[lam.0] += a_s * (xv / lv - 1.0);
+                }
+                Op::LogGammaLogP { x, alpha, beta } => {
+                    let raw = self.scalars[x.0];
+                    let a = self.scalars[alpha.0];
+                    let rate = self.scalars[beta.0];
+                    if a.is_finite() && a > 0.0 && rate.is_finite() && rate > 0.0 {
+                        let log_scaled = raw + rate.ln();
+                        let scaled = log_scaled.exp();
+                        self.adj_scalars[x.0] += a_s * (a - scaled);
+                        self.adj_scalars[alpha.0] += a_s * (log_scaled - digamma(a));
+                        self.adj_scalars[beta.0] += a_s * ((a - scaled) / rate);
+                    }
                 }
                 Op::GammaLogP { x, alpha, beta } => {
                     let xv = self.scalars[x.0];
@@ -1045,7 +1053,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
-                            let s2 = sv * sv;
+
                             let mut dsigma = 0.0f64;
 
                             let mu_off = match self.node_kind[linpred_vec.0] {
@@ -1055,11 +1063,11 @@ impl Evaluator {
 
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i, graph);
-                                let diff = y - m;
+                                let diff = (y - m) / sv;
                                 if let Some(off) = mu_off {
-                                    self.adj_vec_buf[off + i] += a_s * diff / s2;
+                                    self.adj_vec_buf[off + i] += a_s * (diff / sv);
                                 }
-                                dsigma += diff * diff / (s2 * sv) - 1.0 / sv;
+                                dsigma += (diff * diff - 1.0) / sv;
                             }
                             self.adj_scalars[sigma_node.0] += a_s * dsigma;
                         }
@@ -1105,21 +1113,21 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
-                            let s2 = sv * sv;
+
                             let mu_off = match self.node_kind[linpred_vec.0] {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
                             let mut dsigma = 0.0f64;
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation.max(1e-300);
+                                let y = observation;
                                 let ly = y.ln();
                                 let m = self.read_vec(linpred_vec.0, i, graph);
-                                let d = ly - m;
+                                let d = (ly - m) / sv;
                                 if let Some(off) = mu_off {
-                                    self.adj_vec_buf[off + i] += a_s * d / s2;
+                                    self.adj_vec_buf[off + i] += a_s * (d / sv);
                                 }
-                                dsigma += d * d / (s2 * sv) - 1.0 / sv;
+                                dsigma += (d * d - 1.0) / sv;
                             }
                             self.adj_scalars[sigma_node.0] += a_s * dsigma;
                         }
@@ -1133,15 +1141,11 @@ impl Evaluator {
                             let mut dalpha = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let mu = eta.exp();
-                                let denom = av + mu;
-                                let deta = av * (y - mu) / denom;
+                                let (deta, da) = crate::negative_binomial::gradients(y, eta, av);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * deta;
                                 }
-                                dalpha += digamma(y + av) - digamma(av) + av.ln() + 1.0
-                                    - denom.ln()
-                                    - (y + av) / denom;
+                                dalpha += da;
                             }
                             self.adj_scalars[alpha_node.0] += a_s * dalpha;
                         }
@@ -1244,10 +1248,9 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
-                    let s2 = sigma * sigma;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        self.grad[param_start + k] += a_s * (-(v - mu) / s2);
+                        self.grad[param_start + k] += a_s * (-((v - mu) / sigma) / sigma);
                     }
                 }
                 Op::VectorHalfNormalLogP {
@@ -1255,11 +1258,10 @@ impl Evaluator {
                     n_params,
                     sigma,
                 } => {
-                    let s2 = sigma * sigma;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        // d/draw = -exp(2·raw)/σ² + 1
-                        self.grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
+                        self.grad[param_start + k] +=
+                            a_s * (1.0 - (2.0 * (raw - sigma.ln())).exp());
                     }
                 }
                 Op::VectorStudentTLogP {
@@ -1271,10 +1273,8 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        let z = (v - mu) / sigma;
-                        // d/dv = -(ν+1)·z / (σ·ν·(1 + z²/ν))
                         self.grad[param_start + k] +=
-                            a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                            a_s * student_t_derivatives(v, *nu, *mu, *sigma).0;
                     }
                 }
                 Op::VectorGammaLogP {
@@ -1285,8 +1285,7 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        // d/draw = α - β·exp(raw)
-                        self.grad[param_start + k] += a_s * (alpha - beta * raw.exp());
+                        self.grad[param_start + k] += a_s * (alpha - (raw + beta.ln()).exp());
                     }
                 }
                 Op::VectorBetaLogP {
@@ -1341,23 +1340,25 @@ pub use reference::{eval_logp, forward, grad_logp, Value};
 pub mod reference;
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
-    let diff = x - mu;
-    -0.5 * (diff * diff) / (sigma * sigma) - sigma.ln() - 0.5 * std::f64::consts::TAU.ln()
+    if !sigma.is_finite() || sigma <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let z = (x - mu) / sigma;
+    -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - 0.5 * z * z
 }
 
 fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let s2 = sigma * sigma;
     let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
     let n = obs.len() as f64;
     let sum_sq: f64 = mu
         .iter()
         .zip(obs.iter())
         .map(|(m, o)| {
-            let d = o - m;
+            let d = (o - m) / sigma;
             d * d
         })
         .sum();
-    n * log_norm - 0.5 * sum_sq / s2
+    n * log_norm - 0.5 * sum_sq
 }
 
 fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
@@ -1370,7 +1371,7 @@ fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
 fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
     eta.iter()
         .zip(obs.iter())
-        .map(|(e, y)| y * e - e.exp() - ln_gamma(y + 1.0))
+        .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
         .sum()
 }
 
@@ -1383,42 +1384,80 @@ fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
 
 fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
     let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    let s2 = sigma * sigma;
     mu.iter()
         .zip(obs.iter())
         .map(|(m, y)| {
-            let ly = y.max(1e-300).ln();
-            let d = ly - m;
-            log_norm - ly - 0.5 * d * d / s2
+            let ly = y.ln();
+            let d = (ly - m) / sigma;
+            log_norm - ly - 0.5 * d * d
         })
         .sum()
 }
 
 fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
     eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| {
-            let mu = e.exp();
-            ln_gamma(y + alpha) - ln_gamma(alpha) - ln_gamma(y + 1.0)
-                + alpha * (alpha.ln() - (alpha + mu).ln())
-                + y * (e - (alpha + mu).ln())
-        })
+        .zip(obs)
+        .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
         .sum()
 }
 
-fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
-    if x < 0.0 {
+// Combined transformed densities avoid materializing exp(raw), and form
+// scale ratios in log space before squaring or multiplying extreme values.
+fn log_half_normal_logp(raw: f64, sigma: f64) -> f64 {
+    if !sigma.is_finite() || sigma <= 0.0 {
         return f64::NEG_INFINITY;
     }
-    (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln() - x * x / (2.0 * sigma * sigma)
+    let z = raw - sigma.ln();
+    0.5 * (2.0 / std::f64::consts::PI).ln() + z - 0.5 * (2.0 * z).exp()
+}
+
+fn log_gamma_logp(raw: f64, alpha: f64, beta: f64) -> f64 {
+    if !alpha.is_finite() || alpha <= 0.0 || !beta.is_finite() || beta <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let z = raw + beta.ln();
+    alpha * z - ln_gamma(alpha) - z.exp()
+}
+
+fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
+    if x < 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let z = x / sigma;
+    0.5 * (2.0 / std::f64::consts::PI).ln() - sigma.ln() - 0.5 * z * z
 }
 
 fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
-    let z = (x - mu) / sigma;
+    if !nu.is_finite() || nu <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let log_ratio = 2.0 * ((x - mu).abs().ln() - sigma.ln()) - nu.ln();
     ln_gamma(0.5 * (nu + 1.0))
         - ln_gamma(0.5 * nu)
-        - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln()
-        - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
+        - 0.5 * (nu.ln() + std::f64::consts::PI.ln())
+        - sigma.ln()
+        - 0.5 * (nu + 1.0) * softplus(log_ratio)
+}
+
+// Return derivatives with respect to x, sigma, and nu. Log-ratio arithmetic
+// retains Student-t's polynomial tails even when the squared residual overflows.
+fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
+    let diff = x - mu;
+    let log_abs_diff = diff.abs().ln();
+    let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
+    let log_tail = softplus(log_ratio);
+    let weight = sigmoid_stable(log_ratio);
+    let dx = if diff == 0.0 {
+        0.0
+    } else {
+        -diff.signum()
+            * ((nu + 1.0).ln() + log_abs_diff - 2.0 * sigma.ln() - nu.ln() - log_tail).exp()
+    };
+    let scale_term = (nu + 1.0) * weight - 1.0;
+    let dsigma = scale_term / sigma;
+    let dnu = 0.5 * digamma(0.5 * (nu + 1.0)) - 0.5 * digamma(0.5 * nu) - 0.5 * log_tail
+        + 0.5 * scale_term / nu;
+    (dx, dsigma, dnu)
 }
 
 fn uniform_bounds_valid(lower: f64, upper: f64) -> bool {
@@ -1439,7 +1478,7 @@ fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
 }
 
 fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
-    x * lam.ln() - lam - ln_gamma(x + 1.0)
+    crate::count_sampling::log_mass(x, lam)
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
@@ -1458,7 +1497,7 @@ fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
         + (beta - 1.0) * (1.0 - x).ln()
 }
 
-fn softplus(x: f64) -> f64 {
+pub(crate) fn softplus(x: f64) -> f64 {
     if x > 0.0 {
         x + (-x).exp().ln_1p()
     } else {
@@ -2200,5 +2239,202 @@ mod tail_and_inactive_regressions {
             evaluator.compute(&graph, &params);
             assert_eq!(evaluator.grad, baseline.1);
         }
+    }
+}
+
+#[cfg(test)]
+mod extreme_scale_regressions {
+    use super::*;
+    use crate::distributions::{Exponential, Gamma, HalfNormal, Normal};
+
+    fn check(graph: &Graph, params: &[f64], logp: f64, gradients: &[f64]) {
+        let mut evaluator = Evaluator::new(graph);
+        evaluator.compute(graph, params);
+        let reference = grad_logp(graph, params);
+        for (lp, grads) in [
+            (evaluator.total_logp, &evaluator.grad),
+            (reference.0, &reference.1),
+        ] {
+            assert!(
+                (lp - logp).abs() < 1e-9 * (1.0 + logp.abs()),
+                "logp {lp} != {logp}"
+            );
+            for (actual, expected) in grads.iter().zip(gradients) {
+                assert!(actual.is_finite());
+                let tolerance = 1e-9 * expected.abs().max(1e-300);
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "gradient {actual} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gamma_and_exponential_raw_tails_match_analytic_density() {
+        for alpha in [0.001, 1.0, 3.0] {
+            for (raw, beta) in [(-1000.0, 1.0), (-720.0, 1.0), (0.3, 2.0), (710.0, 1e-300)] {
+                let mut scalar = Graph::new();
+                Gamma::prior(&mut scalar, "x", alpha, beta);
+                let mut vector = Graph::new();
+                let start = vector.add_vector_params_with_transform("x", 1, ParamTransform::Exp);
+                vector.vector_gamma_logp(start, 1, alpha, beta);
+                let z = raw + beta.ln();
+                let expected = alpha * z - ln_gamma(alpha) - z.exp();
+                for graph in [&scalar, &vector] {
+                    check(graph, &[raw], expected, &[alpha - z.exp()]);
+                }
+                if alpha == 1.0 {
+                    let mut exponential = Graph::new();
+                    Exponential::prior(&mut exponential, "x", beta);
+                    check(&exponential, &[raw], expected, &[1.0 - z.exp()]);
+                }
+                // New scalar kernels remain serializable through legacy artifacts.
+                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
+                    .unwrap()
+                    .to_graph()
+                    .unwrap();
+                check(&rebuilt, &[raw], expected, &[alpha - z.exp()]);
+            }
+        }
+    }
+
+    #[test]
+    fn half_normal_scaled_tails_preserve_hierarchical_gradients() {
+        for sigma in [1e-200_f64, 1.0, 1e200] {
+            for ratio in [0.5_f64, 2.0] {
+                let raw = sigma.ln() + ratio.ln();
+                // Use the actual representable raw log-ratio in the oracle.
+                let z = raw - sigma.ln();
+                let squared_ratio = z.exp().powi(2);
+                let lp = 0.5 * (2.0 / std::f64::consts::PI).ln() + z - 0.5 * squared_ratio;
+                let mut scalar = Graph::new();
+                HalfNormal::prior(&mut scalar, "x", sigma);
+                check(&scalar, &[raw], lp, &[1.0 - squared_ratio]);
+                let mut vector = Graph::new();
+                let start = vector.add_vector_params_with_transform("x", 1, ParamTransform::Exp);
+                vector.vector_half_normal_logp(start, 1, sigma);
+                check(&vector, &[raw], lp, &[1.0 - squared_ratio]);
+                let mut hierarchical = Graph::new();
+                let scale = hierarchical.add_param("sigma");
+                HalfNormal::prior_with_node_sigma(&mut hierarchical, "x", scale);
+                check(
+                    &hierarchical,
+                    &[sigma, raw],
+                    lp,
+                    &[(squared_ratio - 1.0) / sigma, 1.0 - squared_ratio],
+                );
+                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
+                    .unwrap()
+                    .to_graph()
+                    .unwrap();
+                check(&rebuilt, &[raw], lp, &[1.0 - squared_ratio]);
+            }
+        }
+    }
+
+    #[test]
+    fn transformed_hyperparameter_gradients_match_finite_differences() {
+        let mut graph = Graph::new();
+        let alpha = graph.add_param("alpha");
+        let rate = graph.add_param("rate");
+        let raw = graph.add_param_with_transform("x", ParamTransform::Exp);
+        graph.log_gamma_logp(raw, alpha, rate);
+        for beta in [1e-200_f64, 0.7, 1e200] {
+            let params = [1.3, beta, -beta.ln() + 0.4];
+            let (_, analytic) = grad_logp(&graph, &params);
+            for index in 0..3 {
+                let h = if index == 1 { beta * 1e-5 } else { 1e-5 };
+                let mut plus = params;
+                let mut minus = params;
+                plus[index] += h;
+                minus[index] -= h;
+                let numeric = (eval_logp(&graph, &plus) - eval_logp(&graph, &minus)) / (2.0 * h);
+                assert!((analytic[index] / numeric - 1.0).abs() < 1e-7);
+            }
+            let mut exponential = Graph::new();
+            let rate = exponential.add_param("rate");
+            Exponential::prior_with_node_rate(&mut exponential, "x", rate);
+            check(&exponential, &[beta, -beta.ln()], -1.0, &[0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn normal_priors_and_observations_are_invariant_to_units() {
+        for sigma in [1e-200_f64, 1.0, 1e200] {
+            let lp = -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - 0.125;
+            let mut scalar = Graph::new();
+            Normal::prior(&mut scalar, "x", 0.0, sigma);
+            check(&scalar, &[0.5 * sigma], lp, &[-0.5 / sigma]);
+            let mut vector = Graph::new();
+            let start = vector.add_vector_params("x", 1);
+            vector.vector_normal_logp(start, 1, 0.0, sigma);
+            check(&vector, &[0.5 * sigma], lp, &[-0.5 / sigma]);
+            for log_normal in [false, true] {
+                let mut graph = Graph::new();
+                let mu = graph.add_param("mu");
+                let scale = graph.add_param("sigma");
+                let obs = graph.add_obs_data(vec![if log_normal { 1.0 } else { 0.0 }]);
+                let predictor = graph.broadcast_observation(mu, obs);
+                if log_normal {
+                    graph.obs_logp_lognormal(predictor, scale, obs);
+                } else {
+                    graph.normal_obs_logp(predictor, scale, obs);
+                }
+                check(
+                    &graph,
+                    &[-0.5 * sigma, sigma],
+                    lp,
+                    &[0.5 / sigma, -0.75 / sigma],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn student_t_preserves_scaled_density_and_polynomial_tails() {
+        for sigma in [1e-200_f64, 1.0, 1e200] {
+            let nu = 4.0;
+            let z = 0.5_f64;
+            let lp = ln_gamma(2.5)
+                - ln_gamma(2.0)
+                - 0.5 * (4.0 * std::f64::consts::PI).ln()
+                - sigma.ln()
+                - 2.5 * (1.0 + z * z / nu).ln();
+            let dx = -5.0 * z / (nu + z * z) / sigma;
+            let mut scalar = Graph::new();
+            crate::distributions::StudentT::prior(&mut scalar, "x", nu, 0.0, sigma);
+            let mut vector = Graph::new();
+            let start = vector.add_vector_params("x", 1);
+            vector.vector_student_t_logp(start, 1, nu, 0.0, sigma);
+            check(&scalar, &[z * sigma], lp, &[dx]);
+            check(&vector, &[z * sigma], lp, &[dx]);
+        }
+        let mut scalar = Graph::new();
+        crate::distributions::StudentT::prior(&mut scalar, "x", 0.001, 0.0, 1.0);
+        let x = 1e200_f64;
+        let expected = ln_gamma(0.5005)
+            - ln_gamma(0.0005)
+            - 0.5 * (0.001 * std::f64::consts::PI).ln()
+            - 0.5005 * (2.0 * x.ln() - 0.001_f64.ln());
+        check(&scalar, &[x], expected, &[-1.001 / x]);
+    }
+
+    #[test]
+    fn log_normal_observations_preserve_subnormal_values() {
+        let y = (-740.0_f64).exp();
+        let ly = y.ln();
+        let mut graph = Graph::new();
+        let mu = graph.add_param("mu");
+        let sigma = graph.add_param("sigma");
+        let obs = graph.add_obs_data(vec![y]);
+        let predictor = graph.broadcast_observation(mu, obs);
+        graph.obs_logp_lognormal(predictor, sigma, obs);
+        check(
+            &graph,
+            &[ly - 1.0, 2.0],
+            -0.5 * std::f64::consts::TAU.ln() - 2.0_f64.ln() - ly - 0.125,
+            &[0.25, -0.375],
+        );
     }
 }

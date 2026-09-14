@@ -121,6 +121,10 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 values[mu.0].as_scalar(),
                 values[sigma.0].as_scalar(),
             )),
+            Op::LogHalfNormalLogP { x, sigma } => Value::Scalar(log_half_normal_logp(
+                values[x.0].as_scalar(),
+                values[sigma.0].as_scalar(),
+            )),
             Op::HalfNormalLogP { x, sigma } => Value::Scalar(half_normal_logp_scalar(
                 values[x.0].as_scalar(),
                 values[sigma.0].as_scalar(),
@@ -151,6 +155,11 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::PoissonLogP { x, lam } => Value::Scalar(poisson_logp_scalar(
                 values[x.0].as_scalar(),
                 values[lam.0].as_scalar(),
+            )),
+            Op::LogGammaLogP { x, alpha, beta } => Value::Scalar(log_gamma_logp(
+                values[x.0].as_scalar(),
+                values[alpha.0].as_scalar(),
+                values[beta.0].as_scalar(),
             )),
             Op::GammaLogP { x, alpha, beta } => Value::Scalar(gamma_logp_scalar(
                 values[x.0].as_scalar(),
@@ -244,11 +253,11 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 sigma,
             } => {
                 let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-                let s2 = sigma * sigma;
+
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
-                        let d = params[param_start + k] - mu;
-                        log_norm - 0.5 * d * d / s2
+                        let z = (params[param_start + k] - mu) / sigma;
+                        log_norm - 0.5 * z * z
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -258,12 +267,10 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 n_params,
                 sigma,
             } => {
-                let log_norm = (2.0 / (sigma * std::f64::consts::TAU.sqrt())).ln();
-                let s2 = sigma * sigma;
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let raw = params[param_start + k];
-                        log_norm - (2.0 * raw).exp() / (2.0 * s2) + raw
+                        log_half_normal_logp(raw, *sigma)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -275,14 +282,10 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 mu,
                 sigma,
             } => {
-                let log_norm = ln_gamma(0.5 * (nu + 1.0))
-                    - ln_gamma(0.5 * nu)
-                    - 0.5 * (nu * std::f64::consts::PI * sigma * sigma).ln();
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let v = params[param_start + k];
-                        let z = (v - mu) / sigma;
-                        log_norm - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
+                        student_t_logp_scalar(v, *nu, *mu, *sigma)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -293,11 +296,10 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 alpha,
                 beta,
             } => {
-                let log_norm = alpha * beta.ln() - ln_gamma(*alpha);
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let raw = params[param_start + k];
-                        log_norm + alpha * raw - beta * raw.exp()
+                        log_gamma_logp(raw, *alpha, *beta)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -493,37 +495,39 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let xv = values[x.0].as_scalar();
                 let mv = values[mu.0].as_scalar();
                 let sv = values[sigma.0].as_scalar();
-                let diff = xv - mv;
-                let s2 = sv * sv;
-                adj_scalar[x.0] += a_s * (-diff / s2);
-                adj_scalar[mu.0] += a_s * (diff / s2);
-                adj_scalar[sigma.0] += a_s * (diff * diff / (s2 * sv) - 1.0 / sv);
+                let z = (xv - mv) / sv;
+                adj_scalar[x.0] += a_s * (-z / sv);
+                adj_scalar[mu.0] += a_s * (z / sv);
+                adj_scalar[sigma.0] += a_s * ((z * z - 1.0) / sv);
+            }
+            Op::LogHalfNormalLogP { x, sigma } => {
+                let raw = values[x.0].as_scalar();
+                let scale = values[sigma.0].as_scalar();
+                if scale.is_finite() && scale > 0.0 {
+                    let z2 = (2.0 * (raw - scale.ln())).exp();
+                    adj_scalar[x.0] += a_s * (1.0 - z2);
+                    adj_scalar[sigma.0] += a_s * ((z2 - 1.0) / scale);
+                }
             }
             Op::HalfNormalLogP { x, sigma } => {
                 let xv = values[x.0].as_scalar();
                 let sv = values[sigma.0].as_scalar();
                 if xv >= 0.0 {
-                    adj_scalar[x.0] += a_s * (-xv / (sv * sv));
-                    adj_scalar[sigma.0] += a_s * (xv * xv / (sv * sv * sv) - 1.0 / sv);
+                    adj_scalar[x.0] += a_s * (-(xv / sv) / sv);
+                    adj_scalar[sigma.0] += a_s * (((xv / sv).powi(2) - 1.0) / sv);
                 }
             }
             Op::StudentTLogP { x, nu, mu, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let nv = values[nu.0].as_scalar();
-                let mv = values[mu.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                let z = (xv - mv) / sv;
-                let z2 = z * z;
-                let denom = 1.0 + z2 / nv;
-                adj_scalar[x.0] += a_s * (-(nv + 1.0) * z / (sv * nv * denom));
-                adj_scalar[mu.0] += a_s * ((nv + 1.0) * z / (sv * nv * denom));
-                adj_scalar[sigma.0] += a_s * ((nv + 1.0) * z2 / (sv * nv * denom) - 1.0 / sv);
-                adj_scalar[nu.0] += a_s
-                    * (0.5 * digamma(0.5 * (nv + 1.0))
-                        - 0.5 * digamma(0.5 * nv)
-                        - 0.5 / nv
-                        - 0.5 * denom.ln()
-                        + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
+                let (dx, dsigma, dnu) = student_t_derivatives(
+                    values[x.0].as_scalar(),
+                    values[nu.0].as_scalar(),
+                    values[mu.0].as_scalar(),
+                    values[sigma.0].as_scalar(),
+                );
+                adj_scalar[x.0] += a_s * dx;
+                adj_scalar[mu.0] -= a_s * dx;
+                adj_scalar[sigma.0] += a_s * dsigma;
+                adj_scalar[nu.0] += a_s * dnu;
             }
             Op::PositiveSupport { .. } => {}
             Op::UniformLogP { x: _, lower, upper } => {
@@ -544,6 +548,18 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let xv = values[x.0].as_scalar();
                 let lv = values[lam.0].as_scalar();
                 adj_scalar[lam.0] += a_s * (xv / lv - 1.0);
+            }
+            Op::LogGammaLogP { x, alpha, beta } => {
+                let raw = values[x.0].as_scalar();
+                let a = values[alpha.0].as_scalar();
+                let rate = values[beta.0].as_scalar();
+                if a.is_finite() && a > 0.0 && rate.is_finite() && rate > 0.0 {
+                    let log_scaled = raw + rate.ln();
+                    let scaled = log_scaled.exp();
+                    adj_scalar[x.0] += a_s * (a - scaled);
+                    adj_scalar[alpha.0] += a_s * (log_scaled - digamma(a));
+                    adj_scalar[beta.0] += a_s * ((a - scaled) / rate);
+                }
             }
             Op::GammaLogP { x, alpha, beta } => {
                 let xv = values[x.0].as_scalar();
@@ -577,19 +593,19 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let mu = values[linpred_vec.0].as_vector();
                         let sigma_node = aux.expect("Normal obs logp requires sigma");
                         let sv = values[sigma_node.0].as_scalar();
-                        let s2 = sv * sv;
+
                         let dmu: Vec<f64> = mu
                             .iter()
                             .zip(obs.iter())
-                            .map(|(m, o)| a_s * (o - m) / s2)
+                            .map(|(m, o)| a_s * (((o - m) / sv) / sv))
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
                         let dsigma: f64 = mu
                             .iter()
                             .zip(obs.iter())
                             .map(|(m, o)| {
-                                let diff = o - m;
-                                diff * diff / (s2 * sv) - 1.0 / sv
+                                let diff = (o - m) / sv;
+                                (diff * diff - 1.0) / sv
                             })
                             .sum::<f64>();
                         adj_scalar[sigma_node.0] += a_s * dsigma;
@@ -625,13 +641,13 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let mu = values[linpred_vec.0].as_vector();
                         let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                         let sv = values[sigma_node.0].as_scalar();
-                        let s2 = sv * sv;
+
                         let dmu: Vec<f64> = mu
                             .iter()
                             .zip(obs.iter())
                             .map(|(m, y)| {
-                                let ly = y.max(1e-300).ln();
-                                a_s * (ly - m) / s2
+                                let ly = y.ln();
+                                a_s * (((ly - m) / sv) / sv)
                             })
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &dmu);
@@ -639,9 +655,9 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                             .iter()
                             .zip(obs.iter())
                             .map(|(m, y)| {
-                                let ly = y.max(1e-300).ln();
-                                let d = ly - m;
-                                d * d / (s2 * sv) - 1.0 / sv
+                                let ly = y.ln();
+                                let d = (ly - m) / sv;
+                                (d * d - 1.0) / sv
                             })
                             .sum::<f64>();
                         adj_scalar[sigma_node.0] += a_s * dsigma;
@@ -653,22 +669,13 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let deta: Vec<f64> = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                a_s * av * (y - mu) / (av + mu)
-                            })
+                            .map(|(&e, &y)| a_s * crate::negative_binomial::gradients(y, e, av).0)
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
                         let dalpha: f64 = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                let denom = av + mu;
-                                digamma(y + av) - digamma(av) + av.ln() + 1.0
-                                    - denom.ln()
-                                    - (y + av) / denom
-                            })
+                            .map(|(&e, &y)| crate::negative_binomial::gradients(y, e, av).1)
                             .sum::<f64>();
                         adj_scalar[alpha_node.0] += a_s * dalpha;
                     }
@@ -722,10 +729,9 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 mu,
                 sigma,
             } => {
-                let s2 = sigma * sigma;
                 for k in 0..*n_params {
                     let v = params[param_start + k];
-                    grad[param_start + k] += a_s * (-(v - mu) / s2);
+                    grad[param_start + k] += a_s * (-((v - mu) / sigma) / sigma);
                 }
             }
             Op::VectorHalfNormalLogP {
@@ -733,10 +739,9 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 n_params,
                 sigma,
             } => {
-                let s2 = sigma * sigma;
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    grad[param_start + k] += a_s * (-(2.0 * raw).exp() / s2 + 1.0);
+                    grad[param_start + k] += a_s * (1.0 - (2.0 * (raw - sigma.ln())).exp());
                 }
             }
             Op::VectorStudentTLogP {
@@ -748,9 +753,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let v = params[param_start + k];
-                    let z = (v - mu) / sigma;
-                    grad[param_start + k] +=
-                        a_s * (-(nu + 1.0) * z / (sigma * nu * (1.0 + z * z / nu)));
+                    grad[param_start + k] += a_s * student_t_derivatives(v, *nu, *mu, *sigma).0;
                 }
             }
             Op::VectorGammaLogP {
@@ -761,7 +764,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    grad[param_start + k] += a_s * (alpha - beta * raw.exp());
+                    grad[param_start + k] += a_s * (alpha - (raw + beta.ln()).exp());
                 }
             }
             Op::VectorBetaLogP {

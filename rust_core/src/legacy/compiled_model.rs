@@ -207,6 +207,10 @@ pub enum ModelStep {
         aux: Option<NodeRef>,
         obs: Vec<f64>,
     },
+    LogHalfNormalLogP {
+        x: NodeRef,
+        sigma: NodeRef,
+    },
     HalfNormalLogP {
         x: NodeRef,
         sigma: NodeRef,
@@ -233,6 +237,11 @@ pub enum ModelStep {
     PoissonLogP {
         x: NodeRef,
         lam: NodeRef,
+    },
+    LogGammaLogP {
+        x: NodeRef,
+        alpha: NodeRef,
+        beta: NodeRef,
     },
     GammaLogP {
         x: NodeRef,
@@ -386,6 +395,10 @@ impl CompiledModelArtifact {
                                 .transpose()?,
                             obs: graph.obs_vectors[*obs_data_idx].clone(),
                         },
+                        Op::LogHalfNormalLogP { x, sigma } => ModelStep::LogHalfNormalLogP {
+                            x: translate_ref(*x, &original_to_step_ref)?,
+                            sigma: translate_ref(*sigma, &original_to_step_ref)?,
+                        },
                         Op::HalfNormalLogP { x, sigma } => ModelStep::HalfNormalLogP {
                             x: translate_ref(*x, &original_to_step_ref)?,
                             sigma: translate_ref(*sigma, &original_to_step_ref)?,
@@ -408,6 +421,11 @@ impl CompiledModelArtifact {
                         Op::PoissonLogP { x, lam } => ModelStep::PoissonLogP {
                             x: translate_ref(*x, &original_to_step_ref)?,
                             lam: translate_ref(*lam, &original_to_step_ref)?,
+                        },
+                        Op::LogGammaLogP { x, alpha, beta } => ModelStep::LogGammaLogP {
+                            x: translate_ref(*x, &original_to_step_ref)?,
+                            alpha: translate_ref(*alpha, &original_to_step_ref)?,
+                            beta: translate_ref(*beta, &original_to_step_ref)?,
                         },
                         Op::GammaLogP { x, alpha, beta } => ModelStep::GammaLogP {
                             x: translate_ref(*x, &original_to_step_ref)?,
@@ -982,6 +1000,11 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                     }
                 }
             }
+            ModelStep::LogHalfNormalLogP { x, sigma } => graph.log_half_normal_logp(
+                resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
+                resolve_node_ref(sigma, &scalar_param_nodes, &op_nodes)?,
+            ),
+
             ModelStep::HalfNormalLogP { x, sigma } => graph.half_normal_logp(
                 resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
                 resolve_node_ref(sigma, &scalar_param_nodes, &op_nodes)?,
@@ -1008,6 +1031,12 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
                 resolve_node_ref(lam, &scalar_param_nodes, &op_nodes)?,
             ),
+            ModelStep::LogGammaLogP { x, alpha, beta } => graph.log_gamma_logp(
+                resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
+                resolve_node_ref(alpha, &scalar_param_nodes, &op_nodes)?,
+                resolve_node_ref(beta, &scalar_param_nodes, &op_nodes)?,
+            ),
+
             ModelStep::GammaLogP { x, alpha, beta } => graph.gamma_logp(
                 resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
                 resolve_node_ref(alpha, &scalar_param_nodes, &op_nodes)?,
@@ -1340,6 +1369,10 @@ fn validate_step(
                 }
             }
         }
+        ModelStep::LogHalfNormalLogP { x, sigma } => {
+            check_ref(x)?;
+            check_ref(sigma)
+        }
         ModelStep::HalfNormalLogP { x, sigma } => {
             check_ref(x)?;
             check_ref(sigma)
@@ -1363,6 +1396,11 @@ fn validate_step(
         ModelStep::PoissonLogP { x, lam } => {
             check_ref(x)?;
             check_ref(lam)
+        }
+        ModelStep::LogGammaLogP { x, alpha, beta } => {
+            check_ref(x)?;
+            check_ref(alpha)?;
+            check_ref(beta)
         }
         ModelStep::GammaLogP { x, alpha, beta } => {
             check_ref(x)?;

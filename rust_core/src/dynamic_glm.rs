@@ -2,11 +2,10 @@
 //! Gaussian prior scales and NB dispersion are fixed model specifications.
 //! Group coefficients equal an uncertain population coefficient plus a Gaussian
 //! deviation; group random walks can additionally share a common random walk.
-use crate::autodiff::ln_gamma;
 use crate::bayesian_forecast::BayesianForecastError as Error;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, Poisson, StandardNormal};
+use rand_distr::{Distribution, Gamma, StandardNormal};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -428,11 +427,9 @@ fn log_likelihood(y: f64, eta: f64, occurrence: f64, exposure: f64, cfg: &Dynami
             }
             let log_mu = eta + exposure.ln();
             if cfg.family == Family::Poisson {
-                return y * log_mu - log_mu.exp() - ln_gamma(y + 1.);
+                return crate::count_sampling::log_mass_from_log_rate(y, log_mu);
             }
-            let r = cfg.dispersion;
-            let a = log_mu - r.ln();
-            ln_gamma(y + r) - ln_gamma(r) - ln_gamma(y + 1.) - r * softplus(a) - y * softplus(-a)
+            crate::negative_binomial::log_mass(y, log_mu, cfg.dispersion)
         }
         Family::Gaussian => {
             -0.5 * ((y - eta) / cfg.observation_sd).powi(2)
@@ -818,9 +815,7 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
             "Poisson rate outside supported numerical range; no draws clipped or removed",
         ));
     }
-    Ok(Poisson::new(rate)
-        .map_err(|e| numerical(e.to_string()))?
-        .sample(rng))
+    crate::count_sampling::poisson(rate, rng).map_err(numerical)
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
     let n = factors
@@ -848,4 +843,44 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 fn numerical(message: impl Into<String>) -> Error {
     Error::NumericalFailure(message.into())
+}
+
+#[cfg(test)]
+mod poisson_density_tests {
+    use super::*;
+
+    #[test]
+    fn poisson_large_count_curvature_is_preserved_with_exposure() {
+        let config = DynamicGlmConfig::default();
+        for count in [1e14_f64, 1e15, 8e15] {
+            let expected_mode = -0.5 * (std::f64::consts::TAU.ln() + count.ln());
+            for exposure in [0.5_f64, 1.0, 10.0] {
+                for z in [-1.0, 0.0, 1.0] {
+                    let eta = count.ln() - exposure.ln() + z / count.sqrt();
+                    let actual = log_likelihood(count, eta, 0.0, exposure, &config);
+                    assert!((actual - expected_mode + 0.5 * z * z).abs() < 3e-6);
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod negative_binomial_density_tests {
+    use super::*;
+
+    #[test]
+    fn large_dispersion_likelihood_preserves_local_curvature() {
+        let config = DynamicGlmConfig {
+            family: Family::NegativeBinomial,
+            dispersion: 1e14,
+            ..Default::default()
+        };
+        let eta = 1e14_f64.ln();
+        let center = log_likelihood(1e14, eta, 0.0, 1.0, &config);
+        let upper = log_likelihood(1e14, eta + 1e-7, 0.0, 1.0, &config);
+        let lower = log_likelihood(1e14, eta - 1e-7, 0.0, 1.0, &config);
+        assert!((center + 17.383607774442968).abs() < 2e-8);
+        assert!((upper + lower - 2.0 * center + 0.5).abs() < 5e-8);
+    }
 }

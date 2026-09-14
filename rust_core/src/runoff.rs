@@ -8,9 +8,9 @@
 
 use rand::{distributions::Open01, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Beta, Binomial, Distribution, Gamma, Poisson};
+use rand_distr::{Beta, Binomial, Distribution, Gamma};
 
-const MAX_EXACT_COUNT: u64 = (1_u64 << 53) - 1;
+use crate::count_sampling::MAX_EXACT_COUNT;
 const MAX_RETAINED_VALUES: usize = 25_000_000;
 
 fn validate_allocation(factors: &[usize]) -> Result<(), String> {
@@ -200,17 +200,7 @@ fn binomial(n: u64, probability: f64, rng: &mut ChaCha8Rng) -> Result<u64, Strin
 }
 
 fn poisson(mean: f64, rng: &mut ChaCha8Rng) -> Result<u64, String> {
-    if mean == 0.0 {
-        return Ok(0);
-    }
-    if !mean.is_finite() || mean > MAX_EXACT_COUNT as f64 {
-        return Err("Poisson mean exceeds the supported exact-count range".into());
-    }
-    let value = Poisson::new(mean).map_err(|e| e.to_string())?.sample(rng);
-    if value > MAX_EXACT_COUNT as f64 {
-        return Err("Poisson draw exceeds the supported exact-count range".into());
-    }
-    Ok(value as u64)
+    crate::count_sampling::poisson(mean, rng).map(|value| value as u64)
 }
 
 /// Independent posterior stick-breaking hazards under known-total prefix censoring.

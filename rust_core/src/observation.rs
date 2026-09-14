@@ -1,7 +1,7 @@
 //! Shared observation simulation and conditional means for graph models.
 use crate::graph::ObsFamily;
 use rand::Rng;
-use rand_distr::{Distribution, Exp, Gamma, Normal, Poisson};
+use rand_distr::{Distribution, Exp, Gamma, Normal};
 
 fn positive(value: f64, label: &str) -> Result<f64, String> {
     if value.is_finite() && value > 0.0 {
@@ -16,6 +16,65 @@ fn sigmoid(x: f64) -> f64 {
     } else {
         let e = x.exp();
         e / (1.0 + e)
+    }
+}
+
+/// Pointwise log likelihood on the same parameter scales as observation sampling.
+/// Invalid observations/parameters are errors; an unrepresentably small density
+/// may legitimately have log probability negative infinity.
+pub fn log_density(
+    family: ObsFamily,
+    observed: f64,
+    eta: f64,
+    aux: Option<f64>,
+) -> Result<f64, String> {
+    if !observed.is_finite() || !eta.is_finite() {
+        return Err("observation and linear predictor must be finite".into());
+    }
+    let logp = match family {
+        ObsFamily::Normal | ObsFamily::LogNormal => {
+            let sigma = positive(aux.ok_or("missing sigma")?, "sigma")?;
+            let (response, jacobian) = if family == ObsFamily::LogNormal {
+                let response = positive(observed, "LogNormal observation")?.ln();
+                (response, response)
+            } else {
+                (observed, 0.0)
+            };
+            let z = (response - eta) / sigma;
+            -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - jacobian - 0.5 * z * z
+        }
+        ObsFamily::BernoulliLogit => {
+            if observed != 0.0 && observed != 1.0 {
+                return Err("Bernoulli observation must be zero or one".into());
+            }
+            if observed == 1.0 {
+                -crate::autodiff::softplus(-eta)
+            } else {
+                -crate::autodiff::softplus(eta)
+            }
+        }
+        ObsFamily::PoissonLog | ObsFamily::NegativeBinomialLog => {
+            if observed < 0.0 || observed.fract() != 0.0 {
+                return Err("count observation must be a nonnegative integer".into());
+            }
+            if family == ObsFamily::PoissonLog {
+                crate::count_sampling::log_mass_from_log_rate(observed, eta)
+            } else {
+                let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
+                crate::negative_binomial::log_mass(observed, eta, alpha)
+            }
+        }
+        ObsFamily::ExponentialLog => {
+            if observed < 0.0 {
+                return Err("Exponential observation must be nonnegative".into());
+            }
+            eta - observed * eta.exp()
+        }
+    };
+    if logp.is_nan() {
+        Err("observation log likelihood is not representable".into())
+    } else {
+        Ok(logp)
     }
 }
 /// Expected response, on the observation scale.
@@ -65,9 +124,9 @@ pub fn sample<R: Rng + ?Sized>(
                 0.0
             }
         }
-        ObsFamily::PoissonLog => Poisson::new(positive(eta.exp(), "Poisson rate")?)
-            .map_err(|e| e.to_string())?
-            .sample(rng),
+        ObsFamily::PoissonLog => {
+            crate::count_sampling::poisson(positive(eta.exp(), "Poisson rate")?, rng)?
+        }
         ObsFamily::ExponentialLog => Exp::new(positive(eta.exp(), "Exponential rate")?)
             .map_err(|e| e.to_string())?
             .sample(rng),
@@ -80,9 +139,7 @@ pub fn sample<R: Rng + ?Sized>(
             if lambda == 0.0 {
                 0.0
             } else {
-                Poisson::new(positive(lambda, "Poisson rate")?)
-                    .map_err(|e| e.to_string())?
-                    .sample(rng)
+                crate::count_sampling::poisson(positive(lambda, "Poisson rate")?, rng)?
             }
         }
     };
@@ -97,6 +154,17 @@ pub fn sample<R: Rng + ?Sized>(
 mod tests {
     use super::*;
     use rand::SeedableRng;
+    #[test]
+    fn small_poisson_and_negative_binomial_means_never_produce_negative_counts() {
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(91);
+        for family in [ObsFamily::PoissonLog, ObsFamily::NegativeBinomialLog] {
+            for _ in 0..1000 {
+                let draw = sample(family, -50.0, Some(5.0), &mut rng).unwrap();
+                assert!(draw >= 0.0 && draw.fract() == 0.0);
+            }
+        }
+    }
+
     #[test]
     fn exponential_extreme_scales_preserve_moments() {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(56);

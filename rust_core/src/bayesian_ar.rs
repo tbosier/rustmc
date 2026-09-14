@@ -447,7 +447,12 @@ fn validate_symmetric(matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> 
     for (row_index, row) in matrix.iter().enumerate() {
         for (column_index, &value) in row.iter().take(row_index).enumerate() {
             let transposed = matrix[column_index][row_index];
-            let scale = value.abs().max(transposed.abs()).max(1.0);
+            // Precision entries also carry units; use the marginal scale
+            // for this pair instead of accepting absolute asymmetry below 1.
+            let scale = (matrix[row_index][row_index].abs().sqrt()
+                * matrix[column_index][column_index].abs().sqrt())
+            .max(value.abs())
+            .max(transposed.abs());
             if (value - transposed).abs() > 1e-12 * scale {
                 return Err(invalid_configuration(
                     "coefficient prior precision must be symmetric",
@@ -697,6 +702,18 @@ fn invalid_configuration(message: impl Into<String>) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prior_precision_symmetry_is_independent_of_coefficient_units() {
+        for scale in [1e-20, 1e-14, 1.0, 1e20] {
+            let asymmetric = vec![vec![scale, 0.0], vec![0.5 * scale, scale]];
+            assert!(NormalInverseGammaPrior::new(vec![0.0; 2], asymmetric, 3.0, 1.0).is_err());
+            let symmetric = vec![vec![scale, 0.5 * scale], vec![0.5 * scale, scale]];
+            NormalInverseGammaPrior::new(vec![0.0; 2], symmetric, 3.0, 1.0).unwrap();
+        }
+        let heteroscaled = vec![vec![1e-14, 5e-8], vec![5e-8, 1.0]];
+        NormalInverseGammaPrior::new(vec![0.0; 2], heteroscaled, 3.0, 1.0).unwrap();
+    }
 
     #[test]
     fn fit_and_forecast_seed_domains_are_distinct() {

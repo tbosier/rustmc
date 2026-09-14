@@ -189,6 +189,11 @@ pub enum Op {
         aux: Option<NodeId>,
         obs_data_idx: usize,
     },
+    /// Combined density and exp-transform Jacobian; x is the raw log value.
+    LogHalfNormalLogP {
+        x: NodeId,
+        sigma: NodeId,
+    },
     /// logp(x | sigma) for x >= 0; HalfNormal
     HalfNormalLogP {
         x: NodeId,
@@ -220,6 +225,12 @@ pub enum Op {
     PoissonLogP {
         x: NodeId,
         lam: NodeId,
+    },
+    /// Combined density and exp-transform Jacobian; x is the raw log value.
+    LogGammaLogP {
+        x: NodeId,
+        alpha: NodeId,
+        beta: NodeId,
     },
     /// logp(x | alpha, beta); Gamma
     GammaLogP {
@@ -638,6 +649,13 @@ impl Graph {
         node
     }
 
+    /// Density in log-parameter space, including the exp Jacobian.
+    pub fn log_half_normal_logp(&mut self, x: NodeId, sigma: NodeId) -> NodeId {
+        let node = self.add_node(Op::LogHalfNormalLogP { x, sigma }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
     pub fn half_normal_logp(&mut self, x: NodeId, sigma: NodeId) -> NodeId {
         let node = self.add_node(Op::HalfNormalLogP { x, sigma }, None);
         self.logp_terms.push(node);
@@ -671,6 +689,13 @@ impl Graph {
 
     pub fn poisson_logp(&mut self, x: NodeId, lam: NodeId) -> NodeId {
         let node = self.add_node(Op::PoissonLogP { x, lam }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    /// Density in log-parameter space, including the exp Jacobian.
+    pub fn log_gamma_logp(&mut self, x: NodeId, alpha: NodeId, beta: NodeId) -> NodeId {
+        let node = self.add_node(Op::LogGammaLogP { x, alpha, beta }, None);
         self.logp_terms.push(node);
         node
     }

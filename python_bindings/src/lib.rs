@@ -1019,14 +1019,6 @@ fn validate_expr_keys(
     }
 }
 
-fn softplus(x: f64) -> f64 {
-    if x > 0.0 {
-        x + (1.0 + (-x).exp()).ln()
-    } else {
-        (1.0 + x.exp()).ln()
-    }
-}
-
 fn logit_stable(p: f64) -> f64 {
     p.ln() - (-p).ln_1p()
 }
@@ -1076,94 +1068,25 @@ fn pointwise_log_likelihood_for_draw(
     let mut evaluator = Evaluator::new(graph);
     evaluator.compute(graph, raw_draw);
 
-    let mut out = Vec::with_capacity(heads.len());
-    for head in heads {
-        let values = match head.family {
-            rustmc_core::graph::ObsFamily::Normal => {
-                let sigma_node = head.aux.expect("Normal observation head requires sigma");
-                let sigma = evaluator.scalar_at(sigma_node).abs().max(1e-12);
-                let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-                let s2 = sigma * sigma;
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
-                    let mu = evaluator.vec_elem(head.linpred, i, graph);
-                    let diff = observation - mu;
-                    vals.push(log_norm - 0.5 * diff * diff / s2);
-                }
-                vals
-            }
-            rustmc_core::graph::ObsFamily::BernoulliLogit => {
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    vals.push(observation * eta - softplus(eta));
-                }
-                vals
-            }
-            rustmc_core::graph::ObsFamily::PoissonLog => {
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    vals.push(
-                        observation * eta
-                            - eta.exp()
-                            - rustmc_core::autodiff::ln_gamma(observation + 1.0),
-                    );
-                }
-                vals
-            }
-            rustmc_core::graph::ObsFamily::ExponentialLog => {
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    vals.push(eta - observation * eta.exp());
-                }
-                vals
-            }
-            rustmc_core::graph::ObsFamily::LogNormal => {
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let sigma_node = head.aux.expect("LogNormal observation head requires sigma");
-                let sigma = evaluator.scalar_at(sigma_node).abs().max(1e-12);
-                let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-                let s2 = sigma * sigma;
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &observation) in obs.iter().enumerate().take(head.n_obs) {
-                    let mu = evaluator.vec_elem(head.linpred, i, graph);
-                    let y = observation.max(1e-300);
-                    let ly = y.ln();
-                    let diff = ly - mu;
-                    vals.push(log_norm - ly - 0.5 * diff * diff / s2);
-                }
-                vals
-            }
-            rustmc_core::graph::ObsFamily::NegativeBinomialLog => {
-                let obs = &graph.obs_vectors[head.obs_data_idx];
-                let alpha_node = head
-                    .aux
-                    .expect("NegativeBinomial observation head requires alpha");
-                let alpha = evaluator.scalar_at(alpha_node).abs().max(1e-12);
-                let mut vals = Vec::with_capacity(head.n_obs);
-                for (i, &y) in obs.iter().enumerate().take(head.n_obs) {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
-                    let mu = eta.exp();
-                    vals.push(
-                        rustmc_core::autodiff::ln_gamma(y + alpha)
-                            - rustmc_core::autodiff::ln_gamma(alpha)
-                            - rustmc_core::autodiff::ln_gamma(y + 1.0)
-                            + alpha * (alpha.ln() - (alpha + mu).ln())
-                            + y * (eta - (alpha + mu).ln()),
-                    );
-                }
-                vals
-            }
-        };
-        out.push(values);
-    }
-    Ok(out)
+    heads
+        .iter()
+        .map(|head| {
+            let aux = head.aux.map(|node| evaluator.scalar_at(node));
+            graph.obs_vectors[head.obs_data_idx]
+                .iter()
+                .enumerate()
+                .map(|(i, &observed)| {
+                    rustmc_core::observation::log_density(
+                        head.family,
+                        observed,
+                        evaluator.vec_elem(head.linpred, i, graph),
+                        aux,
+                    )
+                    .map_err(PyValueError::new_err)
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Parse a Python value (float or ParamRef) into a HyperParam.
@@ -2719,6 +2642,13 @@ fn sample_prior_predictive<'py>(
             .map(|(pi, &r)| graph.param_transforms[pi].apply(r))
             .collect();
         let display_draw = derive_display_draw(&constrained_raw, &compiled.display_params)?;
+        if raw
+            .iter()
+            .chain(&display_draw)
+            .any(|value| !value.is_finite())
+        {
+            return Err(PyValueError::new_err("prior draw is not representable"));
+        }
         for (pi, &value) in display_draw.iter().enumerate() {
             param_prior_draws[pi].push(value);
         }
@@ -2781,10 +2711,9 @@ fn sample_prior_raw(
     auto_vector_params: &HashMap<String, usize>,
     rng: &mut ChaCha8Rng,
 ) -> Result<Vec<f64>, PyErr> {
-    use rand_distr::{
-        Beta, Gamma as GammaDist, Poisson as PoissonDist, StandardNormal, StudentT as StudentTDist,
-        Uniform as UniformDist,
-    };
+    use rand::distributions::Open01;
+    use rand_distr::{StandardNormal, StudentT as StudentTDist};
+    use rustmc_core::prior_sampling;
 
     let mut raw: Vec<f64> = Vec::new();
     // Track post-transform values for HyperParam::Param resolution
@@ -2834,36 +2763,27 @@ fn sample_prior_raw(
             PriorSpec::HalfNormal { name, sigma } => {
                 let sigma_v = resolve(sigma, &sampled_values, name)?;
                 validate_positive_finite("sigma", sigma_v)?;
-                let dist = NormalDist::new(0.0_f64, sigma_v)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 let n = auto_vector_params.get(name).copied().unwrap_or(1);
                 for k in 0..n {
-                    let x = dist.sample(rng).abs().max(1e-12);
+                    let draw = prior_sampling::log_half_normal(sigma_v, rng)
+                        .map_err(PyValueError::new_err)?;
                     if k == 0 {
-                        sampled_values.insert(name.clone(), x);
+                        sampled_values.insert(name.clone(), draw.exp());
                     }
-                    raw.push(x.ln()); // Exp transform: raw = log(x)
+                    raw.push(draw);
                 }
             }
             PriorSpec::Exponential { name, rate } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let rate_v = resolve(rate, &sampled_values, name)?;
-                    validate_positive_finite("rate", rate_v)?;
-                    for k in 0..n {
-                        let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
-                        let x = (-u.ln() / rate_v).max(1e-12);
-                        if k == 0 {
-                            sampled_values.insert(name.clone(), x);
-                        }
-                        raw.push(x.ln());
+                let rate_v = resolve(rate, &sampled_values, name)?;
+                validate_positive_finite("rate", rate_v)?;
+                let n = auto_vector_params.get(name).copied().unwrap_or(1);
+                for k in 0..n {
+                    let draw = prior_sampling::log_gamma(1.0, rate_v, rng)
+                        .map_err(PyValueError::new_err)?;
+                    if k == 0 {
+                        sampled_values.insert(name.clone(), draw.exp());
                     }
-                } else {
-                    let rate_v = resolve(rate, &sampled_values, name)?;
-                    validate_positive_finite("rate", rate_v)?;
-                    let u = rng.gen::<f64>().clamp(1e-12, 1.0 - 1e-12);
-                    let x = (-u.ln() / rate_v).max(1e-12);
-                    sampled_values.insert(name.clone(), x);
-                    raw.push(x.ln());
+                    raw.push(draw);
                 }
             }
             PriorSpec::LogNormal { name, mu, sigma } => {
@@ -2910,39 +2830,41 @@ fn sample_prior_raw(
                 }
             }
             PriorSpec::Uniform { name, lower, upper } => {
-                let dist = UniformDist::new(*lower, *upper);
                 let n = auto_vector_params.get(name).copied().unwrap_or(1);
                 for k in 0..n {
-                    let x = dist.sample(rng);
+                    let p: f64 = rng.sample(Open01);
+                    let draw = logit_stable(p);
+                    let x = ParamTransform::BoundedSigmoid {
+                        lower: *lower,
+                        upper: *upper,
+                    }
+                    .apply(draw);
                     if k == 0 {
                         sampled_values.insert(name.clone(), x);
                     }
-                    let p = ((x - lower) / (upper - lower)).clamp(1e-12, 1.0 - 1e-12);
-                    raw.push((p / (1.0 - p)).ln());
+                    raw.push(draw);
                 }
             }
             PriorSpec::Gamma { name, alpha, beta } => {
-                let dist = GammaDist::new(*alpha, 1.0 / beta)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
                 let n = auto_vector_params.get(name).copied().unwrap_or(1);
                 for k in 0..n {
-                    let x = dist.sample(rng).max(1e-12);
+                    let draw = prior_sampling::log_gamma(*alpha, *beta, rng)
+                        .map_err(PyValueError::new_err)?;
                     if k == 0 {
-                        sampled_values.insert(name.clone(), x);
+                        sampled_values.insert(name.clone(), draw.exp());
                     }
-                    raw.push(x.ln()); // Exp transform
+                    raw.push(draw);
                 }
             }
             PriorSpec::Beta { name, alpha, beta } => {
-                let dist =
-                    Beta::new(*alpha, *beta).map_err(|e| PyValueError::new_err(e.to_string()))?;
                 let n = auto_vector_params.get(name).copied().unwrap_or(1);
                 for k in 0..n {
-                    let x = dist.sample(rng).clamp(1e-12, 1.0 - 1e-12);
+                    let draw = prior_sampling::logit_beta(*alpha, *beta, rng)
+                        .map_err(PyValueError::new_err)?;
                     if k == 0 {
-                        sampled_values.insert(name.clone(), x);
+                        sampled_values.insert(name.clone(), ParamTransform::Sigmoid.apply(draw));
                     }
-                    raw.push((x / (1.0 - x)).ln());
+                    raw.push(draw);
                 }
             }
             PriorSpec::Bernoulli { name, p } => {
@@ -2951,9 +2873,17 @@ fn sample_prior_raw(
                 raw.push(x);
             }
             PriorSpec::Poisson { name, lam } => {
-                let x = PoissonDist::new(*lam)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?
-                    .sample(rng);
+                let x = if *lam == 0.0 {
+                    0.0
+                } else {
+                    rustmc_core::observation::sample(
+                        rustmc_core::graph::ObsFamily::PoissonLog,
+                        lam.ln(),
+                        None,
+                        rng,
+                    )
+                    .map_err(PyValueError::new_err)?
+                };
                 sampled_values.insert(name.clone(), x);
                 raw.push(x);
             }
