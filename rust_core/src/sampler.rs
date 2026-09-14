@@ -774,6 +774,86 @@ mod tests {
     use rayon::current_num_threads;
 
     #[test]
+    fn transformed_results_retain_exact_raw_tail_positions() {
+        let mut graph = Graph::new();
+        crate::distributions::BetaDist::prior(&mut graph, "p", 0.01, 0.01);
+        let config = SamplerConfig {
+            num_chains: 2,
+            num_draws: 4,
+            num_warmup: 1,
+            step_size: 1e-9,
+            max_tree_depth: 2,
+            show_progress: false,
+            ..Default::default()
+        };
+        let result = sample_bound_with_init(
+            Arc::new(graph.structure_only()),
+            DataBinding::from_graph(&graph).unwrap(),
+            config.clone(),
+            Some(vec![vec![40.0], vec![50.0]]),
+        )
+        .unwrap();
+        let raw = result.unconstrained_samples.as_ref().unwrap();
+        for (chain_index, chain) in raw.iter().enumerate() {
+            let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_index as u64);
+            let expected = nuts::run_chain(
+                &graph,
+                &NutsConfig {
+                    step_size: config.step_size,
+                    target_accept: config.target_accept,
+                    max_tree_depth: config.max_tree_depth,
+                    num_draws: config.num_draws,
+                    num_warmup: config.num_warmup,
+                },
+                &mut rng,
+                Some(vec![40.0 + 10.0 * chain_index as f64]),
+                None,
+            );
+            assert_eq!(chain, &expected.samples);
+            assert!(chain.iter().all(|q| q[0].is_finite() && q[0] > 39.0));
+            assert!(result.samples[chain_index].iter().all(|q| q[0] == 1.0));
+        }
+        let cloned = result.clone();
+        assert!(Arc::ptr_eq(
+            raw,
+            cloned.unconstrained_samples.as_ref().unwrap()
+        ));
+        let mut identity = Graph::new();
+        crate::distributions::Normal::prior(&mut identity, "x", 0.0, 1.0);
+        assert!(sample(identity, config)
+            .unwrap()
+            .unconstrained_samples
+            .is_none());
+    }
+
+    #[test]
+    fn batch_paths_retain_raw_chain_axes() {
+        let mut graph = Graph::new();
+        crate::distributions::BetaDist::prior(&mut graph, "p", 0.01, 0.01);
+        let config = BatchSampleConfig {
+            num_chains: 2,
+            num_draws: 20,
+            num_warmup: 50,
+            show_progress: false,
+            ..Default::default()
+        };
+        let legacy = batch_sample_graphs(vec![graph.clone()], config.clone()).unwrap();
+        let bound = sample_batch_bound(
+            Arc::new(graph.structure_only()),
+            vec![DataBinding::from_graph(&graph).unwrap()],
+            config,
+        )
+        .unwrap();
+        let raw = legacy[0].unconstrained_samples.as_ref().unwrap();
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].len(), 20);
+        assert_eq!(raw, bound[0].result.unconstrained_samples.as_ref().unwrap());
+        for (position, constrained) in raw.iter().flatten().zip(&legacy[0].samples) {
+            assert_eq!(graph.param_transforms[0].apply(position[0]), constrained[0]);
+        }
+    }
+
+    #[test]
     fn thread_pool_helper_uses_requested_parallelism() {
         let one = with_thread_pool(1, current_num_threads).unwrap();
         let two = with_thread_pool(2, current_num_threads).unwrap();
