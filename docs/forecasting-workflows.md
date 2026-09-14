@@ -65,7 +65,9 @@ successful origins; aggregate scores alone do not reveal omitted failures.
 Scores include empirical CRPS, standard WIS, mean bias/error, interval coverage, and
 interval width. WIS divides the weighted median/interval numerator by `K + .5` for
 `K` intervals. `interval_score` is a single-interval score. Missing realized outcomes
-produce NaN scores. Coverage and widths are pointwise, not simultaneous bands.
+produce NaN scores, which summaries omit. Infinite losses (for example, an
+unrepresentably large squared error) remain infinite in summaries rather than
+being omitted. Coverage and widths are pointwise, not simultaneous bands.
 
 The [retained calibration study](https://github.com/tbosier/rustmc/blob/main/benchmarks/results/2026-09-09-calibration.md)
 uses 32 independently generated datasets per model and reports convergence, coverage,

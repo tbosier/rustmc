@@ -123,3 +123,32 @@ def test_integer_group_indices():
     beta=m.vector_normal_prior('beta',2,0.,1.)
     m.normal_likelihood('obs',beta['g'],1.,'y')
     check_gradient(m.compile(),data,np.array([0.1,0.2]))
+
+
+def test_zero_power_does_not_change_sampling_from_default_initialization():
+    base = rustmc.ModelBuilder()
+    base.normal_prior('x', 0.0, 1.0)
+    with_constant = rustmc.ModelBuilder()
+    x = with_constant.normal_prior('x', 0.0, 1.0)
+    with_constant.potential('constant', x**0)
+    plain, powered = base.compile(), with_constant.compile()
+    value, gradient = powered.log_density({}, [0.0])
+    assert value == pytest.approx(plain.log_density({}, [0.0])[0] + 1.0)
+    np.testing.assert_array_equal(gradient, [0.0])
+    # A constant potential preserves the posterior and can initialize at zero.
+    fit = powered.sample({}, chains=1, draws=20, warmup=20, seed=123, show_progress=False)
+    assert all(np.isfinite(draws).all() for draws in fit.get_samples().values())
+
+
+def test_learned_power_accepts_zero_predictors():
+    m = rustmc.ModelBuilder()
+    exponent = m.half_normal_prior('exponent', 1.0)
+    x = m.data('x')
+    m.potential('power', -(x**exponent).sum())
+    compiled = m.compile()
+    data = {'x': np.array([0.0, 1.0, 2.0])}
+    check_gradient(compiled, data, np.array([0.0]))
+    _, gradient = compiled.log_density(data, [0.0])
+    assert gradient[0] == pytest.approx(-2.0 * np.log(2.0))
+    fit = compiled.sample(data, chains=1, draws=20, warmup=20, seed=123, show_progress=False)
+    assert all(np.isfinite(draws).all() for draws in fit.get_samples().values())

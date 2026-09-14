@@ -66,3 +66,29 @@ def test_structural_validates_priors_dimensions_and_optional_history():
             mc.StructuralModel([C.level("level", V.fixed(.1), 0, 1)], V.fixed(.2), student_df=df)
     with pytest.raises(ValueError, match="25 million"):
         C.seasonal("oversized", 1e20, 2**20, V.fixed(.1), 1.)
+
+
+@pytest.mark.parametrize('coefficients', [[0.], [.5, 0.]])
+def test_zero_innovation_ar_singular_states_fit_forecast_and_replay(coefficients):
+    """A deterministic stable AR can lose rank without invalidating its prior."""
+    n = len(coefficients)
+    V, C = mc.VarianceParameter, mc.StructuralComponent
+    model = mc.StructuralModel([
+        C.ar('ar', coefficients, V.fixed(0), [0.] * n, np.eye(n).tolist())
+    ], V.fixed(1))
+    fit = model.fit([.2, np.nan, -.1, .3], chains=2, draws=20, warmup=0,
+                    store_states=True, seed=751)
+    states = fit.states
+    transition = np.zeros((n, n))
+    transition[0] = coefficients
+    if n > 1:
+        transition[1:, :-1] = np.eye(n - 1)
+    np.testing.assert_allclose(states[:, :, 1:], states[:, :, :-1] @ transition.T, atol=1e-7)
+    forecast = fit.forecast(3, seed=752)
+    expected = fit.terminal_states.copy()
+    for t in range(3):
+        expected = expected @ transition.T
+        np.testing.assert_allclose(forecast.state_paths[:, :, t], expected, atol=1e-7)
+    restored = mc.StructuralFit.from_json(fit.to_json())
+    np.testing.assert_array_equal(restored.forecast(3, seed=752).observation_paths,
+                                  forecast.observation_paths)

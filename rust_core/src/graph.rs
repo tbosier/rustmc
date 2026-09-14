@@ -116,7 +116,17 @@ impl ElementwiseOp {
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
             Self::Div => (1.0 / b, -a / (b * b)),
-            Self::Pow => (b * a.powf(b - 1.0), a.powf(b) * a.ln()),
+            Self::Pow => {
+                // x^0 is constant even at x=0. For positive exponents, 0^b
+                // is also constant in b; forming 0*log(0) gives a false NaN.
+                let da = if b == 0.0 { 0.0 } else { b * a.powf(b - 1.0) };
+                let db = if a == 0.0 && b > 0.0 {
+                    0.0
+                } else {
+                    a.powf(b) * a.ln()
+                };
+                (da, db)
+            }
             Self::Neg => (-1.0, 0.0),
             Self::Exp => (a.exp(), 0.0),
             Self::Log => (1.0 / a, 0.0),
