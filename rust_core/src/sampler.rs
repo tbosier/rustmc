@@ -780,7 +780,8 @@ pub fn batch_sample_graphs(
 fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), String> {
     if let Some(index) = draw.iter().position(|value| !value.is_finite()) {
         return Err(format!(
-            "sampled parameter '{}' is nonfinite after transformation", names[index]
+            "sampled parameter '{}' is nonfinite after transformation",
+            names[index]
         ));
     }
     Ok(())

@@ -1465,8 +1465,8 @@ fn validate_step(
             n_params,
             ..
         } => {
-            if !vector_names.contains(param_name.as_str())
-                && !(*n_params == 1 && scalar_names.contains(param_name.as_str()))
+            if !(vector_names.contains(param_name.as_str())
+                || *n_params == 1 && scalar_names.contains(param_name.as_str()))
             {
                 return Err(ArtifactError::missing_parameter(format!(
                     "unknown parameter block '{}' or non-unit scalar density span",

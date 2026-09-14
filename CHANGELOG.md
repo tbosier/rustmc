@@ -21,6 +21,8 @@ versioning while the public API is stabilized.
   after changing the mass matrix.
 - Preserve native conditional-mean forecast draws, coordinates and metadata in workflow
   adapters; reject empty potential names before creating an unreadable model artifact.
+- Preserve Jacobian/potential terms and the new support constraints in legacy graph
+  exports, and reject overflowing Uniform ranges or nonfinite sampled outputs.
 
 ## [0.12.0] - 2026-09-09
 
