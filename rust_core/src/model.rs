@@ -654,6 +654,11 @@ pub fn build_prior_into_graph(
                 graph.normal_logp(raw, zero, one);
                 let mu_node = resolve_hyper(mu, graph, value_node_map)?;
                 let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
+                // Noncentering cancels the scale in the density and Jacobian,
+                // but the conditional Normal still requires a positive scale.
+                // Keep that support independently of mu + sigma * raw so large
+                // means or tiny scales cannot erase the raw Normal density.
+                graph.positive_support(sigma_node);
                 let scaled = graph.mul(sigma_node, raw);
                 let v = graph.add(mu_node, scaled);
                 value_node_map.insert(name.clone(), v);
