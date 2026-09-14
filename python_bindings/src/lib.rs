@@ -1055,14 +1055,31 @@ fn constrained_draw_to_raw(draw: &[f64], transforms: &[ParamTransform]) -> Vec<f
         .collect()
 }
 
+/// Prefer the sampler's exact position: constrained values may round to a
+/// transform boundary, making their inverse infinite or otherwise lossy.
+fn posterior_position<'a>(
+    result: &'a SampleResult,
+    graph: &Graph,
+    chain: usize,
+    draw: usize,
+) -> std::borrow::Cow<'a, [f64]> {
+    if let Some(positions) = &result.unconstrained_samples {
+        std::borrow::Cow::Borrowed(&positions[chain][draw])
+    } else {
+        std::borrow::Cow::Owned(constrained_draw_to_raw(
+            &result.samples[chain][draw],
+            &graph.param_transforms,
+        ))
+    }
+}
+
 fn pointwise_log_likelihood_for_draw(
     graph: &Graph,
-    draw: &[f64],
+    raw_draw: &[f64],
     heads: &[rustmc_core::graph::ObservationHead],
 ) -> PyResult<Vec<Vec<f64>>> {
     let mut evaluator = Evaluator::new(graph);
-    let raw_draw = constrained_draw_to_raw(draw, &graph.param_transforms);
-    evaluator.compute(graph, &raw_draw);
+    evaluator.compute(graph, raw_draw);
 
     let mut out = Vec::with_capacity(heads.len());
     for head in heads {
@@ -1245,6 +1262,7 @@ fn derive_display_batch_result(
 
     Ok(sampler::BatchModelResult {
         samples,
+        unconstrained_samples: raw_result.unconstrained_samples.clone(),
         param_names,
         num_chains: raw_result.num_chains,
         num_draws: raw_result.num_draws,
@@ -1459,12 +1477,10 @@ impl FitResult {
         for (name, node) in &graph.deterministics {
             let n = evaluator.node_len(*node);
             let mut values = Vec::with_capacity(chains * draws * n.max(1));
-            for chain in &self.raw_result.samples {
-                for draw in chain {
-                    evaluator.compute(
-                        &graph,
-                        &constrained_draw_to_raw(draw, &graph.param_transforms),
-                    );
+            for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
+                for draw_idx in 0..chain.len() {
+                    let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
+                    evaluator.compute(&graph, &position);
                     for i in 0..n.max(1) {
                         values.push(evaluator.vec_elem(*node, i, &graph));
                     }
@@ -1547,11 +1563,12 @@ impl FitResult {
 
         // Flatten all chain draws in order, then subsample without replacement
         // when the caller requests fewer draws than are available.
-        let all_draws: Vec<&Vec<f64>> = self
+        let all_draws: Vec<(usize, usize)> = self
             .raw_result
             .samples
             .iter()
-            .flat_map(|c| c.iter())
+            .enumerate()
+            .flat_map(|(chain_idx, chain)| (0..chain.len()).map(move |draw_idx| (chain_idx, draw_idx)))
             .collect();
         let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
         let n = chosen_indices.len();
@@ -1563,9 +1580,9 @@ impl FitResult {
             .collect();
 
         for draw_idx in chosen_indices {
-            let draw = all_draws[draw_idx];
-            let raw_draw = constrained_draw_to_raw(draw, &graph.param_transforms);
-            evaluator.compute(&graph, &raw_draw);
+            let (chain_idx, draw_idx) = all_draws[draw_idx];
+            let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
+            evaluator.compute(&graph, &position);
             for (li, head) in heads.iter().enumerate() {
                 for i in 0..head.n_obs {
                     let eta = evaluator.vec_elem(head.linpred, i, &graph);
@@ -1611,8 +1628,9 @@ impl FitResult {
             .collect();
 
         for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
-            for (draw_idx, draw) in chain.iter().enumerate() {
-                let per_head = pointwise_log_likelihood_for_draw(&self.graph, draw, &heads)?;
+            for draw_idx in 0..chain.len() {
+                let position = posterior_position(&self.raw_result, &self.graph, chain_idx, draw_idx);
+                let per_head = pointwise_log_likelihood_for_draw(&self.graph, &position, &heads)?;
                 for (li, values) in per_head.iter().enumerate() {
                     for (obs_idx, &value) in values.iter().enumerate() {
                         arrays[li][[chain_idx, draw_idx, obs_idx]] = value;
@@ -2260,6 +2278,7 @@ struct BatchResult {
 fn batch_from_sample(sample: &SampleResult) -> sampler::BatchModelResult {
     sampler::BatchModelResult {
         samples: sample.samples.iter().flatten().cloned().collect(),
+        unconstrained_samples: sample.unconstrained_samples.clone(),
         param_names: sample.param_names.clone(),
         num_chains: sample.samples.len(),
         num_draws: sample.samples.first().map_or(0, Vec::len),
@@ -2593,6 +2612,7 @@ fn batch_sample(
                     .chunks(raw_result.num_draws)
                     .map(|chain| chain.to_vec())
                     .collect(),
+                unconstrained_samples: raw_result.unconstrained_samples.clone(),
                 param_names: raw_result.param_names.clone(),
                 accept_rates: raw_result.accept_rates.clone(),
                 step_sizes: raw_result.step_sizes.clone(),
