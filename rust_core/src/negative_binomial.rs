@@ -50,6 +50,9 @@ fn stirling_error(x: f64) -> f64 {
 
 // psi(a+y)-psi(a)-log((a+y)/a), without subtracting nearly equal logs.
 fn digamma_remainder_difference(mut a: f64, y: f64) -> f64 {
+    if y == 0.0 {
+        return 0.0;
+    }
     let mut correction = 0.0;
     while a < 16.0 {
         correction += log1p_deviance(1.0 / a) - log1p_deviance(1.0 / (a + y));
@@ -83,7 +86,12 @@ fn centered_score(count: f64, eta: f64, alpha: f64) -> f64 {
 }
 
 pub(crate) fn log_mass(count: f64, eta: f64, alpha: f64) -> f64 {
-    if !alpha.is_finite() || alpha <= 0.0 || !count.is_finite() || count < 0.0 {
+    if !alpha.is_finite()
+        || alpha <= 0.0
+        || !count.is_finite()
+        || count < 0.0
+        || count.fract() != 0.0
+    {
         return f64::NEG_INFINITY;
     }
     let log_alpha = alpha.ln();
@@ -113,6 +121,17 @@ pub(crate) fn log_mass(count: f64, eta: f64, alpha: f64) -> f64 {
 
 /// Scores with respect to log mean and the positive dispersion alpha.
 pub(crate) fn gradients(count: f64, eta: f64, alpha: f64) -> (f64, f64) {
+    // Rejected target states still run the reverse pass. Do not enter the
+    // positive-shape recurrence for invalid scales or nonfinite expressions.
+    if !alpha.is_finite()
+        || alpha <= 0.0
+        || !count.is_finite()
+        || count < 0.0
+        || count.fract() != 0.0
+        || !eta.is_finite()
+    {
+        return (0.0, 0.0);
+    }
     let score = centered_score(count, eta, alpha);
     let centered = score / alpha;
     let log_ratio = softplus(count.ln() - alpha.ln()) - softplus(eta - alpha.ln());
@@ -200,6 +219,41 @@ mod tests {
         (3.0, 1000.0, 1.0, -1000.0, -1.0, -997.1666666666666),
         (3.0, -1000.0, 1.0, -3000.0, 3.0, -1.1666666666666667),
     ];
+
+    #[test]
+    fn invalid_dispersion_rejects_without_entering_recurrence() {
+        use crate::{
+            autodiff::{grad_logp, Evaluator},
+            graph::Graph,
+        };
+        let mut graph = Graph::new();
+        let eta = graph.add_param("eta");
+        let alpha = graph.add_param("alpha");
+        let obs = graph.add_obs_data(vec![1.0]);
+        let predictor = graph.broadcast_observation(eta, obs);
+        graph.obs_logp_negative_binomial_log(predictor, alpha, obs);
+        let mut evaluator = Evaluator::new(&graph);
+        for a in [-1e20, -1e9, -1.0, 0.0, f64::INFINITY, f64::NAN] {
+            evaluator.compute(&graph, &[0.0, a]);
+            assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
+            assert_eq!(evaluator.grad, vec![0.0, 0.0]);
+            assert_eq!(
+                grad_logp(&graph, &[0.0, a]),
+                (f64::NEG_INFINITY, vec![0.0, 0.0])
+            );
+        }
+    }
+
+    #[test]
+    fn count_domain_and_zero_count_tiny_dispersion_are_safe() {
+        for count in [-1.0, 0.5, f64::INFINITY, f64::NAN] {
+            assert_eq!(log_mass(count, 0.0, 1.0), f64::NEG_INFINITY);
+            assert_eq!(gradients(count, 0.0, 1.0), (0.0, 0.0));
+        }
+        let alpha = f64::from_bits(1);
+        let (_, da) = gradients(0.0, 0.0, alpha);
+        assert!((da - (1.0 + alpha.ln())).abs() < 1e-10);
+    }
 
     #[test]
     fn density_and_scores_match_high_precision_oracle() {
