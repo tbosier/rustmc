@@ -469,3 +469,27 @@ fn extreme_prior_dimensions_return_errors_without_panicking() {
     assert!(prior_predictive(&config, usize::MAX, 1, None, None).is_err());
     assert!(prior_predictive(&config, 1, usize::MAX, None, None).is_err());
 }
+
+#[test]
+fn tiny_fitted_count_means_preserve_predictive_support() {
+    for family in [Family::Poisson, Family::NegativeBinomial] {
+        let config = DynamicGlmConfig {
+            family,
+            initial_mean: -50.0,
+            coefficient_sd: 0.1,
+            group_sd: 0.0,
+            process_sd: 0.0,
+            shared_process_sd: 0.0,
+            chains: 1,
+            draws: 20,
+            warmup: 20,
+            ..Default::default()
+        };
+        let fit = fit_dynamic_glm(&vec![vec![0.0, 0.0]], None, None, &config).unwrap();
+        let forecast = fit.forecast(1, None, None, 42).unwrap();
+        for draw in &forecast.observation_paths[0] {
+            assert!(draw[0][0] >= 0.0 && draw[0][0].fract() == 0.0);
+        }
+        assert!(forecast.mean_paths[0].iter().all(|draw| draw[0][0] > 0.0));
+    }
+}

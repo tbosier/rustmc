@@ -6,7 +6,7 @@ use crate::autodiff::ln_gamma;
 use crate::bayesian_forecast::BayesianForecastError as Error;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, Poisson, StandardNormal};
+use rand_distr::{Distribution, Gamma, StandardNormal};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -818,9 +818,7 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
             "Poisson rate outside supported numerical range; no draws clipped or removed",
         ));
     }
-    Ok(Poisson::new(rate)
-        .map_err(|e| numerical(e.to_string()))?
-        .sample(rng))
+    crate::count_sampling::poisson(rate, rng).map_err(numerical)
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
     let n = factors
