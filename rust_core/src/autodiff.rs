@@ -604,10 +604,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let mu = eta.exp();
-                                sum += ln_gamma(y + av) - ln_gamma(av) - ln_gamma(y + 1.0)
-                                    + av * (av.ln() - (av + mu).ln())
-                                    + y * (eta - (av + mu).ln());
+                                sum += crate::negative_binomial::log_mass(y, eta, av);
                             }
                             self.scalars[idx] = sum;
                         }
@@ -1144,15 +1141,11 @@ impl Evaluator {
                             let mut dalpha = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let mu = eta.exp();
-                                let denom = av + mu;
-                                let deta = av * (y - mu) / denom;
+                                let (deta, da) = crate::negative_binomial::gradients(y, eta, av);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * deta;
                                 }
-                                dalpha += digamma(y + av) - digamma(av) + av.ln() + 1.0
-                                    - denom.ln()
-                                    - (y + av) / denom;
+                                dalpha += da;
                             }
                             self.adj_scalars[alpha_node.0] += a_s * dalpha;
                         }
@@ -1403,13 +1396,8 @@ fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
 
 fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
     eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| {
-            let mu = e.exp();
-            ln_gamma(y + alpha) - ln_gamma(alpha) - ln_gamma(y + 1.0)
-                + alpha * (alpha.ln() - (alpha + mu).ln())
-                + y * (e - (alpha + mu).ln())
-        })
+        .zip(obs)
+        .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
         .sum()
 }
 

@@ -430,9 +430,7 @@ fn log_likelihood(y: f64, eta: f64, occurrence: f64, exposure: f64, cfg: &Dynami
             if cfg.family == Family::Poisson {
                 return crate::count_sampling::log_mass_from_log_rate(y, log_mu);
             }
-            let r = cfg.dispersion;
-            let a = log_mu - r.ln();
-            ln_gamma(y + r) - ln_gamma(r) - ln_gamma(y + 1.) - r * softplus(a) - y * softplus(-a)
+            crate::negative_binomial::log_mass(y, log_mu, cfg.dispersion)
         }
         Family::Gaussian => {
             -0.5 * ((y - eta) / cfg.observation_sd).powi(2)
@@ -865,5 +863,25 @@ mod poisson_density_tests {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod negative_binomial_density_tests {
+    use super::*;
+
+    #[test]
+    fn large_dispersion_likelihood_preserves_local_curvature() {
+        let config = DynamicGlmConfig {
+            family: Family::NegativeBinomial,
+            dispersion: 1e14,
+            ..Default::default()
+        };
+        let eta = 1e14_f64.ln();
+        let center = log_likelihood(1e14, eta, 0.0, 1.0, &config);
+        let upper = log_likelihood(1e14, eta + 1e-7, 0.0, 1.0, &config);
+        let lower = log_likelihood(1e14, eta - 1e-7, 0.0, 1.0, &config);
+        assert!((center + 17.383607774442968).abs() < 2e-8);
+        assert!((upper + lower - 2.0 * center + 0.5).abs() < 5e-8);
     }
 }

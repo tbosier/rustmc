@@ -669,22 +669,13 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let deta: Vec<f64> = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                a_s * av * (y - mu) / (av + mu)
-                            })
+                            .map(|(&e, &y)| a_s * crate::negative_binomial::gradients(y, e, av).0)
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
                         let dalpha: f64 = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| {
-                                let mu = e.exp();
-                                let denom = av + mu;
-                                digamma(y + av) - digamma(av) + av.ln() + 1.0
-                                    - denom.ln()
-                                    - (y + av) / denom
-                            })
+                            .map(|(&e, &y)| crate::negative_binomial::gradients(y, e, av).1)
                             .sum::<f64>();
                         adj_scalar[alpha_node.0] += a_s * dalpha;
                     }

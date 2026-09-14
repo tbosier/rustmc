@@ -61,11 +61,7 @@ pub fn log_density(
                 crate::count_sampling::log_mass_from_log_rate(observed, eta)
             } else {
                 let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
-                crate::autodiff::ln_gamma(observed + alpha)
-                    - crate::autodiff::ln_gamma(alpha)
-                    - crate::autodiff::ln_gamma(observed + 1.0)
-                    - alpha * crate::autodiff::softplus(eta - alpha.ln())
-                    - observed * crate::autodiff::softplus(alpha.ln() - eta)
+                crate::negative_binomial::log_mass(observed, eta, alpha)
             }
         }
         ObsFamily::ExponentialLog => {

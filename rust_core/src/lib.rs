@@ -20,6 +20,7 @@ pub mod hmc;
 pub mod hurdle;
 pub mod mass_matrix;
 pub mod model;
+mod negative_binomial;
 pub mod nuts;
 pub mod observation;
 pub mod param_ref;
