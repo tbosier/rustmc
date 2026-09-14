@@ -93,29 +93,18 @@ impl Uniform {
     /// Samples raw on (-∞, +∞), transforms via x = lower + (upper-lower) * sigmoid(raw).
     /// Jacobian: log|dx/draw| = log((upper-lower) * sigmoid(raw) * (1-sigmoid(raw)))
     pub fn prior(graph: &mut Graph, name: &str, lower: f64, upper: f64) -> NodeId {
+        let param_start = graph.param_count;
         let raw =
             graph.add_param_with_transform(name, ParamTransform::BoundedSigmoid { lower, upper });
         let sig = graph.sigmoid(raw);
-        let range = upper - lower;
-        let range_node = graph.add_constant(range);
+        let range_node = graph.add_constant(upper - lower);
         let lower_node = graph.add_constant(lower);
-
-        // x = lower + range * sigmoid(raw)
         let scaled = graph.mul(range_node, sig);
         let x = graph.add(lower_node, scaled);
 
-        let upper_node = graph.add_constant(upper);
-        graph.uniform_logp(x, lower_node, upper_node);
-
-        // Jacobian: log(range) + log(sigmoid) + log(1 - sigmoid)
-        let log_range = graph.add_constant(range.ln());
-        let log_sig = graph.log(sig);
-        let one = graph.add_constant(1.0);
-        let one_minus_sig = graph.sub(one, sig);
-        let log_one_minus_sig = graph.log(one_minus_sig);
-        let log_sum = graph.add(log_sig, log_one_minus_sig);
-        let jac = graph.add(log_range, log_sum);
-        graph.add_logp_term(jac);
+        // Evaluate density and Jacobian together in raw space: the interval
+        // width cancels, and rounded sigmoid endpoints must not truncate tails.
+        graph.vector_uniform_logp(param_start, 1, lower, upper);
         x
     }
 }
@@ -224,19 +213,12 @@ impl BetaDist {
     /// Samples raw on (-∞, +∞), transforms via x = sigmoid(raw).
     /// Jacobian: log|dx/draw| = log(sigmoid(raw)) + log(1-sigmoid(raw))
     pub fn prior(graph: &mut Graph, name: &str, alpha: f64, beta: f64) -> NodeId {
+        let param_start = graph.param_count;
         let raw = graph.add_param_with_transform(name, ParamTransform::Sigmoid);
         let x = graph.sigmoid(raw);
-        let alpha_node = graph.add_constant(alpha);
-        let beta_node = graph.add_constant(beta);
-        graph.beta_logp(x, alpha_node, beta_node);
-
-        // Jacobian: log(x) + log(1-x)
-        let log_x = graph.log(x);
-        let one = graph.add_constant(1.0);
-        let one_minus_x = graph.sub(one, x);
-        let log_one_minus_x = graph.log(one_minus_x);
-        let jac = graph.add(log_x, log_one_minus_x);
-        graph.add_logp_term(jac);
+        // Sharing the raw-space kernel with vector priors avoids both rounded
+        // endpoints and cancellation between the density and its Jacobian.
+        graph.vector_beta_logp(param_start, 1, alpha, beta);
         x
     }
 }

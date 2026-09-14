@@ -304,8 +304,7 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
+                        log_norm - alpha * softplus(-raw) - beta * softplus(raw)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -318,8 +317,7 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        s.ln() + (1.0 - s).ln()
+                        -softplus(-raw) - softplus(raw)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -360,6 +358,13 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
     for node in graph.nodes.iter().rev() {
         let idx = node.id.0;
         let a_s = adj_scalar[idx];
+        if a_s == 0.0
+            && adj_vector[idx]
+                .as_ref()
+                .is_none_or(|v| v.iter().all(|&adj| adj == 0.0))
+        {
+            continue;
+        }
 
         match &node.op {
             Op::Elementwise { operator, a, b } => {
@@ -371,6 +376,11 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let mut da = Vec::new();
                 let mut db = Vec::new();
                 for (i, u) in upstream.iter().enumerate() {
+                    if *u == 0.0 {
+                        da.push(0.0);
+                        db.push(0.0);
+                        continue;
+                    }
                     let (x, y) = operator.derivatives(
                         read(&values[a.0], i),
                         b.map_or(0.0, |b| read(&values[b.0], i)),
@@ -748,8 +758,8 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                    let s = sigmoid_stable(raw);
+                    grad[param_start + k] += a_s * (alpha * sigmoid_stable(-raw) - beta * s);
                 }
             }
             Op::VectorUniformLogP {
@@ -759,7 +769,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
+                    let s = sigmoid_stable(raw);
                     grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                 }
             }

@@ -748,8 +748,7 @@ impl Evaluator {
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        sum += log_norm + alpha * s.ln() + beta * (1.0 - s).ln();
+                        sum += log_norm - alpha * softplus(-raw) - beta * softplus(raw);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -763,8 +762,7 @@ impl Evaluator {
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        sum += s.ln() + (1.0 - s).ln();
+                        sum -= softplus(-raw) + softplus(raw);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -792,17 +790,31 @@ impl Evaluator {
                 _ => self.node_lengths[idx],
             };
             let a_s = self.adj_scalars[idx];
+            // Output-only nodes and inactive reverse edges cannot affect the
+            // target, even when their local derivative is infinite or NaN.
+            let active = match self.node_kind[idx] {
+                NodeKind::ComputedVec(off) => self.adj_vec_buf[off..off + vl]
+                    .iter()
+                    .any(|&adj| adj != 0.0),
+                _ => a_s != 0.0,
+            };
+            if !active {
+                continue;
+            }
 
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
                         let av = self.read_vec(a.0, i, graph);
                         let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
-                        let (da, db) = operator.derivatives(av, bv);
                         let upstream = match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i],
                             _ => a_s,
                         };
+                        if upstream == 0.0 {
+                            continue;
+                        }
+                        let (da, db) = operator.derivatives(av, bv);
                         self.accumulate(*a, i, upstream * da);
                         if let Some(b) = b {
                             self.accumulate(*b, i, upstream * db);
@@ -1271,9 +1283,10 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
+                        let s = sigmoid_stable(raw);
                         // d/draw = α·(1-s) - β·s
-                        self.grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                        self.grad[param_start + k] +=
+                            a_s * (alpha * sigmoid_stable(-raw) - beta * s);
                     }
                 }
                 Op::VectorUniformLogP {
@@ -1283,7 +1296,7 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
+                        let s = sigmoid_stable(raw);
                         // d/draw = 1 - 2s
                         self.grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                     }
@@ -2012,6 +2025,107 @@ mod expression_tests {
             minus[i] -= 1e-6;
             let fd = (eval_logp(&g, &plus) - eval_logp(&g, &minus)) / 2e-6;
             assert!((fd - eval.grad[i]).abs() < 1e-6);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tail_and_inactive_regressions {
+    use super::*;
+    use crate::distributions::{BetaDist, Normal, Uniform};
+    use crate::graph::ElementwiseOp;
+
+    #[test]
+    fn scalar_and_vector_bounded_priors_preserve_raw_tails() {
+        for (alpha, beta) in [(0.01, 0.01), (0.3, 2.0), (1.0, 1.0)] {
+            for uniform in [false, true] {
+                let mut scalar = Graph::new();
+                // Include a preceding parameter so raw parameter/node indices differ.
+                Normal::prior(&mut scalar, "offset", 0.0, 1.0);
+                if uniform {
+                    Uniform::prior(&mut scalar, "x", -3.0, 7.0);
+                } else {
+                    BetaDist::prior(&mut scalar, "x", alpha, beta);
+                }
+                let mut vector = Graph::new();
+                Normal::prior(&mut vector, "offset", 0.0, 1.0);
+                let start = vector.add_vector_params_with_transform(
+                    "x",
+                    1,
+                    if uniform {
+                        ParamTransform::BoundedSigmoid {
+                            lower: -3.0,
+                            upper: 7.0,
+                        }
+                    } else {
+                        ParamTransform::Sigmoid
+                    },
+                );
+                if uniform {
+                    vector.vector_uniform_logp(start, 1, -3.0, 7.0);
+                } else {
+                    vector.vector_beta_logp(start, 1, alpha, beta);
+                }
+                for raw in [-1000.0_f64, -100.0, -40.0, 0.0, 40.0, 100.0, 1000.0] {
+                    let (a, b) = if uniform { (1.0, 1.0) } else { (alpha, beta) };
+                    let norm = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b);
+                    // Analytic expression based on |raw|, independent of sigmoid rounding.
+                    let expected = -0.5 * std::f64::consts::TAU.ln() + norm
+                        - a * (-raw).max(0.0)
+                        - b * raw.max(0.0)
+                        - (a + b) * (-raw.abs()).exp().ln_1p();
+                    let expected_grad = if raw >= 0.0 {
+                        let e = (-raw).exp();
+                        (a * e - b) / (1.0 + e)
+                    } else {
+                        let e = raw.exp();
+                        (a - b * e) / (1.0 + e)
+                    };
+                    for graph in [&scalar, &vector] {
+                        let mut evaluator = Evaluator::new(graph);
+                        evaluator.compute(graph, &[0.0, raw]);
+                        let reference = grad_logp(graph, &[0.0, raw]);
+                        assert!((evaluator.total_logp - expected).abs() < 1e-10);
+                        assert!((evaluator.grad[1] - expected_grad).abs() < 1e-12);
+                        assert!((reference.0 - expected).abs() < 1e-10);
+                        assert!((reference.1[1] - expected_grad).abs() < 1e-12);
+                        let h = 1e-3;
+                        let numeric = (eval_logp(graph, &[0.0, raw + h])
+                            - eval_logp(graph, &[0.0, raw - h]))
+                            / (2.0 * h);
+                        assert!((numeric - expected_grad).abs() < 1e-7);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn output_only_singular_derivatives_do_not_change_target() {
+        for vector in [false, true] {
+            let mut graph = Graph::new();
+            let x = if vector {
+                let start = graph.add_vector_params("x", 2);
+                graph.vector_normal_logp(start, 2, 0.0, 1.0);
+                let indices = graph.add_data("indices", vec![0.0, 1.0]);
+                graph.gather(start, 2, indices)
+            } else {
+                Normal::prior(&mut graph, "x", 0.0, 1.0)
+            };
+            let params = vec![0.0; graph.param_count];
+            let baseline = grad_logp(&graph, &params);
+            let squared = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+            let abs = graph.elementwise(ElementwiseOp::Sqrt, squared, None);
+            graph.deterministics.push(("abs_x".into(), abs));
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &params);
+            assert_eq!(evaluator.total_logp, baseline.0);
+            assert_eq!(evaluator.grad, baseline.1);
+            assert_eq!(grad_logp(&graph, &params), baseline);
+            // Reused buffers must also remain unaffected away from the singularity.
+            evaluator.compute(&graph, &vec![0.4; graph.param_count]);
+            evaluator.compute(&graph, &params);
+            assert_eq!(evaluator.grad, baseline.1);
         }
     }
 }
