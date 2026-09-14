@@ -251,8 +251,10 @@ pub fn compute_diagnostics(
             params.push(unavailable_parameter(param_names[pidx].clone()));
             continue;
         }
-        let mean = chain_mean_all(&chains);
-        let std = chain_std_all(&chains, mean);
+        let (origin, scale, normalized) = normalize_chains(&chains);
+        let normalized_mean = chain_mean_all(&normalized);
+        let mean = origin + scale * normalized_mean;
+        let std = scale * chain_std_all(&normalized, normalized_mean);
         let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
         all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
@@ -397,6 +399,29 @@ pub fn compute_transition_diagnostics(
 }
 
 // ── Internal helpers ────────────────────────────────────────────────
+
+// Diagnostics must not depend on the units of a parameter. Center before
+// scaling to preserve small differences around a large common offset; fall
+// back to scaling without centering if the finite endpoints span an
+// unrepresentable difference. Inputs here have already been shape/finite checked.
+fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
+    let mut origin = chains[0][0];
+    let mut scale = chains
+        .iter()
+        .flatten()
+        .map(|x| (x - origin).abs())
+        .fold(0.0, f64::max);
+    if !scale.is_finite() {
+        origin = 0.0;
+        scale = chains.iter().flatten().map(|x| x.abs()).fold(0.0, f64::max);
+    }
+    let divisor = if scale > 0.0 { scale } else { 1.0 };
+    let normalized = chains
+        .iter()
+        .map(|chain| chain.iter().map(|x| (x - origin) / divisor).collect())
+        .collect();
+    (origin, scale, normalized)
+}
 
 fn chain_mean_all(chains: &[Vec<f64>]) -> f64 {
     let mut sum = 0.0;
@@ -591,6 +616,7 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
     if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 3) {
         return f64::NAN;
     }
+    let (_, _, split) = normalize_chains(&split);
     let m = split.len();
     let n = split[0].len();
 
@@ -607,7 +633,7 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
         .sum::<f64>()
         / m_f;
 
-    if w < 1e-30 {
+    if w <= 0.0 {
         return f64::NAN;
     }
 
@@ -617,7 +643,7 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
             .map(|chain_mean| (chain_mean - mean(&chain_means)).powi(2))
             .sum::<f64>();
     let var_plus = (n_f - 1.0) / n_f * w + b / n_f;
-    if !var_plus.is_finite() || var_plus < 1e-30 {
+    if !var_plus.is_finite() || var_plus <= 0.0 {
         return f64::NAN;
     }
 
@@ -749,6 +775,48 @@ mod tests {
         assert!((z - 1.959_963_984_540_054).abs() < 1e-8);
         assert!((inv_normal_cdf(0.025) + z).abs() < 1e-10);
         assert_eq!(inv_normal_cdf(0.5), 0.0);
+    }
+
+    #[test]
+    fn summaries_and_mean_mcse_preserve_parameter_units() {
+        let samples = |offset: f64, scale: f64| {
+            (0..4)
+                .map(|_| {
+                    (0..64)
+                        .map(|i| vec![offset + scale * [-3.0, -1.0, 1.0, 3.0][i % 4]])
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let report = |offset, scale| {
+            compute_diagnostics(&samples(offset, scale), &["x".into()], &[], 0)
+                .params
+                .remove(0)
+        };
+        let baseline = report(0.0, 1.0);
+        let exact_std = (5.0_f64 * 256.0 / 255.0).sqrt();
+        assert!((baseline.std - exact_std).abs() < 1e-14);
+        assert!(baseline.mcse_mean.is_finite() && baseline.mcse_mean > 0.0);
+        for (offset, scale) in [
+            (0.0, 1e-200),
+            (0.0, 1e-16),
+            (0.0, 1e200),
+            (2.0_f64.powi(40), 2.0_f64.powi(-10)),
+        ] {
+            let scaled = report(offset, scale);
+            assert!((scaled.std / scale - exact_std).abs() < 1e-13);
+            assert!((scaled.mcse_mean / scale - baseline.mcse_mean).abs() < 1e-13);
+            assert!((scaled.ess_bulk - baseline.ess_bulk).abs() < 1e-10);
+            assert!((scaled.r_hat - baseline.r_hat).abs() < 1e-13);
+        }
+    }
+
+    #[test]
+    fn finite_large_constant_draws_have_finite_mean_and_zero_std() {
+        let report = compute_diagnostics(&vec![vec![vec![1e308]; 16]; 2], &["x".into()], &[], 0);
+        assert_eq!(report.params[0].mean, 1e308);
+        assert_eq!(report.params[0].std, 0.0);
+        assert!(report.params[0].mcse_mean.is_nan());
     }
 
     #[test]
