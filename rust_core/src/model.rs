@@ -1017,6 +1017,15 @@ pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> Mode
                 value
             }
         };
+        if !value.is_finite() {
+            let name = match spec {
+                DisplayParamSpec::Raw { name, .. }
+                | DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name,
+            };
+            return Err(ModelError::invalid(format!(
+                "sampled parameter '{name}' is nonfinite after display transformation"
+            )));
+        }
         out.push(value);
     }
     Ok(out)
@@ -1369,6 +1378,7 @@ fn validate_definition(spec: &ModelSpec) -> ModelResult<()> {
                 if lower >= upper {
                     return Err(ModelError::invalid("uniform bounds must be increasing"));
                 }
+                validate_positive_finite("uniform width", upper - lower)?;
             }
             PriorSpec::Bernoulli { p, .. } => {
                 if !(0.0..=1.0).contains(p) {

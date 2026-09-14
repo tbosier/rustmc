@@ -192,6 +192,21 @@ pub(super) fn model(fit: &FitResult) -> PyResult<PyCompiledModel> {
 }
 
 pub(super) fn encode(fit: &FitResult) -> PyResult<String> {
+    if fit
+        .raw_result
+        .samples
+        .iter()
+        .flatten()
+        .flatten()
+        .any(|x| !x.is_finite())
+        || fit
+            .raw_result
+            .unconstrained_samples
+            .as_ref()
+            .is_some_and(|positions| positions.iter().flatten().flatten().any(|x| !x.is_finite()))
+    {
+        return Err(invalid("posterior positions must be finite"));
+    }
     let posterior = Posterior {
         coordinate_space: "constrained_graph_parameters".into(),
         param_names: fit.raw_result.param_names.clone(),

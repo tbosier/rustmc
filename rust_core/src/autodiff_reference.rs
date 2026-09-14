@@ -320,14 +320,19 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::VectorUniformLogP {
                 param_start,
                 n_params,
-                ..
+                lower,
+                upper,
             } => {
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        -softplus(-raw) - softplus(raw)
-                    })
-                    .sum();
+                let sum: f64 = if uniform_bounds_valid(*lower, *upper) {
+                    (0..*n_params)
+                        .map(|k| {
+                            let raw = params[param_start + k];
+                            -softplus(-raw) - softplus(raw)
+                        })
+                        .sum()
+                } else {
+                    f64::NEG_INFINITY
+                };
                 Value::Scalar(sum)
             }
         };
@@ -774,8 +779,12 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             Op::VectorUniformLogP {
                 param_start,
                 n_params,
-                ..
+                lower,
+                upper,
             } => {
+                if !uniform_bounds_valid(*lower, *upper) {
+                    continue;
+                }
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
                     let s = sigmoid_stable(raw);

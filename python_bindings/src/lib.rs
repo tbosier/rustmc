@@ -583,6 +583,7 @@ impl ModelBuilder {
         if lower >= upper {
             return Err(PyValueError::new_err("lower must be less than upper"));
         }
+        validate_positive_finite("uniform width", upper - lower)?;
         self.priors.push(PriorSpec::Uniform {
             name: name.to_string(),
             lower,

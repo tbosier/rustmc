@@ -763,8 +763,13 @@ impl Evaluator {
                 Op::VectorUniformLogP {
                     param_start,
                     n_params,
-                    ..
+                    lower,
+                    upper,
                 } => {
+                    if !uniform_bounds_valid(*lower, *upper) {
+                        self.scalars[idx] = f64::NEG_INFINITY;
+                        continue;
+                    }
                     // s = sigmoid(raw), logp_uniform = -log(hi-lo) (const), Jacobian = s·(1-s)·(hi-lo)
                     // Combined: -log(hi-lo) + log(s·(1-s)·(hi-lo)) = log(s·(1-s)) = log(s) + log(1-s)
                     let mut sum = 0.0f64;
@@ -1301,8 +1306,12 @@ impl Evaluator {
                 Op::VectorUniformLogP {
                     param_start,
                     n_params,
-                    ..
+                    lower,
+                    upper,
                 } => {
+                    if !uniform_bounds_valid(*lower, *upper) {
+                        continue;
+                    }
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
                         let s = sigmoid_stable(raw);
@@ -1412,8 +1421,12 @@ fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
         - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
 }
 
+fn uniform_bounds_valid(lower: f64, upper: f64) -> bool {
+    lower.is_finite() && upper.is_finite() && lower < upper && (upper - lower).is_finite()
+}
+
 fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
-    if x < lower || x > upper {
+    if !uniform_bounds_valid(lower, upper) || !x.is_finite() || x < lower || x > upper {
         f64::NEG_INFINITY
     } else {
         -(upper - lower).ln()

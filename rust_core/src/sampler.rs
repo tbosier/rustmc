@@ -394,6 +394,10 @@ pub fn sample_bound_with_init(
         })
         .collect();
 
+    for draw in samples.iter().flatten() {
+        validate_constrained_draw(draw, &param_names)?;
+    }
+
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
@@ -765,7 +769,21 @@ pub fn batch_sample_graphs(
             .collect()
     })?;
 
+    for result in &results {
+        for draw in &result.samples {
+            validate_constrained_draw(draw, &result.param_names)?;
+        }
+    }
     Ok(results)
+}
+
+fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), String> {
+    if let Some(index) = draw.iter().position(|value| !value.is_finite()) {
+        return Err(format!(
+            "sampled parameter '{}' is nonfinite after transformation", names[index]
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
