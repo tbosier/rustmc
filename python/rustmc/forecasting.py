@@ -9,6 +9,24 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 
+def _conditional_mean_samples(result: Any) -> np.ndarray | None:
+    """Adapt legacy native names without guessing the meaning of arbitrary states."""
+    from . import _rustmc as native
+
+    means = getattr(result, "mean_samples", None)
+    if means is not None:
+        return means
+    if isinstance(result, native.BayesianARForecast):
+        return result.conditional_mean_samples
+    if isinstance(result, (native.BayesianForecastResult, native.BayesianHierarchicalForecast)):
+        return result.state_samples
+    if isinstance(result, native.BayesianTrendForecast):
+        return result.level_samples
+    if isinstance(result, native.BayesianSeasonalForecast):
+        return result.level_samples + result.seasonal_samples
+    return None
+
+
 def _cumulative(values: np.ndarray) -> np.ndarray:
     with np.errstate(over="raise", invalid="raise"):
         try:
@@ -78,7 +96,15 @@ class ForecastDraws:
 
     @classmethod
     def from_result(cls, result: Any, *, dates: Sequence[Any] | None = None, series: Sequence[str] | None = None) -> ForecastDraws:
-        return cls(result.observation_samples, getattr(result, "mean_samples", None),
+        if isinstance(result, ForecastDraws):
+            return cls(result.observation_samples, result.mean_samples,
+                result.dates if dates is None else tuple(dates),
+                result.series if series is None else tuple(series), result.metadata)
+        if series is None:
+            from ._rustmc import BayesianHierarchicalForecast
+            if isinstance(result, BayesianHierarchicalForecast):
+                series = result.program_names
+        return cls(result.observation_samples, _conditional_mean_samples(result),
             None if dates is None else tuple(dates), None if series is None else tuple(series),
             {"source": type(result).__name__, "uncertainty_kind": getattr(result, "uncertainty_kind", "posterior_predictive")})
 
