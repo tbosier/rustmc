@@ -676,14 +676,24 @@ impl LinearGaussianStateSpace {
             for (entry, delta) in smoothed_means[time].iter_mut().zip(correction) {
                 *entry += delta;
             }
-            let covariance_delta: Vec<f64> = smoothed_covariances[time + 1]
-                .iter()
-                .zip(&filter.predicted_covariances[time + 1])
-                .map(|(smoothed, predicted)| smoothed - predicted)
-                .collect();
-            let left = mat_mul(&gain, &covariance_delta, d);
-            let covariance_correction = mat_mul_transpose_right(&left, &gain, d);
-            add_assign(&mut smoothed_covariances[time], &covariance_correction);
+            // P(x_t | all y) = P(x_t | x_{t+1}, past y)
+            //                     + J P(x_{t+1} | all y) J'.
+            // Avoid subtracting the predicted covariance from the smoothed
+            // covariance: that can erase a small, valid posterior variance.
+            let mut covariance = backward_conditional_covariance(
+                filtered_covariance,
+                &gain,
+                &self.transition,
+                &self.process_covariance,
+                d,
+            );
+            let propagated = mat_mul_transpose_right(
+                &mat_mul(&gain, &smoothed_covariances[time + 1], d),
+                &gain,
+                d,
+            );
+            add_assign(&mut covariance, &propagated);
+            smoothed_covariances[time] = covariance;
             symmetrize(&mut smoothed_covariances[time], d);
             check_computed(
                 "smoothed state",
@@ -877,28 +887,42 @@ impl LinearGaussianStateSpace {
                 .map(|(mean, correction)| mean + correction)
                 .collect();
 
-            // Stable Joseph-style form for P - J P_pred J':
-            // (I - J T) P (I - J T)' + J Q J'.
-            let mut residual_transition = identity(d);
-            let gain_transition = mat_mul(&gain, &self.transition, d);
-            for (entry, subtraction) in residual_transition.iter_mut().zip(gain_transition) {
-                *entry -= subtraction;
-            }
-            let propagated = mat_mul_transpose_right(
-                &mat_mul(&residual_transition, filtered_covariance, d),
-                &residual_transition,
+            let mut conditional_covariance = backward_conditional_covariance(
+                filtered_covariance,
+                &gain,
+                &self.transition,
+                &self.process_covariance,
                 d,
             );
-            let process_contribution =
-                mat_mul_transpose_right(&mat_mul(&gain, &self.process_covariance, d), &gain, d);
-            let mut conditional_covariance = propagated;
-            add_assign(&mut conditional_covariance, &process_contribution);
             symmetrize(&mut conditional_covariance, d);
             states[index] =
                 sample_multivariate_normal(&conditional_mean, &conditional_covariance, d, rng)?;
         }
         Ok(states)
     }
+}
+
+/// Stable Joseph form for the backward conditional covariance P - J P_pred J'.
+fn backward_conditional_covariance(
+    filtered: &[f64],
+    gain: &[f64],
+    transition: &[f64],
+    process: &[f64],
+    d: usize,
+) -> Vec<f64> {
+    let mut residual_transition = identity(d);
+    let gain_transition = mat_mul(gain, transition, d);
+    for (entry, subtraction) in residual_transition.iter_mut().zip(gain_transition) {
+        *entry -= subtraction;
+    }
+    let mut covariance = mat_mul_transpose_right(
+        &mat_mul(&residual_transition, filtered, d),
+        &residual_transition,
+        d,
+    );
+    let process_contribution = mat_mul_transpose_right(&mat_mul(gain, process, d), gain, d);
+    add_assign(&mut covariance, &process_contribution);
+    covariance
 }
 
 fn check_len(name: &str, actual: usize, expected: usize) -> Result<(), StateSpaceError> {
@@ -934,7 +958,10 @@ fn check_symmetric(name: &str, matrix: &[f64], d: usize) -> Result<(), StateSpac
         for j in 0..i {
             let a = matrix[i * d + j];
             let b = matrix[j * d + i];
-            let scale = 1.0_f64.max(a.abs()).max(b.abs());
+            // Compare in covariance units for this pair of states. An absolute
+            // floor would accept gross asymmetry when states have small units.
+            let marginal_scale = matrix[i * d + i].abs().sqrt() * matrix[j * d + j].abs().sqrt();
+            let scale = marginal_scale.max(a.abs()).max(b.abs());
             if (a - b).abs() > SYMMETRY_TOLERANCE * scale {
                 return Err(StateSpaceError::NotSymmetric(format!(
                     "{name} differs at ({i}, {j}) and ({j}, {i})"
@@ -1043,29 +1070,97 @@ fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
     Ok(factor)
 }
 
-/// Cholesky-like validation for positive-semidefinite covariance matrices.
-/// A zero pivot is valid only when the corresponding residual off-diagonal
-/// entries are also numerically zero.
+/// Factor a covariance after diagonal equilibration, so numerical rank is
+/// measured in correlation units rather than the units of the largest state.
+/// Complete diagonal pivoting keeps roundoff in rank-deficient FFBS matrices
+/// from being amplified by a nearly zero pivot. The returned factor is dense:
+/// its rows are in the original state order and A = factor * factor'.
 fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
-    let mut factor = vec![0.0; d * d];
-    let scale = matrix.iter().map(|value| value.abs()).fold(1.0, f64::max);
-    let tolerance = 1e-12 * scale;
+    let tolerance = 64.0 * f64::EPSILON * d as f64;
+    let mut scales = vec![0.0; d];
+    for i in 0..d {
+        let variance = matrix[i * d + i];
+        if !variance.is_finite() || variance < 0.0 {
+            return Err(());
+        }
+        scales[i] = variance.sqrt();
+    }
+    let mut residual = vec![0.0; d * d];
     for i in 0..d {
         for j in 0..=i {
-            let mut value = matrix[i * d + j];
-            for k in 0..j {
-                value -= factor[i * d + k] * factor[j * d + k];
-            }
-            if i == j {
-                if !value.is_finite() || value < -tolerance {
-                    return Err(());
-                }
-                factor[i * d + j] = value.max(0.0).sqrt();
-            } else if factor[j * d + j] > tolerance.sqrt() {
-                factor[i * d + j] = value / factor[j * d + j];
-            } else if value.abs() > tolerance {
+            let value = matrix[i * d + j];
+            if !value.is_finite() {
                 return Err(());
             }
+            let correlation = if scales[i] == 0.0 || scales[j] == 0.0 {
+                // A PSD matrix with zero marginal variance has a zero row.
+                if value != 0.0 {
+                    return Err(());
+                }
+                0.0
+            } else if i == j {
+                1.0
+            } else {
+                // Divide by the larger scale first to avoid overflow even
+                // when the two state variances have very different units.
+                value / scales[i].max(scales[j]) / scales[i].min(scales[j])
+            };
+            if !correlation.is_finite() || correlation.abs() > 1.0 + tolerance {
+                return Err(());
+            }
+            residual[i * d + j] = correlation;
+            residual[j * d + i] = correlation;
+        }
+    }
+    // Preserve every positive pivot when ordinary Cholesky succeeds. The
+    // rank-revealing fallback is needed only for semidefinite matrices (and
+    // their roundoff perturbations), not for small positive variances.
+    if let Ok(mut factor) = cholesky(&residual, d) {
+        for i in 0..d {
+            for j in 0..=i {
+                factor[i * d + j] *= scales[i];
+            }
+        }
+        return Ok(factor);
+    }
+    let mut remaining: Vec<usize> = (0..d).collect();
+    let mut factor = vec![0.0; d * d];
+    for column in 0..d {
+        let pivot_position = (column..d)
+            .max_by(|&a, &b| {
+                residual[remaining[a] * d + remaining[a]]
+                    .total_cmp(&residual[remaining[b] * d + remaining[b]])
+            })
+            .ok_or(())?;
+        remaining.swap(column, pivot_position);
+        let pivot = remaining[column];
+        let variance = residual[pivot * d + pivot];
+        if variance <= tolerance {
+            // Only a residual entirely within roundoff can be discarded;
+            // negative diagonals or off-diagonals can otherwise hide an
+            // indefinite matrix behind an apparently zero pivot.
+            for &i in &remaining[column..] {
+                for &j in &remaining[column..] {
+                    if residual[i * d + j].abs() > tolerance {
+                        return Err(());
+                    }
+                }
+            }
+            break;
+        }
+        let root = variance.sqrt();
+        for &i in &remaining[column..] {
+            factor[i * d + column] = residual[i * d + pivot] / root;
+        }
+        for &i in &remaining[column + 1..] {
+            for &j in &remaining[column + 1..] {
+                residual[i * d + j] -= factor[i * d + column] * factor[j * d + column];
+            }
+        }
+    }
+    for i in 0..d {
+        for j in 0..d {
+            factor[i * d + j] *= scales[i];
         }
     }
     Ok(factor)
@@ -1085,7 +1180,7 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
     let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
     let mut draw = mean.to_vec();
     for row in 0..d {
-        for column in 0..=row {
+        for column in 0..d {
             draw[row] += factor[row * d + column] * standard[column];
         }
     }
@@ -1122,6 +1217,183 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn smoother_preserves_small_posterior_variance_after_diffuse_missing_state() {
+        let model = LinearGaussianStateSpace::local_level(0.0, 1.0, 0.0, 1e20).unwrap();
+        let result = model.smooth(&[f64::NAN, 0.0]).unwrap();
+        for covariance in result.smoothed_covariances {
+            // Static latent state: both marginals have precision 1e-20 + 1.
+            assert_close(covariance[0], 1.0);
+        }
+    }
+
+    #[test]
+    fn covariance_factor_preserves_small_and_heteroscaled_correlations() {
+        let correlation = 1.0 - f64::EPSILON;
+        let factor =
+            positive_semidefinite_factor(&[1.0, correlation, correlation, 1.0], 2).unwrap();
+        assert!(
+            factor[3] > 0.0,
+            "a strictly positive pivot must be retained"
+        );
+        for covariance in [
+            vec![1e-14, 5e-15, 5e-15, 1e-14],
+            vec![1e-14, 5e-8, 5e-8, 1.0],
+            vec![1e-300, 0.5, 0.5, 1e300],
+            vec![1e-14, 1e-7, 1e-7, 1.0], // rank one
+        ] {
+            let factor = positive_semidefinite_factor(&covariance, 2).unwrap();
+            let reconstructed = mat_mul_transpose_right(&factor, &factor, 2);
+            for (actual, expected) in reconstructed.iter().zip(&covariance) {
+                assert!(
+                    (actual / expected - 1.0).abs() < 1e-13,
+                    "{actual} != {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn covariance_symmetry_validation_is_invariant_to_state_units() {
+        for scale in [1e-20, 1.0, 1e20] {
+            let covariance = vec![scale, 0.0, 0.5 * scale, scale];
+            assert!(matches!(
+                LinearGaussianStateSpace::new(
+                    2,
+                    identity(2),
+                    vec![1.0; 2],
+                    covariance,
+                    1.0,
+                    vec![0.0; 2],
+                    identity(2),
+                ),
+                Err(StateSpaceError::NotSymmetric(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn covariance_validation_rejects_indefinite_matrices_at_any_scale() {
+        for scale in [1e-20, 1.0, 1e20] {
+            for covariance in [
+                vec![-scale, 0.0, 0.0, scale],
+                vec![scale, 2.0 * scale, 2.0 * scale, scale],
+                vec![0.0, 1e-8 * scale, 1e-8 * scale, scale],
+            ] {
+                assert!(positive_semidefinite_factor(&covariance, 2).is_err());
+            }
+        }
+        // A zero remaining diagonal must not conceal an indefinite residual.
+        assert!(
+            positive_semidefinite_factor(&[1.0, 1.0, 1.0, 1.0, 1.0, 1.01, 1.0, 1.01, 1.0], 3)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn initial_and_process_draws_preserve_small_covariance_forecast_variance() {
+        let covariance = vec![1e-14, 5e-15, 5e-15, 1e-14];
+        let model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1e7, 1e7],
+            covariance.clone(),
+            1.0,
+            vec![0.0; 2],
+            covariance,
+        )
+        .unwrap();
+        let mut rng = ChaCha8Rng::seed_from_u64(408);
+        let draws = 20000;
+        let mut second_moments = [0.0; 2];
+        let mut observed_second_moment = 0.0;
+        for _ in 0..draws {
+            let initial = model.simulate_initial(&mut rng).unwrap();
+            let process = model.simulate_transition(&[0.0; 2], &mut rng).unwrap();
+            for (index, state) in [initial, process].iter().enumerate() {
+                let mean = dot(&model.observation, state);
+                second_moments[index] += mean * mean;
+                if index == 0 {
+                    let z: f64 = StandardNormal.sample(&mut rng);
+                    observed_second_moment += (mean + z).powi(2);
+                }
+            }
+        }
+        for sum in second_moments {
+            assert!((sum / draws as f64 - 3.0).abs() < 0.1);
+        }
+        assert!((observed_second_moment / draws as f64 - 4.0).abs() < 0.13);
+    }
+
+    #[test]
+    fn filtering_and_ffbs_are_invariant_to_state_and_predictor_units() {
+        let observations = [0.3, -0.2, f64::NAN, 0.5];
+        let make_model = |scales: [f64; 2]| {
+            let mut covariance = vec![1.0, 0.5, 0.5, 1.0];
+            for i in 0..2 {
+                for j in 0..2 {
+                    covariance[i * 2 + j] *= scales[i] * scales[j];
+                }
+            }
+            LinearGaussianStateSpace::new(
+                2,
+                identity(2),
+                vec![1.0 / scales[0], 1.0 / scales[1]],
+                vec![0.0; 4],
+                1.0,
+                vec![0.0; 2],
+                covariance,
+            )
+            .unwrap()
+        };
+        let reference = make_model([1.0, 1.0]).smooth(&observations).unwrap();
+        for scales in [[1e-7, 1e-7], [1e-7, 1.0], [1e7, 1e-7]] {
+            let model = make_model(scales);
+            let smoother = model.smooth(&observations).unwrap();
+            assert_close(
+                smoother.filter.log_likelihood,
+                reference.filter.log_likelihood,
+            );
+            for t in 0..observations.len() {
+                for i in 0..2 {
+                    assert_close(
+                        smoother.smoothed_means[t][i] / scales[i],
+                        reference.smoothed_means[t][i],
+                    );
+                    for j in 0..2 {
+                        assert_close(
+                            smoother.smoothed_covariances[t][i * 2 + j] / scales[i] / scales[j],
+                            reference.smoothed_covariances[t][i * 2 + j],
+                        );
+                    }
+                }
+            }
+            let expected = reference.smoothed_covariances.last().unwrap();
+            let mean = reference.smoothed_means.last().unwrap();
+            let mut sums = [0.0; 4];
+            let mut rng = ChaCha8Rng::seed_from_u64(35);
+            let draws = 6000;
+            for _ in 0..draws {
+                let states = model.sample_states_ffbs(&observations, &mut rng).unwrap();
+                for pair in states.windows(2) {
+                    for i in 0..2 {
+                        assert!(((pair[0][i] - pair[1][i]) / scales[i]).abs() < 1e-8);
+                    }
+                }
+                let last = states.last().unwrap();
+                for i in 0..2 {
+                    for j in 0..2 {
+                        sums[i * 2 + j] +=
+                            (last[i] / scales[i] - mean[i]) * (last[j] / scales[j] - mean[j]);
+                    }
+                }
+            }
+            for (sum, expected) in sums.iter().zip(expected) {
+                assert!((sum / draws as f64 - expected).abs() < 0.025);
+            }
+        }
     }
 
     #[test]
