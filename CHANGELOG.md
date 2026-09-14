@@ -6,6 +6,24 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Fixed
+
+- Preserve logical NumPy matrix order across contiguous, transposed and strided inputs.
+- Evaluate Beta and Uniform priors in unconstrained coordinates without truncating
+  rounded sigmoid tails; retain exact sampler positions for prediction and fit artifacts.
+  Fit artifact version 2 retains these positions and reads existing version 1 artifacts.
+- Keep output-only deterministic expressions from contaminating target gradients, and
+  preserve positive-scale support when noncentering hierarchical Normal priors.
+- Preserve correlated state uncertainty across measurement scales, reject asymmetric
+  covariances consistently in the shared state-space implementation, and avoid
+  cancellation of small posterior variances in smoothing.
+- Count terminating NUTS expansions in tree depth and recenter HMC step-size adaptation
+  after changing the mass matrix.
+- Preserve native conditional-mean forecast draws, coordinates and metadata in workflow
+  adapters; reject empty potential names before creating an unreadable model artifact.
+- Preserve Jacobian/potential terms and the new support constraints in legacy graph
+  exports, and reject overflowing Uniform ranges or nonfinite sampled outputs.
+
 ## [0.12.0] - 2026-09-09
 
 ### Added

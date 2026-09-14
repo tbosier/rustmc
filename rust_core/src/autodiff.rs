@@ -491,6 +491,14 @@ impl Evaluator {
                         self.scalars[sigma.0],
                     );
                 }
+                Op::PositiveSupport { x } => {
+                    let x = self.scalars[x.0];
+                    self.scalars[idx] = if x.is_finite() && x > 0.0 {
+                        0.0
+                    } else {
+                        f64::NEG_INFINITY
+                    };
+                }
                 Op::UniformLogP { x, lower, upper } => {
                     self.scalars[idx] = uniform_logp_scalar(
                         self.scalars[x.0],
@@ -748,23 +756,26 @@ impl Evaluator {
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        sum += log_norm + alpha * s.ln() + beta * (1.0 - s).ln();
+                        sum += log_norm - alpha * softplus(-raw) - beta * softplus(raw);
                     }
                     self.scalars[idx] = sum;
                 }
                 Op::VectorUniformLogP {
                     param_start,
                     n_params,
-                    ..
+                    lower,
+                    upper,
                 } => {
+                    if !uniform_bounds_valid(*lower, *upper) {
+                        self.scalars[idx] = f64::NEG_INFINITY;
+                        continue;
+                    }
                     // s = sigmoid(raw), logp_uniform = -log(hi-lo) (const), Jacobian = s·(1-s)·(hi-lo)
                     // Combined: -log(hi-lo) + log(s·(1-s)·(hi-lo)) = log(s·(1-s)) = log(s) + log(1-s)
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        sum += s.ln() + (1.0 - s).ln();
+                        sum -= softplus(-raw) + softplus(raw);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -792,17 +803,31 @@ impl Evaluator {
                 _ => self.node_lengths[idx],
             };
             let a_s = self.adj_scalars[idx];
+            // Output-only nodes and inactive reverse edges cannot affect the
+            // target, even when their local derivative is infinite or NaN.
+            let active = match self.node_kind[idx] {
+                NodeKind::ComputedVec(off) => self.adj_vec_buf[off..off + vl]
+                    .iter()
+                    .any(|&adj| adj != 0.0),
+                _ => a_s != 0.0,
+            };
+            if !active {
+                continue;
+            }
 
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
                         let av = self.read_vec(a.0, i, graph);
                         let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
-                        let (da, db) = operator.derivatives(av, bv);
                         let upstream = match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i],
                             _ => a_s,
                         };
+                        if upstream == 0.0 {
+                            continue;
+                        }
+                        let (da, db) = operator.derivatives(av, bv);
                         self.accumulate(*a, i, upstream * da);
                         if let Some(b) = b {
                             self.accumulate(*b, i, upstream * db);
@@ -967,6 +992,7 @@ impl Evaluator {
                             - 0.5 * (1.0 + z2 / nv).ln()
                             + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
                 }
+                Op::PositiveSupport { .. } => {}
                 Op::UniformLogP { x: _, lower, upper } => {
                     let lv = self.scalars[lower.0];
                     let uv = self.scalars[upper.0];
@@ -1271,19 +1297,24 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
+                        let s = sigmoid_stable(raw);
                         // d/draw = α·(1-s) - β·s
-                        self.grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                        self.grad[param_start + k] +=
+                            a_s * (alpha * sigmoid_stable(-raw) - beta * s);
                     }
                 }
                 Op::VectorUniformLogP {
                     param_start,
                     n_params,
-                    ..
+                    lower,
+                    upper,
                 } => {
+                    if !uniform_bounds_valid(*lower, *upper) {
+                        continue;
+                    }
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
+                        let s = sigmoid_stable(raw);
                         // d/draw = 1 - 2s
                         self.grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                     }
@@ -1390,8 +1421,12 @@ fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
         - 0.5 * (nu + 1.0) * (1.0 + z * z / nu).ln()
 }
 
+fn uniform_bounds_valid(lower: f64, upper: f64) -> bool {
+    lower.is_finite() && upper.is_finite() && lower < upper && (upper - lower).is_finite()
+}
+
 fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
-    if x < lower || x > upper {
+    if !uniform_bounds_valid(lower, upper) || !x.is_finite() || x < lower || x > upper {
         f64::NEG_INFINITY
     } else {
         -(upper - lower).ln()
@@ -1481,6 +1516,35 @@ fn digamma(mut x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::graph::{Graph, ObsFamily};
+
+    #[test]
+    fn positive_support_retains_finite_positive_scale_domain() {
+        let mut graph = Graph::new();
+        let scale = graph.add_param("scale");
+        graph.positive_support(scale);
+        for x in [
+            -1.0,
+            -0.0,
+            0.0,
+            1e-300,
+            0.5,
+            1e300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let expected = if x.is_finite() && x > 0.0 {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            };
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &[x]);
+            assert_eq!(evaluator.total_logp, expected);
+            assert_eq!(evaluator.grad, vec![0.0]);
+            assert_eq!(grad_logp(&graph, &[x]), (expected, vec![0.0]));
+        }
+    }
 
     #[test]
     fn ln_gamma_matches_known_values() {
@@ -2012,6 +2076,129 @@ mod expression_tests {
             minus[i] -= 1e-6;
             let fd = (eval_logp(&g, &plus) - eval_logp(&g, &minus)) / 2e-6;
             assert!((fd - eval.grad[i]).abs() < 1e-6);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tail_and_inactive_regressions {
+    use super::*;
+    use crate::distributions::{BetaDist, Normal, Uniform};
+    use crate::graph::ElementwiseOp;
+
+    #[test]
+    fn scalar_and_vector_bounded_priors_preserve_raw_tails() {
+        for (alpha, beta) in [(0.01, 0.01), (0.3, 2.0), (1.0, 1.0)] {
+            for uniform in [false, true] {
+                let mut scalar = Graph::new();
+                // Include a preceding parameter so raw parameter/node indices differ.
+                Normal::prior(&mut scalar, "offset", 0.0, 1.0);
+                if uniform {
+                    Uniform::prior(&mut scalar, "x", -3.0, 7.0);
+                } else {
+                    BetaDist::prior(&mut scalar, "x", alpha, beta);
+                }
+                let mut vector = Graph::new();
+                Normal::prior(&mut vector, "offset", 0.0, 1.0);
+                let start = vector.add_vector_params_with_transform(
+                    "x",
+                    1,
+                    if uniform {
+                        ParamTransform::BoundedSigmoid {
+                            lower: -3.0,
+                            upper: 7.0,
+                        }
+                    } else {
+                        ParamTransform::Sigmoid
+                    },
+                );
+                if uniform {
+                    vector.vector_uniform_logp(start, 1, -3.0, 7.0);
+                } else {
+                    vector.vector_beta_logp(start, 1, alpha, beta);
+                }
+                for raw in [-1000.0_f64, -100.0, -40.0, 0.0, 40.0, 100.0, 1000.0] {
+                    let (a, b) = if uniform { (1.0, 1.0) } else { (alpha, beta) };
+                    let norm = ln_gamma(a + b) - ln_gamma(a) - ln_gamma(b);
+                    // Analytic expression based on |raw|, independent of sigmoid rounding.
+                    let expected = -0.5 * std::f64::consts::TAU.ln() + norm
+                        - a * (-raw).max(0.0)
+                        - b * raw.max(0.0)
+                        - (a + b) * (-raw.abs()).exp().ln_1p();
+                    let expected_grad = if raw >= 0.0 {
+                        let e = (-raw).exp();
+                        (a * e - b) / (1.0 + e)
+                    } else {
+                        let e = raw.exp();
+                        (a - b * e) / (1.0 + e)
+                    };
+                    for graph in [&scalar, &vector] {
+                        let mut evaluator = Evaluator::new(graph);
+                        evaluator.compute(graph, &[0.0, raw]);
+                        let reference = grad_logp(graph, &[0.0, raw]);
+                        assert!((evaluator.total_logp - expected).abs() < 1e-10);
+                        assert!((evaluator.grad[1] - expected_grad).abs() < 1e-12);
+                        assert!((reference.0 - expected).abs() < 1e-10);
+                        assert!((reference.1[1] - expected_grad).abs() < 1e-12);
+                        let h = 1e-3;
+                        let numeric = (eval_logp(graph, &[0.0, raw + h])
+                            - eval_logp(graph, &[0.0, raw - h]))
+                            / (2.0 * h);
+                        assert!((numeric - expected_grad).abs() < 1e-7);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn inactive_vector_elements_do_not_propagate_singular_derivatives() {
+        let mut graph = Graph::new();
+        let start = graph.add_vector_params("x", 2);
+        graph.vector_normal_logp(start, 2, 0.0, 1.0);
+        let indices = graph.add_data("indices", vec![0.0, 1.0]);
+        let x = graph.gather(start, 2, indices);
+        let squared = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+        let abs = graph.elementwise(ElementwiseOp::Sqrt, squared, None);
+        let mask = graph.add_data("mask", vec![0.0, 1.0]);
+        let active_abs = graph.elementwise(ElementwiseOp::Mul, abs, Some(mask));
+        let potential = graph.sum(active_abs);
+        graph.add_logp_term(potential);
+        let params = [0.0, 0.4];
+        let mut evaluator = Evaluator::new(&graph);
+        evaluator.compute(&graph, &params);
+        let reference = grad_logp(&graph, &params);
+        assert!(evaluator.total_logp.is_finite());
+        assert_eq!(evaluator.grad, vec![0.0, 0.6]);
+        assert_eq!(reference, (evaluator.total_logp, evaluator.grad));
+    }
+
+    #[test]
+    fn output_only_singular_derivatives_do_not_change_target() {
+        for vector in [false, true] {
+            let mut graph = Graph::new();
+            let x = if vector {
+                let start = graph.add_vector_params("x", 2);
+                graph.vector_normal_logp(start, 2, 0.0, 1.0);
+                let indices = graph.add_data("indices", vec![0.0, 1.0]);
+                graph.gather(start, 2, indices)
+            } else {
+                Normal::prior(&mut graph, "x", 0.0, 1.0)
+            };
+            let params = vec![0.0; graph.param_count];
+            let baseline = grad_logp(&graph, &params);
+            let squared = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+            let abs = graph.elementwise(ElementwiseOp::Sqrt, squared, None);
+            graph.deterministics.push(("abs_x".into(), abs));
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &params);
+            assert_eq!(evaluator.total_logp, baseline.0);
+            assert_eq!(evaluator.grad, baseline.1);
+            assert_eq!(grad_logp(&graph, &params), baseline);
+            // Reused buffers must also remain unaffected away from the singularity.
+            evaluator.compute(&graph, &vec![0.4; graph.param_count]);
+            evaluator.compute(&graph, &params);
+            assert_eq!(evaluator.grad, baseline.1);
         }
     }
 }

@@ -221,12 +221,7 @@ fn data_inputs_from_maps(data_1d: &Data1d, data_2d: &Data2d) -> DataInputs {
 }
 
 impl PyCompiledModel {
-    fn bind_any(
-        &self,
-        value: &Bound<'_, PyAny>,
-        id: String,
-        shared: Option<&Bound<'_, PyDict>>,
-    ) -> PyResult<CoreDataBinding> {
+    fn bind_any(&self, value: &Bound<'_, PyAny>, id: String) -> PyResult<CoreDataBinding> {
         if let Ok(bound) = value.downcast::<PyBoundModel>() {
             let bound = bound.borrow();
             if !Arc::ptr_eq(&bound.structure, &self.structure) {
@@ -243,22 +238,7 @@ impl PyCompiledModel {
         })?;
         let mut one_d = self.default_data_1d.clone();
         let mut two_d = self.default_data_2d.clone();
-        let mut shared_keys = std::collections::HashSet::new();
-        if let Some(shared) = shared {
-            let (shared_1d, shared_2d) = parse_data_dict(shared)?;
-            shared_keys.extend(shared_1d.keys().cloned());
-            shared_keys.extend(shared_2d.keys().cloned());
-            merge_data_overrides(&mut one_d, &mut two_d, shared_1d, shared_2d);
-        }
         let (extra_1d, extra_2d) = parse_data_dict(dict)?;
-        for key in extra_1d.keys().chain(extra_2d.keys()) {
-            if shared_keys.contains(key) {
-                return Err(PyValueError::new_err(format!(
-                    "data key '{}' appears in both shared and per-dataset inputs",
-                    key
-                )));
-            }
-        }
         merge_data_overrides(&mut one_d, &mut two_d, extra_1d, extra_2d);
         validate_core_binding(
             &self.structure,
@@ -306,7 +286,6 @@ struct ModelBuilder {
     id: u64,
     priors: Vec<PriorSpec>,
     likelihoods: Vec<LikelihoodSpec>,
-    param_names: Vec<String>,
     bound_data_1d: HashMap<String, Vec<f64>>,
     bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
@@ -465,7 +444,6 @@ impl ModelBuilder {
             id: next_model_id(),
             priors: Vec::new(),
             likelihoods: Vec::new(),
-            param_names: Vec::new(),
             bound_data_1d,
             bound_data_2d,
         })
@@ -484,6 +462,9 @@ impl ModelBuilder {
     }
     /// Add a scalar custom log-density term; reduce vector expressions with sum().
     fn potential(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<()> {
+        if name.is_empty() {
+            return Err(PyValueError::new_err("potential name must not be empty"));
+        }
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "potential")?;
         if !expr.inner.is_scalar() {
@@ -541,7 +522,6 @@ impl ModelBuilder {
             mu: mu_hp,
             sigma: sigma_hp,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -552,7 +532,6 @@ impl ModelBuilder {
             name: name.to_string(),
             sigma: sigma_hp,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -563,7 +542,6 @@ impl ModelBuilder {
             name: name.to_string(),
             rate: rate_hp,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -581,7 +559,6 @@ impl ModelBuilder {
             mu: mu_hp,
             sigma: sigma_hp,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -596,7 +573,6 @@ impl ModelBuilder {
             mu,
             sigma,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -607,12 +583,12 @@ impl ModelBuilder {
         if lower >= upper {
             return Err(PyValueError::new_err("lower must be less than upper"));
         }
+        validate_positive_finite("uniform width", upper - lower)?;
         self.priors.push(PriorSpec::Uniform {
             name: name.to_string(),
             lower,
             upper,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -626,7 +602,6 @@ impl ModelBuilder {
             name: name.to_string(),
             p,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -637,7 +612,6 @@ impl ModelBuilder {
             name: name.to_string(),
             lam,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -650,7 +624,6 @@ impl ModelBuilder {
             alpha,
             beta,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -663,7 +636,6 @@ impl ModelBuilder {
             alpha,
             beta,
         });
-        self.param_names.push(name.to_string());
         Ok(self.param_ref(name))
     }
 
@@ -876,7 +848,7 @@ impl ModelBuilder {
         let spec = self.build()?;
         reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
         let (template_1d, template_2d) = template_data_for_spec(&spec)?;
-        validate_bound_vector_lengths(&template_1d, &template_2d)?;
+        validate_matrix_storage(&template_2d)?;
         let compiled = compile_python_model(&spec, &template_1d, &template_2d)?;
         let mut definition = spec;
         definition.bound_data_1d.clear();
@@ -898,15 +870,13 @@ fn parse_data_dict(data: &Bound<'_, PyDict>) -> PyResult<(Data1d, Data2d)> {
     let mut data_2d = HashMap::new();
     for (key, value) in data.iter() {
         let key_str: String = key.extract()?;
-        let value = if value.downcast::<PyArray1<f64>>().is_ok()
-            || value.downcast::<PyArray2<f64>>().is_ok()
-        {
-            value
-        } else {
-            data.py()
-                .import("numpy")?
-                .call_method1("ascontiguousarray", (&value, "float64"))?
-        };
+        // Core matrices use row-major storage. NumPy's slice API also accepts
+        // Fortran-contiguous arrays, so dtype alone cannot justify bypassing
+        // this normalization. It also accepts strided views and Python lists.
+        let value = data
+            .py()
+            .import("numpy")?
+            .call_method1("ascontiguousarray", (&value, "float64"))?;
         if let Ok(arr) = value.downcast::<PyArray2<f64>>() {
             let shape = arr.shape().to_vec();
             let slice = unsafe { arr.as_slice()? };
@@ -978,11 +948,8 @@ fn merge_data_overrides(
     }
 }
 
-/// Validate that all bound vector-like inputs share the same length.
-fn validate_bound_vector_lengths(
-    data_1d: &HashMap<String, Vec<f64>>,
-    data_2d: &HashMap<String, (Vec<f64>, usize, usize)>,
-) -> PyResult<usize> {
+/// Validate that each matrix's row-major storage matches its shape.
+fn validate_matrix_storage(data_2d: &HashMap<String, (Vec<f64>, usize, usize)>) -> PyResult<()> {
     for (key, (values, rows, cols)) in data_2d {
         if rows.checked_mul(*cols) != Some(values.len()) {
             return Err(PyValueError::new_err(format!(
@@ -990,7 +957,7 @@ fn validate_bound_vector_lengths(
             )));
         }
     }
-    Ok(data_1d.values().next().map_or(0, Vec::len))
+    Ok(())
 }
 
 /// Validate that every data key referenced in `expr` and `observed_key` exists in the
@@ -1083,14 +1050,31 @@ fn constrained_draw_to_raw(draw: &[f64], transforms: &[ParamTransform]) -> Vec<f
         .collect()
 }
 
+/// Prefer the sampler's exact position: constrained values may round to a
+/// transform boundary, making their inverse infinite or otherwise lossy.
+fn posterior_position<'a>(
+    result: &'a SampleResult,
+    graph: &Graph,
+    chain: usize,
+    draw: usize,
+) -> std::borrow::Cow<'a, [f64]> {
+    if let Some(positions) = &result.unconstrained_samples {
+        std::borrow::Cow::Borrowed(&positions[chain][draw])
+    } else {
+        std::borrow::Cow::Owned(constrained_draw_to_raw(
+            &result.samples[chain][draw],
+            &graph.param_transforms,
+        ))
+    }
+}
+
 fn pointwise_log_likelihood_for_draw(
     graph: &Graph,
-    draw: &[f64],
+    raw_draw: &[f64],
     heads: &[rustmc_core::graph::ObservationHead],
 ) -> PyResult<Vec<Vec<f64>>> {
     let mut evaluator = Evaluator::new(graph);
-    let raw_draw = constrained_draw_to_raw(draw, &graph.param_transforms);
-    evaluator.compute(graph, &raw_draw);
+    evaluator.compute(graph, raw_draw);
 
     let mut out = Vec::with_capacity(heads.len());
     for head in heads {
@@ -1273,6 +1257,7 @@ fn derive_display_batch_result(
 
     Ok(sampler::BatchModelResult {
         samples,
+        unconstrained_samples: raw_result.unconstrained_samples.clone(),
         param_names,
         num_chains: raw_result.num_chains,
         num_draws: raw_result.num_draws,
@@ -1487,12 +1472,11 @@ impl FitResult {
         for (name, node) in &graph.deterministics {
             let n = evaluator.node_len(*node);
             let mut values = Vec::with_capacity(chains * draws * n.max(1));
-            for chain in &self.raw_result.samples {
-                for draw in chain {
-                    evaluator.compute(
-                        &graph,
-                        &constrained_draw_to_raw(draw, &graph.param_transforms),
-                    );
+            for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
+                for draw_idx in 0..chain.len() {
+                    let position =
+                        posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
+                    evaluator.compute(&graph, &position);
                     for i in 0..n.max(1) {
                         values.push(evaluator.vec_elem(*node, i, &graph));
                     }
@@ -1575,11 +1559,14 @@ impl FitResult {
 
         // Flatten all chain draws in order, then subsample without replacement
         // when the caller requests fewer draws than are available.
-        let all_draws: Vec<&Vec<f64>> = self
+        let all_draws: Vec<(usize, usize)> = self
             .raw_result
             .samples
             .iter()
-            .flat_map(|c| c.iter())
+            .enumerate()
+            .flat_map(|(chain_idx, chain)| {
+                (0..chain.len()).map(move |draw_idx| (chain_idx, draw_idx))
+            })
             .collect();
         let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
         let n = chosen_indices.len();
@@ -1591,9 +1578,9 @@ impl FitResult {
             .collect();
 
         for draw_idx in chosen_indices {
-            let draw = all_draws[draw_idx];
-            let raw_draw = constrained_draw_to_raw(draw, &graph.param_transforms);
-            evaluator.compute(&graph, &raw_draw);
+            let (chain_idx, draw_idx) = all_draws[draw_idx];
+            let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
+            evaluator.compute(&graph, &position);
             for (li, head) in heads.iter().enumerate() {
                 for i in 0..head.n_obs {
                     let eta = evaluator.vec_elem(head.linpred, i, &graph);
@@ -1639,8 +1626,10 @@ impl FitResult {
             .collect();
 
         for (chain_idx, chain) in self.raw_result.samples.iter().enumerate() {
-            for (draw_idx, draw) in chain.iter().enumerate() {
-                let per_head = pointwise_log_likelihood_for_draw(&self.graph, draw, &heads)?;
+            for draw_idx in 0..chain.len() {
+                let position =
+                    posterior_position(&self.raw_result, &self.graph, chain_idx, draw_idx);
+                let per_head = pointwise_log_likelihood_for_draw(&self.graph, &position, &heads)?;
                 for (li, values) in per_head.iter().enumerate() {
                     for (obs_idx, &value) in values.iter().enumerate() {
                         arrays[li][[chain_idx, draw_idx, obs_idx]] = value;
@@ -1840,7 +1829,7 @@ fn sample(
         merge_data_overrides(&mut data_map, &mut matrix_map, extra_1d, extra_2d);
     }
 
-    validate_bound_vector_lengths(&data_map, &matrix_map)?;
+    validate_matrix_storage(&matrix_map)?;
 
     if data_map.is_empty() && matrix_map.is_empty() && !model_spec.likelihoods.is_empty() {
         return Err(PyValueError::new_err(
@@ -1922,7 +1911,7 @@ impl PyCompiledModel {
                 "position must be a finite vector matching the parameter dimension",
             ));
         }
-        let binding = self.bind_any(data, "0".into(), None)?;
+        let binding = self.bind_any(data, "0".into())?;
         let mut evaluator = Evaluator::try_with_binding(&self.structure, binding)
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         evaluator.compute(&self.structure, &position);
@@ -2014,7 +2003,7 @@ impl PyCompiledModel {
             max_tree_depth,
             num_leapfrog_steps,
         )?;
-        let binding = self.bind_any(data, "0".to_string(), None)?;
+        let binding = self.bind_any(data, "0".to_string())?;
         let sampler_type = parse_sampler_type(sampler)?;
         let config = SamplerConfig {
             sampler: sampler_type,
@@ -2288,6 +2277,7 @@ struct BatchResult {
 fn batch_from_sample(sample: &SampleResult) -> sampler::BatchModelResult {
     sampler::BatchModelResult {
         samples: sample.samples.iter().flatten().cloned().collect(),
+        unconstrained_samples: sample.unconstrained_samples.clone(),
         param_names: sample.param_names.clone(),
         num_chains: sample.samples.len(),
         num_draws: sample.samples.first().map_or(0, Vec::len),
@@ -2572,7 +2562,7 @@ fn batch_sample(
         let (extra_1d, extra_2d) = parse_data_dict(data_bound)?;
         merge_data_overrides(&mut data_map, &mut matrix_map, extra_1d, extra_2d);
 
-        validate_bound_vector_lengths(&data_map, &matrix_map)?;
+        validate_matrix_storage(&matrix_map)?;
 
         compiled_models.push(compile_python_model(&spec, &data_map, &matrix_map)?);
     }
@@ -2621,6 +2611,7 @@ fn batch_sample(
                     .chunks(raw_result.num_draws)
                     .map(|chain| chain.to_vec())
                     .collect(),
+                unconstrained_samples: raw_result.unconstrained_samples.clone(),
                 param_names: raw_result.param_names.clone(),
                 accept_rates: raw_result.accept_rates.clone(),
                 step_sizes: raw_result.step_sizes.clone(),
@@ -2688,7 +2679,7 @@ fn sample_prior_predictive<'py>(
         merge_data_overrides(&mut data_map, &mut matrix_map, e1, e2);
     }
 
-    validate_bound_vector_lengths(&data_map, &matrix_map)?;
+    validate_matrix_storage(&matrix_map)?;
 
     let compiled = compile_python_model(model_spec, &data_map, &matrix_map)?;
     let graph = compiled.graph.clone();

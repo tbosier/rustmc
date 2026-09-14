@@ -131,6 +131,14 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 values[mu.0].as_scalar(),
                 values[sigma.0].as_scalar(),
             )),
+            Op::PositiveSupport { x } => {
+                let x = values[x.0].as_scalar();
+                Value::Scalar(if x.is_finite() && x > 0.0 {
+                    0.0
+                } else {
+                    f64::NEG_INFINITY
+                })
+            }
             Op::UniformLogP { x, lower, upper } => Value::Scalar(uniform_logp_scalar(
                 values[x.0].as_scalar(),
                 values[lower.0].as_scalar(),
@@ -304,8 +312,7 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 let sum: f64 = (0..*n_params)
                     .map(|k| {
                         let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        log_norm + alpha * s.ln() + beta * (1.0 - s).ln()
+                        log_norm - alpha * softplus(-raw) - beta * softplus(raw)
                     })
                     .sum();
                 Value::Scalar(sum)
@@ -313,15 +320,19 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::VectorUniformLogP {
                 param_start,
                 n_params,
-                ..
+                lower,
+                upper,
             } => {
-                let sum: f64 = (0..*n_params)
-                    .map(|k| {
-                        let raw = params[param_start + k];
-                        let s = 1.0 / (1.0 + (-raw).exp());
-                        s.ln() + (1.0 - s).ln()
-                    })
-                    .sum();
+                let sum: f64 = if uniform_bounds_valid(*lower, *upper) {
+                    (0..*n_params)
+                        .map(|k| {
+                            let raw = params[param_start + k];
+                            -softplus(-raw) - softplus(raw)
+                        })
+                        .sum()
+                } else {
+                    f64::NEG_INFINITY
+                };
                 Value::Scalar(sum)
             }
         };
@@ -360,6 +371,13 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
     for node in graph.nodes.iter().rev() {
         let idx = node.id.0;
         let a_s = adj_scalar[idx];
+        if a_s == 0.0
+            && adj_vector[idx]
+                .as_ref()
+                .is_none_or(|v| v.iter().all(|&adj| adj == 0.0))
+        {
+            continue;
+        }
 
         match &node.op {
             Op::Elementwise { operator, a, b } => {
@@ -371,6 +389,11 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let mut da = Vec::new();
                 let mut db = Vec::new();
                 for (i, u) in upstream.iter().enumerate() {
+                    if *u == 0.0 {
+                        da.push(0.0);
+                        db.push(0.0);
+                        continue;
+                    }
                     let (x, y) = operator.derivatives(
                         read(&values[a.0], i),
                         b.map_or(0.0, |b| read(&values[b.0], i)),
@@ -502,6 +525,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         - 0.5 * denom.ln()
                         + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
             }
+            Op::PositiveSupport { .. } => {}
             Op::UniformLogP { x: _, lower, upper } => {
                 let lv = values[lower.0].as_scalar();
                 let uv = values[upper.0].as_scalar();
@@ -748,18 +772,22 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
-                    grad[param_start + k] += a_s * (alpha * (1.0 - s) - beta * s);
+                    let s = sigmoid_stable(raw);
+                    grad[param_start + k] += a_s * (alpha * sigmoid_stable(-raw) - beta * s);
                 }
             }
             Op::VectorUniformLogP {
                 param_start,
                 n_params,
-                ..
+                lower,
+                upper,
             } => {
+                if !uniform_bounds_valid(*lower, *upper) {
+                    continue;
+                }
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = 1.0 / (1.0 + (-raw).exp());
+                    let s = sigmoid_stable(raw);
                     grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                 }
             }

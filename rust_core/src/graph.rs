@@ -201,6 +201,10 @@ pub enum Op {
         mu: NodeId,
         sigma: NodeId,
     },
+    /// Domain constraint with zero log density for finite x > 0, -infinity otherwise.
+    PositiveSupport {
+        x: NodeId,
+    },
     /// logp(x | lower, upper); Uniform
     UniformLogP {
         x: NodeId,
@@ -642,6 +646,13 @@ impl Graph {
 
     pub fn student_t_logp(&mut self, x: NodeId, nu: NodeId, mu: NodeId, sigma: NodeId) -> NodeId {
         let node = self.add_node(Op::StudentTLogP { x, nu, mu, sigma }, None);
+        self.logp_terms.push(node);
+        node
+    }
+
+    /// Retain the positive finite domain of a scale after reparameterization.
+    pub fn positive_support(&mut self, x: NodeId) -> NodeId {
+        let node = self.add_node(Op::PositiveSupport { x }, None);
         self.logp_terms.push(node);
         node
     }

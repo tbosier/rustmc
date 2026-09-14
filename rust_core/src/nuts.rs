@@ -376,6 +376,7 @@ fn build_tree_iterative(
             )
         };
 
+        depth += 1;
         n_leapfrog_total += subtree.n_leapfrog;
 
         sum_accept_stat += subtree.sum_accept_prob;
@@ -412,8 +413,6 @@ fn build_tree_iterative(
         if check_uturn(&left, &right, mass, scratch) {
             break;
         }
-
-        depth += 1;
     }
 
     let mean_accept = if n_accept_stat > 0 {
@@ -699,6 +698,70 @@ mod tests {
     use super::*;
     use crate::graph::Graph;
     use rand::SeedableRng;
+
+    #[test]
+    fn output_only_deterministic_preserves_sampling_from_zero() {
+        use crate::graph::ElementwiseOp;
+        let mut graph = Graph::new();
+        let x = crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        let config = NutsConfig {
+            num_draws: 20,
+            num_warmup: 20,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let baseline = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let square = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+        let abs = graph.elementwise(ElementwiseOp::Sqrt, square, None);
+        graph.deterministics.push(("abs_x".into(), abs));
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let actual = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        assert_eq!(actual.samples, baseline.samples);
+        assert_eq!(actual.divergences, baseline.divergences);
+    }
+
+    #[test]
+    fn terminating_expansion_is_counted() {
+        let mut graph = Graph::new();
+        crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        for step_size in [10.0, 100.0] {
+            let config = NutsConfig {
+                step_size,
+                max_tree_depth: 5,
+                num_draws: 1,
+                num_warmup: 0,
+                ..NutsConfig::default()
+            };
+            let mut rng = ChaCha8Rng::seed_from_u64(42);
+            let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+            let stats = &chain.transitions[0];
+            assert_eq!(stats.num_leapfrog_steps, 1);
+            assert_eq!(stats.tree_depth, Some(1));
+            assert_eq!(stats.divergent, step_size == 100.0);
+        }
+    }
+
+    #[test]
+    fn boundary_concentrated_beta_recovers_both_raw_tails() {
+        let mut graph = Graph::new();
+        crate::distributions::BetaDist::prior(&mut graph, "x", 0.01, 0.01);
+        let config = NutsConfig {
+            num_draws: 6000,
+            num_warmup: 1000,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        for sign in [-1.0, 1.0] {
+            let fraction = chain.samples.iter().filter(|q| sign * q[0] > 40.0).count() as f64
+                / chain.samples.len() as f64;
+            // The Beta(.01,.01) integral above logit 40 is 0.3352.
+            assert!(
+                (fraction - 0.3352).abs() < 0.045,
+                "tail fraction {fraction}"
+            );
+        }
+    }
 
     #[test]
     fn initial_step_size_search_is_not_pinned_to_lower_bound() {

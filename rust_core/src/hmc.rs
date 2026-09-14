@@ -24,12 +24,18 @@ pub(crate) fn acceptance_probability(energy_error: f64) -> f64 {
 #[derive(Debug, Clone)]
 pub struct TransitionStats {
     pub is_warmup: bool,
+    /// HMC: the Metropolis proposal was accepted. NUTS: the tree did not
+    /// diverge; multinomial sampling may still retain the initial state.
     pub accepted: bool,
     pub accept_prob: f64,
+    /// HMC proposal energy error, or NUTS selected-state energy error (which
+    /// can be zero when the initial state is selected).
     pub energy_error: f64,
     pub divergent: bool,
     pub step_size: f64,
     pub num_leapfrog_steps: usize,
+    /// Number of attempted NUTS doubling expansions, including the expansion
+    /// that terminates with a U-turn or divergence.
     pub tree_depth: Option<usize>,
 }
 
@@ -138,7 +144,7 @@ pub(crate) fn run_chain_with_evaluator(
 
     // Dual-averaging state
     let target_accept = config.target_accept;
-    let da_mu = (10.0 * step_size).ln();
+    let mut da_mu = (10.0 * step_size).ln();
     let da_gamma = 0.05;
     let da_t0 = 10.0;
     let da_kappa = 0.75;
@@ -254,6 +260,7 @@ pub(crate) fn run_chain_with_evaluator(
                 let new_eps =
                     find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng);
                 step_size = new_eps;
+                da_mu = (10.0 * new_eps).ln();
                 log_eps_bar = new_eps.ln();
             }
         }
@@ -416,6 +423,29 @@ mod tests {
         let one = graph.add_constant(1.0);
         graph.normal_logp(x, zero, one);
         graph
+    }
+
+    #[test]
+    fn metric_reset_recenters_step_size_adaptation() {
+        let graph = simple_gaussian_graph();
+        let config = HmcConfig {
+            step_size: 0.001,
+            num_leapfrog_steps: 3,
+            num_draws: 2,
+            num_warmup: 100,
+            ..HmcConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let first_after_reset = &chain.transitions[91];
+        let second_after_reset = &chain.transitions[92];
+        assert!((first_after_reset.step_size - config.step_size).abs() > 1e-3);
+        // The first update of the new adaptation phase is centered on the
+        // initial step found with the new metric, not the pre-warmup step.
+        let expected = 10.0
+            * first_after_reset.step_size
+            * (-(config.target_accept - first_after_reset.accept_prob) / (11.0 * 0.05)).exp();
+        assert!((second_after_reset.step_size - expected).abs() < 1e-10);
     }
 
     #[test]

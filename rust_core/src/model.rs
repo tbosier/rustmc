@@ -654,6 +654,11 @@ pub fn build_prior_into_graph(
                 graph.normal_logp(raw, zero, one);
                 let mu_node = resolve_hyper(mu, graph, value_node_map)?;
                 let sigma_node = resolve_hyper(sigma, graph, value_node_map)?;
+                // Noncentering cancels the scale in the density and Jacobian,
+                // but the conditional Normal still requires a positive scale.
+                // Keep that support independently of mu + sigma * raw so large
+                // means or tiny scales cannot erase the raw Normal density.
+                graph.positive_support(sigma_node);
                 let scaled = graph.mul(sigma_node, raw);
                 let v = graph.add(mu_node, scaled);
                 value_node_map.insert(name.clone(), v);
@@ -1012,6 +1017,15 @@ pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> Mode
                 value
             }
         };
+        if !value.is_finite() {
+            let name = match spec {
+                DisplayParamSpec::Raw { name, .. }
+                | DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name,
+            };
+            return Err(ModelError::invalid(format!(
+                "sampled parameter '{name}' is nonfinite after display transformation"
+            )));
+        }
         out.push(value);
     }
     Ok(out)
@@ -1039,6 +1053,7 @@ pub fn derive_display_sample_result(
 
     Ok(SampleResult {
         samples,
+        unconstrained_samples: raw_result.unconstrained_samples.clone(),
         accept_rates: raw_result.accept_rates.clone(),
         step_sizes: raw_result.step_sizes.clone(),
         divergences: raw_result.divergences.clone(),
@@ -1363,6 +1378,7 @@ fn validate_definition(spec: &ModelSpec) -> ModelResult<()> {
                 if lower >= upper {
                     return Err(ModelError::invalid("uniform bounds must be increasing"));
                 }
+                validate_positive_finite("uniform width", upper - lower)?;
             }
             PriorSpec::Bernoulli { p, .. } => {
                 if !(0.0..=1.0).contains(p) {
@@ -1550,23 +1566,29 @@ impl ModelFit {
             .iter()
             .map(|name| (name.clone(), Vec::new()))
             .collect();
-        for chain in &self.raw.samples {
+        for (chain_index, chain) in self.raw.samples.iter().enumerate() {
             let mut values = vec![Vec::with_capacity(chain.len()); heads.len()];
-            for draw in chain {
-                let position = draw
-                    .iter()
-                    .zip(&prediction_graph.param_transforms)
-                    .map(|(&v, t)| match t {
-                        ParamTransform::Identity => v,
-                        ParamTransform::Exp => v.ln(),
-                        ParamTransform::Sigmoid => v.ln() - (-v).ln_1p(),
-                        ParamTransform::BoundedSigmoid { lower, upper } => {
-                            let p = (v - lower) / (upper - lower);
-                            p.ln() - (-p).ln_1p()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                evaluator.compute(&prediction_graph, &position);
+            for (draw_index, draw) in chain.iter().enumerate() {
+                let reconstructed;
+                let position = if let Some(raw) = &self.raw.unconstrained_samples {
+                    &raw[chain_index][draw_index]
+                } else {
+                    reconstructed = draw
+                        .iter()
+                        .zip(&prediction_graph.param_transforms)
+                        .map(|(&v, t)| match t {
+                            ParamTransform::Identity => v,
+                            ParamTransform::Exp => v.ln(),
+                            ParamTransform::Sigmoid => v.ln() - (-v).ln_1p(),
+                            ParamTransform::BoundedSigmoid { lower, upper } => {
+                                let p = (v - lower) / (upper - lower);
+                                p.ln() - (-p).ln_1p()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    &reconstructed
+                };
+                evaluator.compute(&prediction_graph, position);
                 for (i, head) in heads.iter().enumerate() {
                     let aux = head.aux.map(|n| evaluator.scalar_at(n));
                     let mut observations = Vec::with_capacity(head.n_obs);

@@ -97,3 +97,62 @@ fn corrupt_artifact_and_wrong_parameter_axes_are_rejected() {
     artifact["schema"]["matrices"][0]["kind"]["Matrix"]["n_cols"] = 3.into();
     assert!(GraphModel::from_json(&artifact.to_string()).is_err());
 }
+
+#[test]
+fn bounded_tail_fit_keeps_raw_positions_for_native_prediction() {
+    use rustmc_core::model::{compile, ModelSpec};
+    let definition: ModelSpec = serde_json::from_value(serde_json::json!({
+        "dimensions": {}, "potentials": [], "deterministics": [],
+        "priors": [{"Beta": {"name": "p", "alpha": 0.01, "beta": 0.01}}],
+        "likelihoods": [{"family": "Normal", "name": "obs", "mu_expr": {"Param": "p"},
+                         "sigma": {"Const": 1.0}, "observed_key": "y"}]
+    }))
+    .unwrap();
+    let data = HashMap::from([("y".to_string(), vec![1.0])]);
+    let compiled = compile(&definition, &data, &HashMap::new()).unwrap();
+    let model = GraphModel {
+        definition,
+        structure: Arc::new(compiled.graph.structure_only()),
+        likelihood_names: compiled.likelihood_names,
+        display_params: compiled.display_params,
+    };
+    let binding = model
+        .bind(
+            DataInputs {
+                vectors: HashMap::from([("y".to_string(), Arc::from(vec![1.0]))]),
+                ..DataInputs::default()
+            },
+            "tail",
+        )
+        .unwrap();
+    let fit = model
+        .sample(
+            binding.clone(),
+            SamplerConfig {
+                num_chains: 1,
+                num_draws: 3,
+                num_warmup: 1,
+                step_size: 1e-9,
+                max_tree_depth: 2,
+                show_progress: false,
+                ..Default::default()
+            },
+            Some(vec![vec![40.0]]),
+        )
+        .unwrap();
+    assert!(fit.samples.samples[0].iter().all(|draw| draw[0] == 1.0));
+    let raw = fit.samples.unconstrained_samples.as_ref().unwrap();
+    for draw in &raw[0] {
+        assert!(draw[0] > 39.0);
+        assert!(model.log_density(&binding, draw).unwrap().0.is_finite());
+    }
+    let predictions = fit
+        .predict(
+            DataInputs::default(),
+            HashMap::from([("obs".into(), 2)]),
+            42,
+            true,
+        )
+        .unwrap();
+    assert_eq!(predictions["obs"], vec![vec![vec![1.0; 2]; 3]]);
+}

@@ -82,7 +82,7 @@ model must be bound to data before fitting. It is separate from the older Rust
 
 ## Saving a fitted graph model
 
-`fit.to_json()` creates a `rustmc.graph-fit` version 1 artifact, and
+`fit.to_json()` creates a `rustmc.graph-fit` version 2 artifact, and
 `rustmc.FitResult.from_json(text)` restores it. This fitted artifact includes the
 compiled declarative model, keyed training data, every stored chain/draw position,
 parameter names/order, and sampler telemetry. Unlike a compiled-model artifact,
@@ -98,13 +98,13 @@ replayed = restored.predict(future, seed=123, sizes={"occurrence": 4})
 ```
 
 Given identical future inputs and prediction seed, restored predictions reproduce
-the original arrays exactly. Stored positions use the native sampler result's
-**constrained graph parameter** coordinates, including latent parameters used by
-noncentered priors; display variables and deterministics are reconstructed from
-the model instead of being stored as independent, potentially inconsistent draws.
-The sampler does not retain its original unconstrained trajectory or RNG/adaptation
-state in a fit, so this format replays predictions and diagnostics rather than
-resuming an interrupted chain.
+the original arrays exactly. Stored positions include the native sampler result's
+**constrained graph parameters** and exact **unconstrained sampler positions**
+when parameter transforms are present. The latter preserve valid tail draws even
+when a constrained value rounds to a transform boundary. Display variables and
+deterministics are reconstructed from the model. RNG and adaptation state are not
+stored, so the format replays predictions and diagnostics rather than resuming an
+interrupted chain.
 
 Loading recompiles the declarative model, binds and validates training dimensions,
 checks parameter identity, position shape/support, finite target values/gradients,
@@ -112,3 +112,8 @@ and diagnostic chain/draw dimensions. Divergent transitions may contain nonfinit
 energy errors; these use explicit JSON string tokens instead of nonstandard numeric
 literals. Other numeric payloads must be finite. JSON loading executes no pickled
 objects or user code. The version 1 compiled-model format remains unchanged.
+
+Version 1 fits remain readable when their constrained values can be inverted to
+finite valid positions; their original coordinates cannot be recovered exactly
+after a rounded transformation. Saving a restored version 1 fit upgrades it to
+version 2 using the reconstructed coordinates.

@@ -1,7 +1,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
-use crate::graph::Graph;
+use crate::graph::{Graph, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
@@ -151,6 +151,10 @@ pub(crate) fn validate_initial_values(
 #[derive(Debug, Clone)]
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
+    /// Exact sampler positions, indexed by chain/draw/parameter, retained when
+    /// any parameter is transformed. Constrained floating-point draws cannot
+    /// always be inverted (for example sigmoid(40) rounds to one).
+    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
     pub accept_rates: Vec<f64>,
     pub step_sizes: Vec<f64>,
     pub divergences: Vec<usize>,
@@ -390,14 +394,24 @@ pub fn sample_bound_with_init(
         })
         .collect();
 
+    for draw in samples.iter().flatten() {
+        validate_constrained_draw(draw, &param_names)?;
+    }
+
     let accept_rates: Vec<f64> = results.iter().map(|r| r.accept_rate).collect();
     let step_sizes: Vec<f64> = results.iter().map(|r| r.step_size).collect();
     let divergences: Vec<usize> = results.iter().map(|r| r.divergences).collect();
     let transitions: Vec<Vec<TransitionStats>> =
         results.iter().map(|r| r.transitions.clone()).collect();
 
+    let unconstrained_samples = transforms
+        .iter()
+        .any(|t| !matches!(t, ParamTransform::Identity))
+        .then(|| Arc::new(results.into_iter().map(|r| r.samples).collect()));
+
     Ok(SampleResult {
         samples,
+        unconstrained_samples,
         accept_rates,
         step_sizes,
         divergences,
@@ -406,10 +420,12 @@ pub fn sample_bound_with_init(
     })
 }
 
-/// Lightweight result for a single model in a batch run (1 chain).
+/// Result for a single model in a batch run, with flattened constrained draws.
 #[derive(Debug, Clone)]
 pub struct BatchModelResult {
     pub samples: Vec<Vec<f64>>,
+    /// Exact positions in chain/draw/parameter order for transformed graphs.
+    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
     pub param_names: Vec<String>,
     pub num_chains: usize,
     pub num_draws: usize,
@@ -568,6 +584,7 @@ pub fn sample_batch_bound(
                         index,
                         result: BatchModelResult {
                             samples,
+                            unconstrained_samples: sample.unconstrained_samples,
                             param_names: sample.param_names,
                             num_chains: config.num_chains,
                             num_draws: config.num_draws,
@@ -681,6 +698,11 @@ pub fn batch_sample_graphs(
             .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
                 let mut samples: Vec<Vec<f64>> = Vec::new();
+                let mut unconstrained_samples = graph
+                    .param_transforms
+                    .iter()
+                    .any(|t| !matches!(t, ParamTransform::Identity))
+                    .then(|| Vec::with_capacity(chains_per_model));
                 let mut accept_rates = Vec::with_capacity(chains_per_model);
                 let mut step_sizes = Vec::with_capacity(chains_per_model);
                 let mut divergences = Vec::with_capacity(chains_per_model);
@@ -727,10 +749,14 @@ pub fn batch_sample_graphs(
                     step_sizes.push(chain.step_size);
                     divergences.push(chain.divergences);
                     transitions.push(chain.transitions);
+                    if let Some(raw) = &mut unconstrained_samples {
+                        raw.push(chain.samples);
+                    }
                 }
 
                 BatchModelResult {
                     samples,
+                    unconstrained_samples: unconstrained_samples.map(Arc::new),
                     param_names: graph.param_names.clone(),
                     num_chains: chains_per_model,
                     num_draws: config.num_draws,
@@ -743,13 +769,108 @@ pub fn batch_sample_graphs(
             .collect()
     })?;
 
+    for result in &results {
+        for draw in &result.samples {
+            validate_constrained_draw(draw, &result.param_names)?;
+        }
+    }
     Ok(results)
+}
+
+fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), String> {
+    if let Some(index) = draw.iter().position(|value| !value.is_finite()) {
+        return Err(format!(
+            "sampled parameter '{}' is nonfinite after transformation",
+            names[index]
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rayon::current_num_threads;
+
+    #[test]
+    fn transformed_results_retain_exact_raw_tail_positions() {
+        let mut graph = Graph::new();
+        crate::distributions::BetaDist::prior(&mut graph, "p", 0.01, 0.01);
+        let config = SamplerConfig {
+            num_chains: 2,
+            num_draws: 4,
+            num_warmup: 1,
+            step_size: 1e-9,
+            max_tree_depth: 2,
+            show_progress: false,
+            ..Default::default()
+        };
+        let result = sample_bound_with_init(
+            Arc::new(graph.structure_only()),
+            DataBinding::from_graph(&graph).unwrap(),
+            config.clone(),
+            Some(vec![vec![40.0], vec![50.0]]),
+        )
+        .unwrap();
+        let raw = result.unconstrained_samples.as_ref().unwrap();
+        for (chain_index, chain) in raw.iter().enumerate() {
+            let mut rng = ChaCha8Rng::seed_from_u64(config.seed + chain_index as u64);
+            let expected = nuts::run_chain(
+                &graph,
+                &NutsConfig {
+                    step_size: config.step_size,
+                    target_accept: config.target_accept,
+                    max_tree_depth: config.max_tree_depth,
+                    num_draws: config.num_draws,
+                    num_warmup: config.num_warmup,
+                },
+                &mut rng,
+                Some(vec![40.0 + 10.0 * chain_index as f64]),
+                None,
+            );
+            assert_eq!(chain, &expected.samples);
+            assert!(chain.iter().all(|q| q[0].is_finite() && q[0] > 39.0));
+            assert!(result.samples[chain_index].iter().all(|q| q[0] == 1.0));
+        }
+        let cloned = result.clone();
+        assert!(Arc::ptr_eq(
+            raw,
+            cloned.unconstrained_samples.as_ref().unwrap()
+        ));
+        let mut identity = Graph::new();
+        crate::distributions::Normal::prior(&mut identity, "x", 0.0, 1.0);
+        assert!(sample(identity, config)
+            .unwrap()
+            .unconstrained_samples
+            .is_none());
+    }
+
+    #[test]
+    fn batch_paths_retain_raw_chain_axes() {
+        let mut graph = Graph::new();
+        crate::distributions::BetaDist::prior(&mut graph, "p", 0.01, 0.01);
+        let config = BatchSampleConfig {
+            num_chains: 2,
+            num_draws: 20,
+            num_warmup: 50,
+            show_progress: false,
+            ..Default::default()
+        };
+        let legacy = batch_sample_graphs(vec![graph.clone()], config.clone()).unwrap();
+        let bound = sample_batch_bound(
+            Arc::new(graph.structure_only()),
+            vec![DataBinding::from_graph(&graph).unwrap()],
+            config,
+        )
+        .unwrap();
+        let raw = legacy[0].unconstrained_samples.as_ref().unwrap();
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].len(), 20);
+        assert_eq!(raw, bound[0].result.unconstrained_samples.as_ref().unwrap());
+        for (position, constrained) in raw.iter().flatten().zip(&legacy[0].samples) {
+            assert_eq!(graph.param_transforms[0].apply(position[0]), constrained[0]);
+        }
+    }
 
     #[test]
     fn thread_pool_helper_uses_requested_parallelism() {
@@ -819,6 +940,7 @@ mod tests {
     fn sample_result_exposes_transition_diagnostics() {
         let result = SampleResult {
             samples: vec![],
+            unconstrained_samples: None,
             accept_rates: vec![0.8],
             step_sizes: vec![0.1],
             divergences: vec![1],

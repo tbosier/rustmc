@@ -36,6 +36,9 @@ struct Posterior {
     coordinate_space: String,
     param_names: Vec<String>,
     samples: Vec<Vec<Vec<f64>>>,
+    /// Version 2 retains exact sampler positions for non-invertible rounded transforms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unconstrained_samples: Option<Vec<Vec<Vec<f64>>>>,
     accept_rates: Vec<f64>,
     step_sizes: Vec<f64>,
     divergences: Vec<usize>,
@@ -189,10 +192,26 @@ pub(super) fn model(fit: &FitResult) -> PyResult<PyCompiledModel> {
 }
 
 pub(super) fn encode(fit: &FitResult) -> PyResult<String> {
+    if fit
+        .raw_result
+        .samples
+        .iter()
+        .flatten()
+        .flatten()
+        .any(|x| !x.is_finite())
+        || fit
+            .raw_result
+            .unconstrained_samples
+            .as_ref()
+            .is_some_and(|positions| positions.iter().flatten().flatten().any(|x| !x.is_finite()))
+    {
+        return Err(invalid("posterior positions must be finite"));
+    }
     let posterior = Posterior {
         coordinate_space: "constrained_graph_parameters".into(),
         param_names: fit.raw_result.param_names.clone(),
         samples: fit.raw_result.samples.clone(),
+        unconstrained_samples: fit.raw_result.unconstrained_samples.as_deref().cloned(),
         accept_rates: fit.raw_result.accept_rates.clone(),
         step_sizes: fit.raw_result.step_sizes.clone(),
         divergences: fit.raw_result.divergences.clone(),
@@ -206,7 +225,7 @@ pub(super) fn encode(fit: &FitResult) -> PyResult<String> {
     let compiled = model(fit)?;
     let artifact = Artifact {
         format: "rustmc.graph-fit".into(),
-        version: 1,
+        version: 2,
         model: model_artifact::describe(&compiled),
         training: training_data(fit)?,
         posterior,
@@ -217,8 +236,13 @@ pub(super) fn encode(fit: &FitResult) -> PyResult<String> {
 pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     let artifact: Artifact =
         serde_json::from_str(text).map_err(|error| invalid(&error.to_string()))?;
-    if artifact.format != "rustmc.graph-fit" || artifact.version != 1 {
+    if artifact.format != "rustmc.graph-fit" || !matches!(artifact.version, 1 | 2) {
         return Err(invalid("unsupported format/version"));
+    }
+    if artifact.version == 1 && artifact.posterior.unconstrained_samples.is_some() {
+        return Err(invalid(
+            "version 1 does not support unconstrained posterior positions",
+        ));
     }
     artifact
         .model
@@ -240,7 +264,7 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     graph
         .validate_shapes()
         .map_err(|error| invalid(&error.to_string()))?;
-    let raw_result = validate_posterior(artifact.posterior, &graph)?;
+    let raw_result = validate_posterior(artifact.posterior, &graph, artifact.version)?;
     let display_result = derive_display_sample_result(&raw_result, &compiled.display_params)?;
     if display_result
         .samples
@@ -263,6 +287,7 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
 fn validate_posterior(
     posterior: Posterior,
     graph: &rustmc_core::graph::Graph,
+    version: u32,
 ) -> PyResult<SampleResult> {
     if posterior.coordinate_space != "constrained_graph_parameters" {
         return Err(invalid("unsupported posterior coordinate space"));
@@ -279,19 +304,59 @@ fn validate_posterior(
             "posterior must contain chains, draws, and parameters",
         ));
     }
+    let transformed = graph
+        .param_transforms
+        .iter()
+        .any(|transform| !matches!(transform, rustmc_core::graph::ParamTransform::Identity));
+    if version == 2 && transformed && posterior.unconstrained_samples.is_none() {
+        return Err(invalid(
+            "version 2 requires unconstrained posterior positions for transformed parameters",
+        ));
+    }
+    if let Some(positions) = &posterior.unconstrained_samples {
+        if positions.len() != chains || positions.iter().any(|chain| chain.len() != draws) {
+            return Err(invalid(
+                "unconstrained posterior chain/draw dimensions differ from samples",
+            ));
+        }
+    }
+    let retain_positions = transformed || posterior.unconstrained_samples.is_some();
+    let mut validated_positions = Vec::with_capacity(chains);
     let mut evaluator = rustmc_core::autodiff::Evaluator::try_new(graph)
         .map_err(|error| invalid(&error.to_string()))?;
-    for chain in &posterior.samples {
+    for (chain_index, chain) in posterior.samples.iter().enumerate() {
+        let mut positions = Vec::with_capacity(draws);
         if chain.len() != draws {
             return Err(invalid("posterior draw counts differ between chains"));
         }
-        for draw in chain {
+        for (draw_index, draw) in chain.iter().enumerate() {
             if draw.len() != graph.param_count || draw.iter().any(|value| !value.is_finite()) {
                 return Err(invalid(
                     "posterior positions have invalid dimensions or nonfinite values",
                 ));
             }
-            let position = constrained_draw_to_raw(draw, &graph.param_transforms);
+            let position = if let Some(raw) = &posterior.unconstrained_samples {
+                let position = &raw[chain_index][draw_index];
+                if position.len() != graph.param_count || position.iter().any(|x| !x.is_finite()) {
+                    return Err(invalid("unconstrained posterior positions have invalid dimensions or nonfinite values"));
+                }
+                for ((raw, displayed), transform) in
+                    position.iter().zip(draw).zip(&graph.param_transforms)
+                {
+                    let expected = transform.apply(*raw);
+                    // Permit ordinary floating-point JSON reconstruction error,
+                    // but verify the supplied coordinates describe the same draw.
+                    let tolerance = 8.0 * f64::EPSILON * expected.abs().max(displayed.abs());
+                    if !expected.is_finite() || (expected - displayed).abs() > tolerance {
+                        return Err(invalid(
+                            "unconstrained posterior positions disagree with constrained samples",
+                        ));
+                    }
+                }
+                position.clone()
+            } else {
+                constrained_draw_to_raw(draw, &graph.param_transforms)
+            };
             if position.iter().any(|value| !value.is_finite()) {
                 return Err(invalid(
                     "posterior position is outside its parameter transform support",
@@ -305,6 +370,12 @@ fn validate_posterior(
                     "posterior position has a nonfinite target density or gradient",
                 ));
             }
+            if retain_positions {
+                positions.push(position);
+            }
+        }
+        if retain_positions {
+            validated_positions.push(positions);
         }
     }
     if posterior.accept_rates.len() != chains
@@ -359,6 +430,7 @@ fn validate_posterior(
     }
     Ok(SampleResult {
         samples: posterior.samples,
+        unconstrained_samples: retain_positions.then(|| Arc::new(validated_positions)),
         param_names: posterior.param_names,
         accept_rates: posterior.accept_rates,
         step_sizes: posterior.step_sizes,

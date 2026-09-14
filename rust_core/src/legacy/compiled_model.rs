@@ -138,6 +138,11 @@ pub enum NodeRef {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ModelStep {
+    /// Optional final declaration of the exact target terms. Older artifacts
+    /// without this tag retain the implicit density-op behavior.
+    LogDensityTerms {
+        terms: Vec<NodeRef>,
+    },
     Constant {
         value: f64,
     },
@@ -211,6 +216,10 @@ pub enum ModelStep {
         nu: NodeRef,
         mu: NodeRef,
         sigma: NodeRef,
+    },
+    /// Zero log density for finite positive scalar input, negative infinity otherwise.
+    PositiveSupport {
+        x: NodeRef,
     },
     UniformLogP {
         x: NodeRef,
@@ -578,6 +587,9 @@ impl CompiledModelArtifact {
                             lower: *lower,
                             upper: *upper,
                         },
+                        Op::PositiveSupport { x } => ModelStep::PositiveSupport {
+                            x: translate_ref(*x, &original_to_step_ref)?,
+                        },
                         Op::Elementwise { .. }
                         | Op::Gather { .. }
                         | Op::Sum(_)
@@ -595,6 +607,14 @@ impl CompiledModelArtifact {
                 }
             }
         }
+
+        steps.push(ModelStep::LogDensityTerms {
+            terms: graph
+                .logp_terms
+                .iter()
+                .map(|id| translate_ref(*id, &original_to_step_ref))
+                .collect::<Result<_, _>>()?,
+        });
 
         Ok(Self {
             format_version: ARTIFACT_FORMAT_VERSION,
@@ -649,6 +669,36 @@ impl CompiledModelArtifact {
 
         for (idx, step) in self.steps.iter().enumerate() {
             validate_step(step, idx, &scalar_names, &vector_names, &vector_lengths)?;
+            let scalar_inputs: &[NodeRef] = match step {
+                ModelStep::PositiveSupport { x } => std::slice::from_ref(x),
+                ModelStep::LogDensityTerms { terms } => {
+                    if idx + 1 != self.steps.len() {
+                        return Err(ArtifactError::invalid(
+                            "log-density term declaration must be the final step",
+                        ));
+                    }
+                    terms
+                }
+                _ => &[],
+            };
+            for input in scalar_inputs {
+                if let NodeRef::Node(input) = input {
+                    if matches!(
+                        self.steps[*input],
+                        ModelStep::Data { .. }
+                            | ModelStep::ScalarMulData { .. }
+                            | ModelStep::VectorAdd { .. }
+                            | ModelStep::ScalarBroadcastAdd { .. }
+                            | ModelStep::ScalarBroadcast { .. }
+                            | ModelStep::FusedLinearMu { .. }
+                            | ModelStep::MatVecMul { .. }
+                    ) {
+                        return Err(ArtifactError::invalid(
+                            "positive-domain constraints and log-density terms require scalar inputs",
+                        ));
+                    }
+                }
+            }
         }
 
         Ok(())
@@ -785,6 +835,9 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
     for block in &artifact.parameter_blocks {
         match block {
             ParameterBlock::Scalar { name, transform } => {
+                // Scalar Beta/Uniform priors share the one-element vector
+                // density kernels, while retaining their scalar parameter name.
+                vector_param_starts.insert(name.clone(), graph.param_count);
                 let node = graph.add_param_with_transform(name, transform.into());
                 scalar_param_nodes.insert(name.clone(), node);
             }
@@ -801,6 +854,14 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
 
     for (idx, step) in artifact.steps.iter().enumerate() {
         let node = match step {
+            ModelStep::LogDensityTerms { terms } => {
+                graph.logp_terms = terms
+                    .iter()
+                    .map(|r| resolve_node_ref(r, &scalar_param_nodes, &op_nodes))
+                    .collect::<Result<_, _>>()?;
+                // This final metadata step does not introduce a graph node.
+                continue;
+            }
             ModelStep::Constant { value } => graph.add_constant(*value),
             ModelStep::Data { name, values } => graph.add_data(name, values.clone()),
             ModelStep::Add { lhs, rhs } => graph.add(
@@ -931,6 +992,9 @@ fn build_graph(artifact: &CompiledModelArtifact) -> Result<Graph, ArtifactError>
                 resolve_node_ref(mu, &scalar_param_nodes, &op_nodes)?,
                 resolve_node_ref(sigma, &scalar_param_nodes, &op_nodes)?,
             ),
+            ModelStep::PositiveSupport { x } => {
+                graph.positive_support(resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?)
+            }
             ModelStep::UniformLogP { x, lower, upper } => graph.uniform_logp(
                 resolve_node_ref(x, &scalar_param_nodes, &op_nodes)?,
                 resolve_node_ref(lower, &scalar_param_nodes, &op_nodes)?,
@@ -1177,6 +1241,7 @@ fn validate_step(
     };
 
     match step {
+        ModelStep::LogDensityTerms { terms } => terms.iter().try_for_each(check_ref),
         ModelStep::Constant { .. } | ModelStep::Data { .. } => Ok(()),
         ModelStep::Add { lhs, rhs }
         | ModelStep::Mul { lhs, rhs }
@@ -1285,6 +1350,7 @@ fn validate_step(
             check_ref(mu)?;
             check_ref(sigma)
         }
+        ModelStep::PositiveSupport { x } => check_ref(x),
         ModelStep::UniformLogP { x, lower, upper } => {
             check_ref(x)?;
             check_ref(lower)?;
@@ -1399,9 +1465,11 @@ fn validate_step(
             n_params,
             ..
         } => {
-            if !vector_names.contains(param_name.as_str()) {
+            if !(vector_names.contains(param_name.as_str())
+                || *n_params == 1 && scalar_names.contains(param_name.as_str()))
+            {
                 return Err(ArtifactError::missing_parameter(format!(
-                    "unknown vector parameter '{}'",
+                    "unknown parameter block '{}' or non-unit scalar density span",
                     param_name
                 )));
             }
@@ -1507,6 +1575,206 @@ mod tests {
         let obs = g.add_obs_data(vec![0.5, -0.2]);
         g.normal_obs_logp(mu, sigma, obs);
         g
+    }
+
+    #[test]
+    fn noncentered_model_positive_support_survives_legacy_artifact_roundtrip() {
+        use crate::model::{compile, HyperParam, ModelSpec, PriorSpec};
+        for positive_prior in [false, true] {
+            let scale = if positive_prior {
+                PriorSpec::HalfNormal {
+                    name: "scale".into(),
+                    sigma: HyperParam::Const(1.0),
+                }
+            } else {
+                PriorSpec::Normal {
+                    name: "scale".into(),
+                    mu: HyperParam::Const(0.0),
+                    sigma: HyperParam::Const(1.0),
+                }
+            };
+            let spec = ModelSpec {
+                dimensions: HashMap::new(),
+                potentials: vec![],
+                deterministics: vec![],
+                priors: vec![
+                    scale,
+                    PriorSpec::Normal {
+                        name: "effect".into(),
+                        mu: HyperParam::Const(0.0),
+                        sigma: HyperParam::Param("scale".into()),
+                    },
+                ],
+                likelihoods: vec![],
+                bound_data_1d: HashMap::new(),
+                bound_data_2d: HashMap::new(),
+            };
+            let original = compile(&spec, &HashMap::new(), &HashMap::new())
+                .unwrap()
+                .graph;
+            let runtime = CompiledModelRuntime::from_graph(&original).unwrap();
+            let json = runtime.to_json_pretty().unwrap();
+            assert!(json.contains("PositiveSupport"));
+            let restored = CompiledModelRuntime::from_json_str(&json).unwrap();
+            let rebuilt = restored.to_graph().unwrap();
+            assert_eq!(rebuilt.logp_terms.len(), original.logp_terms.len());
+            let mut before = crate::autodiff::Evaluator::new(&original);
+            let mut after = crate::autodiff::Evaluator::new(&rebuilt);
+            for scale in [-1.0, 0.0, 1e-12, 0.5, 10.0] {
+                before.compute(&original, &[scale, 0.3]);
+                after.compute(&rebuilt, &[scale, 0.3]);
+                assert_eq!(after.total_logp, before.total_logp);
+                assert_eq!(after.grad, before.grad);
+                if !positive_prior && scale <= 0.0 {
+                    assert_eq!(after.total_logp, f64::NEG_INFINITY);
+                } else {
+                    assert!(after.total_logp.is_finite());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn positive_support_artifact_references_are_validated() {
+        let mut graph = Graph::new();
+        let scale = graph.add_param("scale");
+        graph.positive_support(scale);
+        let artifact = CompiledModelArtifact::from_graph(&graph).unwrap();
+        for reference in [
+            NodeRef::Param("missing".into()),
+            NodeRef::Node(0),
+            NodeRef::Node(10),
+        ] {
+            let mut corrupt = artifact.clone();
+            corrupt.steps[0] = ModelStep::PositiveSupport { x: reference };
+            assert!(corrupt.validate().is_err());
+            assert!(
+                CompiledModelRuntime::from_json_str(&corrupt.to_json_pretty().unwrap()).is_err()
+            );
+        }
+        let mut vector_input = artifact.clone();
+        vector_input.steps = vec![
+            ModelStep::Data {
+                name: "vector".into(),
+                values: vec![1.0],
+            },
+            ModelStep::PositiveSupport {
+                x: NodeRef::Node(0),
+            },
+        ];
+        assert!(vector_input.validate().is_err());
+        let mut corrupt = artifact;
+        corrupt.parameter_blocks[0] = ParameterBlock::Vector {
+            name: "scale".into(),
+            len: 1,
+            transform: SerializableParamTransform::Identity,
+        };
+        assert!(corrupt.validate().is_err());
+    }
+
+    #[test]
+    fn explicit_target_terms_preserve_jacobians_potentials_order_and_multiplicity() {
+        let mut graph = Graph::new();
+        let scale = crate::distributions::HalfNormal::prior(&mut graph, "scale", 1.0);
+        let square = graph.square(scale);
+        let penalty = graph.neg(square);
+        // Plain expression terms and repeated contributions must not disappear.
+        graph.logp_terms.extend([penalty, penalty]);
+        let artifact = CompiledModelArtifact::from_graph(&graph).unwrap();
+        let rebuilt = CompiledModelRuntime::from_json_str(&artifact.to_json_pretty().unwrap())
+            .unwrap()
+            .to_graph()
+            .unwrap();
+        let mut before = crate::autodiff::Evaluator::new(&graph);
+        let mut after = crate::autodiff::Evaluator::new(&rebuilt);
+        for raw in [-2.0, 0.0, 1.0] {
+            before.compute(&graph, &[raw]);
+            after.compute(&rebuilt, &[raw]);
+            assert_eq!(before.total_logp, after.total_logp);
+            assert_eq!(before.grad, after.grad);
+        }
+        assert_eq!(rebuilt.logp_terms.len(), graph.logp_terms.len());
+        // Declared membership also permits removing an otherwise implicit term.
+        let mut empty_target = artifact;
+        *empty_target.steps.last_mut().unwrap() = ModelStep::LogDensityTerms { terms: vec![] };
+        let empty = CompiledModelRuntime::from_artifact(empty_target)
+            .unwrap()
+            .to_graph()
+            .unwrap();
+        assert!(empty.logp_terms.is_empty());
+    }
+
+    #[test]
+    fn legacy_implicit_density_artifacts_remain_readable_and_new_terms_are_checked() {
+        let mut legacy = CompiledModelArtifact::from_graph(&simple_graph()).unwrap();
+        assert!(matches!(
+            legacy.steps.pop(),
+            Some(ModelStep::LogDensityTerms { .. })
+        ));
+        let rebuilt = CompiledModelRuntime::from_json_str(&legacy.to_json_pretty().unwrap())
+            .unwrap()
+            .to_graph()
+            .unwrap();
+        assert!(!rebuilt.logp_terms.is_empty());
+        for terms in [
+            vec![NodeRef::Node(legacy.steps.len())],
+            vec![NodeRef::Param("absent".into())],
+        ] {
+            let mut corrupt = legacy.clone();
+            corrupt.steps.push(ModelStep::LogDensityTerms { terms });
+            assert!(corrupt.validate().is_err());
+        }
+        let mut corrupt = legacy.clone();
+        corrupt
+            .steps
+            .insert(0, ModelStep::LogDensityTerms { terms: vec![] });
+        assert!(corrupt.validate().is_err());
+        let mut corrupt = legacy;
+        let index = corrupt.steps.len();
+        corrupt.steps.push(ModelStep::Data {
+            name: "vector".into(),
+            values: vec![1.0],
+        });
+        corrupt.steps.push(ModelStep::LogDensityTerms {
+            terms: vec![NodeRef::Node(index)],
+        });
+        assert!(corrupt.validate().is_err());
+    }
+
+    #[test]
+    fn scalar_beta_and_uniform_kernel_artifacts_preserve_names_and_tail_density() {
+        for beta in [false, true] {
+            let mut original = Graph::new();
+            if beta {
+                crate::distributions::BetaDist::prior(&mut original, "value", 0.01, 0.01);
+            } else {
+                crate::distributions::Uniform::prior(&mut original, "value", 2.0, 3.0);
+            }
+            let artifact = CompiledModelArtifact::from_graph(&original).unwrap();
+            let rebuilt = CompiledModelRuntime::from_json_str(&artifact.to_json_pretty().unwrap())
+                .unwrap()
+                .to_graph()
+                .unwrap();
+            assert_eq!(rebuilt.param_names, vec!["value"]);
+            let mut before = crate::autodiff::Evaluator::new(&original);
+            let mut after = crate::autodiff::Evaluator::new(&rebuilt);
+            for raw in [-50.0, -1.0, 0.0, 1.0, 50.0] {
+                before.compute(&original, &[raw]);
+                after.compute(&rebuilt, &[raw]);
+                assert!(after.total_logp.is_finite());
+                assert_eq!(before.total_logp, after.total_logp);
+                assert_eq!(before.grad, after.grad);
+            }
+            let mut corrupt = artifact;
+            for step in &mut corrupt.steps {
+                if let ModelStep::VectorBetaLogP { n_params, .. }
+                | ModelStep::VectorUniformLogP { n_params, .. } = step
+                {
+                    *n_params = 2;
+                }
+            }
+            assert!(corrupt.validate().is_err());
+        }
     }
 
     #[test]
