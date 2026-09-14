@@ -21,6 +21,37 @@ def _draws(samples: Any, actual: Any) -> tuple[np.ndarray, np.ndarray]:
     return samples.reshape((-1,) + actual.shape), actual
 
 
+def _weighted_difference(a: np.ndarray, b: np.ndarray, weight: Any) -> np.ndarray:
+    """Subtract before weighting for precision; scale first only on overflow."""
+    with np.errstate(over="ignore", invalid="ignore"):
+        difference = a - b
+        return np.where(np.isinf(difference), a * weight - b * weight, difference * weight)
+
+
+def _mean_error(draws: np.ndarray, actual: np.ndarray) -> np.ndarray:
+    with np.errstate(over="ignore", invalid="ignore"):
+        errors = draws - actual
+        overflow = np.isinf(errors).any(axis=0)
+        errors = np.where(overflow, draws * 0.5 - actual * 0.5, errors)
+        scale = np.max(np.abs(errors), axis=0)
+        normalized = np.divide(errors, scale, out=np.zeros_like(errors), where=scale != 0)
+        return normalized.mean(axis=0) * scale * np.where(overflow, 2.0, 1.0)
+
+
+def _quantiles(draws: np.ndarray, probabilities: Any) -> np.ndarray:
+    """Linear quantiles without overflowing the interpolation span."""
+    ordered = np.sort(draws, axis=0)
+    positions = np.asarray(probabilities, dtype=float) * (len(ordered) - 1)
+    lower_index = np.floor(positions).astype(int)
+    upper_index = np.ceil(positions).astype(int)
+    fraction = (positions - lower_index).reshape(positions.shape + (1,) * (draws.ndim - 1))
+    lower, upper = ordered[lower_index], ordered[upper_index]
+    with np.errstate(over="ignore", invalid="ignore"):
+        span = upper - lower
+        return np.where(np.isinf(span), lower * (1 - fraction) + upper * fraction,
+                        lower + span * fraction)
+
+
 def interval_score(actual: Any, lower: Any, upper: Any, alpha: float = 0.05) -> np.ndarray:
     """Proper score for a central (1-alpha) prediction interval; lower is better."""
     actual, lower, upper = np.broadcast_arrays(
@@ -40,8 +71,12 @@ def crps(samples: Any, actual: Any) -> np.ndarray:
     draws, actual = _draws(samples, actual)
     ordered = np.sort(draws, axis=0)
     n = len(ordered)
-    weights = (2 * np.arange(1, n + 1) - n - 1).reshape((n,) + (1,) * actual.ndim)
-    return np.mean(np.abs(draws - actual), axis=0) - np.sum(weights * ordered, axis=0) / (n * n)
+    ranks = np.arange(1, n + 1).reshape((n,) + (1,) * actual.ndim)
+    # Equivalent to E|X-y| - E|X-X'|/2, expressed as nonnegative terms.
+    # Subtracting two large expectations or summing weighted uncentered draws
+    # can erase the score when the forecast is narrow relative to its level.
+    weights = np.where(ordered <= actual, 2 * ranks - 1, 2 * (n - ranks) + 1) / (n * n)
+    return np.sum(np.abs(_weighted_difference(ordered, actual, weights)), axis=0)
 
 
 def weighted_interval_score(samples: Any, actual: Any, levels: Sequence[float] = (0.5, 0.8, 0.95)) -> np.ndarray:
@@ -52,27 +87,34 @@ def weighted_interval_score(samples: Any, actual: Any, levels: Sequence[float] =
         raise ValueError("levels must be a nonempty sequence strictly between zero and one")
     if len(np.unique(levels)) != len(levels):
         raise ValueError("interval levels must be unique")
-    score = 0.5 * np.abs(actual - np.median(draws, axis=0))
+    denominator = len(levels) + 0.5
+    score = np.abs(_weighted_difference(actual, _quantiles(draws, 0.5), 0.5 / denominator))
     for level in levels:
         alpha = 1 - level
-        lower, upper = np.quantile(draws, (alpha / 2, 1 - alpha / 2), axis=0)
-        score += (alpha / 2) * interval_score(actual, lower, upper, alpha)
-    return score / (len(levels) + 0.5)
+        lower, upper = _quantiles(draws, (alpha / 2, 1 - alpha / 2))
+        # Apply the WIS weights before forming interval penalties: a component
+        # interval score may overflow even when the final WIS is representable.
+        score += _weighted_difference(upper, lower, alpha / (2 * denominator))
+        score += np.maximum(_weighted_difference(lower, actual, 1 / denominator), 0)
+        score += np.maximum(_weighted_difference(actual, upper, 1 / denominator), 0)
+    return score
 
 
 def score_forecast(samples: Any, actual: Any, levels: Sequence[float] = (0.5, 0.8, 0.95)) -> dict[str, np.ndarray]:
     """Scores retain target dimensions, including horizon. Missing outcomes score NaN."""
     draws, actual = _draws(samples, actual)
-    bias = np.mean(draws, axis=0) - actual
+    bias = _mean_error(draws, actual)
+    with np.errstate(over="ignore"):
+        squared_error = bias**2
     scores = {
         "bias": bias,
         "absolute_error": np.abs(bias),
-        "squared_error": bias**2,
+        "squared_error": squared_error,
         "crps": crps(draws, actual),
         "wis": weighted_interval_score(draws, actual, levels),
     }
     for level in levels:
-        lower, upper = np.quantile(draws, ((1-level)/2, (1+level)/2), axis=0)
+        lower, upper = _quantiles(draws, ((1-level)/2, (1+level)/2))
         suffix = format(float(level), ".12g")
         scores[f"coverage_{suffix}"] = np.where(np.isnan(actual), np.nan, (actual >= lower) & (actual <= upper)).astype(float)
         scores[f"width_{suffix}"] = np.where(np.isnan(actual), np.nan, upper - lower)
@@ -144,10 +186,19 @@ class BacktestResult:
         for key in scores[0]:
             values = np.stack([s[key] for s in scores])
             axes = tuple(range(values.ndim - 1)) if by_horizon else None
-            finite = np.isfinite(values)
-            count = np.sum(finite, axis=axes)
-            total = np.sum(np.where(finite, values, 0), axis=axes)
-            result[key] = np.divide(total, count, out=np.full_like(total, np.nan, dtype=float), where=count > 0)
+            present = ~np.isnan(values)
+            count = np.sum(present, axis=axes)
+            denominator = np.sum(present, axis=axes, keepdims=True)
+            # NaN represents a missing outcome; infinity is a real loss and
+            # must not make a failed forecast disappear from the average.
+            scale = np.max(np.where(np.isfinite(values), np.abs(values), 0), axis=axes, keepdims=True)
+            scale = np.where(scale == 0, 1, scale)
+            with np.errstate(over="ignore", invalid="ignore"):
+                normalized = np.where(present, values, 0) / scale
+                total = np.sum(normalized, axis=axes, keepdims=True)
+                mean = np.divide(total, denominator, out=np.zeros_like(total), where=denominator > 0) * scale
+            mean = np.squeeze(mean, axis=axes)
+            result[key] = np.where(count > 0, mean, np.nan)
         return result
 
     @property
