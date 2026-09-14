@@ -1044,6 +1044,7 @@ pub fn derive_display_sample_result(
 
     Ok(SampleResult {
         samples,
+        unconstrained_samples: raw_result.unconstrained_samples.clone(),
         accept_rates: raw_result.accept_rates.clone(),
         step_sizes: raw_result.step_sizes.clone(),
         divergences: raw_result.divergences.clone(),
@@ -1555,23 +1556,29 @@ impl ModelFit {
             .iter()
             .map(|name| (name.clone(), Vec::new()))
             .collect();
-        for chain in &self.raw.samples {
+        for (chain_index, chain) in self.raw.samples.iter().enumerate() {
             let mut values = vec![Vec::with_capacity(chain.len()); heads.len()];
-            for draw in chain {
-                let position = draw
-                    .iter()
-                    .zip(&prediction_graph.param_transforms)
-                    .map(|(&v, t)| match t {
-                        ParamTransform::Identity => v,
-                        ParamTransform::Exp => v.ln(),
-                        ParamTransform::Sigmoid => v.ln() - (-v).ln_1p(),
-                        ParamTransform::BoundedSigmoid { lower, upper } => {
-                            let p = (v - lower) / (upper - lower);
-                            p.ln() - (-p).ln_1p()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                evaluator.compute(&prediction_graph, &position);
+            for (draw_index, draw) in chain.iter().enumerate() {
+                let reconstructed;
+                let position = if let Some(raw) = &self.raw.unconstrained_samples {
+                    &raw[chain_index][draw_index]
+                } else {
+                    reconstructed = draw
+                        .iter()
+                        .zip(&prediction_graph.param_transforms)
+                        .map(|(&v, t)| match t {
+                            ParamTransform::Identity => v,
+                            ParamTransform::Exp => v.ln(),
+                            ParamTransform::Sigmoid => v.ln() - (-v).ln_1p(),
+                            ParamTransform::BoundedSigmoid { lower, upper } => {
+                                let p = (v - lower) / (upper - lower);
+                                p.ln() - (-p).ln_1p()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    &reconstructed
+                };
+                evaluator.compute(&prediction_graph, position);
                 for (i, head) in heads.iter().enumerate() {
                     let aux = head.aux.map(|n| evaluator.scalar_at(n));
                     let mut observations = Vec::with_capacity(head.n_obs);

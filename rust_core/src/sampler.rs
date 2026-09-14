@@ -1,7 +1,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
-use crate::graph::Graph;
+use crate::graph::{Graph, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
@@ -151,6 +151,10 @@ pub(crate) fn validate_initial_values(
 #[derive(Debug, Clone)]
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
+    /// Exact sampler positions, indexed by chain/draw/parameter, retained when
+    /// any parameter is transformed. Constrained floating-point draws cannot
+    /// always be inverted (for example sigmoid(40) rounds to one).
+    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
     pub accept_rates: Vec<f64>,
     pub step_sizes: Vec<f64>,
     pub divergences: Vec<usize>,
@@ -396,8 +400,14 @@ pub fn sample_bound_with_init(
     let transitions: Vec<Vec<TransitionStats>> =
         results.iter().map(|r| r.transitions.clone()).collect();
 
+    let unconstrained_samples = transforms
+        .iter()
+        .any(|t| !matches!(t, ParamTransform::Identity))
+        .then(|| Arc::new(results.into_iter().map(|r| r.samples).collect()));
+
     Ok(SampleResult {
         samples,
+        unconstrained_samples,
         accept_rates,
         step_sizes,
         divergences,
@@ -406,10 +416,12 @@ pub fn sample_bound_with_init(
     })
 }
 
-/// Lightweight result for a single model in a batch run (1 chain).
+/// Result for a single model in a batch run, with flattened constrained draws.
 #[derive(Debug, Clone)]
 pub struct BatchModelResult {
     pub samples: Vec<Vec<f64>>,
+    /// Exact positions in chain/draw/parameter order for transformed graphs.
+    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
     pub param_names: Vec<String>,
     pub num_chains: usize,
     pub num_draws: usize,
@@ -568,6 +580,7 @@ pub fn sample_batch_bound(
                         index,
                         result: BatchModelResult {
                             samples,
+                            unconstrained_samples: sample.unconstrained_samples,
                             param_names: sample.param_names,
                             num_chains: config.num_chains,
                             num_draws: config.num_draws,
@@ -681,6 +694,11 @@ pub fn batch_sample_graphs(
             .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
                 let mut samples: Vec<Vec<f64>> = Vec::new();
+                let mut unconstrained_samples = graph
+                    .param_transforms
+                    .iter()
+                    .any(|t| !matches!(t, ParamTransform::Identity))
+                    .then(|| Vec::with_capacity(chains_per_model));
                 let mut accept_rates = Vec::with_capacity(chains_per_model);
                 let mut step_sizes = Vec::with_capacity(chains_per_model);
                 let mut divergences = Vec::with_capacity(chains_per_model);
@@ -727,10 +745,14 @@ pub fn batch_sample_graphs(
                     step_sizes.push(chain.step_size);
                     divergences.push(chain.divergences);
                     transitions.push(chain.transitions);
+                    if let Some(raw) = &mut unconstrained_samples {
+                        raw.push(chain.samples);
+                    }
                 }
 
                 BatchModelResult {
                     samples,
+                    unconstrained_samples: unconstrained_samples.map(Arc::new),
                     param_names: graph.param_names.clone(),
                     num_chains: chains_per_model,
                     num_draws: config.num_draws,
@@ -819,6 +841,7 @@ mod tests {
     fn sample_result_exposes_transition_diagnostics() {
         let result = SampleResult {
             samples: vec![],
+            unconstrained_samples: None,
             accept_rates: vec![0.8],
             step_sizes: vec![0.1],
             divergences: vec![1],

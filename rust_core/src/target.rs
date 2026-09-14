@@ -181,6 +181,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
             .collect::<Result<Vec<_>, String>>()
     })??;
     Ok(SampleResult {
+        unconstrained_samples: None,
         samples: chains.iter().map(|c| c.samples.clone()).collect(),
         accept_rates: chains.iter().map(|c| c.accept_rate).collect(),
         step_sizes: chains.iter().map(|c| c.step_size).collect(),
