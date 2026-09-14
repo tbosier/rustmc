@@ -2438,3 +2438,70 @@ mod extreme_scale_regressions {
         );
     }
 }
+
+#[cfg(test)]
+mod power_boundary_regressions {
+    use super::*;
+    use crate::{
+        distributions::{HalfNormal, Normal},
+        graph::ElementwiseOp,
+    };
+
+    #[test]
+    fn zero_power_preserves_scalar_target_and_gradient_at_zero() {
+        let mut graph = Graph::new();
+        let x = Normal::prior(&mut graph, "x", 0.0, 1.0);
+        let zero = graph.add_constant(0.0);
+        let constant = graph.elementwise(ElementwiseOp::Pow, x, Some(zero));
+        graph.add_logp_term(constant);
+        for raw in [-0.3, 0.0, 0.3] {
+            let expected = (
+                1.0 - 0.5 * std::f64::consts::TAU.ln() - 0.5 * raw * raw,
+                vec![-raw],
+            );
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &[raw]);
+            assert!((evaluator.total_logp - expected.0).abs() < 1e-14);
+            assert_eq!(evaluator.grad, expected.1);
+            let reference = grad_logp(&graph, &[raw]);
+            assert!((reference.0 - expected.0).abs() < 1e-14);
+            assert_eq!(reference.1, expected.1);
+        }
+    }
+
+    #[test]
+    fn zero_data_with_learned_positive_exponent_has_finite_gradient() {
+        for vector in [false, true] {
+            let mut graph = Graph::new();
+            let x = graph.add_data("x", vec![0.0, 1.0, 2.0]);
+            let exponent = if vector {
+                let start = graph.add_vector_params_with_transform("b", 3, ParamTransform::Exp);
+                graph.vector_half_normal_logp(start, 3, 1.0);
+                let indices = graph.add_data("indices", vec![0.0, 1.0, 2.0]);
+                graph.gather(start, 3, indices)
+            } else {
+                HalfNormal::prior(&mut graph, "b", 1.0)
+            };
+            let powered = graph.elementwise(ElementwiseOp::Pow, x, Some(exponent));
+            let total = graph.sum(powered);
+            let penalty = graph.neg(total);
+            graph.add_logp_term(penalty);
+            for position in [-0.7, 0.0, 0.4] {
+                let params = vec![position; graph.param_count];
+                let mut evaluator = Evaluator::new(&graph);
+                evaluator.compute(&graph, &params);
+                let reference = grad_logp(&graph, &params);
+                assert!(evaluator.total_logp.is_finite());
+                assert_eq!(reference, (evaluator.total_logp, evaluator.grad.clone()));
+                for i in 0..params.len() {
+                    let mut plus = params.clone();
+                    let mut minus = params.clone();
+                    plus[i] += 1e-6;
+                    minus[i] -= 1e-6;
+                    let numerical = (eval_logp(&graph, &plus) - eval_logp(&graph, &minus)) / 2e-6;
+                    assert!((numerical - evaluator.grad[i]).abs() < 1e-8);
+                }
+            }
+        }
+    }
+}
