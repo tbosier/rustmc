@@ -652,20 +652,13 @@ impl LinearGaussianStateSpace {
         for time in (0..count - 1).rev() {
             let filtered_covariance = &filter.filtered_covariances[time];
             let numerator = mat_mul_transpose_right(filtered_covariance, &self.transition, d);
-            let factor = cholesky(&filter.predicted_covariances[time + 1], d).map_err(|_| {
-                StateSpaceError::NumericalFailure(format!(
-                    "predicted covariance at time {} could not be solved",
-                    time + 1
-                ))
-            })?;
-            let mut gain = vec![0.0; d * d];
-            for row in 0..d {
-                let rhs: Vec<f64> = (0..d).map(|column| numerator[row * d + column]).collect();
-                let solution = cholesky_solve(&factor, &rhs, d);
-                for column in 0..d {
-                    gain[row * d + column] = solution[column];
-                }
-            }
+            let gain = backward_gain(&numerator, &filter.predicted_covariances[time + 1], d)
+                .map_err(|_| {
+                    StateSpaceError::NumericalFailure(format!(
+                        "predicted covariance at time {} could not be solved",
+                        time + 1
+                    ))
+                })?;
 
             let mean_delta: Vec<f64> = smoothed_means[time + 1]
                 .iter()
@@ -862,18 +855,13 @@ impl LinearGaussianStateSpace {
         for index in (0..count).rev() {
             let filtered_covariance = &filtered_covariances[index];
             let numerator = mat_mul_transpose_right(filtered_covariance, &self.transition, d);
-            let prediction_factor =
-                cholesky(&filter.predicted_covariances[index], d).map_err(|_| {
+            let gain = backward_gain(&numerator, &filter.predicted_covariances[index], d).map_err(
+                |_| {
                     StateSpaceError::NumericalFailure(format!(
-                        "predicted covariance at time {index} could not be factored for FFBS"
+                        "predicted covariance at time {index} could not be solved for FFBS"
                     ))
-                })?;
-            let mut gain = vec![0.0; d * d];
-            for row in 0..d {
-                let rhs = &numerator[row * d..(row + 1) * d];
-                let solution = cholesky_solve(&prediction_factor, rhs, d);
-                gain[row * d..(row + 1) * d].copy_from_slice(&solution);
-            }
+                },
+            )?;
 
             let delta: Vec<f64> = states[index + 1]
                 .iter()
@@ -900,6 +888,48 @@ impl LinearGaussianStateSpace {
         }
         Ok(states)
     }
+}
+
+/// Solve J P_pred = P_filtered T'. For singular predictions, conditioning on
+/// a maximal independent subset of coordinates is equivalent to conditioning on
+/// the entire next state. Dependent coordinates add no information. This avoids
+/// jitter, which would invent uncertainty in deterministic state transitions.
+fn backward_gain(numerator: &[f64], predicted: &[f64], d: usize) -> Result<Vec<f64>, ()> {
+    let mut gain = vec![0.0; d * d];
+    if let Ok(factor) = cholesky(predicted, d) {
+        for row in 0..d {
+            let solution = cholesky_solve(&factor, &numerator[row * d..(row + 1) * d], d);
+            gain[row * d..(row + 1) * d].copy_from_slice(&solution);
+        }
+        return Ok(gain);
+    }
+    let (_, independent) = positive_semidefinite_factor_with_indices(predicted, d)?;
+    let rank = independent.len();
+    let scales: Vec<f64> = independent
+        .iter()
+        .map(|&i| predicted[i * d + i].sqrt())
+        .collect();
+    let mut correlation = vec![0.0; rank * rank];
+    for (i, &original_i) in independent.iter().enumerate() {
+        for (j, &original_j) in independent.iter().enumerate() {
+            correlation[i * rank + j] = predicted[original_i * d + original_j]
+                / scales[i].max(scales[j])
+                / scales[i].min(scales[j]);
+        }
+    }
+    let factor = cholesky(&correlation, rank)?;
+    for row in 0..d {
+        let rhs: Vec<f64> = independent
+            .iter()
+            .enumerate()
+            .map(|(i, &column)| numerator[row * d + column] / scales[i])
+            .collect();
+        let solution = cholesky_solve(&factor, &rhs, rank);
+        for (i, &column) in independent.iter().enumerate() {
+            gain[row * d + column] = solution[i] / scales[i];
+        }
+    }
+    Ok(gain)
 }
 
 /// Stable Joseph form for the backward conditional covariance P - J P_pred J'.
@@ -1076,6 +1106,14 @@ fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
 /// from being amplified by a nearly zero pivot. The returned factor is dense:
 /// its rows are in the original state order and A = factor * factor'.
 fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
+    positive_semidefinite_factor_with_indices(matrix, d).map(|(factor, _)| factor)
+}
+
+/// Also return the independent covariance coordinates selected by pivoting.
+fn positive_semidefinite_factor_with_indices(
+    matrix: &[f64],
+    d: usize,
+) -> Result<(Vec<f64>, Vec<usize>), ()> {
     let tolerance = 64.0 * f64::EPSILON * d as f64;
     let mut scales = vec![0.0; d];
     for i in 0..d {
@@ -1121,10 +1159,11 @@ fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()
                 factor[i * d + j] *= scales[i];
             }
         }
-        return Ok(factor);
+        return Ok((factor, (0..d).collect()));
     }
     let mut remaining: Vec<usize> = (0..d).collect();
     let mut factor = vec![0.0; d * d];
+    let mut rank = 0;
     for column in 0..d {
         let pivot_position = (column..d)
             .max_by(|&a, &b| {
@@ -1148,6 +1187,7 @@ fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()
             }
             break;
         }
+        rank += 1;
         let root = variance.sqrt();
         for &i in &remaining[column..] {
             factor[i * d + column] = residual[i * d + pivot] / root;
@@ -1163,7 +1203,8 @@ fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()
             factor[i * d + j] *= scales[i];
         }
     }
-    Ok(factor)
+    remaining.truncate(rank);
+    Ok((factor, remaining))
 }
 
 fn sample_multivariate_normal<R: Rng + ?Sized>(
@@ -1217,6 +1258,99 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-10, "{actual} != {expected}");
+    }
+
+    #[test]
+    fn singular_transition_smoothing_matches_scalar_gaussian_conditioning() {
+        // x[t] = (0.5*z[t-1], z[t-1]) loses the second initial coordinate.
+        // The remaining trajectory is a one-parameter Gaussian regression.
+        let model = LinearGaussianStateSpace::new(
+            2,
+            vec![0.5, 0.0, 1.0, 0.0],
+            vec![1.0, 0.0],
+            vec![0.0; 4],
+            1.0,
+            vec![0.0; 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let y = [0.2, f64::NAN, -0.1, 0.3];
+        let h: Vec<f64> = (1..=4).map(|t| 0.5_f64.powi(t)).collect();
+        let variance = 1.0
+            / (1.0
+                + h.iter()
+                    .zip(y)
+                    .filter(|(_, y)| y.is_finite())
+                    .map(|(h, _)| h * h)
+                    .sum::<f64>());
+        let mean = variance
+            * h.iter()
+                .zip(y)
+                .filter(|(_, y)| y.is_finite())
+                .map(|(h, y)| h * y)
+                .sum::<f64>();
+        let smooth = model.smooth(&y).unwrap();
+        for (time, &h) in h.iter().enumerate() {
+            for (i, coefficient) in [h, 2.0 * h].into_iter().enumerate() {
+                assert_close(smooth.smoothed_means[time][i], coefficient * mean);
+                for (j, other) in [h, 2.0 * h].into_iter().enumerate() {
+                    assert_close(
+                        smooth.smoothed_covariances[time][i * 2 + j],
+                        coefficient * other * variance,
+                    );
+                }
+            }
+        }
+        let mut rng = ChaCha8Rng::seed_from_u64(751);
+        let mut sum = [0.0; 2];
+        let mut squares = [0.0; 2];
+        for _ in 0..8000 {
+            let states = model.sample_states_ffbs(&y, &mut rng).unwrap();
+            for (i, value) in states[0].iter().enumerate() {
+                sum[i] += value;
+                squares[i] += value * value;
+            }
+            for pair in states.windows(2) {
+                assert!((pair[1][0] - 0.5 * pair[0][0]).abs() < 1e-7);
+                assert!((pair[1][1] - pair[0][0]).abs() < 1e-7);
+            }
+        }
+        for (i, expected_mean, expected_variance) in [(0, mean, variance), (1, 0.0, 1.0)] {
+            let actual_mean = sum[i] / 8000.0;
+            assert!((actual_mean - expected_mean).abs() < 0.035);
+            assert!((squares[i] / 8000.0 - actual_mean.powi(2) - expected_variance).abs() < 0.04);
+        }
+    }
+
+    #[test]
+    fn zero_transition_preserves_initial_uncertainty_and_exact_future_state() {
+        let model = LinearGaussianStateSpace::new(
+            1,
+            vec![0.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![3.0],
+            vec![2.0],
+        )
+        .unwrap();
+        let y = [1.0, -2.0, 0.5];
+        let smooth = model.smooth(&y).unwrap();
+        assert_eq!(smooth.smoothed_means, vec![vec![0.0]; 3]);
+        assert_eq!(smooth.smoothed_covariances, vec![vec![0.0]; 3]);
+        let mut rng = ChaCha8Rng::seed_from_u64(754);
+        let mut sum = 0.0;
+        let mut squares = 0.0;
+        for _ in 0..5000 {
+            let states = model.sample_states_ffbs(&y, &mut rng).unwrap();
+            assert_eq!(states[1..], vec![vec![0.0]; 3]);
+            sum += states[0][0];
+            squares += states[0][0].powi(2);
+        }
+        let mean = sum / 5000.0;
+        assert!((mean - 3.0).abs() < 0.07);
+        assert!((squares / 5000.0 - mean * mean - 2.0).abs() < 0.1);
+        assert!(backward_gain(&[1.0, 0.0, 0.0, 1.0], &[1.0, 2.0, 2.0, 1.0], 2).is_err());
     }
 
     #[test]
