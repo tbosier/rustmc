@@ -78,5 +78,5 @@ def test_negative_binomial_pointwise_dispersion_is_not_clipped():
 def test_prior_prediction_rejects_unrepresentable_output():
     m = r.ModelBuilder()
     m.log_normal_prior("x", 800., 1.)
-    with pytest.raises(ValueError, match="representable"):
+    with pytest.raises(ValueError, match="nonfinite.*display transformation"):
         r.sample_prior_predictive(m.build(), n_samples=2)
