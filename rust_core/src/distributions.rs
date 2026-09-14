@@ -51,10 +51,7 @@ impl HalfNormal {
         let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
         let x = graph.exp(raw);
         let sigma_node = graph.add_constant(sigma);
-        graph.half_normal_logp(x, sigma_node);
-        // Jacobian correction: log|det J| = raw (since dx/draw = exp(raw) = x, log = raw)
-        let jacobian = graph.add_node_as_logp(raw);
-        let _ = jacobian;
+        graph.log_half_normal_logp(raw, sigma_node);
         x
     }
 
@@ -63,9 +60,7 @@ impl HalfNormal {
     pub fn prior_with_node_sigma(graph: &mut Graph, name: &str, sigma_node: NodeId) -> NodeId {
         let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
         let x = graph.exp(raw);
-        graph.half_normal_logp(x, sigma_node);
-        let jacobian = graph.add_node_as_logp(raw);
-        let _ = jacobian;
+        graph.log_half_normal_logp(raw, sigma_node);
         x
     }
 }
@@ -145,8 +140,7 @@ impl Exponential {
         let x = graph.exp(raw);
         let alpha_node = graph.add_constant(1.0);
         let rate_node = graph.add_constant(rate);
-        graph.gamma_logp(x, alpha_node, rate_node);
-        graph.add_logp_term(raw);
+        graph.log_gamma_logp(raw, alpha_node, rate_node);
         x
     }
 
@@ -154,8 +148,7 @@ impl Exponential {
         let raw = graph.add_param_with_transform(name, ParamTransform::Exp);
         let x = graph.exp(raw);
         let alpha_node = graph.add_constant(1.0);
-        graph.gamma_logp(x, alpha_node, rate_node);
-        graph.add_logp_term(raw);
+        graph.log_gamma_logp(raw, alpha_node, rate_node);
         x
     }
 }
@@ -199,8 +192,7 @@ impl Gamma {
         let x = graph.exp(raw);
         let alpha_node = graph.add_constant(alpha);
         let beta_node = graph.add_constant(beta);
-        graph.gamma_logp(x, alpha_node, beta_node);
-        graph.add_logp_term(raw);
+        graph.log_gamma_logp(raw, alpha_node, beta_node);
         x
     }
 }

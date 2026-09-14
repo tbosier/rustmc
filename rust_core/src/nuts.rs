@@ -742,6 +742,28 @@ mod tests {
     }
 
     #[test]
+    fn small_shape_gamma_recovers_underflow_tail_mass() {
+        let mut graph = Graph::new();
+        crate::distributions::Gamma::prior(&mut graph, "x", 0.001, 1.0);
+        let config = NutsConfig {
+            num_draws: 6000,
+            num_warmup: 1000,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![-1000.0]), None);
+        let fraction = chain.samples.iter().filter(|q| q[0] < -1000.0).count() as f64
+            / chain.samples.len() as f64;
+        // For x=exp(-1000), Gamma(.001,1)'s lower CDF is
+        // x^alpha/Gamma(alpha+1); the omitted correction is O(exp(-1000)).
+        let expected = (-1.0 - crate::autodiff::ln_gamma(1.001)).exp();
+        assert!(
+            (fraction - expected).abs() < 0.045,
+            "tail fraction {fraction} != {expected}"
+        );
+    }
+
+    #[test]
     fn boundary_concentrated_beta_recovers_both_raw_tails() {
         let mut graph = Graph::new();
         crate::distributions::BetaDist::prior(&mut graph, "x", 0.01, 0.01);
