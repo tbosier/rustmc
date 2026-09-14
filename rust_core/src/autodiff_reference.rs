@@ -131,6 +131,14 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 values[mu.0].as_scalar(),
                 values[sigma.0].as_scalar(),
             )),
+            Op::PositiveSupport { x } => {
+                let x = values[x.0].as_scalar();
+                Value::Scalar(if x.is_finite() && x > 0.0 {
+                    0.0
+                } else {
+                    f64::NEG_INFINITY
+                })
+            }
             Op::UniformLogP { x, lower, upper } => Value::Scalar(uniform_logp_scalar(
                 values[x.0].as_scalar(),
                 values[lower.0].as_scalar(),
@@ -512,6 +520,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         - 0.5 * denom.ln()
                         + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
             }
+            Op::PositiveSupport { .. } => {}
             Op::UniformLogP { x: _, lower, upper } => {
                 let lv = values[lower.0].as_scalar();
                 let uv = values[upper.0].as_scalar();

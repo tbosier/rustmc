@@ -578,6 +578,11 @@ impl CompiledModelArtifact {
                             lower: *lower,
                             upper: *upper,
                         },
+                        Op::PositiveSupport { .. } => {
+                            return Err(ArtifactError::invalid(
+                                "legacy artifacts do not support positive-domain constraints",
+                            ))
+                        }
                         Op::Elementwise { .. }
                         | Op::Gather { .. }
                         | Op::Sum(_)

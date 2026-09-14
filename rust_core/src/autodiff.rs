@@ -491,6 +491,14 @@ impl Evaluator {
                         self.scalars[sigma.0],
                     );
                 }
+                Op::PositiveSupport { x } => {
+                    let x = self.scalars[x.0];
+                    self.scalars[idx] = if x.is_finite() && x > 0.0 {
+                        0.0
+                    } else {
+                        f64::NEG_INFINITY
+                    };
+                }
                 Op::UniformLogP { x, lower, upper } => {
                     self.scalars[idx] = uniform_logp_scalar(
                         self.scalars[x.0],
@@ -979,6 +987,7 @@ impl Evaluator {
                             - 0.5 * (1.0 + z2 / nv).ln()
                             + 0.5 * (nv + 1.0) * z2 / (nv * nv * denom));
                 }
+                Op::PositiveSupport { .. } => {}
                 Op::UniformLogP { x: _, lower, upper } => {
                     let lv = self.scalars[lower.0];
                     let uv = self.scalars[upper.0];
@@ -1494,6 +1503,35 @@ fn digamma(mut x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::graph::{Graph, ObsFamily};
+
+    #[test]
+    fn positive_support_retains_finite_positive_scale_domain() {
+        let mut graph = Graph::new();
+        let scale = graph.add_param("scale");
+        graph.positive_support(scale);
+        for x in [
+            -1.0,
+            -0.0,
+            0.0,
+            1e-300,
+            0.5,
+            1e300,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+        ] {
+            let expected = if x.is_finite() && x > 0.0 {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            };
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &[x]);
+            assert_eq!(evaluator.total_logp, expected);
+            assert_eq!(evaluator.grad, vec![0.0]);
+            assert_eq!(grad_logp(&graph, &[x]), (expected, vec![0.0]));
+        }
+    }
 
     #[test]
     fn ln_gamma_matches_known_values() {
