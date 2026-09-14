@@ -647,25 +647,19 @@ impl LinearGaussianStateSpace {
             });
         }
         let d = self.dimension;
+        let (backward, mut smoothed_factor) = self.backward_parameters(observations)?;
         let mut smoothed_means = filter.filtered_means.clone();
         let mut smoothed_covariances = filter.filtered_covariances.clone();
+        smoothed_covariances[count - 1] = root_covariance(&smoothed_factor, d, d);
         for time in (0..count - 1).rev() {
-            let filtered_covariance = &filter.filtered_covariances[time];
-            let numerator = mat_mul_transpose_right(filtered_covariance, &self.transition, d);
-            let gain = backward_gain(&numerator, &filter.predicted_covariances[time + 1], d)
-                .map_err(|_| {
-                    StateSpaceError::NumericalFailure(format!(
-                        "predicted covariance at time {} could not be solved",
-                        time + 1
-                    ))
-                })?;
+            let gain = &backward[time + 1].gain;
 
             let mean_delta: Vec<f64> = smoothed_means[time + 1]
                 .iter()
                 .zip(&filter.predicted_means[time + 1])
                 .map(|(smoothed, predicted)| smoothed - predicted)
                 .collect();
-            let correction = mat_vec(&gain, &mean_delta, d);
+            let correction = mat_vec(gain, &mean_delta, d);
             for (entry, delta) in smoothed_means[time].iter_mut().zip(correction) {
                 *entry += delta;
             }
@@ -673,21 +667,20 @@ impl LinearGaussianStateSpace {
             //                     + J P(x_{t+1} | all y) J'.
             // Avoid subtracting the predicted covariance from the smoothed
             // covariance: that can erase a small, valid posterior variance.
-            let mut covariance = backward_conditional_covariance(
-                filtered_covariance,
-                &gain,
-                &self.transition,
-                &self.process_covariance,
-                d,
-            );
-            let propagated = mat_mul_transpose_right(
-                &mat_mul(&gain, &smoothed_covariances[time + 1], d),
-                &gain,
-                d,
-            );
-            add_assign(&mut covariance, &propagated);
-            smoothed_covariances[time] = covariance;
-            symmetrize(&mut smoothed_covariances[time], d);
+            let propagated = mat_mul(gain, &smoothed_factor, d);
+            let mut combined = vec![0.0; d * 3 * d];
+            for row in 0..d {
+                combined[row * 3 * d..row * 3 * d + 2 * d]
+                    .copy_from_slice(&backward[time + 1].factor[row * 2 * d..(row + 1) * 2 * d]);
+                combined[row * 3 * d + 2 * d..(row + 1) * 3 * d]
+                    .copy_from_slice(&propagated[row * d..(row + 1) * d]);
+            }
+            smoothed_factor = orthogonal_rows(&combined, d, 3 * d)
+                .map_err(|_| {
+                    StateSpaceError::NumericalFailure("smoothed covariance root failed".into())
+                })?
+                .factor;
+            smoothed_covariances[time] = root_covariance(&smoothed_factor, d, d);
             check_computed(
                 "smoothed state",
                 &smoothed_means[time],
@@ -826,9 +819,102 @@ impl LinearGaussianStateSpace {
         })
     }
 
-    /// Draw the pre-observation initial state and all filtered states from the
-    /// joint smoothing distribution. This is crate-private because callers
-    /// must still provide an outer parameter sampler to obtain Bayesian fits.
+    /// Propagate covariance roots so rank is determined before squaring them.
+    /// Covariance roundoff is O(epsilon), which cannot distinguish a true small
+    /// eigenvalue from a lost deterministic direction. In root coordinates the
+    /// same small eigenvalue has O(sqrt(epsilon)) amplitude and is retained.
+    fn backward_parameters(
+        &self,
+        observations: &[f64],
+    ) -> Result<(Vec<BackwardConditional>, Vec<f64>), StateSpaceError> {
+        let d = self.dimension;
+        let width = 2 * d;
+        let failure =
+            || StateSpaceError::NumericalFailure("square-root backward conditioning failed".into());
+        let mut filtered = cholesky(&self.initial_covariance, d).map_err(|_| failure())?;
+        let process = process_root(&self.process_covariance, d).map_err(|_| failure())?;
+        let mut backward = Vec::with_capacity(observations.len());
+        for (time, value) in observations.iter().enumerate() {
+            let propagated = mat_mul(&self.transition, &filtered, d);
+            let mut joint = vec![0.0; d * width];
+            for i in 0..d {
+                joint[i * width..i * width + d].copy_from_slice(&propagated[i * d..(i + 1) * d]);
+                joint[i * width + d..(i + 1) * width].copy_from_slice(&process[i * d..(i + 1) * d]);
+            }
+            let roots = orthogonal_rows(&joint, d, width).map_err(|_| failure())?;
+            let rank = roots.indices.len();
+            let mut projection = vec![0.0; d * rank];
+            let mut residual = vec![0.0; d * width];
+            for i in 0..d {
+                residual[i * width..i * width + d].copy_from_slice(&filtered[i * d..(i + 1) * d]);
+                for j in 0..rank {
+                    let coefficient: f64 = (0..d)
+                        .map(|k| filtered[i * d + k] * roots.basis[j * width + k])
+                        .sum();
+                    projection[i * rank + j] = coefficient;
+                    for k in 0..width {
+                        residual[i * width + k] -= coefficient * roots.basis[j * width + k];
+                    }
+                }
+            }
+            let mut gain = vec![0.0; d * d];
+            for row in 0..d {
+                // The independent rows of the root form a lower triangular
+                // matrix in pivot order. Solve its transpose, not P_pred.
+                let mut solution = projection[row * rank..(row + 1) * rank].to_vec();
+                for i in (0..rank).rev() {
+                    for j in i + 1..rank {
+                        solution[i] -= roots.factor[roots.indices[j] * d + i] * solution[j];
+                    }
+                    solution[i] /= roots.factor[roots.indices[i] * d + i];
+                    gain[row * d + roots.indices[i]] = solution[i];
+                }
+            }
+            // An invertible identity transition with no innovations conveys
+            // the entire state exactly, including arbitrarily small modes.
+            if self.transition == identity(d) && self.process_covariance.iter().all(|x| *x == 0.0) {
+                gain = identity(d);
+                residual.fill(0.0);
+            }
+            let covariance = root_covariance(&residual, d, width);
+            check_computed("backward conditional", &gain, &covariance, time)?;
+            backward.push(BackwardConditional {
+                gain,
+                factor: residual,
+            });
+            filtered = roots.factor;
+            if value.is_finite() {
+                let h = self
+                    .observation_rows
+                    .as_ref()
+                    .map_or(self.observation.as_slice(), |rows| rows[time].as_slice());
+                let noise = self
+                    .observation_variances
+                    .as_ref()
+                    .map_or(self.observation_variance, |v| v[time]);
+                let u: Vec<f64> = (0..d)
+                    .map(|j| (0..d).map(|i| h[i] * filtered[i * d + j]).sum())
+                    .collect();
+                let variance = noise + u.iter().map(|x| x * x).sum::<f64>();
+                let gain: Vec<f64> = (0..d)
+                    .map(|i| (0..d).map(|j| filtered[i * d + j] * u[j]).sum::<f64>() / variance)
+                    .collect();
+                let mut update = vec![0.0; d * (d + 1)];
+                for i in 0..d {
+                    for j in 0..d {
+                        update[i * (d + 1) + j] = filtered[i * d + j] - gain[i] * u[j];
+                    }
+                    update[i * (d + 1) + d] = gain[i] * noise.sqrt();
+                }
+                filtered = orthogonal_rows(&update, d, d + 1)
+                    .map_err(|_| failure())?
+                    .factor;
+            }
+        }
+        Ok((backward, filtered))
+    }
+
+    /// Draw the initial state and all observation-time states jointly.
     pub(crate) fn sample_states_ffbs<R: Rng + ?Sized>(
         &self,
         observations: &[f64],
@@ -838,121 +924,198 @@ impl LinearGaussianStateSpace {
         let count = observations.len();
         let d = self.dimension;
         let mut filtered_means = Vec::with_capacity(count + 1);
-        let mut filtered_covariances = Vec::with_capacity(count + 1);
         filtered_means.push(self.initial_mean.clone());
         filtered_means.extend(filter.filtered_means.iter().cloned());
-        filtered_covariances.push(self.initial_covariance.clone());
-        filtered_covariances.extend(filter.filtered_covariances.iter().cloned());
 
+        let (backward, terminal_factor) = self.backward_parameters(observations)?;
         let mut states = vec![vec![0.0; d]; count + 1];
-        states[count] = sample_multivariate_normal(
-            &filtered_means[count],
-            &filtered_covariances[count],
-            d,
-            rng,
-        )?;
+        states[count] = sample_from_factor(&filtered_means[count], &terminal_factor, d, d, rng)?;
 
         for index in (0..count).rev() {
-            let filtered_covariance = &filtered_covariances[index];
-            let numerator = mat_mul_transpose_right(filtered_covariance, &self.transition, d);
-            let gain = backward_gain(&numerator, &filter.predicted_covariances[index], d).map_err(
-                |_| {
-                    StateSpaceError::NumericalFailure(format!(
-                        "predicted covariance at time {index} could not be solved for FFBS"
-                    ))
-                },
-            )?;
+            let conditional = &backward[index];
+            let gain = &conditional.gain;
 
             let delta: Vec<f64> = states[index + 1]
                 .iter()
                 .zip(&filter.predicted_means[index])
                 .map(|(sampled, predicted)| sampled - predicted)
                 .collect();
-            let correction = mat_vec(&gain, &delta, d);
+            let correction = mat_vec(gain, &delta, d);
             let conditional_mean: Vec<f64> = filtered_means[index]
                 .iter()
                 .zip(correction)
                 .map(|(mean, correction)| mean + correction)
                 .collect();
 
-            let mut conditional_covariance = backward_conditional_covariance(
-                filtered_covariance,
-                &gain,
-                &self.transition,
-                &self.process_covariance,
-                d,
-            );
-            symmetrize(&mut conditional_covariance, d);
             states[index] =
-                sample_multivariate_normal(&conditional_mean, &conditional_covariance, d, rng)?;
+                sample_from_factor(&conditional_mean, &conditional.factor, d, 2 * d, rng)?;
         }
         Ok(states)
     }
 }
 
-/// Solve J P_pred = P_filtered T'. For singular predictions, conditioning on
-/// a maximal independent subset of coordinates is equivalent to conditioning on
-/// the entire next state. Dependent coordinates add no information. This avoids
-/// jitter, which would invent uncertainty in deterministic state transitions.
-fn backward_gain(numerator: &[f64], predicted: &[f64], d: usize) -> Result<Vec<f64>, ()> {
-    let mut gain = vec![0.0; d * d];
-    if let Ok(factor) = cholesky(predicted, d) {
-        for row in 0..d {
-            let solution = cholesky_solve(&factor, &numerator[row * d..(row + 1) * d], d);
-            gain[row * d..(row + 1) * d].copy_from_slice(&solution);
-        }
-        return Ok(gain);
-    }
-    let (_, independent) = positive_semidefinite_factor_with_indices(predicted, d)?;
-    let rank = independent.len();
-    let scales: Vec<f64> = independent
-        .iter()
-        .map(|&i| predicted[i * d + i].sqrt())
-        .collect();
-    let mut correlation = vec![0.0; rank * rank];
-    for (i, &original_i) in independent.iter().enumerate() {
-        for (j, &original_j) in independent.iter().enumerate() {
-            correlation[i * rank + j] = predicted[original_i * d + original_j]
-                / scales[i].max(scales[j])
-                / scales[i].min(scales[j]);
-        }
-    }
-    let factor = cholesky(&correlation, rank)?;
-    for row in 0..d {
-        let rhs: Vec<f64> = independent
-            .iter()
-            .enumerate()
-            .map(|(i, &column)| numerator[row * d + column] / scales[i])
-            .collect();
-        let solution = cholesky_solve(&factor, &rhs, rank);
-        for (i, &column) in independent.iter().enumerate() {
-            gain[row * d + column] = solution[i] / scales[i];
-        }
-    }
-    Ok(gain)
+struct BackwardConditional {
+    gain: Vec<f64>,
+    factor: Vec<f64>,
 }
 
-/// Stable Joseph form for the backward conditional covariance P - J P_pred J'.
-fn backward_conditional_covariance(
-    filtered: &[f64],
-    gain: &[f64],
-    transition: &[f64],
-    process: &[f64],
-    d: usize,
-) -> Vec<f64> {
-    let mut residual_transition = identity(d);
-    let gain_transition = mat_mul(gain, transition, d);
-    for (entry, subtraction) in residual_transition.iter_mut().zip(gain_transition) {
-        *entry -= subtraction;
+struct OrthogonalRows {
+    factor: Vec<f64>,
+    basis: Vec<f64>,
+    indices: Vec<usize>,
+}
+
+fn root_covariance(root: &[f64], d: usize, width: usize) -> Vec<f64> {
+    let mut covariance = vec![0.0; d * d];
+    for i in 0..d {
+        for j in 0..=i {
+            let value = (0..width)
+                .map(|k| root[i * width + k] * root[j * width + k])
+                .sum();
+            covariance[i * d + j] = value;
+            covariance[j * d + i] = value;
+        }
     }
-    let mut covariance = mat_mul_transpose_right(
-        &mat_mul(&residual_transition, filtered, d),
-        &residual_transition,
-        d,
-    );
-    let process_contribution = mat_mul_transpose_right(&mat_mul(gain, process, d), gain, d);
-    add_assign(&mut covariance, &process_contribution);
     covariance
+}
+
+fn sample_from_factor<R: Rng + ?Sized>(
+    mean: &[f64],
+    root: &[f64],
+    d: usize,
+    width: usize,
+    rng: &mut R,
+) -> Result<Vec<f64>, StateSpaceError> {
+    let z: Vec<f64> = (0..width).map(|_| StandardNormal.sample(rng)).collect();
+    let draw: Vec<f64> = (0..d)
+        .map(|i| mean[i] + (0..width).map(|j| root[i * width + j] * z[j]).sum::<f64>())
+        .collect();
+    if draw.iter().any(|x| !x.is_finite()) {
+        return Err(StateSpaceError::NumericalFailure(
+            "FFBS produced a non-finite state draw".into(),
+        ));
+    }
+    Ok(draw)
+}
+
+/// Rank-revealing modified Gram-Schmidt on equilibrated root rows. A second
+/// orthogonalization pass avoids mistaking cancellation for an extra direction.
+fn orthogonal_rows(matrix: &[f64], d: usize, width: usize) -> Result<OrthogonalRows, ()> {
+    let mut scales = vec![0.0_f64; d];
+    let mut residual = matrix.to_vec();
+    for i in 0..d {
+        for &x in &matrix[i * width..(i + 1) * width] {
+            if !x.is_finite() {
+                return Err(());
+            }
+            scales[i] = scales[i].max(x.abs());
+        }
+        if scales[i] > 0.0 {
+            for x in &mut residual[i * width..(i + 1) * width] {
+                *x /= scales[i];
+            }
+        }
+    }
+    let tolerance = 64.0 * f64::EPSILON * (d + width) as f64;
+    let mut remaining: Vec<usize> = (0..d).collect();
+    let mut indices = Vec::new();
+    let mut basis = vec![0.0; d * width];
+    let mut factor = vec![0.0; d * d];
+    for column in 0..d {
+        let norm = |i: usize| {
+            residual[i * width..(i + 1) * width]
+                .iter()
+                .map(|x| x * x)
+                .sum::<f64>()
+                .sqrt()
+        };
+        let pivot = *remaining
+            .iter()
+            .max_by(|&&a, &&b| norm(a).total_cmp(&norm(b)))
+            .ok_or(())?;
+        let length = norm(pivot);
+        if length <= tolerance {
+            break;
+        }
+        for k in 0..width {
+            basis[column * width + k] = residual[pivot * width + k] / length;
+        }
+        indices.push(pivot);
+        for &row in &remaining {
+            let mut coefficient = 0.0;
+            for _ in 0..2 {
+                let correction: f64 = (0..width)
+                    .map(|k| residual[row * width + k] * basis[column * width + k])
+                    .sum();
+                coefficient += correction;
+                for k in 0..width {
+                    residual[row * width + k] -= correction * basis[column * width + k];
+                }
+            }
+            factor[row * d + column] = coefficient * scales[row];
+        }
+        remaining.retain(|&row| row != pivot);
+    }
+    Ok(OrthogonalRows {
+        factor,
+        basis,
+        indices,
+    })
+}
+
+/// Pivoted LDL factorization with power-of-two equilibration and compensated
+/// Schur complements. Exact low-rank process matrices must not acquire spurious
+/// sqrt(epsilon) innovations from Cholesky's rounded square roots.
+fn process_root(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
+    let scales: Vec<f64> = (0..d)
+        .map(|i| {
+            let root = matrix[i * d + i].sqrt();
+            if root > 0.0 {
+                root.log2().floor().exp2()
+            } else {
+                1.0
+            }
+        })
+        .collect();
+    let mut residual = matrix.to_vec();
+    for i in 0..d {
+        for j in 0..d {
+            residual[i * d + j] = residual[i * d + j] / scales[i] / scales[j];
+        }
+    }
+    let mut remaining: Vec<usize> = (0..d).collect();
+    let mut factor = vec![0.0; d * d];
+    let tolerance = 256.0 * f64::EPSILON * d as f64;
+    for column in 0..d {
+        let pivot = *remaining
+            .iter()
+            .max_by(|&&a, &&b| residual[a * d + a].total_cmp(&residual[b * d + b]))
+            .ok_or(())?;
+        let variance = residual[pivot * d + pivot];
+        if variance <= 0.0 {
+            if remaining.iter().any(|&i| {
+                remaining
+                    .iter()
+                    .any(|&j| residual[i * d + j].abs() > tolerance)
+            }) {
+                return Err(());
+            }
+            break;
+        }
+        for &i in &remaining {
+            factor[i * d + column] = residual[i * d + pivot] / variance.sqrt() * scales[i];
+        }
+        remaining.retain(|&i| i != pivot);
+        for &i in &remaining {
+            for &j in &remaining {
+                let product = residual[i * d + pivot] * residual[j * d + pivot];
+                let error = (-residual[i * d + pivot]).mul_add(residual[j * d + pivot], product);
+                residual[i * d + j] =
+                    (residual[i * d + j].mul_add(variance, -product) + error) / variance;
+            }
+        }
+    }
+    Ok(factor)
 }
 
 fn check_len(name: &str, actual: usize, expected: usize) -> Result<(), StateSpaceError> {
@@ -1106,14 +1269,6 @@ fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
 /// from being amplified by a nearly zero pivot. The returned factor is dense:
 /// its rows are in the original state order and A = factor * factor'.
 fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
-    positive_semidefinite_factor_with_indices(matrix, d).map(|(factor, _)| factor)
-}
-
-/// Also return the independent covariance coordinates selected by pivoting.
-fn positive_semidefinite_factor_with_indices(
-    matrix: &[f64],
-    d: usize,
-) -> Result<(Vec<f64>, Vec<usize>), ()> {
     let tolerance = 64.0 * f64::EPSILON * d as f64;
     let mut scales = vec![0.0; d];
     for i in 0..d {
@@ -1159,11 +1314,10 @@ fn positive_semidefinite_factor_with_indices(
                 factor[i * d + j] *= scales[i];
             }
         }
-        return Ok((factor, (0..d).collect()));
+        return Ok(factor);
     }
     let mut remaining: Vec<usize> = (0..d).collect();
     let mut factor = vec![0.0; d * d];
-    let mut rank = 0;
     for column in 0..d {
         let pivot_position = (column..d)
             .max_by(|&a, &b| {
@@ -1187,7 +1341,6 @@ fn positive_semidefinite_factor_with_indices(
             }
             break;
         }
-        rank += 1;
         let root = variance.sqrt();
         for &i in &remaining[column..] {
             factor[i * d + column] = residual[i * d + pivot] / root;
@@ -1203,8 +1356,7 @@ fn positive_semidefinite_factor_with_indices(
             factor[i * d + j] *= scales[i];
         }
     }
-    remaining.truncate(rank);
-    Ok((factor, remaining))
+    Ok(factor)
 }
 
 fn sample_multivariate_normal<R: Rng + ?Sized>(
@@ -1231,23 +1383,6 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
         ));
     }
     Ok(draw)
-}
-
-fn cholesky_solve(factor: &[f64], rhs: &[f64], d: usize) -> Vec<f64> {
-    let mut result = rhs.to_vec();
-    for i in 0..d {
-        for j in 0..i {
-            result[i] -= factor[i * d + j] * result[j];
-        }
-        result[i] /= factor[i * d + i];
-    }
-    for i in (0..d).rev() {
-        for j in i + 1..d {
-            result[i] -= factor[j * d + i] * result[j];
-        }
-        result[i] /= factor[i * d + i];
-    }
-    result
 }
 
 #[cfg(test)]
@@ -1323,6 +1458,91 @@ mod tests {
     }
 
     #[test]
+    fn mixed_rank_collapse_matches_independent_gaussian_updates() {
+        // T^2 = T Q = 0. The first state has two random directions; all
+        // subsequent states have one and are mutually independent.
+        let w = [1.0, -1.0, 2.0];
+        let q: Vec<f64> = w
+            .iter()
+            .flat_map(|a| w.iter().map(move |b| a * b / 8.0))
+            .collect();
+        let model = LinearGaussianStateSpace::new(
+            3,
+            vec![0.25, -0.25, -0.25, 0.25, -0.25, -0.25, 0.0, 0.0, 0.0],
+            vec![1.0, 0.0, 0.0],
+            q.clone(),
+            1.0,
+            vec![0.0; 3],
+            identity(3),
+        )
+        .unwrap();
+        let y = [0.2, -0.4, 0.7];
+        let result = model.smooth(&y).unwrap();
+        for (time, observation) in y.iter().enumerate() {
+            let mut prior = q.clone();
+            if time == 0 {
+                for i in 0..2 {
+                    for j in 0..2 {
+                        prior[i * 3 + j] += 3.0 / 16.0;
+                    }
+                }
+            }
+            let variance = 1.0 + prior[0];
+            for i in 0..3 {
+                assert_close(
+                    result.smoothed_means[time][i],
+                    prior[i * 3] / variance * observation,
+                );
+                for j in 0..3 {
+                    assert_close(
+                        result.smoothed_covariances[time][i * 3 + j],
+                        prior[i * 3 + j] - prior[i * 3] * prior[j * 3] / variance,
+                    );
+                }
+            }
+        }
+        let mut rng = ChaCha8Rng::seed_from_u64(872);
+        let mut sum = 0.0;
+        let mut square = 0.0;
+        for _ in 0..8000 {
+            let states = model.sample_states_ffbs(&y, &mut rng).unwrap();
+            for state in &states[2..] {
+                assert!((state[1] + state[0]).abs() < 1e-12);
+                assert!((state[2] - 2.0 * state[0]).abs() < 1e-12);
+            }
+            sum += states[3][0];
+            square += states[3][0].powi(2);
+        }
+        let mean = sum / 8000.0;
+        assert!((mean - 0.7 / 9.0).abs() < 0.012);
+        assert!((square / 8000.0 - mean * mean - 1.0 / 9.0).abs() < 0.008);
+    }
+
+    #[test]
+    fn roots_preserve_small_positive_modes_and_reject_nonfinite_draws() {
+        let covariance = vec![1.0, 1.0 - f64::EPSILON, 1.0 - f64::EPSILON, 1.0];
+        let root = process_root(&covariance, 2).unwrap();
+        assert!(root[1].abs() + root[3].abs() > 0.0);
+        let model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1.0, -1.0],
+            vec![0.0; 4],
+            1e-14,
+            vec![0.0; 2],
+            covariance,
+        )
+        .unwrap();
+        let (conditionals, _) = model.backward_parameters(&[1e-8, -1e-8, 2e-8]).unwrap();
+        for conditional in conditionals {
+            assert_eq!(conditional.gain, identity(2));
+            assert!(conditional.factor.iter().all(|x| *x == 0.0));
+        }
+        let mut rng = ChaCha8Rng::seed_from_u64(871);
+        assert!(sample_from_factor(&[f64::INFINITY], &[0.0], 1, 1, &mut rng).is_err());
+    }
+
+    #[test]
     fn zero_transition_preserves_initial_uncertainty_and_exact_future_state() {
         let model = LinearGaussianStateSpace::new(
             1,
@@ -1350,7 +1570,7 @@ mod tests {
         let mean = sum / 5000.0;
         assert!((mean - 3.0).abs() < 0.07);
         assert!((squares / 5000.0 - mean * mean - 2.0).abs() < 0.1);
-        assert!(backward_gain(&[1.0, 0.0, 0.0, 1.0], &[1.0, 2.0, 2.0, 1.0], 2).is_err());
+        assert!(process_root(&[1.0, 2.0, 2.0, 1.0], 2).is_err());
     }
 
     #[test]
