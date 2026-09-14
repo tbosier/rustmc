@@ -8,6 +8,14 @@ versioning while the public API is stabilized.
 
 ### Fixed
 
+- Preserve posterior means, standard deviations and Monte Carlo standard errors
+  across parameter units without overflow or arbitrary variance cutoffs.
+- Allow smoothing and FFBS for valid deterministic state transitions with singular
+  predicted covariance, including zero-innovation AR components.
+- Keep zero powers and zero-valued predictors with learned positive exponents from
+  introducing invalid gradients into otherwise finite custom-model targets.
+- Preserve infinite losses in backtest summaries and stabilize CRPS, WIS and point
+  error arithmetic for narrow forecasts with large levels or extreme finite scales.
 - Preserve logical NumPy matrix order across contiguous, transposed and strided inputs.
 - Evaluate Beta and Uniform priors in unconstrained coordinates without truncating
   rounded sigmoid tails; retain exact sampler positions for prediction and fit artifacts.
