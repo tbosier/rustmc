@@ -571,7 +571,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += y * eta - eta.exp() - ln_gamma(y + 1.0);
+                                sum += crate::count_sampling::log_mass_from_log_rate(y, eta);
                             }
                             self.scalars[idx] = sum;
                         }
@@ -1378,7 +1378,7 @@ fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
 fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
     eta.iter()
         .zip(obs.iter())
-        .map(|(e, y)| y * e - e.exp() - ln_gamma(y + 1.0))
+        .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
         .sum()
 }
 
@@ -1490,7 +1490,7 @@ fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
 }
 
 fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
-    x * lam.ln() - lam - ln_gamma(x + 1.0)
+    crate::count_sampling::log_mass(x, lam)
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {

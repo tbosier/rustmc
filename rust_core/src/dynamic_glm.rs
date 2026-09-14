@@ -428,7 +428,7 @@ fn log_likelihood(y: f64, eta: f64, occurrence: f64, exposure: f64, cfg: &Dynami
             }
             let log_mu = eta + exposure.ln();
             if cfg.family == Family::Poisson {
-                return y * log_mu - log_mu.exp() - ln_gamma(y + 1.);
+                return crate::count_sampling::log_mass_from_log_rate(y, log_mu);
             }
             let r = cfg.dispersion;
             let a = log_mu - r.ln();
@@ -846,4 +846,24 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 fn numerical(message: impl Into<String>) -> Error {
     Error::NumericalFailure(message.into())
+}
+
+#[cfg(test)]
+mod poisson_density_tests {
+    use super::*;
+
+    #[test]
+    fn poisson_large_count_curvature_is_preserved_with_exposure() {
+        let config = DynamicGlmConfig::default();
+        for count in [1e14_f64, 1e15, 8e15] {
+            let expected_mode = -0.5 * (std::f64::consts::TAU.ln() + count.ln());
+            for exposure in [0.5_f64, 1.0, 10.0] {
+                for z in [-1.0, 0.0, 1.0] {
+                    let eta = count.ln() - exposure.ln() + z / count.sqrt();
+                    let actual = log_likelihood(count, eta, 0.0, exposure, &config);
+                    assert!((actual - expected_mode + 0.5 * z * z).abs() < 3e-6);
+                }
+            }
+        }
+    }
 }

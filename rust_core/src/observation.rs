@@ -58,7 +58,7 @@ pub fn log_density(
                 return Err("count observation must be a nonnegative integer".into());
             }
             if family == ObsFamily::PoissonLog {
-                observed * eta - eta.exp() - crate::autodiff::ln_gamma(observed + 1.0)
+                crate::count_sampling::log_mass_from_log_rate(observed, eta)
             } else {
                 let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
                 crate::autodiff::ln_gamma(observed + alpha)

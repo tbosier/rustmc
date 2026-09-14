@@ -1,4 +1,4 @@
-//! Poisson simulation over the exactly representable count range.
+//! Stable Poisson densities and simulation over the exactly representable count range.
 //!
 //! Large rates use Hörmann's transformed rejection algorithm PTRS:
 //! https://doi.org/10.1016/0167-6687(93)90997-4
@@ -59,7 +59,32 @@ pub(crate) fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, St
     }
 }
 
-fn log_mass(count: f64, rate: f64) -> f64 {
+/// Poisson log mass with a log-rate input. Keeping eta for underflowed rates
+/// preserves finite log probabilities for positive observations in that tail.
+pub(crate) fn log_mass_from_log_rate(count: f64, log_rate: f64) -> f64 {
+    if !log_rate.is_finite() || !count.is_finite() || count < 0.0 || count.fract() != 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let rate = log_rate.exp();
+    if !rate.is_finite() {
+        return f64::NEG_INFINITY;
+    }
+    if rate < f64::MIN_POSITIVE {
+        // Subnormal exp results lose relative accuracy as well. Eta is still
+        // precise and there is no large-term cancellation in this tail.
+        return count * log_rate - rate - crate::autodiff::ln_gamma(count + 1.0);
+    }
+    log_mass(count, rate)
+}
+
+pub(crate) fn log_mass(count: f64, rate: f64) -> f64 {
+    if !count.is_finite() || count < 0.0 || count.fract() != 0.0 || !rate.is_finite() || rate < 0.0
+    {
+        return f64::NEG_INFINITY;
+    }
+    if rate == 0.0 {
+        return if count == 0.0 { 0.0 } else { f64::NEG_INFINITY };
+    }
     if count == 0.0 {
         return -rate;
     }
@@ -84,7 +109,13 @@ fn log_mass(count: f64, rate: f64) -> f64 {
         }
         rate * sum
     } else {
-        count * (count / rate).ln() + rate - count
+        let ratio = count / rate;
+        let log_ratio = if ratio.is_finite() && ratio > 0.0 {
+            ratio.ln()
+        } else {
+            count.ln() - rate.ln()
+        };
+        count * log_ratio + rate - count
     };
     let inverse = 1.0 / count;
     let inverse_squared = inverse * inverse;
