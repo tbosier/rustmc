@@ -2139,6 +2139,28 @@ mod tail_and_inactive_regressions {
     }
 
     #[test]
+    fn inactive_vector_elements_do_not_propagate_singular_derivatives() {
+        let mut graph = Graph::new();
+        let start = graph.add_vector_params("x", 2);
+        graph.vector_normal_logp(start, 2, 0.0, 1.0);
+        let indices = graph.add_data("indices", vec![0.0, 1.0]);
+        let x = graph.gather(start, 2, indices);
+        let squared = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+        let abs = graph.elementwise(ElementwiseOp::Sqrt, squared, None);
+        let mask = graph.add_data("mask", vec![0.0, 1.0]);
+        let active_abs = graph.elementwise(ElementwiseOp::Mul, abs, Some(mask));
+        let potential = graph.sum(active_abs);
+        graph.add_logp_term(potential);
+        let params = [0.0, 0.4];
+        let mut evaluator = Evaluator::new(&graph);
+        evaluator.compute(&graph, &params);
+        let reference = grad_logp(&graph, &params);
+        assert!(evaluator.total_logp.is_finite());
+        assert_eq!(evaluator.grad, vec![0.0, 0.6]);
+        assert_eq!(reference, (evaluator.total_logp, evaluator.grad));
+    }
+
+    #[test]
     fn output_only_singular_derivatives_do_not_change_target() {
         for vector in [false, true] {
             let mut graph = Graph::new();

@@ -700,6 +700,27 @@ mod tests {
     use rand::SeedableRng;
 
     #[test]
+    fn output_only_deterministic_preserves_sampling_from_zero() {
+        use crate::graph::ElementwiseOp;
+        let mut graph = Graph::new();
+        let x = crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        let config = NutsConfig {
+            num_draws: 20,
+            num_warmup: 20,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let baseline = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let square = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
+        let abs = graph.elementwise(ElementwiseOp::Sqrt, square, None);
+        graph.deterministics.push(("abs_x".into(), abs));
+        let mut rng = ChaCha8Rng::seed_from_u64(42);
+        let actual = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        assert_eq!(actual.samples, baseline.samples);
+        assert_eq!(actual.divergences, baseline.divergences);
+    }
+
+    #[test]
     fn terminating_expansion_is_counted() {
         let mut graph = Graph::new();
         crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
