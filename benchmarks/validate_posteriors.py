@@ -51,6 +51,50 @@ def reference_cases():
     yield "gamma_poisson", m.compile(), {"y": y}, ["rate"], np.array([a/b]), np.array([[a/b**2]])
 
 
+#: Per-parameter convergence diagnostic -> reported metric and its aggregation.
+CONVERGENCE_METRICS = (("r_hat", "max_rhat", max), ("ess_bulk", "min_ess_bulk", min),
+                       ("ess_tail", "min_ess_tail", min))
+
+
+def _as_float(value):
+    # float() silently drops the imaginary part of a complex value, which would turn a
+    # non-finite diagnostic into a plausible one, and raises OverflowError on a huge int.
+    if isinstance(value, complex):
+        return math.nan
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return math.nan
+
+
+def convergence_metrics(diagnostics, names):
+    """Aggregate per-parameter diagnostics, naming every non-finite entry as a failure.
+
+    Builtin ``max``/``min`` return the non-NaN operand unless the NaN comes first, and
+    both silently keep a signed infinity that is not the extremum, so a single bad
+    parameter could otherwise pass the gate. Each parameter is screened before
+    aggregation, and a non-finite entry is carried into the reported metric so the
+    failure survives into the JSON report rather than being replaced by a plausible
+    value from a neighbouring parameter. A parameter in ``names`` with no diagnostic
+    row at all is the same hole and fails too, since an absent row is never screened.
+    """
+    failures, metrics = [], {}
+    labels = [diagnostic.get("name", index) for index, diagnostic in enumerate(diagnostics)]
+    if not diagnostics:
+        failures.append("diagnostics_empty")
+    failures += [f"diagnostics_missing[{name}]" for name in names if name not in labels]
+    for key, metric, reduce in CONVERGENCE_METRICS:
+        values = []
+        for label, diagnostic in zip(labels, diagnostics):
+            value = _as_float(diagnostic.get(key))
+            if not math.isfinite(value):
+                failures.append(f"{metric}[{label}]")
+            values.append(value)
+        nonfinite = [value for value in values if not math.isfinite(value)]
+        metrics[metric] = nonfinite[0] if nonfinite else (reduce(values) if values else math.nan)
+    return failures, metrics
+
+
 def assess_fit(fit, names, reference_mean, reference_covariance):
     """Require convergence and marginal/joint posterior accuracy; keep failed metrics."""
     samples = np.stack([fit.get_samples_2d()[name] for name in names], axis=-1)
@@ -58,15 +102,19 @@ def assess_fit(fit, names, reference_mean, reference_covariance):
     reference_sd = np.sqrt(np.diag(reference_covariance))
     covariance = np.atleast_2d(np.cov(flat, rowvar=False))
     diagnostics = fit.diagnostics()
+    convergence_failures, convergence = convergence_metrics(diagnostics, names)
+    divergences = list(fit.divergences())
     metrics = {
-        "max_rhat": max(d["r_hat"] for d in diagnostics),
-        "min_ess_bulk": min(d["ess_bulk"] for d in diagnostics),
-        "min_ess_tail": min(d["ess_tail"] for d in diagnostics),
-        "divergences": sum(fit.divergences()),
+        **convergence,
+        # The error metrics take np.abs first, so every element is non-negative and
+        # np.max keeps both NaN and infinity for the finiteness sweep below; builtin
+        # max would not, so do not swap it in. An absent divergence count is not a
+        # zero count: sum(()) would report a clean run from missing telemetry.
+        "divergences": sum(divergences) if divergences else math.nan,
         "max_mean_error_sd": float(np.max(np.abs(flat.mean(axis=0)-reference_mean)/reference_sd)),
         "max_covariance_error_sd": float(np.max(np.abs(covariance-reference_covariance)/np.outer(reference_sd, reference_sd))),
     }
-    failures = [name for name, value in metrics.items() if not math.isfinite(value)]
+    failures = convergence_failures + [name for name, value in metrics.items() if not math.isfinite(value)]
     limits = {"max_rhat": 1.01, "max_mean_error_sd": .12, "max_covariance_error_sd": .15}
     failures += [name for name, limit in limits.items() if metrics[name] > limit]
     failures += [name for name in ("min_ess_bulk", "min_ess_tail") if metrics[name] < 400]
