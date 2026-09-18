@@ -879,7 +879,9 @@ impl Evaluator {
                     let va = self.scalars[a.0];
                     let vb = self.scalars[b.0];
                     self.adj_scalars[a.0] += a_s / vb;
-                    self.adj_scalars[b.0] -= a_s * va / (vb * vb);
+                    // See ElementwiseOp::Div: squaring the denominator loses
+                    // representable derivatives at both ends of the range.
+                    self.adj_scalars[b.0] -= a_s * (va / vb) / vb;
                 }
                 Op::Neg(a) => self.adj_scalars[a.0] -= a_s,
                 Op::Exp(a) => {

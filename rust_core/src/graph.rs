@@ -115,7 +115,12 @@ impl ElementwiseOp {
             Self::Add => (1.0, 1.0),
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
-            Self::Div => (1.0 / b, -a / (b * b)),
+            // -(a/b)/b rather than -a/(b*b): the squared denominator
+            // overflows to infinity for |b| > ~1.3e154 (erasing a
+            // representable derivative as -0.0) and underflows to zero for
+            // |b| < ~1.5e-154 (fabricating an infinity). Dividing twice keeps
+            // the same two roundings and stays inside the exponent range.
+            Self::Div => (1.0 / b, -(a / b) / b),
             Self::Pow => {
                 // x^0 is constant even at x=0. For positive exponents, 0^b
                 // is also constant in b; forming 0*log(0) gives a false NaN.

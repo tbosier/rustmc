@@ -454,7 +454,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let va = values[a.0].as_scalar();
                 let vb = values[b.0].as_scalar();
                 adj_scalar[a.0] += a_s / vb;
-                adj_scalar[b.0] -= a_s * va / (vb * vb);
+                adj_scalar[b.0] -= a_s * (va / vb) / vb;
             }
             Op::Neg(a) => adj_scalar[a.0] -= a_s,
             Op::Exp(a) => adj_scalar[a.0] += a_s * values[a.0].as_scalar().exp(),
