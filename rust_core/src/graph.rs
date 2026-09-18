@@ -66,6 +66,34 @@ pub struct ObservationHead {
     pub n_obs: usize,
 }
 
+/// Logistic sigmoid, `1 / (1 + exp(-x))`, evaluated without overflow.
+///
+/// The textbook form overflows `exp(-x)` for `x < -709` and returns 0 where
+/// the true value is an ordinary subnormal, so branch on the sign and
+/// exponentiate the negative argument.
+#[inline]
+pub fn stable_sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let e = x.exp();
+        e / (1.0 + e)
+    }
+}
+
+/// Derivative of [`stable_sigmoid`].
+///
+/// Mathematically `s(x) * (1 - s(x))`, but `1 - s(x)` cancels to exactly zero
+/// once `s(x)` rounds to 1 (around `x = 37`), discarding a value that stays
+/// representable out to `x = 745`. `exp(-|x|) / (1 + exp(-|x|))^2` is the same
+/// quantity, is symmetric in `x` by construction, and needs one `exp`.
+#[inline]
+pub fn stable_sigmoid_derivative(x: f64) -> f64 {
+    let e = (-x.abs()).exp();
+    let d = 1.0 + e;
+    e / (d * d)
+}
+
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum ElementwiseOp {
@@ -95,14 +123,7 @@ impl ElementwiseOp {
             Self::Neg => -a,
             Self::Exp => a.exp(),
             Self::Log => a.ln(),
-            Self::Sigmoid => {
-                if a >= 0.0 {
-                    1.0 / (1.0 + (-a).exp())
-                } else {
-                    let e = a.exp();
-                    e / (1.0 + e)
-                }
-            }
+            Self::Sigmoid => stable_sigmoid(a),
             Self::Sqrt => a.sqrt(),
             Self::Tanh => a.tanh(),
             Self::Softplus => a.max(0.0) + (-a.abs()).exp().ln_1p(),
@@ -135,13 +156,10 @@ impl ElementwiseOp {
             Self::Neg => (-1.0, 0.0),
             Self::Exp => (a.exp(), 0.0),
             Self::Log => (1.0 / a, 0.0),
-            Self::Sigmoid => {
-                let v = self.value(a, b);
-                (v * (1.0 - v), 0.0)
-            }
+            Self::Sigmoid => (stable_sigmoid_derivative(a), 0.0),
             Self::Sqrt => (0.5 / a.sqrt(), 0.0),
             Self::Tanh => (1.0 - a.tanh().powi(2), 0.0),
-            Self::Softplus => (Self::Sigmoid.value(a, 0.0), 0.0),
+            Self::Softplus => (stable_sigmoid(a), 0.0),
             Self::Sin => (a.cos(), 0.0),
             Self::Cos => (-a.sin(), 0.0),
         }
@@ -347,10 +365,19 @@ impl ParamTransform {
         match self {
             ParamTransform::Identity => raw,
             ParamTransform::Exp => raw.exp(),
-            ParamTransform::Sigmoid => 1.0 / (1.0 + (-raw).exp()),
+            ParamTransform::Sigmoid => stable_sigmoid(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                lower + (upper - lower) * s
+                // Anchor to whichever endpoint the value is nearest.
+                // `lower + span * s` cancels catastrophically once `s` is
+                // near 1 and `lower` is large and negative: with
+                // lower = -1e308 and upper = 1, raw = 710 gives
+                // -1e308 + 1e308 == 0 instead of 0.552371377432487.
+                let span = upper - lower;
+                if raw >= 0.0 {
+                    upper - span * stable_sigmoid(-raw)
+                } else {
+                    lower + span * stable_sigmoid(raw)
+                }
             }
         }
     }
@@ -361,13 +388,9 @@ impl ParamTransform {
         match self {
             ParamTransform::Identity => 1.0,
             ParamTransform::Exp => raw.exp(),
-            ParamTransform::Sigmoid => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                s * (1.0 - s)
-            }
+            ParamTransform::Sigmoid => stable_sigmoid_derivative(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                (upper - lower) * s * (1.0 - s)
+                (upper - lower) * stable_sigmoid_derivative(raw)
             }
         }
     }

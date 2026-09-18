@@ -1,6 +1,10 @@
 use crate::data::DataBinding;
 use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
 
+/// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
+pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
+use crate::graph::stable_sigmoid_derivative;
+
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
 // ---------------------------------------------------------------------------
@@ -422,10 +426,7 @@ impl Evaluator {
                 Op::Neg(a) => self.scalars[idx] = -self.scalars[a.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
                 Op::Log(a) => self.scalars[idx] = self.scalars[a.0].ln(),
-                Op::Sigmoid(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = 1.0 / (1.0 + (-v).exp());
-                }
+                Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
                 Op::Square(a) => {
                     let v = self.scalars[a.0];
                     self.scalars[idx] = v * v;
@@ -890,8 +891,7 @@ impl Evaluator {
                 }
                 Op::Log(a) => self.adj_scalars[a.0] += a_s / self.scalars[a.0],
                 Op::Sigmoid(a) => {
-                    let s = self.scalars[idx];
-                    self.adj_scalars[a.0] += a_s * s * (1.0 - s);
+                    self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
                 }
                 Op::Square(a) => self.adj_scalars[a.0] += a_s * 2.0 * self.scalars[a.0],
 
@@ -1504,15 +1504,6 @@ pub(crate) fn softplus(x: f64) -> f64 {
         x + (-x).exp().ln_1p()
     } else {
         x.exp().ln_1p()
-    }
-}
-
-fn sigmoid_stable(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let ex = x.exp();
-        ex / (1.0 + ex)
     }
 }
 
