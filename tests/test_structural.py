@@ -92,3 +92,47 @@ def test_zero_innovation_ar_singular_states_fit_forecast_and_replay(coefficients
     restored = mc.StructuralFit.from_json(fit.to_json())
     np.testing.assert_array_equal(restored.forecast(3, seed=752).observation_paths,
                                   forecast.observation_paths)
+
+
+def test_forecast_reusing_the_fit_seed_stays_independent_of_the_terminal_state():
+    """Forecasting with the fit's own seed must not replay the fit's RNG stream.
+
+    Fitting and forecasting draw from separate domains of the seed, so a caller
+    who passes one seed to both still gets predictive innovations that are
+    independent of the sampled terminal state. When the two shared a stream, the
+    forecast's first transition innovation was literally the same standard normal
+    pair that built the terminal state it was applied to, inflating the
+    predictive variance by ~60% with no error reported.
+    """
+    V, C = mc.VarianceParameter, mc.StructuralComponent
+    q, r, p0, seed, draws = .5, 1., 1., 42, 30000
+    model = mc.StructuralModel([C.level("a", V.fixed(q), 0., p0),
+                                C.level("b", V.fixed(q), 0., p0)], V.fixed(r))
+    # One observation of the summed levels keeps the posterior exactly Gaussian,
+    # and fixed variances make every Gibbs sweep an independent FFBS draw.
+    fit = model.fit([1.], chains=1, draws=draws, warmup=0, seed=seed)
+    terminal = fit.terminal_states[0]
+    total = terminal.sum(-1)
+
+    # Kalman update for state_1 given the single observation y_1 = [1 1] state_1.
+    prior, design = np.diag([p0 + q, p0 + q]), np.ones((1, 2))
+    innovation_variance = design @ prior @ design.T + r
+    gain = prior @ design.T / innovation_variance
+    posterior = prior - gain @ innovation_variance @ gain.T
+    analytic_state = float((design @ posterior @ design.T)[0, 0])
+    analytic_observation = analytic_state + 2 * q + r
+    assert abs(total.var(ddof=1) / analytic_state - 1) < .04, "fitted terminal state is off"
+
+    # Several horizons: the two streams advance at different rates, so only some
+    # step counts line them up, and which ones is an implementation detail.
+    for steps in (1, 2, 3):
+        paths = fit.forecast(steps, seed=seed)
+        first = paths.observation_paths[0][:, 0]
+        transition = paths.state_paths[0][:, 0, :].sum(-1) - total
+        correlation = float(np.corrcoef(total, transition)[0, 1])
+        assert abs(correlation) < .05, (
+            f"steps={steps}: terminal state and first forecast innovation correlate "
+            f"at {correlation:+.4f}; the forecast is replaying the fit's RNG stream")
+        assert abs(first.var(ddof=1) / analytic_observation - 1) < .04, (
+            f"steps={steps}: step-1 predictive variance {first.var(ddof=1):.4f} "
+            f"does not match the analytic {analytic_observation:.4f}")
