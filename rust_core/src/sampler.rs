@@ -293,11 +293,11 @@ fn validate_initial_target(
 /// gradient-based entry point in this module, plus `model::GraphModel::sample`
 /// and `compiled_model::CompiledModelRuntime::sample`, which both funnel here.
 ///
-/// Not covered: the raw kernels `nuts::run_chain`, `nuts::run_chain_bound`,
-/// `hmc::run_chain` and `hmc::run_chain_bound` are `pub` and return a bare
-/// `ChainResult` with no error channel, so they cannot report a rejection
-/// without a breaking signature change. A caller reaching past this module into
-/// those kernels can still drive a discrete latent.
+/// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
+/// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
+/// they call this directly. That is why they return a `Result` rather than a
+/// bare `ChainResult`. `sampler`'s own call sites use the `_unguarded` variants
+/// instead, having already run this once at their boundary.
 ///
 /// Observed data is never rejected, and not by a heuristic: the observation
 /// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
@@ -326,8 +326,13 @@ pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), Str
     // LogDensityTerms` replaces `logp_terms` wholesale, so a discrete term can
     // still reach the total density indirectly (through, say, an `Add`
     // registered in its place) while the discrete node itself is missing from
-    // the list. Scanning all nodes fails closed there, and costs one pass per
-    // `sample` call — nothing beside the sampling that follows.
+    // the list. Scanning all nodes fails closed there.
+    //
+    // Cost is one pass over the nodes, plus one operand walk per discrete term
+    // found. Models with no `Bernoulli`/`Poisson` prior — which is nearly all
+    // of them — pay only the pass; a model with `d` discrete terms pays `d`
+    // walks, each allocating and clearing one bitmap over the nodes. Both are
+    // negligible beside the sampling that follows.
     for node in &graph.nodes {
         let (x, family) = match node.op {
             Op::BernoulliLogP { x, .. } => (x, "Bernoulli"),

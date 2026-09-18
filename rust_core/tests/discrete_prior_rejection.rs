@@ -207,7 +207,15 @@ fn the_raw_kernels_still_run_a_continuous_model() {
         .expect("nuts::run_chain must still run a continuous model");
     assert_eq!(chain.samples.len(), 20);
 
+    let chain = hmc::run_chain(&graph, &hmc_config, &mut rng, None, None)
+        .expect("hmc::run_chain must still run a continuous model");
+    assert_eq!(chain.samples.len(), 20);
+
     let binding = DataBinding::from_graph(&graph).expect("graph binds");
+    let chain = nuts::run_chain_bound(&graph, binding.clone(), &nuts_config, &mut rng, None, None)
+        .expect("nuts::run_chain_bound must still run a continuous model");
+    assert_eq!(chain.samples.len(), 20);
+
     let chain = hmc::run_chain_bound(&graph, binding, &hmc_config, &mut rng, None, None)
         .expect("hmc::run_chain_bound must still run a continuous model");
     assert_eq!(chain.samples.len(), 20);

@@ -92,11 +92,13 @@ impl Uniform {
         let raw =
             graph.add_param_with_transform(name, ParamTransform::BoundedSigmoid { lower, upper });
         // One fused node, not `lower + (upper - lower) * sigmoid(raw)` spelled
-        // out in the graph: assembled from nodes this was a second formula for
+        // out in the graph. Assembled from nodes this was a second formula for
         // the constrained value, and it disagreed with the `ParamTransform`
-        // that reports the draw back to the caller — by the whole value for
-        // `(-1e308, 1)`, where the graph evaluated the density at 0 while the
-        // posterior showed 0.552371377432487. See [`Op::BoundedSigmoid`].
+        // that reports the draw back to the caller — by one ulp on `(0, 1)`,
+        // and by the whole value for `(-1e308, 1)`, where the graph evaluated
+        // the density at 0 while the posterior showed 0.552371377432487. Fusing
+        // also keeps the span out of reverse mode as a separate factor. See
+        // `Op::BoundedSigmoid`.
         let x = graph.bounded_sigmoid(raw, lower, upper);
 
         // Evaluate density and Jacobian together in raw space: the interval

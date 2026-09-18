@@ -96,49 +96,104 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
     e / (d * d)
 }
 
-/// `lower + (upper - lower) * sigmoid(raw)`, evaluated so that neither the
-/// span nor either endpoint has to be representable on its own.
+/// `lower + (upper - lower) * sigmoid(raw)`, anchored to whichever endpoint the
+/// value is nearest.
 ///
 /// This is the single definition of the bounded transform. Both the
 /// constrained draw reported back to a caller ([`ParamTransform::apply`]) and
 /// the value the graph evaluates its density at ([`Op::BoundedSigmoid`]) call
 /// it, so they cannot drift into two formulas that disagree about where the
-/// model was evaluated.
+/// model was evaluated. That drift is what this function exists to prevent —
+/// the formula itself is unchanged.
 ///
-/// Written as the convex combination `lower * s(-raw) + upper * s(raw)`, which
-/// is the same quantity and fixes three failures of the scaled form:
+/// `lower + span * s` cancels catastrophically once `s` is near 1 and `lower`
+/// is large and negative: with lower = -1e308 and upper = 1, raw = 710 gives
+/// -1e308 + 1e308 == 0 instead of 0.552371377432487. Both branches also round
+/// towards the endpoint they subtract from, so for any interval whose span is
+/// representable the result can never leave `[lower, upper]`. That guarantee is
+/// why the branch is here rather than the branch-free convex combination
+/// `lower * s(-raw) + upper * s(raw)`: the latter is the same quantity in exact
+/// arithmetic, but its two separately rounded products can land outside a
+/// narrow interval far from zero — `(1e16, 1e16 + 2)` at raw -34.5 gives
+/// 9999999999999998, below `lower` — and can overflow to infinity when both
+/// endpoints are near `f64::MAX`.
 ///
-/// * `lower + span * s` cancels catastrophically once `s` rounds to 1 and
-///   `lower` is large and negative — `(-1e308, 1)` at raw 710 gives 0 instead
-///   of 0.552371377432487, because `s(710)` is exactly 1 in f64 while the
-///   information is all in `s(-710)`, which this form reads directly.
-/// * `upper - lower` overflows for `(-1e308, 1e308)`, so the scaled form
-///   returns `-inf` at raw 0 (true value: exactly 0) and `NaN` at raw -800
-///   (`inf * 0`). Neither endpoint is multiplied by the span here.
-/// * The two-branch endpoint-anchored form disagreed with itself by one ulp
-///   across raw 0. This form has no branch, so it is a single function of
-///   `raw` everywhere.
+/// Three limits remain, none of them new:
 ///
-/// One limit is unchanged: a constrained value whose sigmoid underflows is
-/// still lost, because the sigmoid is materialised before scaling.
-/// `(0, 1e308)` at raw -746 gives 0 where the true value is 1.038e-16.
-/// Recovering it would need the scaling folded inside the exponential, at the
-/// cost of accuracy everywhere else.
+/// * The branches can disagree by one ulp at raw == 0, so the mapping is not
+///   exactly monotone there (lower = 1, upper = 1e16 steps down by one ulp
+///   across zero); that is a rounding artefact of the reported value, and
+///   [`bounded_sigmoid_derivative`] does not model it.
+/// * Materialising the sigmoid before scaling loses bounded values whose
+///   sigmoid underflows: lower = 0, upper = 1e308, raw = -746 gives 0 where the
+///   true value is 1.0382848095158282e-16. Removing that needs the scaling
+///   folded into the sigmoid.
+/// * An interval whose span is not representable — `(-1e308, 1e308)` has
+///   `upper - lower == inf` — yields `-inf` or `NaN` here. Such an interval is
+///   not a usable `Uniform` prior in any case: both `uniform_bounds_valid` and
+///   `model`'s `validate_positive_finite("uniform width", ...)` require a
+///   finite width, so its density is `-inf` everywhere regardless of the
+///   transform.
 #[inline]
 pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
-    lower * stable_sigmoid(-raw) + upper * stable_sigmoid(raw)
+    let span = upper - lower;
+    if raw >= 0.0 {
+        upper - span * stable_sigmoid(-raw)
+    } else {
+        lower + span * stable_sigmoid(raw)
+    }
 }
 
 /// d/draw of [`bounded_sigmoid`], i.e. `(upper - lower) * s'(raw)`.
 ///
-/// Distributed over the two endpoints for the same reason as the value: the
-/// span need not be representable (`(-1e308, 1e308)` at raw 0 has derivative
-/// 5e307, not `inf`), and `span * s'` overflows in the other direction
-/// whenever the product is formed before the caller's adjoint is applied.
+/// `span * s'` cannot overflow: `s'` never exceeds 0.25, so the product is at
+/// most a quarter of a representable span. Distributing it over the endpoints
+/// as `upper * s' - lower * s'` would not be safer — for `(1e16, 1e16 + 2)` at
+/// raw 0.176 the two products round to the same f64 and cancel to exactly 0,
+/// discarding a derivative of 0.4961479024771348.
 #[inline]
 pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
+    (upper - lower) * stable_sigmoid_derivative(raw)
+}
+
+/// `adjoint * (upper - lower) * s'(raw)`, associated so that the product stays
+/// inside the exponent range wherever the exact value is representable.
+///
+/// Reverse mode has three factors to multiply and only two orders worth
+/// considering, and each fails where the other succeeds:
+///
+/// * Applying the span to the adjoint first is what the old three-node
+///   `sigmoid`/`mul`/`add` chain did, and it overflows: `Uniform(0, 1e308)` at
+///   raw -710 under a `sigma = 0.1` likelihood has an adjoint of -44.76, and
+///   `-44.76 * 1e308` is `-inf` where the true gradient is -19.04.
+/// * Applying the span to the slope first — [`bounded_sigmoid_derivative`] —
+///   fixes that, but underflows in the mirror case: `(0, 1e-308)` at raw -40
+///   has `span * s' == 4.2e-326`, which rounds to zero and erases a gradient of
+///   4.248354255291588e-18 under an adjoint of 1e308.
+///
+/// So take the second order, and fall back to the first only when it lost the
+/// value outright. The fallback cannot itself overflow: `span * s'` only
+/// underflows when the span is tiny, and multiplying the adjoint by a tiny span
+/// moves it towards zero.
+///
+/// The band where the fallback fires is narrow. `s / s'` is `1 + e^-|raw|`,
+/// which never exceeds 2, so `span * s'` and the constrained value's distance
+/// from its nearer endpoint underflow within a factor of two of each other:
+/// almost everywhere `span * s'` rounds to zero, the value is pinned at an
+/// endpoint and a zero gradient is the honest derivative of the rounded map.
+/// A subnormal span near raw 0 is the exception — `(0, 1e-323)` has
+/// `span * s' == 2.5e-324`, which rounds to zero while the value still moves —
+/// and that is the case this order rescues.
+#[inline]
+pub fn bounded_sigmoid_adjoint(adjoint: f64, raw: f64, lower: f64, upper: f64) -> f64 {
     let slope = stable_sigmoid_derivative(raw);
-    upper * slope - lower * slope
+    let span = upper - lower;
+    let scaled = span * slope;
+    if scaled == 0.0 && span != 0.0 && slope != 0.0 {
+        (adjoint * span) * slope
+    } else {
+        adjoint * scaled
+    }
 }
 
 /// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
@@ -674,8 +729,19 @@ impl Graph {
     /// than the first one found so the error message does not depend on the
     /// traversal order.
     ///
-    /// Nodes are in topological order, so the walk terminates, and each node
-    /// is expanded at most once.
+    /// The dependence is syntactic, not semantic. An op that reads a parameter
+    /// and ignores it — `theta.powf(0.0)`, which is identically 1 — still
+    /// counts as reaching it, and an op that indexes a parameter span reports
+    /// the span's first slot rather than the element it will select at runtime,
+    /// so a `Gather` over `coef[1]` names `coef[0]`. Both are deliberate: this
+    /// backs a safety check, where naming a neighbouring parameter or refusing
+    /// a pathological spelling of a constant is the cheap failure, and missing
+    /// a real dependence is the expensive one.
+    ///
+    /// Termination does not rest on the node order: `nodes` is public and a
+    /// `NodeId` is an unchecked index, so a caller can build a graph that is
+    /// not topologically sorted. The `expanded` set is what bounds the walk —
+    /// each node is expanded at most once even under a cycle.
     pub(crate) fn reachable_param(&self, root: NodeId) -> Option<usize> {
         let mut expanded = vec![false; self.nodes.len()];
         let mut stack = vec![root];

@@ -11,7 +11,7 @@ use rustmc_core::autodiff::Evaluator;
 use rustmc_core::distributions::{
     BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Uniform,
 };
-use rustmc_core::graph::{ElementwiseOp, Graph, NodeId, ParamTransform};
+use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, ParamTransform};
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
 };
@@ -384,7 +384,8 @@ fn bounded_sigmoid_transform_survives_both_tails() {
 /// reverse mode had to materialise the sigmoid node's adjoint with the `1e308`
 /// factor already applied: with `sigma = 0.1` that intermediate is `-4.5e309`,
 /// it overflowed, and the gradient came back `-inf`. The fused bounded-sigmoid
-/// node never forms it, so both scales are now exact.
+/// node never forms it, so both scales are now finite and correct to the 1e-9
+/// asserted below — not to the last bit, since `exp` is not correctly rounded.
 ///
 /// Expectations below are the analytic derivative of the model density,
 /// computed out of crate with Python's `decimal` at 1500 significant digits;
@@ -437,15 +438,19 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
 // ---------------------------------------------------------------------------
 
 /// Bounded intervals the constrained value has to survive: two ordinary ones,
-/// each tail separately, one whose span `upper - lower` is not representable
-/// at all, and one where both endpoints are large and positive.
-const BOUNDED_INTERVALS: [(f64, f64); 6] = [
+/// each tail separately, one where both endpoints are large and positive, and
+/// two that are narrower than one ulp of their own endpoints — the last two are
+/// where a branch-free convex combination of the endpoints fails, returning a
+/// value below `lower` or overflowing to infinity.
+const BOUNDED_INTERVALS: [(f64, f64); 8] = [
     (0.0, 1.0),
     (-2.0, 3.0),
     (0.0, 1e308),
     (-1e308, 1.0),
-    (-1e308, 1e308),
     (1.0, 1e16),
+    (-1e16, 2e16),
+    (1e16, 1e16 + 2.0),
+    (1.7976931348623155e308, f64::MAX),
 ];
 
 /// `Uniform::prior` returns the node every downstream likelihood reads as the
@@ -457,6 +462,14 @@ const BOUNDED_INTERVALS: [(f64, f64); 6] = [
 /// Asserted on the bit pattern rather than a tolerance, because the claim is
 /// identity and not agreement: `Uniform(-1e308, 1)` at raw 710 used to report
 /// 0.552371377432487 while the graph evaluated its density at 0.0.
+///
+/// This is the one kind of expectation in this file that is not an independent
+/// reference, and it cannot be: after the fix both sides call
+/// `graph::bounded_sigmoid`, so a wrong shared helper would satisfy it. It is a
+/// tripwire for a second formula being reintroduced, not a check on the
+/// formula, and it earns its place only because
+/// `uniform_prior_constrained_value_matches_high_precision_reference` below
+/// pins the value itself against an out-of-crate reference.
 #[test]
 fn uniform_prior_density_point_is_the_reported_draw() {
     for (lower, upper) in BOUNDED_INTERVALS {
@@ -492,8 +505,16 @@ fn uniform_prior_constrained_value_matches_high_precision_reference() {
         (-2.0, 3.0, -1.0, -0.6552928931500244),
         (0.0, 1e308, -710.0, 0.447628622567513),
         (-1e308, 1.0, 710.0, 0.552371377432487),
-        (-1e308, 1e308, 0.0, 0.0),
-        (-1e308, 1e308, 1.0, 4.621171572600098e307),
+        // Narrower than one ulp of its own endpoints: the exact value rounds
+        // to `lower`, and the two large endpoint products of a convex
+        // combination round to 9999999999999998, below it.
+        (1e16, 1e16 + 2.0, -34.5, 1e16),
+        (
+            1.7976931348623155e308,
+            f64::MAX,
+            1.625,
+            1.7976931348623157e308,
+        ),
     ] {
         let mut graph = Graph::new();
         let theta = Uniform::prior(&mut graph, "theta", lower, upper);
@@ -507,34 +528,47 @@ fn uniform_prior_constrained_value_matches_high_precision_reference() {
     }
 }
 
-/// `upper - lower` is not representable for every interval a caller may write
-/// down: `(-1e308, 1e308)` has span `inf`, so scaling a sigmoid by it returns
-/// `-inf` at raw 0 where the constrained value is exactly 0, and reports an
-/// infinite Jacobian everywhere. Folding both endpoints into the transform
-/// keeps every intermediate inside the exponent range.
+/// An interval whose span is not representable is not a bound this transform
+/// supports, and the density says so rather than the transform: `(-1e308,
+/// 1e308)` has `upper - lower == inf`, and the raw-space Uniform kernel refuses
+/// a non-finite width. The transform's own output there is `-inf`/`NaN`, which
+/// is why no containment claim is made for it below — the model is already
+/// dead at the density.
 #[test]
-fn bounded_sigmoid_transform_survives_a_span_that_overflows() {
-    let full = ParamTransform::BoundedSigmoid {
-        lower: -1e308,
-        upper: 1e308,
-    };
-    assert_eq!(full.apply(0.0), 0.0);
-    assert_close(full.apply(1.0), 4.621171572600098e307, "apply(1)");
-    assert_close(full.apply(-1.0), -4.621171572600098e307, "apply(-1)");
-    assert_close(full.derivative(0.0), 5e307, "derivative(0)");
-    assert_close(full.derivative(710.0), 0.895257245135026, "derivative(710)");
-    assert_close(
-        full.derivative(-710.0),
-        0.895257245135026,
-        "derivative(-710)",
-    );
+fn a_span_that_is_not_representable_has_no_density_anywhere() {
+    let mut graph = Graph::new();
+    let theta = Uniform::prior(&mut graph, "theta", -1e308, 1e308);
+    let mut evaluator = Evaluator::new(&graph);
+    for raw in [-800.0, -1.0, 0.0, 1.0, 800.0] {
+        evaluator.compute(&graph, &[raw]);
+        assert_eq!(
+            evaluator.total_logp,
+            f64::NEG_INFINITY,
+            "Uniform(-1e308, 1e308) must have no density at raw {raw}"
+        );
+    }
+    // And the value node still reports whatever the transform reports, so the
+    // two have not diverged even on a bound neither of them supports.
+    for raw in [-800.0, 0.0, 800.0] {
+        evaluator.compute(&graph, &[raw]);
+        assert_eq!(
+            evaluator.scalar_at(theta).to_bits(),
+            ParamTransform::BoundedSigmoid {
+                lower: -1e308,
+                upper: 1e308
+            }
+            .apply(raw)
+            .to_bits()
+        );
+    }
 }
 
 /// A constrained draw outside its own interval is a draw the model's support
 /// forbids, and it is finite, so no downstream finiteness check would catch
 /// it. Swept densely rather than checked at the tails, since the
 /// endpoint-anchored form rounds towards a different endpoint on each side of
-/// zero.
+/// zero. The two sub-ulp intervals are the load-bearing rows: a convex
+/// combination of the endpoints leaves both of them.
 #[test]
 fn uniform_prior_constrained_value_never_leaves_its_interval() {
     for (lower, upper) in BOUNDED_INTERVALS {
@@ -548,6 +582,43 @@ fn uniform_prior_constrained_value_never_leaves_its_interval() {
             );
             raw += 0.125;
         }
+    }
+}
+
+/// The three-factor product reverse mode forms for a bounded parameter:
+/// `adjoint * (upper - lower) * s'(raw)`. Both fixed orders lose values the
+/// other keeps, so the association is load-bearing and pinned here against
+/// `adjoint * span * s(raw) * (1 - s(raw))` evaluated out of crate with
+/// Python's `decimal` at 1500 significant digits.
+///
+/// Row 2 is the bug the fused node exists to fix: applying the span to the
+/// adjoint first, as the old `sigmoid`/`mul`/`add` chain did, gives `-inf`.
+/// Row 1 is its mirror: applying the span to the slope first makes `span * s'`
+/// 4.2e-326, which rounds to zero. Rows 3 and 4 are the subnormal span near
+/// raw 0, the one band where the value still moves after `span * s'` has
+/// rounded away.
+#[test]
+fn bounded_sigmoid_adjoint_matches_high_precision_reference() {
+    for (adjoint, raw, lower, upper, expected) in [
+        (1e308, -40.0, 0.0, 1e-308, 4.248354255291589e-18),
+        (-44.7628622567513, -710.0, 0.0, 1e308, -20.0371383741689),
+        (1e300, 0.0, 0.0, 1e-323, 2.470328229206233e-24),
+        (1e300, 0.5, 0.0, 1e-323, 2.3221452168794243e-24),
+        (1.0, 0.0, -2.0, 3.0, 1.25),
+        (3.0, 1.5, -2.0, 3.0, 2.2371967810549926),
+        (-2.5, 710.0, -1e308, 1.0, -1.1190715564187825),
+        (7.0, -3.25, 0.0, 1.0, 0.2515351357772969),
+    ] {
+        let actual = bounded_sigmoid_adjoint(adjoint, raw, lower, upper);
+        assert!(
+            actual.is_finite(),
+            "adjoint({adjoint}, {raw}, {lower}, {upper}) = {actual} is not finite"
+        );
+        assert_close(
+            actual,
+            expected,
+            &format!("bounded_sigmoid_adjoint({adjoint}, {raw}, {lower}, {upper})"),
+        );
     }
 }
 
