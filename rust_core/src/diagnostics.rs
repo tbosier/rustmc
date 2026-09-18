@@ -403,10 +403,7 @@ pub fn compute_diagnostics(
             params.push(unavailable_parameter(param_names[pidx].clone()));
             continue;
         }
-        let (origin, scale, normalized) = normalize_chains(&chains);
-        let normalized_mean = chain_mean_all(&normalized);
-        let mean = origin + scale * normalized_mean;
-        let std = scale * chain_std_all(&normalized, normalized_mean);
+        let (mean, std) = scaled_moments(|| chains.iter().flatten().copied());
         let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
         all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
@@ -550,6 +547,74 @@ pub fn compute_transition_diagnostics(
     }
 }
 
+/// Posterior mean and standard deviation of one parameter's draws, in the
+/// draws' own units and without an intermediate that leaves the exponent range.
+///
+/// This is the single definition of both moments. `compute_diagnostics` uses it
+/// for the summary table, and `SampleResult::mean`/`std` and
+/// `BatchModelResult::mean`/`std` use it for the values they report directly,
+/// so a fit cannot describe its own posterior two different ways.
+///
+/// `draws` is a factory rather than a slice because the two callers hold the
+/// draws in different shapes — chain-major `Vec<Vec<f64>>` per parameter, and a
+/// strided read across a `Vec<Vec<Vec<f64>>>` — and neither should have to
+/// materialise a copy. It is called three times and must yield the same
+/// sequence, in the same order, each time: the summation order is part of the
+/// reported value.
+///
+/// Draws are centred on the first of them and divided by the largest absolute
+/// deviation from it before being summed, so neither the running sum nor
+/// `diff * diff` can overflow: every normalised draw lies in `[-1, 1]`. The
+/// naive form loses `diff * diff` above `|diff| ~ 1.34e154` and the running sum
+/// above `f64::MAX / n`, neither of which is a limit of the posterior. If the
+/// deviations themselves are unrepresentable (`-1e308` and `1e308` in one
+/// chain) the centring is dropped and the draws are scaled about zero instead.
+///
+/// Returns `(NaN, NaN)` when any draw is not finite, matching what the summary
+/// reports for such a parameter, and a `NaN` standard deviation for a single
+/// draw, which does not define one. The denominator is `n - 1`: this is the
+/// sample standard deviation of the draws, which is what ArviZ's `summary`
+/// reports and what the summary table here has always reported.
+pub(crate) fn scaled_moments<I, F>(draws: F) -> (f64, f64)
+where
+    F: Fn() -> I,
+    I: Iterator<Item = f64>,
+{
+    let Some(first) = draws().next() else {
+        return (f64::NAN, f64::NAN);
+    };
+    if draws().any(|x| !x.is_finite()) {
+        return (f64::NAN, f64::NAN);
+    }
+
+    let mut origin = first;
+    let mut scale = draws().map(|x| (x - origin).abs()).fold(0.0, f64::max);
+    if !scale.is_finite() {
+        origin = 0.0;
+        scale = draws().map(|x| x.abs()).fold(0.0, f64::max);
+    }
+    let divisor = if scale > 0.0 { scale } else { 1.0 };
+
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for x in draws() {
+        sum += (x - origin) / divisor;
+        n += 1;
+    }
+    let normalized_mean = sum / n as f64;
+    let mean = origin + scale * normalized_mean;
+
+    if n < 2 {
+        return (mean, f64::NAN);
+    }
+    let mut sum_sq = 0.0;
+    for x in draws() {
+        let d = (x - origin) / divisor - normalized_mean;
+        sum_sq += d * d;
+    }
+    (mean, scale * (sum_sq / (n - 1) as f64).sqrt())
+}
+
 // ── Internal helpers ────────────────────────────────────────────────
 
 // Diagnostics must not depend on the units of a parameter. Center before
@@ -573,34 +638,6 @@ fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
         .map(|chain| chain.iter().map(|x| (x - origin) / divisor).collect())
         .collect();
     (origin, scale, normalized)
-}
-
-fn chain_mean_all(chains: &[Vec<f64>]) -> f64 {
-    let mut sum = 0.0;
-    let mut n = 0usize;
-    for c in chains {
-        for &v in c {
-            sum += v;
-            n += 1;
-        }
-    }
-    sum / n as f64
-}
-
-fn chain_std_all(chains: &[Vec<f64>], mean: f64) -> f64 {
-    let mut sum_sq = 0.0;
-    let mut n = 0usize;
-    for c in chains {
-        for &v in c {
-            let d = v - mean;
-            sum_sq += d * d;
-            n += 1;
-        }
-    }
-    if n < 2 {
-        return f64::NAN;
-    }
-    (sum_sq / (n - 1) as f64).sqrt()
 }
 
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {

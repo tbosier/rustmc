@@ -163,40 +163,40 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
+    /// Posterior mean per parameter, from the same implementation the summary
+    /// table uses.
+    ///
+    /// See [`diagnostics::scaled_moments`]: the draws are centred and scaled
+    /// before they are summed, so a posterior whose draws sit near the top of
+    /// the representable range reports a finite mean rather than an infinity,
+    /// and reports the same one `diagnostics()` does.
     pub fn mean(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        let mut sums = vec![0.0; n_params];
-        let mut count = 0usize;
-
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    sums[i] += v;
-                }
-                count += 1;
-            }
-        }
-
-        sums.iter().map(|s| s / count as f64).collect()
+        (0..self.param_names.len())
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter, from the same implementation
+    /// the summary table uses.
+    ///
+    /// This is the sample standard deviation (`n - 1` in the denominator), as
+    /// the summary table has always reported; before the two paths were shared
+    /// this one divided by `n` and the two disagreed by `sqrt(n / (n - 1))`.
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
-        let n_params = self.param_names.len();
-        let mut sum_sq = vec![0.0; n_params];
-        let mut count = 0usize;
+        (0..self.param_names.len())
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
 
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    let diff = v - means[i];
-                    sum_sq[i] += diff * diff;
-                }
-                count += 1;
-            }
-        }
-
-        sum_sq.iter().map(|s| (s / count as f64).sqrt()).collect()
+    /// Every draw of parameter `index`, chain-major.
+    ///
+    /// The order is the order the naive loop accumulated in, and it is the
+    /// order `BatchModelResult` accumulates in, so the two keep reporting the
+    /// same value for the same draws.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples
+            .iter()
+            .flat_map(move |chain| chain.iter().map(move |draw| draw[index]))
     }
 
     pub fn total_divergences(&self) -> usize {
@@ -709,30 +709,24 @@ pub fn sample_batch_bound(
 }
 
 impl BatchModelResult {
+    /// Posterior mean per parameter; see [`SampleResult::mean`].
     pub fn mean(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sums = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                sums[i] += v;
-            }
-        }
-        sums.iter().map(|s| s / n_draws as f64).collect()
+        (0..self.param_names.len())
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter; see [`SampleResult::std`].
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
-        let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sum_sq = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                let d = v - means[i];
-                sum_sq[i] += d * d;
-            }
-        }
-        sum_sq.iter().map(|s| (s / n_draws as f64).sqrt()).collect()
+        (0..self.param_names.len())
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
+
+    /// Every draw of parameter `index`. `samples` is already chain-major, so
+    /// this is the same sequence `SampleResult::draws_of` yields.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples.iter().map(move |draw| draw[index])
     }
 
     pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {

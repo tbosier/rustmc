@@ -15,6 +15,7 @@ use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, 
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
 };
+use rustmc_core::sampler::{sample, SampleResult, SamplerConfig};
 use std::collections::HashMap;
 
 fn evaluate(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
@@ -1077,4 +1078,133 @@ fn gathered_constrained_vector_parameters_agree_with_finite_differences() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — posterior moments
+// ---------------------------------------------------------------------------
+
+/// A `SampleResult` carrying exactly these draws, one parameter, chain-major.
+///
+/// Built directly rather than fitted, because the point is the arithmetic that
+/// turns draws into moments and a fitted posterior cannot be asked to land on
+/// chosen draws. `posterior_moments_agree_across_paths_on_a_real_fit` covers
+/// the same code reached the way a user reaches it.
+fn result_with_draws(chains: &[&[f64]]) -> SampleResult {
+    SampleResult {
+        samples: chains
+            .iter()
+            .map(|chain| chain.iter().map(|&v| vec![v]).collect())
+            .collect(),
+        unconstrained_samples: None,
+        accept_rates: vec![1.0; chains.len()],
+        step_sizes: vec![0.1; chains.len()],
+        divergences: vec![0; chains.len()],
+        transitions: chains.iter().map(|_| Vec::new()).collect(),
+        param_names: vec!["theta".to_string()],
+    }
+}
+
+/// Draws near the top of the representable range: both naive accumulators
+/// overflow (`9e307 + ... + 2e307` is `inf`, and every `diff * diff` is `inf`),
+/// so `mean()` used to report an infinite mean and `std()` a NaN while
+/// `diagnostics()` reported the right numbers for the very same draws.
+///
+/// Expectations are the exact rational mean and variance of these eight f64
+/// values, evaluated out of crate with Python `fractions.Fraction` and the
+/// square root taken with `decimal` at 80 significant digits:
+///   mean = 5.5000000000000000167258431908505089157e307
+///   sd   = 2.4494897427831782313051785197920223420e307
+/// The standard deviation is the sample one, `n - 1` in the denominator, which
+/// is what the summary table reports.
+#[test]
+fn posterior_moments_survive_draws_near_the_representable_maximum() {
+    const EXPECTED_MEAN: f64 = 5.5e307;
+    const EXPECTED_STD: f64 = 2.4494897427831783e307;
+
+    let result = result_with_draws(&[&[9e307, 8e307, 7e307, 6e307], &[5e307, 4e307, 3e307, 2e307]]);
+
+    // The accumulator this replaced, so the test cannot pass by accident.
+    assert!(
+        !result
+            .samples
+            .iter()
+            .flatten()
+            .map(|draw| draw[0])
+            .sum::<f64>()
+            .is_finite(),
+        "the naive running sum must still overflow on these draws"
+    );
+
+    let mean = result.mean()[0];
+    let std = result.std()[0];
+    assert!(
+        mean.is_finite() && std.is_finite(),
+        "mean {mean}, std {std}"
+    );
+    assert_close(mean, EXPECTED_MEAN, "mean of draws near f64::MAX");
+    assert_close(std, EXPECTED_STD, "std of draws near f64::MAX");
+
+    let report = result.diagnostics();
+    assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
+    assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+}
+
+/// The same agreement on a fitted posterior, reached the way a caller reaches
+/// it. `HalfNormal(1e307)` is sampled on a log scale, so the chain reaches the
+/// top of the range from the usual zero initialization, and the draws it
+/// reports are of order 1e307: the naive sum over 2000 of them overflows.
+///
+/// The posterior is the prior, whose moments are closed forms —
+/// `sigma * sqrt(2/pi)` and `sigma * sqrt(1 - 2/pi)` — so this checks the
+/// reported numbers against something other than the other in-repo path too.
+#[test]
+fn posterior_moments_agree_across_paths_on_a_real_fit() {
+    let sigma = 1e307;
+    let mut graph = Graph::new();
+    HalfNormal::prior(&mut graph, "theta", sigma);
+    let result = sample(
+        graph,
+        SamplerConfig {
+            num_chains: 2,
+            num_draws: 1000,
+            num_warmup: 1000,
+            seed: 20260918,
+            show_progress: false,
+            ..SamplerConfig::default()
+        },
+    )
+    .expect("a HalfNormal prior at 1e307 must still fit");
+
+    let naive: f64 = result
+        .samples
+        .iter()
+        .flatten()
+        .map(|draw| draw[0])
+        .sum::<f64>();
+    assert!(
+        !naive.is_finite(),
+        "the naive running sum must overflow for this posterior, got {naive}"
+    );
+
+    let mean = result.mean()[0];
+    let std = result.std()[0];
+    let report = result.diagnostics();
+    assert!(
+        mean.is_finite() && std.is_finite(),
+        "mean {mean}, std {std}"
+    );
+    assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
+    assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+
+    let expected_mean = sigma * (2.0 / std::f64::consts::PI).sqrt();
+    let expected_std = sigma * (1.0 - 2.0 / std::f64::consts::PI).sqrt();
+    assert!(
+        (mean / expected_mean - 1.0).abs() < 0.2,
+        "posterior mean {mean} vs the half-normal mean {expected_mean}"
+    );
+    assert!(
+        (std / expected_std - 1.0).abs() < 0.25,
+        "posterior std {std} vs the half-normal sd {expected_std}"
+    );
 }
