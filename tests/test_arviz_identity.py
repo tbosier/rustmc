@@ -117,6 +117,22 @@ def test_ppc_samples_thins_each_chain_and_records_the_retained_draws():
     matched = posterior.sel(draw=ppc.draw)
     assert matched["beta"].shape == (4, 5)
 
+    # Shape alone would also pass for coordinates that are plausible but wrong,
+    # so pin the values. A predictive draw carries observation noise and cannot
+    # identify its own parameter draw, but the log likelihood is a deterministic
+    # function of that draw, so it can. Selecting log_likelihood down to the
+    # retained coordinates must reproduce the closed-form density evaluated at
+    # the posterior draws those same coordinates select.
+    log_lik = group(idata, "log_likelihood").sel(draw=ppc.draw)["obs"].values
+    closed_form = (
+        -0.5 * np.log(2 * np.pi)
+        - 0.5 * (data["y"] - matched["beta"].values[..., None] * data["x"]) ** 2
+    )
+    np.testing.assert_allclose(log_lik, closed_form, atol=1e-12)
+    # Negative control: the same comparison under a one-draw roll must fail, or
+    # the assertion above is not actually testing the pairing.
+    assert not np.allclose(log_lik, np.roll(closed_form, 1, axis=1), atol=1e-12)
+
     # Same seed, same retained draws; a different seed picks a different set.
     again = group(fit.to_arviz(include_ppc=True, ppc_samples=20, ppc_seed=7),
                   "posterior_predictive")
