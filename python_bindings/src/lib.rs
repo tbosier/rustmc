@@ -2723,10 +2723,17 @@ fn regroup_draws_by_chain(flat: Vec<Vec<f64>>, num_draws: usize) -> Vec<Vec<Vec<
 /// then runs a forward pass to generate predicted observations.
 /// Use this to check whether your priors make sense before fitting.
 ///
+/// A likelihood is not required.  With none declared, the result carries the
+/// prior draws of the parameters and of any deterministic, and no predicted
+/// observations -- which is exactly what "check whether your priors make sense
+/// before fitting" means for a model whose likelihood is not written yet.
+/// Potentials *are* refused: a custom density term supplies no random
+/// generator, so a model carrying one has no prior to simulate from.
+///
 /// Parameters
 /// ----------
 /// model_spec : ModelSpec
-///     A compiled model (from `builder.build()`).  Must have at least one likelihood.
+///     A model definition, from `builder.build()`.
 /// data : dict or None
 ///     Data dict (same as `sample()`).  Needed for the predictor covariates (x values).
 /// n_samples : int

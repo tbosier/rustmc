@@ -927,7 +927,6 @@ dependencies = [
  "pyo3",
  "rand",
  "rand_chacha",
- "rand_distr",
  "rustmc_core",
  "serde",
  "serde_json",
