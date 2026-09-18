@@ -2,6 +2,8 @@
 
 import copy
 import json
+import math
+import pathlib
 
 import numpy as np
 import pytest
@@ -109,3 +111,120 @@ def test_global_and_batch_entrypoints_retain_raw_graph_coordinates():
         np.testing.assert_allclose(np.exp(raw), artifact["posterior"]["samples"])
         restored = rustmc.FitResult.from_json(json.dumps(artifact))
         np.testing.assert_array_equal(fit.predict(seed=99)["obs"], restored.predict(seed=99)["obs"])
+
+
+# ── an artifact written by the PREVIOUS bounded transform must still load ──
+#
+# 0.13 re-associated the bounded sigmoid from `lower + span * s(raw)` to an
+# endpoint-anchored form, so that it evaluates the density at the point it
+# reports. The two forms round differently in the last bits. The position
+# agreement check budgeted that difference relative to the *draw*, but the
+# difference scales with the *interval*, so any interval straddling zero could
+# push a legitimate draw near zero outside the budget and make a saved fit
+# unloadable.
+#
+# This fixture is a real artifact written by the 0.12 extension, committed
+# verbatim. It must not be regenerated with the current code: an artifact the
+# current writer produces agrees with the current reader by construction, which
+# is exactly why the existing round-trip tests missed this.
+OLD_WRITER_UNIFORM = pathlib.Path(__file__).parent / "fixtures" / "graph_fit_v2_uniform.json"
+
+
+def _previous_bounded_sigmoid(raw, lower, upper):
+    """The 0.12 formula, mirrored here so the fixture's provenance is checkable.
+
+    The association matters: 0.12 formed the sigmoid first and then scaled it,
+    so `span * s` and `span / d` are not interchangeable at the last bit --
+    which is the whole subject of this section.
+    """
+    s = 1.0 / (1.0 + math.exp(-raw))
+    return lower + (upper - lower) * s
+
+
+def test_the_committed_fixture_really_exercises_the_old_writer_regression():
+    """Guard the guard: prove the fixture would fail a value-relative budget.
+
+    If this ever stops holding, the fixture has been regenerated with the
+    current writer and the regression test below has quietly become vacuous.
+    """
+    stored = json.loads(OLD_WRITER_UNIFORM.read_text())
+    assert (stored["format"], stored["version"]) == ("rustmc.graph-fit", 2)
+    lower, upper = -2.0, 3.0
+    prior = stored["model"]["definition"]["priors"][0]["Uniform"]
+    assert (prior["lower"], prior["upper"]) == (lower, upper)
+
+    # Every stored draw is exactly what the PREVIOUS formula produces...
+    pairs = [
+        (displayed, raw)
+        for cs, rs in zip(stored["posterior"]["samples"],
+                          stored["posterior"]["unconstrained_samples"])
+        for cd, rd in zip(cs, rs)
+        for displayed, raw in zip(cd, rd)
+    ]
+    assert pairs
+    for displayed, raw in pairs:
+        assert _previous_bounded_sigmoid(raw, lower, upper) == displayed
+
+    # ...and at least one of them lands near zero, where a budget of
+    # 8 * eps * |draw| is too small to absorb the re-association.
+    closest = min(abs(displayed) for displayed, _ in pairs)
+    assert closest < 0.5 * (upper - lower), closest
+
+
+def test_a_fit_written_by_the_previous_bounded_transform_still_loads():
+    artifact = OLD_WRITER_UNIFORM.read_text()
+    stored = json.loads(artifact)
+
+    restored = rustmc.FitResult.from_json(artifact)
+
+    # The old writer's draws are returned unchanged. The loader accepts the
+    # earlier rounding; it does not quietly recompute the posterior into
+    # something the user never sampled.
+    np.testing.assert_array_equal(
+        restored.get_samples()["u"],
+        np.asarray(stored["posterior"]["samples"]).reshape(-1),
+    )
+    assert np.isfinite(restored.get_samples()["u"]).all()
+    assert (restored.get_samples()["u"] > -2.0).all()
+    assert (restored.get_samples()["u"] < 3.0).all()
+
+    # It is a working fit, not just a document that parsed: it re-saves, and
+    # re-saving preserves the old writer's draws rather than rewriting them.
+    resaved = json.loads(restored.to_json())
+    assert resaved["posterior"]["samples"] == stored["posterior"]["samples"]
+    assert len(restored.diagnostics()) == 1  # the one parameter, `u`
+
+
+@pytest.mark.parametrize("corruption", [
+    # A raw position that decodes to a genuinely different draw misses by a
+    # fraction of the interval, not by an ULP of it, so the widened budget
+    # still refuses every one of these.
+    lambda a: a["posterior"]["unconstrained_samples"][0][0].__setitem__(0, 0.0),
+    lambda a: a["posterior"]["unconstrained_samples"][0][0].__setitem__(0, 1.0),
+    lambda a: a["posterior"]["unconstrained_samples"][0][0].__setitem__(0, -40.0),
+    lambda a: a["posterior"]["unconstrained_samples"][0][0].__setitem__(0, float("nan")),
+    lambda a: a["posterior"]["samples"][0][0].__setitem__(0, 2.9),
+    lambda a: a["posterior"]["unconstrained_samples"].pop(),
+])
+def test_a_corrupted_old_writer_artifact_is_still_rejected(corruption):
+    artifact = json.loads(OLD_WRITER_UNIFORM.read_text())
+    corruption(artifact)
+    with pytest.raises(ValueError):
+        rustmc.FitResult.from_json(json.dumps(artifact))
+
+
+def test_the_widened_budget_is_far_tighter_than_a_wrong_draw():
+    """The smallest corruption the check must still catch is orders of magnitude
+    larger than the largest rounding it must now tolerate."""
+    artifact = json.loads(OLD_WRITER_UNIFORM.read_text())
+    lower, upper = -2.0, 3.0
+    raw = artifact["posterior"]["unconstrained_samples"][0][0][0]
+    displayed = artifact["posterior"]["samples"][0][0][0]
+
+    budget = 8.0 * np.finfo(float).eps * ((upper - lower) + abs(displayed))
+    # Nudging the raw position by one ULP is rounding, and is tolerated.
+    nudged = np.nextafter(raw, math.inf)
+    assert abs(_previous_bounded_sigmoid(nudged, lower, upper) - displayed) < budget
+    # Moving it enough to change the draw at all is not.
+    moved = raw + 1e-9
+    assert abs(_previous_bounded_sigmoid(moved, lower, upper) - displayed) > budget
