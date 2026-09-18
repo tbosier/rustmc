@@ -2329,6 +2329,57 @@ mod extreme_scale_regressions {
     use super::*;
     use crate::distributions::{Exponential, Gamma, HalfNormal, Normal};
 
+    /// The reference evaluator must agree with the `Evaluator` where only the
+    /// *composed* adjoint is representable.
+    ///
+    /// Every other differential test runs at ordinary scales, where the two agree
+    /// whether the oracle composes or multiplies afterwards. That is why the
+    /// oracle was able to drift: it kept `derivatives(..)` then `* upstream`
+    /// after the `Evaluator` moved to `adjoints(..)`, and nothing noticed.
+    ///
+    /// The target is `-(1/b) * scale`, so the division's upstream adjoint is
+    /// `-scale` rather than 1. `derivatives` alone cannot rescue this: `-1/b^2`
+    /// overflows for a small `b` however it is associated, and only folding
+    /// `scale` in keeps the product in range.
+    #[test]
+    fn the_reference_evaluator_composes_adjoints_like_the_evaluator() {
+        for (scale, b, expected) in [
+            (1e-200, 1e-200, 1e200),
+            (1e-160, 1e-180, 1e200),
+            (1e200, 1e200, 1e-200),
+        ] {
+            let mut graph = Graph::new();
+            let param = graph.add_param("b");
+            let one = graph.add_constant(1.0);
+            let ratio = graph.elementwise(crate::graph::ElementwiseOp::Div, one, Some(param));
+            let scale_node = graph.add_constant(scale);
+            let scaled =
+                graph.elementwise(crate::graph::ElementwiseOp::Mul, ratio, Some(scale_node));
+            let term = graph.elementwise(crate::graph::ElementwiseOp::Neg, scaled, None);
+            graph.add_node_as_logp(term);
+
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &[b]);
+            let (reference_logp, reference_grad) = grad_logp(&graph, &[b]);
+
+            assert_eq!(
+                evaluator.total_logp, reference_logp,
+                "log density disagrees at scale {scale}, b {b}"
+            );
+            assert_eq!(
+                evaluator.grad[0], reference_grad[0],
+                "gradient disagrees at scale {scale}, b {b}: evaluator {} vs reference {}",
+                evaluator.grad[0], reference_grad[0]
+            );
+            let error = (evaluator.grad[0] - expected).abs() / expected;
+            assert!(
+                error < 1e-9,
+                "gradient at scale {scale}, b {b} is {} not {expected}",
+                evaluator.grad[0]
+            );
+        }
+    }
+
     fn check(graph: &Graph, params: &[f64], logp: f64, gradients: &[f64]) {
         let mut evaluator = Evaluator::new(graph);
         evaluator.compute(graph, params);

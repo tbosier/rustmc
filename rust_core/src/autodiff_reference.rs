@@ -388,12 +388,19 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         db.push(0.0);
                         continue;
                     }
-                    let (x, y) = operator.derivatives(
+                    // Compose through `adjoints`, not `derivatives` then multiply.
+                    // For Div, Log and Pow the local derivative can leave the
+                    // representable range while the composed adjoint is ordinary;
+                    // multiplying afterwards loses it. The Evaluator composes, so
+                    // this oracle has to as well or the two disagree in the tails
+                    // and the differential test stops meaning anything there.
+                    let (x, y) = operator.adjoints(
+                        *u,
                         read(&values[a.0], i),
                         b.map_or(0.0, |b| read(&values[b.0], i)),
                     );
-                    da.push(u * x);
-                    db.push(u * y);
+                    da.push(x);
+                    db.push(y);
                 }
                 if matches!(values[a.0], Value::Scalar(_)) {
                     adj_scalar[a.0] += da.iter().sum::<f64>();
@@ -526,15 +533,17 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[upper.0] -= a_s / range;
                 }
             }
+            // Share the Evaluator's scores rather than restating them. The local
+            // copies clamped p into [1e-12, 1 - 1e-12] and never checked the
+            // support, so they disagreed with the densities above once those
+            // learned to refuse an impossible outcome.
             Op::BernoulliLogP { x, p } => {
-                let xv = values[x.0].as_scalar();
-                let pv = values[p.0].as_scalar().clamp(1e-12, 1.0 - 1e-12);
-                adj_scalar[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+                adj_scalar[p.0] +=
+                    a_s * bernoulli_logp_dp(values[x.0].as_scalar(), values[p.0].as_scalar());
             }
             Op::PoissonLogP { x, lam } => {
-                let xv = values[x.0].as_scalar();
-                let lv = values[lam.0].as_scalar();
-                adj_scalar[lam.0] += a_s * (xv / lv - 1.0);
+                adj_scalar[lam.0] +=
+                    a_s * poisson_logp_dlam(values[x.0].as_scalar(), values[lam.0].as_scalar());
             }
             Op::LogGammaLogP { x, alpha, beta } => {
                 let raw = values[x.0].as_scalar();
