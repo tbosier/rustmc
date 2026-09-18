@@ -192,14 +192,9 @@ pub enum Op {
     Data(usize),
     Add(NodeId, NodeId),
     Mul(NodeId, NodeId),
-    Sub(NodeId, NodeId),
-    Div(NodeId, NodeId),
-    Neg(NodeId),
     Exp(NodeId),
-    Log(NodeId),
     /// 1 / (1 + exp(-x))
     Sigmoid(NodeId),
-    Square(NodeId),
     /// Element-wise multiply: scalar * data vector.
     ScalarMulData(NodeId, NodeId),
     /// Element-wise addition of two vectors.
@@ -526,32 +521,12 @@ impl Graph {
         self.add_node(Op::Mul(a, b), None)
     }
 
-    pub fn sub(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        self.add_node(Op::Sub(a, b), None)
-    }
-
-    pub fn div(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        self.add_node(Op::Div(a, b), None)
-    }
-
-    pub fn neg(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Neg(a), None)
-    }
-
     pub fn exp(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Exp(a), None)
     }
 
-    pub fn log(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Log(a), None)
-    }
-
     pub fn sigmoid(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Sigmoid(a), None)
-    }
-
-    pub fn square(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Square(a), None)
     }
 
     pub fn scalar_mul_data(&mut self, scalar: NodeId, data: NodeId) -> NodeId {

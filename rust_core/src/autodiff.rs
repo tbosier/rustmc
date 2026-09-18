@@ -420,17 +420,9 @@ impl Evaluator {
                 Op::Constant(c) => self.scalars[idx] = *c,
                 Op::Data(_) => {}
                 Op::Add(a, b) => self.scalars[idx] = self.scalars[a.0] + self.scalars[b.0],
-                Op::Sub(a, b) => self.scalars[idx] = self.scalars[a.0] - self.scalars[b.0],
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
-                Op::Div(a, b) => self.scalars[idx] = self.scalars[a.0] / self.scalars[b.0],
-                Op::Neg(a) => self.scalars[idx] = -self.scalars[a.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
-                Op::Log(a) => self.scalars[idx] = self.scalars[a.0].ln(),
                 Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
-                Op::Square(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = v * v;
-                }
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
                     let out_off = match self.node_kind[idx] {
@@ -866,34 +858,19 @@ impl Evaluator {
                     self.adj_scalars[a.0] += a_s;
                     self.adj_scalars[b.0] += a_s;
                 }
-                Op::Sub(a, b) => {
-                    self.adj_scalars[a.0] += a_s;
-                    self.adj_scalars[b.0] -= a_s;
-                }
                 Op::Mul(a, b) => {
                     let va = self.scalars[a.0];
                     let vb = self.scalars[b.0];
                     self.adj_scalars[a.0] += a_s * vb;
                     self.adj_scalars[b.0] += a_s * va;
                 }
-                Op::Div(a, b) => {
-                    let va = self.scalars[a.0];
-                    let vb = self.scalars[b.0];
-                    self.adj_scalars[a.0] += a_s / vb;
-                    // See ElementwiseOp::Div: squaring the denominator loses
-                    // representable derivatives at both ends of the range.
-                    self.adj_scalars[b.0] -= a_s * (va / vb) / vb;
-                }
-                Op::Neg(a) => self.adj_scalars[a.0] -= a_s,
                 Op::Exp(a) => {
                     let va = self.scalars[a.0].exp();
                     self.adj_scalars[a.0] += a_s * va;
                 }
-                Op::Log(a) => self.adj_scalars[a.0] += a_s / self.scalars[a.0],
                 Op::Sigmoid(a) => {
                     self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
                 }
-                Op::Square(a) => self.adj_scalars[a.0] += a_s * 2.0 * self.scalars[a.0],
 
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
@@ -2282,12 +2259,6 @@ mod extreme_scale_regressions {
                     Exponential::prior(&mut exponential, "x", beta);
                     check(&exponential, &[raw], expected, &[1.0 - z.exp()]);
                 }
-                // New scalar kernels remain serializable through legacy artifacts.
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], expected, &[alpha - z.exp()]);
             }
         }
     }
@@ -2317,11 +2288,6 @@ mod extreme_scale_regressions {
                     lp,
                     &[(squared_ratio - 1.0) / sigma, 1.0 - squared_ratio],
                 );
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], lp, &[1.0 - squared_ratio]);
             }
         }
     }
@@ -2477,7 +2443,7 @@ mod power_boundary_regressions {
             };
             let powered = graph.elementwise(ElementwiseOp::Pow, x, Some(exponent));
             let total = graph.sum(powered);
-            let penalty = graph.neg(total);
+            let penalty = graph.elementwise(ElementwiseOp::Neg, total, None);
             graph.add_logp_term(penalty);
             for position in [-0.7, 0.0, 0.4] {
                 let params = vec![position; graph.param_count];
