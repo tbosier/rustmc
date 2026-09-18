@@ -432,6 +432,154 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// Everything this op reads: other nodes, and the free-parameter slots it
+    /// indexes out of the parameter vector without going through a node.
+    ///
+    /// The match below is exhaustive and deliberately has no catch-all arm.
+    /// Callers use it to decide whether a model is one the samplers can
+    /// evaluate at all (see [`Graph::reachable_param`]), so a new `Op` variant
+    /// that silently reported no dependencies would reopen a hole rather than
+    /// fail a build. Adding a variant must not compile until someone has
+    /// written down what it forwards.
+    ///
+    /// This is a *data* dependency, not the reverse-mode adjoint path: several
+    /// ops here read an operand whose adjoint they never propagate to.
+    pub(crate) fn visit_dependencies(
+        &self,
+        visit_node: &mut impl FnMut(NodeId),
+        visit_params: &mut impl FnMut(usize, usize),
+    ) {
+        match self {
+            Op::Elementwise { a, b, .. } => {
+                visit_node(*a);
+                if let Some(b) = b {
+                    visit_node(*b);
+                }
+            }
+            Op::Gather {
+                param_start,
+                n_params,
+                indices,
+            } => {
+                visit_params(*param_start, *n_params);
+                visit_node(*indices);
+            }
+            Op::Sum(a) => visit_node(*a),
+            Op::BroadcastObservation { scalar, .. } => visit_node(*scalar),
+            Op::Param(index) => visit_params(*index, 1),
+            Op::Constant(_) | Op::Data(_) => {}
+            Op::Add(a, b)
+            | Op::Mul(a, b)
+            | Op::ScalarMulData(a, b)
+            | Op::VectorAdd(a, b)
+            | Op::ScalarBroadcastAdd(a, b) => {
+                visit_node(*a);
+                visit_node(*b);
+            }
+            Op::Exp(a) | Op::Sigmoid(a) | Op::ScalarBroadcast(a) => visit_node(*a),
+            Op::BoundedSigmoid { raw, .. } => visit_node(*raw),
+            Op::NormalLogP { x, mu, sigma } => {
+                visit_node(*x);
+                visit_node(*mu);
+                visit_node(*sigma);
+            }
+            Op::ObsLogP {
+                linpred_vec, aux, ..
+            } => {
+                visit_node(*linpred_vec);
+                if let Some(aux) = aux {
+                    visit_node(*aux);
+                }
+            }
+            Op::LogHalfNormalLogP { x, sigma } | Op::HalfNormalLogP { x, sigma } => {
+                visit_node(*x);
+                visit_node(*sigma);
+            }
+            Op::StudentTLogP { x, nu, mu, sigma } => {
+                visit_node(*x);
+                visit_node(*nu);
+                visit_node(*mu);
+                visit_node(*sigma);
+            }
+            Op::PositiveSupport { x } => visit_node(*x),
+            Op::UniformLogP { x, lower, upper } => {
+                visit_node(*x);
+                visit_node(*lower);
+                visit_node(*upper);
+            }
+            Op::BernoulliLogP { x, p } => {
+                visit_node(*x);
+                visit_node(*p);
+            }
+            Op::PoissonLogP { x, lam } => {
+                visit_node(*x);
+                visit_node(*lam);
+            }
+            Op::LogGammaLogP { x, alpha, beta }
+            | Op::GammaLogP { x, alpha, beta }
+            | Op::BetaLogP { x, alpha, beta } => {
+                visit_node(*x);
+                visit_node(*alpha);
+                visit_node(*beta);
+            }
+            Op::FusedLinearMu {
+                param_nodes,
+                intercept,
+                ..
+            } => {
+                for node in param_nodes {
+                    visit_node(*node);
+                }
+                if let Some(intercept) = intercept {
+                    visit_node(*intercept);
+                }
+            }
+            Op::MatVecMul {
+                param_start,
+                n_params,
+                intercept,
+                ..
+            } => {
+                visit_params(*param_start, *n_params);
+                if let Some(intercept) = intercept {
+                    visit_node(*intercept);
+                }
+            }
+            Op::VectorNormalLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorHalfNormalLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorStudentTLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorGammaLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorBetaLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorUniformLogP {
+                param_start,
+                n_params,
+                ..
+            } => visit_params(*param_start, *n_params),
+        }
+    }
+}
+
 /// A single node in the computation graph.
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -515,6 +663,41 @@ impl Graph {
             deterministics: Vec::new(),
             name_to_node: HashMap::new(),
         }
+    }
+
+    /// The lowest-indexed free parameter `root`'s value depends on, if any.
+    ///
+    /// Walks operands transitively through [`Op::visit_dependencies`], so a
+    /// parameter reached through any number of intervening nodes counts — a
+    /// direct `Op::Param` is just the zero-step case. Used by the samplers to
+    /// refuse a density they cannot evaluate; the lowest index is taken rather
+    /// than the first one found so the error message does not depend on the
+    /// traversal order.
+    ///
+    /// Nodes are in topological order, so the walk terminates, and each node
+    /// is expanded at most once.
+    pub(crate) fn reachable_param(&self, root: NodeId) -> Option<usize> {
+        let mut expanded = vec![false; self.nodes.len()];
+        let mut stack = vec![root];
+        let mut lowest: Option<usize> = None;
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id.0) else {
+                continue;
+            };
+            if std::mem::replace(&mut expanded[id.0], true) {
+                continue;
+            }
+            node.op.visit_dependencies(
+                &mut |next| stack.push(next),
+                &mut |param_start, n_params| {
+                    if n_params > 0 {
+                        lowest =
+                            Some(lowest.map_or(param_start, |seen: usize| seen.min(param_start)));
+                    }
+                },
+            );
+        }
+        lowest
     }
 
     fn add_node(&mut self, op: Op, name: Option<String>) -> NodeId {

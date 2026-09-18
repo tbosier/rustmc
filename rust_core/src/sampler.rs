@@ -307,17 +307,17 @@ fn validate_initial_target(
 /// visited here at all. A discrete *latent* is the other shape: `x: NodeId`
 /// pointing at `Op::Param`.
 ///
-/// Known gap: this only recognises an `x` that *is* an `Op::Param`. A free
-/// parameter reaching `x` indirectly — `bernoulli_logp(graph.exp(param), p)`,
-/// or an artifact wiring an `Add`/`Sigmoid` between them — is not detected, and
-/// such a graph is equally invalid (worse, `Op::BernoulliLogP`'s backward pass
-/// propagates no adjoint to `x` at all, so the term moves the density without
-/// moving the gradient). Closing that needs a reachability walk from `x` over
-/// every `Op` variant's operands, which belongs beside the `Op` enum in
-/// `graph.rs` so it stays exhaustive as the enum grows. No constructor in this
-/// crate builds that shape: `Bernoulli::prior` and `Poisson::prior` both pass a
-/// bare parameter.
-fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
+/// A free parameter reaching `x` indirectly counts too —
+/// `bernoulli_logp(graph.exp(param), p)`, or an artifact wiring an
+/// `Add`/`Sigmoid` between them. Such a graph is equally invalid, and worse in
+/// one respect: `Op::BernoulliLogP`'s backward pass propagates no adjoint to
+/// `x` at all, so the term moves the density without moving the gradient.
+/// `Graph::reachable_param` does the walk, over an exhaustive match on `Op`
+/// that lives beside the enum so it cannot fall behind it. No constructor in
+/// this crate builds that shape — `Bernoulli::prior` and `Poisson::prior` both
+/// pass a bare parameter — so this is about what the published `Graph` API
+/// lets a caller assemble.
+pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
     let mut offenders: Vec<(usize, &str, &str)> = Vec::new();
     // Scan every node rather than just `graph.logp_terms`. The two are
     // equivalent for a graph built through `Graph`'s own API, because
@@ -336,15 +336,17 @@ fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
         };
         // A transform cannot rescue a discrete support, so every free parameter
         // under one of these densities is an offender regardless of its
-        // `ParamTransform`.
-        let Some(Op::Param(index)) = graph.nodes.get(x.0).map(|node| &node.op) else {
+        // `ParamTransform` — and regardless of how many nodes separate it from
+        // the density. A discrete term over a constant reaches no parameter and
+        // is not a latent, so it is left alone.
+        let Some(index) = graph.reachable_param(x) else {
             continue;
         };
         let name = graph
             .param_names
-            .get(*index)
+            .get(index)
             .map_or("<unknown>", String::as_str);
-        offenders.push((*index, name, family));
+        offenders.push((index, name, family));
     }
     if offenders.is_empty() {
         return Ok(());
