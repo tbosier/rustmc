@@ -118,16 +118,14 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
 /// 9999999999999998, below `lower` — and can overflow to infinity when both
 /// endpoints are near `f64::MAX`.
 ///
-/// Three limits remain, none of them new:
+/// The distance from the endpoint is [`span_times_sigmoid`], which folds the
+/// span into the exponent rather than applying it to a materialised sigmoid.
+/// Two limits remain:
 ///
 /// * The branches can disagree by one ulp at raw == 0, so the mapping is not
 ///   exactly monotone there (lower = 1, upper = 1e16 steps down by one ulp
 ///   across zero); that is a rounding artefact of the reported value, and
 ///   [`bounded_sigmoid_derivative`] does not model it.
-/// * Materialising the sigmoid before scaling loses bounded values whose
-///   sigmoid underflows: lower = 0, upper = 1e308, raw = -746 gives 0 where the
-///   true value is 1.0382848095158282e-16. Removing that needs the scaling
-///   folded into the sigmoid.
 /// * An interval whose span is not representable — `(-1e308, 1e308)` has
 ///   `upper - lower == inf` — yields `-inf` or `NaN` here. Such an interval is
 ///   not a usable `Uniform` prior in any case: both `uniform_bounds_valid` and
@@ -138,10 +136,63 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
 pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
     let span = upper - lower;
     if raw >= 0.0 {
-        upper - span * stable_sigmoid(-raw)
+        upper - span_times_sigmoid(span, -raw)
     } else {
-        lower + span * stable_sigmoid(raw)
+        lower + span_times_sigmoid(span, raw)
     }
+}
+
+/// `span * sigmoid(raw)` for `raw <= 0`, over the whole range where the product
+/// is representable rather than only where the sigmoid is.
+///
+/// Applying the span to a materialised sigmoid loses the tail twice over. Below
+/// `raw = -708.4` the sigmoid is a subnormal and sheds bits — at `raw = -740`,
+/// `span = 1e308` it is already 0.26% high, and at -745 it is 75% high — and
+/// below `raw = -745.13` it is zero outright, so `Uniform(0, 1e308)` at
+/// raw = -746 returned 0 for a value of 1.0382848095158282e-16.
+///
+/// The way out is that the sigmoid *is* `exp(raw)` in that tail: once
+/// `exp(raw)` is below 2^-52, `1 + exp(raw)` rounds to exactly 1. And
+/// `exp(raw) == exp(raw / 2)^2` with `raw / 2` exact, so applying the span
+/// between the two halves keeps every intermediate normal: for
+/// `span = 1e308, raw = -746` that is `1e308 * 1.0e-162 * 1.0e-162`. No
+/// logarithm of the span is taken, so no precision is lost to one.
+///
+/// Accurate to 2.2e-16 relative from the gate down to `raw = -1416`, where
+/// `exp(raw / 2)` becomes subnormal itself and the halves start shedding bits;
+/// the value reaches zero around `raw = -1454` for the widest representable
+/// span. Both boundaries are pinned by
+/// `bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows`.
+///
+/// The direct product is kept wherever the sigmoid is a normal number, so
+/// ordinary intervals and ordinary raw values are bit for bit unchanged, and an
+/// unrepresentable span keeps returning the infinity or NaN it did before.
+#[inline]
+fn span_times_sigmoid(span: f64, raw: f64) -> f64 {
+    let s = stable_sigmoid(raw);
+    if s.is_normal() || !span.is_finite() {
+        return span * s;
+    }
+    let half = (0.5 * raw).exp();
+    (span * half) * half
+}
+
+/// `span * s'(raw)`, the same rescue as [`span_times_sigmoid`] applied to the
+/// slope.
+///
+/// `s'(raw)` is `exp(-|raw|) / (1 + exp(-|raw|))^2`, and once `exp(-|raw|)` is
+/// subnormal the squared denominator rounds to exactly 1, so the slope is
+/// `exp(-|raw|)` there and splits into two halves the same way. Without this
+/// the derivative of a wide interval went to zero at `|raw| = 745` alongside
+/// the value.
+#[inline]
+fn span_times_sigmoid_slope(span: f64, raw: f64) -> f64 {
+    let slope = stable_sigmoid_derivative(raw);
+    if slope.is_normal() || !span.is_finite() {
+        return span * slope;
+    }
+    let half = (-0.5 * raw.abs()).exp();
+    (span * half) * half
 }
 
 /// d/draw of [`bounded_sigmoid`], i.e. `(upper - lower) * s'(raw)`.
@@ -153,7 +204,7 @@ pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
 /// discarding a derivative of 0.4961479024771348.
 #[inline]
 pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
-    (upper - lower) * stable_sigmoid_derivative(raw)
+    span_times_sigmoid_slope(upper - lower, raw)
 }
 
 /// `adjoint * (upper - lower) * s'(raw)`, associated so that the product stays
@@ -184,11 +235,15 @@ pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
 /// A subnormal span near raw 0 is the exception — `(0, 1e-323)` has
 /// `span * s' == 2.5e-324`, which rounds to zero while the value still moves —
 /// and that is the case this order rescues.
+///
+/// The wide-span tail is no longer one of these cases:
+/// [`span_times_sigmoid_slope`] keeps `span * s'` alive past `|raw| = 745`, so
+/// the fallback now fires only for a genuinely tiny span.
 #[inline]
 pub fn bounded_sigmoid_adjoint(adjoint: f64, raw: f64, lower: f64, upper: f64) -> f64 {
     let slope = stable_sigmoid_derivative(raw);
     let span = upper - lower;
-    let scaled = span * slope;
+    let scaled = span_times_sigmoid_slope(span, raw);
     if scaled == 0.0 && span != 0.0 && slope != 0.0 {
         (adjoint * span) * slope
     } else {

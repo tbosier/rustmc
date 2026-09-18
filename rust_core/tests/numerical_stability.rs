@@ -434,6 +434,130 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
     );
 }
 
+/// `(raw, span * sigmoid(raw))` for `span = 1e308`, from Python `decimal` at
+/// 200 significant digits. The slope `span * s'(raw)` is the same number to
+/// every digit shown here, since `1 + exp(raw)` is 1 throughout.
+///
+/// Applying the span to a materialised sigmoid lost this whole table below
+/// -708: the sigmoid is a subnormal from there and sheds bits (at -740 the
+/// result was 0.26% high, at -745 it was 75% high), and below -745.13 it is
+/// zero outright.
+const WIDE_SPAN_TAIL: [(f64, f64); 11] = [
+    (-710.0, 0.447628622567513),
+    (-720.0, 2.0322308024242932e-05),
+    (-730.0, 9.226313569122114e-10),
+    (-740.0, 4.188739880048049e-14),
+    (-745.0, 2.822350730471937e-16),
+    (-746.0, 1.0382848095158282e-16),
+    (-750.0, 1.9016849634750064e-18),
+    (-760.0, 8.633636377213886e-23),
+    (-800.0, 3.667874584177687e-40),
+    (-1000.0, 5.075958897549457e-127),
+    (-1400.0, 9.721322154756662e-301),
+];
+
+/// The tail the fused transform used to erase: `Uniform(0, 1e308)` at
+/// raw = -746 returned exactly 0 for a constrained value of
+/// 1.0382848095158282e-16.
+///
+/// Folding the span into the exponent needs no logarithm of the span: the
+/// sigmoid is `exp(raw)` throughout this range, `exp(raw) == exp(raw / 2)^2`,
+/// and `raw / 2` is exact, so the span goes between the two halves.
+#[test]
+fn bounded_sigmoid_tail_survives_a_sigmoid_that_underflows() {
+    let wide = ParamTransform::BoundedSigmoid {
+        lower: 0.0,
+        upper: 1e308,
+    };
+    for (raw, expected) in WIDE_SPAN_TAIL {
+        assert_close(wide.apply(raw), expected, &format!("apply({raw})"));
+        assert_close(
+            wide.derivative(raw),
+            expected,
+            &format!("derivative({raw})"),
+        );
+        // The mirror interval reaches the same distance from its upper end.
+        let mirrored = ParamTransform::BoundedSigmoid {
+            lower: -1e308,
+            upper: 0.0,
+        };
+        assert_close(
+            -mirrored.apply(-raw),
+            expected,
+            &format!("mirrored apply({})", -raw),
+        );
+    }
+}
+
+/// Where the rescue itself stops, pinned so it is a known edge and not a
+/// surprise. `exp(raw / 2)` is normal down to `raw = -1416.79`; below that the
+/// two halves are subnormals and shed bits like the sigmoid used to, and the
+/// value reaches zero near `raw = -1454` for the widest representable span.
+///
+/// That is 670 units of raw further out than before, and past the point where
+/// `f64` can represent the constrained value at all for any narrower interval.
+#[test]
+fn bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows() {
+    let wide = ParamTransform::BoundedSigmoid {
+        lower: 0.0,
+        upper: 1e308,
+    };
+    // Last raw whose halves are both normal, and the first that is not.
+    assert!((2.0 * f64::MIN_POSITIVE.ln() + 1416.7928370645282).abs() < 1e-9);
+    assert!((0.5 * -1416.0_f64).exp().is_normal());
+    assert!(!(0.5 * -1418.0_f64).exp().is_normal());
+
+    // Still full precision just inside the boundary.
+    assert_close(wide.apply(-1416.0), 1.0939906871877455e-307, "apply(-1416)");
+    // Degraded but not lost just outside it: the exact value is a subnormal
+    // with only a handful of bits left in any case.
+    let beyond = wide.apply(-1440.0);
+    assert!(
+        beyond > 0.0 && (beyond / 4.129964e-318 - 1.0).abs() < 1e-3,
+        "apply(-1440) = {beyond}"
+    );
+    // And zero once the exact value is no longer representable.
+    assert_eq!(wide.apply(-1460.0), 0.0, "apply(-1460)");
+    assert_eq!(wide.apply(-2000.0), 0.0, "apply(-2000)");
+    // Never outside the interval, at any raw.
+    for raw in [-2000.0, -1454.0, -746.0, -1.0, 0.0, 1.0, 746.0, 2000.0] {
+        let value = wide.apply(raw);
+        assert!((0.0..=1e308).contains(&value), "apply({raw}) = {value}");
+    }
+}
+
+/// The gradient half of the same story, end to end: `Uniform(0, 1e308)` at
+/// raw = -746 under a `sigma = 1e-17` likelihood. With the constrained value
+/// rounded to 0 the likelihood penalty vanished and the gradient was the
+/// Jacobian term alone, exactly `+1`, pointing the wrong way.
+///
+/// The density and the gradient below are the analytic expressions evaluated
+/// out of crate with Python `decimal` at 200 significant digits.
+#[test]
+fn wide_uniform_prior_gradient_at_minus_746_under_a_tight_likelihood() {
+    let mut graph = Graph::new();
+    let theta = Uniform::prior(&mut graph, "theta", 0.0, 1e308);
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1e-17);
+    graph.normal_logp(observed, theta, sigma);
+
+    let (logp, grad) = evaluate(&graph, &[-746.0]);
+    assert!(
+        (logp / -761.6767592358718 - 1.0).abs() < 1e-12,
+        "logp {logp} vs -761.6767592358718"
+    );
+    assert!(
+        grad[0] < 0.0,
+        "the likelihood penalty vanished again: gradient {}",
+        grad[0]
+    );
+    assert!(
+        (grad[0] / -106.80353456713196 - 1.0).abs() < 1e-9,
+        "grad {} vs -106.80353456713196",
+        grad[0]
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Task 5 — a bounded prior's density point is the draw the caller reads back
 // ---------------------------------------------------------------------------
