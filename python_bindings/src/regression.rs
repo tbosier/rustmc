@@ -5,7 +5,7 @@ use rustmc_core::bayesian_regression::{
     RegressionPosterior,
 };
 
-#[pyclass(name = "GaussianCoefficientPrior", frozen)]
+#[pyclass(name = "GaussianCoefficientPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyGaussianCoefficientPrior {
     pub(crate) inner: GaussianCoefficientPrior,
@@ -121,7 +121,7 @@ pub(crate) fn config(
     }
 }
 
-#[pyclass(name = "BayesianRegressionFit")]
+#[pyclass(name = "BayesianRegressionFit", module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianRegressionFit {
     pub(crate) posterior: RegressionPosterior,
@@ -238,7 +238,7 @@ impl PyBayesianRegressionFit {
     }
 }
 
-#[pyclass(name = "BayesianRegressionForecast")]
+#[pyclass(name = "BayesianRegressionForecast", module = "rustmc")]
 pub(crate) struct PyBayesianRegressionForecast {
     pub(crate) inner: RegressionForecast,
     pub(crate) seasonal: bool,

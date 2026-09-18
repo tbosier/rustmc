@@ -134,7 +134,7 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
     ))
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 struct ModelSpec(rustmc_core::model::ModelSpec);
@@ -159,14 +159,14 @@ impl ModelSpec {
     }
 }
 
-#[pyclass(name = "BoundModel")]
+#[pyclass(name = "BoundModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyBoundModel {
     structure: Arc<Graph>,
     binding: CoreDataBinding,
 }
 
-#[pyclass(name = "CompiledModel")]
+#[pyclass(name = "CompiledModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyCompiledModel {
     definition: ModelSpec,
@@ -276,7 +276,7 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
     rustmc_core::model::template_data_for_spec(&spec.0).map_err(model_error)
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
     dimensions: HashMap<String, String>,
@@ -1221,7 +1221,7 @@ fn validate_transition_chain_count(
     }
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct FitResult {
     definition: ModelSpec,
@@ -2271,7 +2271,7 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 /// Everything this exposes is read off the retained fit's display draws. It
 /// used to also hold a flattened `BatchModelResult` copy of those same draws,
 /// which made a third posterior per cell alongside the raw and display trees.
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct BatchResult {
     full_fit: Option<StoredBatchFit>,
@@ -2467,7 +2467,7 @@ impl BatchResult {
     }
 }
 
-#[pyclass(name = "BatchFit")]
+#[pyclass(name = "BatchFit", module = "rustmc")]
 struct PyBatchFit {
     ids: Vec<String>,
     results: Vec<Result<BatchResult, String>>,
@@ -2928,7 +2928,7 @@ fn state_covariances_array<'py>(
 /// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
-#[pyclass(name = "LinearGaussianStateSpace")]
+#[pyclass(name = "LinearGaussianStateSpace", module = "rustmc")]
 #[derive(Clone)]
 struct PyLinearGaussianStateSpace {
     inner: CoreLinearGaussianStateSpace,
@@ -3132,7 +3132,7 @@ impl PyLinearGaussianStateSpace {
     }
 }
 
-#[pyclass(name = "KalmanFilterResult")]
+#[pyclass(name = "KalmanFilterResult", module = "rustmc")]
 struct PyKalmanFilterResult {
     inner: CoreKalmanFilterResult,
     dimension: usize,
@@ -3172,7 +3172,7 @@ impl PyKalmanFilterResult {
     }
 }
 
-#[pyclass(name = "KalmanSmootherResult")]
+#[pyclass(name = "KalmanSmootherResult", module = "rustmc")]
 struct PyKalmanSmootherResult {
     inner: CoreKalmanSmootherResult,
     dimension: usize,
@@ -3212,7 +3212,7 @@ impl PyKalmanSmootherResult {
     }
 }
 
-#[pyclass(name = "ForecastResult")]
+#[pyclass(name = "ForecastResult", module = "rustmc")]
 struct PyForecastResult {
     inner: CoreForecastResult,
     dimension: usize,
@@ -3543,7 +3543,7 @@ fn hierarchical_total_rollup_array<'py>(
 /// Ragged program series are fitted in one conjugate Gibbs posterior. This
 /// structure-aware sampler draws exact full conditionals and therefore avoids
 /// requiring NUTS to traverse a hierarchical funnel.
-#[pyclass(name = "BayesianHierarchicalMean", frozen)]
+#[pyclass(name = "BayesianHierarchicalMean", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianHierarchicalMean {
     population_mean_prior: f64,
@@ -3725,7 +3725,7 @@ fn validate_unique_names(names: &[String], expected: usize, field: &str) -> PyRe
     Ok(())
 }
 
-#[pyclass(name = "BayesianHierarchicalMeanFit")]
+#[pyclass(name = "BayesianHierarchicalMeanFit", module = "rustmc")]
 struct PyBayesianHierarchicalMeanFit {
     posterior: CoreHierarchicalMeanPosterior,
     time_counts: Vec<usize>,
@@ -3893,7 +3893,7 @@ impl PyBayesianHierarchicalMeanFit {
     }
 }
 
-#[pyclass(name = "BayesianHierarchicalForecast")]
+#[pyclass(name = "BayesianHierarchicalForecast", module = "rustmc")]
 struct PyBayesianHierarchicalForecast {
     inner: CoreHierarchicalMeanForecast,
     program_names: Vec<String>,
@@ -4117,7 +4117,7 @@ fn validate_probability(probability: f64) -> PyResult<()> {
 
 /// Inverse-gamma prior for a variance, parameterized by shape and scale.
 /// The density is proportional to x^(-shape-1) exp(-scale/x).
-#[pyclass(name = "InverseGammaPrior", frozen)]
+#[pyclass(name = "InverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone, Copy)]
 struct PyInverseGammaPrior {
     inner: CoreInverseGammaPrior,
@@ -4152,7 +4152,7 @@ impl PyInverseGammaPrior {
 
 /// Bayesian scalar Gaussian local-level model fitted with conjugate
 /// forward-filtering/backward-sampling Gibbs updates.
-#[pyclass(name = "BayesianLocalLevel", frozen)]
+#[pyclass(name = "BayesianLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevel {
     initial_mean: f64,
@@ -4325,7 +4325,7 @@ impl PyBayesianLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianLocalLevelFit")]
+#[pyclass(name = "BayesianLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevelFit {
     posterior: CoreLocalLevelPosterior,
@@ -4452,7 +4452,7 @@ impl PyBayesianLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianForecastResult")]
+#[pyclass(name = "BayesianForecastResult", module = "rustmc")]
 struct PyBayesianForecastResult {
     inner: CorePosteriorPredictiveForecast,
 }
@@ -4593,7 +4593,7 @@ where
 }
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
-#[pyclass(name = "BayesianSeasonalLocalLevel", frozen)]
+#[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevel {
     period: usize,
@@ -4772,7 +4772,7 @@ impl PyBayesianSeasonalLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+#[pyclass(name = "BayesianSeasonalLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevelFit {
     posterior: CoreSeasonalLocalLevelPosterior,
@@ -4904,7 +4904,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalForecast")]
+#[pyclass(name = "BayesianSeasonalForecast", module = "rustmc")]
 struct PyBayesianSeasonalForecast {
     inner: CoreSeasonalPosteriorPredictiveForecast,
 }
@@ -5101,7 +5101,7 @@ where
 }
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
-#[pyclass(name = "BayesianLocalLinearTrend", frozen)]
+#[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrend {
     initial_mean: [f64; 2],
@@ -5322,7 +5322,7 @@ impl PyBayesianLocalLinearTrend {
     }
 }
 
-#[pyclass(name = "BayesianLocalLinearTrendFit")]
+#[pyclass(name = "BayesianLocalLinearTrendFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrendFit {
     posterior: CoreLocalLinearTrendPosterior,
@@ -5462,7 +5462,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 }
 
-#[pyclass(name = "BayesianTrendForecast")]
+#[pyclass(name = "BayesianTrendForecast", module = "rustmc")]
 struct PyBayesianTrendForecast {
     inner: CoreTrendPosteriorPredictiveForecast,
 }
@@ -5659,7 +5659,7 @@ fn ar_coefficient_array<'py>(
 /// If beta contains ``[intercept, lag_1, ..., lag_p]``, then
 /// ``beta | sigma2 ~ Normal(mean, sigma2 * precision^-1)`` and
 /// ``sigma2 ~ InverseGamma(variance_shape, variance_scale)``.
-#[pyclass(name = "NormalInverseGammaPrior", frozen)]
+#[pyclass(name = "NormalInverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyNormalInverseGammaPrior {
     inner: CoreNormalInverseGammaPrior,
@@ -5734,7 +5734,7 @@ impl PyNormalInverseGammaPrior {
 ///
 /// This is distinct from ``LinearGaussianStateSpace.stationary_ar1``: the
 /// latter is a latent AR(1) observed with separate measurement noise.
-#[pyclass(name = "BayesianAutoRegression", frozen)]
+#[pyclass(name = "BayesianAutoRegression", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianAutoRegression {
     order: usize,
@@ -5853,7 +5853,7 @@ impl PyBayesianAutoRegression {
     }
 }
 
-#[pyclass(name = "BayesianARFit")]
+#[pyclass(name = "BayesianARFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianArFit {
     posterior: CoreBayesianArPosterior,
@@ -5959,7 +5959,7 @@ impl PyBayesianArFit {
     }
 }
 
-#[pyclass(name = "BayesianARForecast")]
+#[pyclass(name = "BayesianARForecast", module = "rustmc")]
 struct PyBayesianArForecast {
     inner: CoreBayesianArForecast,
 }

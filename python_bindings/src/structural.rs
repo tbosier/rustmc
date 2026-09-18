@@ -5,7 +5,7 @@ use rustmc_core::structural::{
 };
 
 /// An explicit fixed variance or independent inverse-gamma prior (shape, scale).
-#[pyclass(name = "VarianceParameter", frozen)]
+#[pyclass(name = "VarianceParameter", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyVarianceParameter {
     inner: VarianceParameter,
@@ -26,7 +26,7 @@ impl PyVarianceParameter {
     }
 }
 /// A named additive component with a proper initial Gaussian state prior.
-#[pyclass(name = "StructuralComponent", frozen)]
+#[pyclass(name = "StructuralComponent", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyStructuralComponent {
     inner: Component,
@@ -148,7 +148,7 @@ fn matrix(rows: Vec<Vec<f64>>, d: usize) -> PyResult<Vec<f64>> {
     }
     Ok(rows.into_iter().flatten().collect())
 }
-#[pyclass(name = "StructuralModel", frozen)]
+#[pyclass(name = "StructuralModel", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyStructuralModel {
     inner: StructuralConfig,
@@ -239,7 +239,7 @@ impl PyStructuralModel {
         })
     }
 }
-#[pyclass(name = "StructuralFit", frozen)]
+#[pyclass(name = "StructuralFit", frozen, module = "rustmc")]
 pub(crate) struct PyStructuralFit {
     inner: StructuralPosterior,
 }
@@ -412,7 +412,7 @@ fn array4<'py>(py: Python<'py>, v: &[Vec<Vec<Vec<f64>>>]) -> Bound<'py, PyArray4
     Array4::from_shape_fn((v.len(), v[0].len(), h, d), |(i, j, k, l)| v[i][j][k][l])
         .into_pyarray(py)
 }
-#[pyclass(name = "StructuralForecast", frozen)]
+#[pyclass(name = "StructuralForecast", frozen, module = "rustmc")]
 pub(crate) struct PyStructuralForecast {
     inner: StructuralPaths,
     names: Vec<String>,
