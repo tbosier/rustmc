@@ -26,7 +26,11 @@ fn allocation(factors: &[usize]) -> Result<()> {
     Ok(())
 }
 
+/// `deny_unknown_fields` reaches the `InverseGamma` struct variant; the
+/// `Fixed` newtype variant carries no field names for it to act on, and serde
+/// already refuses an unrecognised variant name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum VarianceParameter {
     Fixed(f64),
     InverseGamma { shape: f64, scale: f64 },
@@ -62,6 +66,7 @@ impl VarianceParameter {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Component {
     pub name: String,
     pub transition: Vec<f64>,
@@ -219,6 +224,7 @@ impl Component {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralConfig {
     pub components: Vec<Component>,
     pub observation_variance: VarianceParameter,
@@ -234,6 +240,7 @@ pub struct SamplingConfig {
     pub store_states: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralDraw {
     pub variances: Vec<f64>,
     pub observation_variance: f64,
@@ -241,12 +248,17 @@ pub struct StructuralDraw {
     pub states: Option<Vec<Vec<f64>>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralPosterior {
     pub config: StructuralConfig,
     pub chains: Vec<Vec<StructuralDraw>>,
     pub training_rows: Vec<Vec<f64>>,
 }
+/// Not reachable from either structural loader today - it is a forecast/smoother
+/// result, not part of an artifact - but it derives `Deserialize`, so it is held
+/// to the same rule in case it is ever embedded in one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralPaths {
     /// [chain][draw][time][state]
     pub states: Vec<Vec<Vec<Vec<f64>>>>,
@@ -710,6 +722,7 @@ impl StructuralPosterior {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SavedPosterior {
     format: String,
     version: u32,
@@ -799,6 +812,7 @@ impl StructuralPosterior {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SavedModel {
     format: String,
     version: u32,

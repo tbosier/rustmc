@@ -21,7 +21,11 @@ pub enum Family {
     Gaussian,
 }
 
+/// `Family` above is left alone deliberately: all its variants are unit
+/// variants, so `deny_unknown_fields` is inert on it, and serde already refuses
+/// an unrecognised family name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DynamicGlmConfig {
     pub family: Family,
     pub initial_mean: f64,
@@ -97,6 +101,7 @@ impl DynamicGlmConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DynamicGlmDraw {
     /// [component][coefficient], including intercept at column zero.
     pub population_coefficients: Vec<Vec<f64>>,
@@ -106,6 +111,7 @@ pub struct DynamicGlmDraw {
     pub states: Vec<Panel>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DynamicGlmPosterior {
     pub config: DynamicGlmConfig,
     pub chains: Vec<Vec<DynamicGlmDraw>>,
