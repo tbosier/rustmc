@@ -30,9 +30,15 @@ ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = ROOT / "examples"
 README = EXAMPLES / "README.md"
 
-# Optional third-party imports an example may legitimately lack. A missing one
-# is reported as a skip; any other failure is an error.
-OPTIONAL = {"arviz", "matplotlib", "pymc", "nutpie", "numpyro", "prophet", "statsmodels"}
+# examples/README.md states that every documented example runs on NumPy alone
+# except the ones named here, and says which package each needs. That claim is
+# what this map enforces: an example may skip only for the dependency it is
+# documented to need. An example that silently acquires a new third-party
+# import fails instead of quietly dropping out of the gate.
+OPTIONAL_BY_EXAMPLE = {
+    "arviz_example.py": {"arviz", "matplotlib"},
+    "bayesian_local_level_forecasting.py": {"arviz"},
+}
 
 
 def documented() -> tuple[set[str], set[str]]:
@@ -78,8 +84,16 @@ def run_one(name: str, timeout: int, env: dict[str, str]) -> tuple[str, str, flo
     if done.returncode == 0:
         return name, "ok", elapsed, ""
     missing = re.search(r"ModuleNotFoundError: No module named '([\w.]+)'", done.stderr)
-    if missing and missing.group(1).split(".")[0] in OPTIONAL:
-        return name, "skipped", elapsed, f"needs {missing.group(1)}"
+    if missing:
+        module = missing.group(1).split(".")[0]
+        allowed = OPTIONAL_BY_EXAMPLE.get(name, set())
+        if module in allowed:
+            return name, "skipped", elapsed, f"needs {missing.group(1)}"
+        return name, "FAILED", elapsed, (
+            f"imports {module}, which examples/README.md does not list as an optional\n"
+            f"dependency of {name}. Either drop the import or document it and add it to\n"
+            f"OPTIONAL_BY_EXAMPLE in this script."
+        )
     tail = "\n".join((done.stderr or done.stdout).splitlines()[-12:])
     return name, "FAILED", elapsed, tail
 
@@ -118,11 +132,13 @@ def main() -> int:
             print(f"{status:>8}  {elapsed:6.1f}s  {name}" + (f"  ({detail})" if status in {"skipped", "TIMEOUT"} else ""))
 
     bad = [r for r in results if r[1] in {"FAILED", "TIMEOUT"}]
+    skipped = [r for r in results if r[1] == "skipped"]
     for name, status, _, detail in bad:
         print(f"\n===== {status}: {name} =====\n{detail}", file=sys.stderr)
     slowest = max(results, key=lambda r: r[2])
     print(
-        f"\n{len(results)} documented examples, {len(bad)} bad, "
+        f"\n{len(results)} documented examples, {len(results) - len(bad) - len(skipped)} ran, "
+        f"{len(skipped)} skipped for a documented optional dependency, {len(bad)} bad, "
         f"slowest {slowest[0]} at {slowest[2]:.1f}s (budget {args.timeout}s)"
     )
     return 1 if bad else 0

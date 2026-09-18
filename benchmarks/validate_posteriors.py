@@ -350,7 +350,19 @@ def json_safe(value):
     if (isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral)
             and not math.isfinite(value)):
         return None
-    return value
+    if isinstance(value, (str, bool, int, float, type(None))):
+        return value
+    # Anything else reaching here is a type json.dumps has no encoder for -- a
+    # Decimal, say, which is a numbers.Number but not a numbers.Real, so neither
+    # branch above sees it. Raising would discard the entire report over one
+    # unserializable diagnostic, which is the failure docs/statistical-validation.md
+    # says cannot happen. Convert what converts, and keep the rest as its repr so
+    # the evidence survives.
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return repr(value)
+    return number if math.isfinite(number) else None
 
 
 def main():

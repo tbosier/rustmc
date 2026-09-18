@@ -114,8 +114,9 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   after changing the mass matrix.
 - Preserve native conditional-mean forecast draws, coordinates and metadata in workflow
   adapters; reject empty potential names before creating an unreadable model artifact.
-- Preserve Jacobian/potential terms and the new support constraints in legacy graph
-  exports, and reject overflowing Uniform ranges or nonfinite sampled outputs.
+- Reject overflowing Uniform ranges and nonfinite sampled outputs. (An earlier fix in
+  this cycle also preserved Jacobian/potential terms in legacy graph exports; that
+  format is removed below, so only the Uniform and output guards remain.)
 - Correct Poisson simulation at tiny and large rates across generic observations,
   dynamic count models and payment runoff.
 - Preserve Poisson and negative-binomial likelihood curvature at large counts and

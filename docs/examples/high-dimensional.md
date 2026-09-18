@@ -42,10 +42,11 @@ fit = rmc.sample(
 )
 print(fit.summary())
 
-# Compare a few estimates to the true values
+# Compare a few estimates to the true values. A vector parameter is reported as
+# one entry per coordinate -- `beta[0]`, `beta[1]`, ... -- not as a nested array.
 means = fit.mean()
 for i in range(5):
-    print(f"beta[{i}]: true={beta_true[i]:.4f}  estimated={means['beta'][i]:.4f}")
+    print(f"beta[{i}]: true={beta_true[i]:.4f}  estimated={means[f'beta[{i}]']:.4f}")
 ```
 
 ## Notes
