@@ -86,12 +86,48 @@ pub fn stable_sigmoid(x: f64) -> f64 {
 /// Mathematically `s(x) * (1 - s(x))`, but `1 - s(x)` cancels to exactly zero
 /// once `s(x)` rounds to 1 (around `x = 37`), discarding a value that stays
 /// representable out to `x = 745`. `exp(-|x|) / (1 + exp(-|x|))^2` is the same
-/// quantity, is symmetric in `x` by construction, and needs one `exp`.
+/// quantity, is symmetric in `x` by construction, and needs one `exp`. Near
+/// `x = 0` the old form was marginally more accurate, because `1 - s` is exact
+/// there by Sterbenz; this one stays within about two ulp everywhere instead.
 #[inline]
 pub fn stable_sigmoid_derivative(x: f64) -> f64 {
     let e = (-x.abs()).exp();
     let d = 1.0 + e;
     e / (d * d)
+}
+
+/// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
+///
+/// `-a / (b * b)` is the accurate form and is used wherever the squared
+/// denominator is a normal number: `b * b` is then either exact or off by half
+/// an ulp, so the result is within one ulp of the true quotient.
+///
+/// It fails outside that band, and not gracefully. `b * b` overflows to
+/// infinity for `|b| > 1.34e154`, so `-a / inf` returns `-0.0` and erases a
+/// derivative that is often perfectly representable (`a = b = 1e200` has
+/// derivative `-1e-200`). Going the other way it decays into the subnormals
+/// below `|b| = 1.49e-154` and reaches zero below `|b| = 1.58e-162`, so
+/// `-a / 0.0` fabricates an infinity where the true derivative is finite
+/// (`a = b = 1e-200` has derivative `-1e200`).
+///
+/// In that band divide twice instead. Two divisions never leave the exponent
+/// range, at the cost of a second rounding — which is why this is a fallback
+/// and not the only path: double rounding through the subnormals can turn a
+/// representable `-5e-324` into `-0.0` (`a = 1.5e-323`, `b = 2.2`), exactly
+/// the failure the fallback exists to prevent. Restricting it to the range
+/// where `-a / (b * b)` is already broken keeps both forms on the inputs they
+/// handle well.
+#[inline]
+fn div_denominator_derivative(a: f64, b: f64) -> f64 {
+    let square = b * b;
+    if square.is_normal() {
+        -a / square
+    } else {
+        // Covers b == 0 (the square is +0 either way, so both forms give the
+        // same signed infinity or NaN), the two overflow/underflow tails, and
+        // the subnormal square band in between.
+        -(a / b) / b
+    }
 }
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
@@ -136,12 +172,7 @@ impl ElementwiseOp {
             Self::Add => (1.0, 1.0),
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
-            // -(a/b)/b rather than -a/(b*b): the squared denominator
-            // overflows to infinity for |b| > ~1.3e154 (erasing a
-            // representable derivative as -0.0) and underflows to zero for
-            // |b| < ~1.5e-154 (fabricating an infinity). Dividing twice keeps
-            // the same two roundings and stays inside the exponent range.
-            Self::Div => (1.0 / b, -(a / b) / b),
+            Self::Div => (1.0 / b, div_denominator_derivative(a, b)),
             Self::Pow => {
                 // x^0 is constant even at x=0. For positive exponents, 0^b
                 // is also constant in b; forming 0*log(0) gives a false NaN.
@@ -363,10 +394,22 @@ impl ParamTransform {
             ParamTransform::Sigmoid => stable_sigmoid(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
                 // Anchor to whichever endpoint the value is nearest.
-                // `lower + span * s` cancels catastrophically once `s` is
-                // near 1 and `lower` is large and negative: with
-                // lower = -1e308 and upper = 1, raw = 710 gives
-                // -1e308 + 1e308 == 0 instead of 0.552371377432487.
+                // `lower + span * s` cancels catastrophically once `s` is near
+                // 1 and `lower` is large and negative: with lower = -1e308 and
+                // upper = 1, raw = 710 gives -1e308 + 1e308 == 0 instead of
+                // 0.552371377432487. Both branches also round towards the
+                // endpoint they subtract from, so the result can never leave
+                // [lower, upper].
+                //
+                // Two limits remain. The branches can disagree by one ulp at
+                // raw == 0, so the mapping is not exactly monotone there
+                // (lower = 1, upper = 1e16 steps down by one ulp across zero);
+                // that is a rounding artefact of the reported value, and
+                // `derivative` below does not model it. And materialising the
+                // sigmoid before scaling still loses bounded values whose
+                // sigmoid underflows: lower = 0, upper = 1e308, raw = -746
+                // gives 0 where the true value is 1.0382848095158282e-16.
+                // Removing that needs the scaling folded into the sigmoid.
                 let span = upper - lower;
                 if raw >= 0.0 {
                     upper - span * stable_sigmoid(-raw)

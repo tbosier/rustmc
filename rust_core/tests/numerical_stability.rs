@@ -44,15 +44,25 @@ fn division_target() -> Graph {
 // Task 1 — Div gradient
 // ---------------------------------------------------------------------------
 
+/// `-a/b^2` at ordinary scales, against the correctly rounded f64 computed
+/// out of crate with Python's `decimal`. Asserting `grad[1] == -(a / b) / b`
+/// here would just restate the implementation.
 #[test]
 fn division_gradient_matches_closed_form_at_ordinary_scale() {
     let graph = division_target();
-    for (a, b) in [(3.0, 2.0), (-7.5, 0.25), (1.0, -4.0), (0.125, 1e3)] {
+    for (a, b, expected) in [
+        (3.0, 2.0, -0.75),
+        (-7.5, 0.25, 120.0),
+        (1.0, -4.0, -0.0625),
+        (0.125, 1e3, -1.25e-7),
+        (1.0, 13.0, -0.005917159763313609),
+        (-2.7, 0.3, 30.000000000000004),
+        (5.0, 7.0, -0.10204081632653061),
+    ] {
         let (value, grad) = evaluate(&graph, &[a, b]);
         assert_eq!(value, a / b, "value for {a}/{b}");
         assert_eq!(grad[0], 1.0 / b, "d/da for {a}/{b}");
-        // Exactly representable at these scales, so equality is the right test.
-        assert_eq!(grad[1], -(a / b) / b, "d/db for {a}/{b}");
+        assert_eq!(grad[1], expected, "d/db for {a}/{b}");
         for (index, analytic) in grad.iter().enumerate() {
             let numeric = central_difference(&graph, &[a, b], index, 1e-6 * b.abs().max(1.0));
             assert!(
@@ -60,6 +70,23 @@ fn division_gradient_matches_closed_form_at_ordinary_scale() {
                 "finite difference mismatch for {a}/{b} index {index}: {analytic} vs {numeric}"
             );
         }
+    }
+}
+
+/// The fallback that rescues the two tails must not be applied where it is not
+/// needed: dividing twice rounds twice, and a second rounding inside the
+/// subnormals turns a representable derivative into zero and back.
+#[test]
+fn division_gradient_does_not_double_round_through_the_subnormals() {
+    let graph = division_target();
+    // (a, b, correctly rounded -a/b^2), computed out of crate at 400 digits.
+    for (a, b, expected) in [
+        (1.5e-323, 2.2, -5e-324),
+        (5e-324, 1.5, -0.0),
+        (5e-324, 0.75, -1e-323),
+    ] {
+        let (_, grad) = evaluate(&graph, &[a, b]);
+        assert_eq!(grad[1], expected, "d/db for {a}/{b}");
     }
 }
 
@@ -202,22 +229,28 @@ fn division_by_a_huge_exponential_keeps_the_user_visible_gradient() {
 // ---------------------------------------------------------------------------
 
 /// `(argument, sigmoid, sigmoid')`, computed with Python's `decimal` module at
-/// 400 significant digits and rounded to the nearest f64. `sigmoid'` is
-/// `exp(-|x|) / (1 + exp(-|x|))^2`, which is `s(1-s)` without the
-/// cancellation that destroys the upper tail.
+/// 400 significant digits and written as the shortest decimal that round-trips
+/// to the nearest f64. `sigmoid'` is `exp(-|x|) / (1 + exp(-|x|))^2`, which is
+/// `s(1-s)` without the cancellation that destroys the upper tail.
+///
+/// `assert_close` compares to 1e-12 relative, roughly 4500 ulp. That is a
+/// magnitude-and-tail check, not a certification of the last bit: `exp` is not
+/// required to be correctly rounded, so demanding equality here would make the
+/// suite depend on the host libm. What it does catch is a tail collapsing to
+/// zero, which is the whole reason this table exists.
 const SIGMOID_REFERENCE: [(f64, f64, f64); 17] = [
     (-800.0, 0.0, 0.0),
     (-745.2, 0.0, 0.0),
     (-710.0, 4.47628622567513e-309, 4.47628622567513e-309),
     (-709.0, 1.216780750623423e-308, 1.216780750623423e-308),
     (-100.0, 3.720075976020836e-44, 3.720075976020836e-44),
-    (-37.0, 8.533047625744064e-17, 8.533047625744064e-17),
-    (-1.0, 2.689414213699951e-01, 1.966119332414818e-01),
-    (-1e-8, 4.999999975e-01, 2.5e-01),
-    (0.0, 5.0e-01, 2.5e-01),
-    (1e-8, 5.000000024999999e-01, 2.5e-01),
-    (1.0, 7.310585786300049e-01, 1.966119332414818e-01),
-    (37.0, 9.999999999999998e-01, 8.533047625744064e-17),
+    (-37.0, 8.533047625744065e-17, 8.533047625744065e-17),
+    (-1.0, 0.2689414213699951, 0.19661193324148185),
+    (-1e-8, 0.4999999975, 0.25),
+    (0.0, 0.5, 0.25),
+    (1e-8, 0.5000000025, 0.25),
+    (1.0, 0.7310585786300049, 0.19661193324148185),
+    (37.0, 0.9999999999999999, 8.533047625744065e-17),
     (100.0, 1.0, 3.720075976020836e-44),
     (709.0, 1.0, 1.216780750623423e-308),
     (710.0, 1.0, 4.47628622567513e-309),
@@ -369,10 +402,14 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
         (logp - -718.634922627295).abs() < 1e-9,
         "logp {logp} vs -718.634922627295"
     );
-    assert!(
-        grad[0] != 1.0 && !grad[0].is_nan(),
-        "gradient is still the self-consistently wrong 1.0: {}",
-        grad[0]
+    // Not the fixed value: reverse mode must form the sigmoid node's adjoint
+    // with the 1e308 factor already applied, and -44.76 * 1e308 overflows.
+    // Asserted exactly so this stays a characterisation of a known limit and
+    // cannot quietly start passing on some third wrong number.
+    assert_eq!(
+        grad[0],
+        f64::NEG_INFINITY,
+        "expected the documented intermediate overflow"
     );
 
     // Same prior, likelihood scale that keeps every adjoint representable.
@@ -448,7 +485,11 @@ fn elementwise_case(op: ElementwiseOp) -> Graph {
             let shifted = graph.elementwise(ElementwiseOp::Add, b, Some(three));
             let ratio = graph.elementwise(ElementwiseOp::Div, a, Some(shifted));
             let scaled = graph.elementwise(ElementwiseOp::Mul, ratio, Some(xd));
-            let denom = graph.elementwise(ElementwiseOp::Add, xd, Some(three));
+            // Denominator depends on b, so the vector Div exercises the
+            // second-operand gradient and not just the numerator's.
+            let bx = graph.elementwise(ElementwiseOp::Mul, b, Some(xd));
+            let shifted_vec = graph.elementwise(ElementwiseOp::Add, bx, Some(three));
+            let denom = graph.elementwise(ElementwiseOp::Add, shifted_vec, Some(xd));
             let vector_ratio = graph.elementwise(ElementwiseOp::Div, a, Some(denom));
             graph.elementwise(ElementwiseOp::Add, scaled, Some(vector_ratio))
         }
@@ -553,6 +594,10 @@ fn prior_case(prior: PriorSpec, vector: bool) -> Graph {
         .graph
 }
 
+/// Every continuous `PriorSpec` variant `model::compile` can build. The two
+/// discrete variants, `PriorSpec::Bernoulli` and `PriorSpec::Poisson`, are
+/// deliberately absent: `reject_discrete_priors_for_gradient_sampling` refuses
+/// them before a gradient is ever taken, so they have no gradient to check.
 #[test]
 fn every_prior_family_agrees_with_finite_differences() {
     let families: Vec<(&str, PriorSpec, bool)> = vec![
@@ -649,8 +694,12 @@ fn every_prior_family_agrees_with_finite_differences() {
     }
 }
 
-/// Every scalar `Op` arm the samplers still construct, exercised together so
-/// the IR deletion cannot quietly drop one.
+/// The four scalar arithmetic `Op` variants that survive the IR deletion —
+/// `Add`, `Mul`, `Exp`, `Sigmoid` — chained into one target. This is not a
+/// sweep of every `Op` variant: the density kernels (`NormalLogP`,
+/// `LogGammaLogP`, the vectorised priors, ...) are covered by
+/// `every_prior_family_agrees_with_finite_differences` and by the crate's own
+/// unit tests.
 #[test]
 fn surviving_scalar_ops_agree_with_finite_differences() {
     let mut graph = Graph::new();
@@ -665,5 +714,65 @@ fn surviving_scalar_ops_agree_with_finite_differences() {
     graph.normal_logp(observed, squashed, sigma);
     for params in [[0.2, -0.3], [-0.9, 0.45], [1.3, 0.8]] {
         assert_finite_difference_agrees(&graph, &params, &format!("scalar ops at {params:?}"));
+    }
+}
+
+/// `Op::Gather` is the only path that calls `ParamTransform::apply` and
+/// `ParamTransform::derivative` while computing a target, so it is the only
+/// place the transform rewrite can reach a gradient. The scalar `Uniform`
+/// prior does not go through it — it builds sigmoid graph nodes instead — so
+/// without this the prior sweep never exercises the changed code.
+#[test]
+fn gathered_constrained_vector_parameters_agree_with_finite_differences() {
+    let indices = vec![0.0, 1.0, 2.0, 0.0, 1.0, 2.0];
+    let observations = vec![0.4, -0.2, 0.9, 0.1, 0.55, -0.7];
+
+    let transforms = [
+        ParamTransform::BoundedSigmoid {
+            lower: -2.0,
+            upper: 3.0,
+        },
+        ParamTransform::BoundedSigmoid {
+            lower: 0.0,
+            upper: 1.0,
+        },
+        ParamTransform::BoundedSigmoid {
+            lower: -50.0,
+            upper: 10.0,
+        },
+        ParamTransform::Sigmoid,
+        ParamTransform::Exp,
+        ParamTransform::Identity,
+    ];
+
+    for transform in transforms {
+        let mut graph = Graph::new();
+        let start = graph.add_vector_params_with_transform("p", 3, transform.clone());
+        match transform {
+            ParamTransform::BoundedSigmoid { lower, upper } => {
+                graph.vector_uniform_logp(start, 3, lower, upper)
+            }
+            ParamTransform::Sigmoid => graph.vector_beta_logp(start, 3, 2.0, 3.0),
+            ParamTransform::Exp => graph.vector_half_normal_logp(start, 3, 1.3),
+            ParamTransform::Identity => graph.vector_normal_logp(start, 3, 0.0, 1.5),
+        };
+        let index_node = graph.add_data("idx", indices.clone());
+        let mu = graph.gather(start, 3, index_node);
+        let obs = graph.add_named_obs_data("y", "obs", observations.clone());
+        let sigma = graph.add_constant(1.0);
+        graph.normal_obs_logp(mu, sigma, obs);
+
+        for params in [
+            [0.3, -0.45, 0.9],
+            [-1.2, 0.9, -0.1],
+            [2.0, -2.0, 0.0],
+            [-4.0, 4.0, 1.7],
+        ] {
+            assert_finite_difference_agrees(
+                &graph,
+                &params,
+                &format!("gathered {transform:?} at {params:?}"),
+            );
+        }
     }
 }
