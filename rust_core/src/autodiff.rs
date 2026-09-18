@@ -1,6 +1,10 @@
 use crate::data::DataBinding;
 use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
 
+/// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
+pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
+use crate::graph::stable_sigmoid_derivative;
+
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
 // ---------------------------------------------------------------------------
@@ -416,20 +420,9 @@ impl Evaluator {
                 Op::Constant(c) => self.scalars[idx] = *c,
                 Op::Data(_) => {}
                 Op::Add(a, b) => self.scalars[idx] = self.scalars[a.0] + self.scalars[b.0],
-                Op::Sub(a, b) => self.scalars[idx] = self.scalars[a.0] - self.scalars[b.0],
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
-                Op::Div(a, b) => self.scalars[idx] = self.scalars[a.0] / self.scalars[b.0],
-                Op::Neg(a) => self.scalars[idx] = -self.scalars[a.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
-                Op::Log(a) => self.scalars[idx] = self.scalars[a.0].ln(),
-                Op::Sigmoid(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = 1.0 / (1.0 + (-v).exp());
-                }
-                Op::Square(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = v * v;
-                }
+                Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
                     let out_off = match self.node_kind[idx] {
@@ -865,33 +858,19 @@ impl Evaluator {
                     self.adj_scalars[a.0] += a_s;
                     self.adj_scalars[b.0] += a_s;
                 }
-                Op::Sub(a, b) => {
-                    self.adj_scalars[a.0] += a_s;
-                    self.adj_scalars[b.0] -= a_s;
-                }
                 Op::Mul(a, b) => {
                     let va = self.scalars[a.0];
                     let vb = self.scalars[b.0];
                     self.adj_scalars[a.0] += a_s * vb;
                     self.adj_scalars[b.0] += a_s * va;
                 }
-                Op::Div(a, b) => {
-                    let va = self.scalars[a.0];
-                    let vb = self.scalars[b.0];
-                    self.adj_scalars[a.0] += a_s / vb;
-                    self.adj_scalars[b.0] -= a_s * va / (vb * vb);
-                }
-                Op::Neg(a) => self.adj_scalars[a.0] -= a_s,
                 Op::Exp(a) => {
                     let va = self.scalars[a.0].exp();
                     self.adj_scalars[a.0] += a_s * va;
                 }
-                Op::Log(a) => self.adj_scalars[a.0] += a_s / self.scalars[a.0],
                 Op::Sigmoid(a) => {
-                    let s = self.scalars[idx];
-                    self.adj_scalars[a.0] += a_s * s * (1.0 - s);
+                    self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
                 }
-                Op::Square(a) => self.adj_scalars[a.0] += a_s * 2.0 * self.scalars[a.0],
 
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
@@ -1332,12 +1311,18 @@ impl Evaluator {
 }
 
 // ---------------------------------------------------------------------------
-// Original free functions (kept for tests and simple use)
+// Reference evaluator — differential-testing oracle, not public API
 // ---------------------------------------------------------------------------
 
-pub use reference::{eval_logp, forward, grad_logp, Value};
+/// Allocating re-implementation of the whole IR, used only to cross-check the
+/// zero-allocation `Evaluator`. It is deliberately not exported: it has no
+/// non-test callers and it panics on its entry points when a node's shape is
+/// not what it expected.
+#[cfg(test)]
 #[path = "autodiff_reference.rs"]
-pub mod reference;
+mod reference;
+#[cfg(test)]
+pub(crate) use reference::{eval_logp, grad_logp};
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     if !sigma.is_finite() || sigma <= 0.0 {
@@ -1347,59 +1332,68 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - 0.5 * z * z
 }
 
-fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    let n = obs.len() as f64;
-    let sum_sq: f64 = mu
-        .iter()
-        .zip(obs.iter())
-        .map(|(m, o)| {
-            let d = (o - m) / sigma;
-            d * d
-        })
-        .sum();
-    n * log_norm - 0.5 * sum_sq
-}
+// Whole-vector observation kernels. Only the reference evaluator uses these:
+// the Evaluator fuses the same arithmetic into its own single pass.
+#[cfg(test)]
+mod obs_logp_sums {
+    use super::softplus;
 
-fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| y * e - softplus(*e))
-        .sum()
-}
+    pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        let n = obs.len() as f64;
+        let sum_sq: f64 = mu
+            .iter()
+            .zip(obs.iter())
+            .map(|(m, o)| {
+                let d = (o - m) / sigma;
+                d * d
+            })
+            .sum();
+        n * log_norm - 0.5 * sum_sq
+    }
 
-fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
-        .sum()
-}
+    pub(super) fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| y * e - softplus(*e))
+            .sum()
+    }
 
-fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| e - y * e.exp())
-        .sum()
-}
+    pub(super) fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
+            .sum()
+    }
 
-fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    mu.iter()
-        .zip(obs.iter())
-        .map(|(m, y)| {
-            let ly = y.ln();
-            let d = (ly - m) / sigma;
-            log_norm - ly - 0.5 * d * d
-        })
-        .sum()
-}
+    pub(super) fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| e - y * e.exp())
+            .sum()
+    }
 
-fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs)
-        .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
-        .sum()
+    pub(super) fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        mu.iter()
+            .zip(obs.iter())
+            .map(|(m, y)| {
+                let ly = y.ln();
+                let d = (ly - m) / sigma;
+                log_norm - ly - 0.5 * d * d
+            })
+            .sum()
+    }
+
+    pub(super) fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs)
+            .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
+            .sum()
+    }
 }
+#[cfg(test)]
+use obs_logp_sums::*;
 
 // Combined transformed densities avoid materializing exp(raw), and form
 // scale ratios in log space before squaring or multiplying extreme values.
@@ -1502,15 +1496,6 @@ pub(crate) fn softplus(x: f64) -> f64 {
         x + (-x).exp().ln_1p()
     } else {
         x.exp().ln_1p()
-    }
-}
-
-fn sigmoid_stable(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let ex = x.exp();
-        ex / (1.0 + ex)
     }
 }
 
@@ -2289,12 +2274,6 @@ mod extreme_scale_regressions {
                     Exponential::prior(&mut exponential, "x", beta);
                     check(&exponential, &[raw], expected, &[1.0 - z.exp()]);
                 }
-                // New scalar kernels remain serializable through legacy artifacts.
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], expected, &[alpha - z.exp()]);
             }
         }
     }
@@ -2324,11 +2303,6 @@ mod extreme_scale_regressions {
                     lp,
                     &[(squared_ratio - 1.0) / sigma, 1.0 - squared_ratio],
                 );
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], lp, &[1.0 - squared_ratio]);
             }
         }
     }
@@ -2484,7 +2458,7 @@ mod power_boundary_regressions {
             };
             let powered = graph.elementwise(ElementwiseOp::Pow, x, Some(exponent));
             let total = graph.sum(powered);
-            let penalty = graph.neg(total);
+            let penalty = graph.elementwise(ElementwiseOp::Neg, total, None);
             graph.add_logp_term(penalty);
             for position in [-0.7, 0.0, 0.4] {
                 let params = vec![position; graph.param_count];
@@ -2501,6 +2475,102 @@ mod power_boundary_regressions {
                     let numerical = (eval_logp(&graph, &plus) - eval_logp(&graph, &minus)) / 2e-6;
                     assert!((numerical - evaluator.grad[i]).abs() < 1e-8);
                 }
+            }
+        }
+    }
+}
+
+/// Checks that used to live in `rust_core/tests/output_boundaries.rs` and
+/// `rust_core/tests/poisson_density.rs`, moved here when the reference
+/// evaluator stopped being public API. They pin the *reference* evaluator to
+/// independent expectations, which the surviving `Evaluator` assertions in
+/// those files do not do.
+#[cfg(test)]
+mod reference_boundary_coverage {
+    use super::*;
+    use crate::distributions::Uniform;
+    use crate::graph::{ObsFamily, ParamTransform};
+
+    /// Was `output_boundaries.rs:34`: an invalid interval must be rejected in
+    /// unconstrained coordinates by the reference evaluator too, with a zero
+    /// gradient rather than a NaN.
+    #[test]
+    fn reference_rejects_invalid_uniform_ranges() {
+        for (lower, upper) in [
+            (1.0, 1.0),
+            (2.0, 1.0),
+            (-1e308, 1e308),
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+        ] {
+            for scalar in [false, true] {
+                let mut graph = Graph::new();
+                if scalar {
+                    Uniform::prior(&mut graph, "x", lower, upper);
+                } else {
+                    let start = graph.add_vector_params_with_transform(
+                        "x",
+                        1,
+                        ParamTransform::BoundedSigmoid { lower, upper },
+                    );
+                    graph.vector_uniform_logp(start, 1, lower, upper);
+                }
+                for raw in [-40.0, 0.0, 40.0] {
+                    assert_eq!(
+                        grad_logp(&graph, &[raw]),
+                        (f64::NEG_INFINITY, vec![0.0]),
+                        "lower={lower} upper={upper} scalar={scalar} raw={raw}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn poisson_graph(count: f64) -> Graph {
+        let mut graph = Graph::new();
+        let eta = graph.add_param("eta");
+        let observed = graph.add_obs_data(vec![count]);
+        let means = graph.broadcast_observation(eta, observed);
+        graph.obs_logp_poisson_log(means, observed);
+        graph
+    }
+
+    /// Was `poisson_density.rs:37-40`: at rates where Stirling's series is the
+    /// only usable form, the reference `ObsFamily::PoissonLog` branch must
+    /// reproduce the same mode, curvature and score as the Evaluator.
+    #[test]
+    fn reference_matches_high_rate_poisson_density_and_score() {
+        for count in [1e14_f64, 1e15, 8e15] {
+            let graph = poisson_graph(count);
+            let expected_mode =
+                -0.5 * (std::f64::consts::TAU.ln() + count.ln()) - 1.0 / (12.0 * count);
+            let center = count.ln();
+            let sd = 1.0 / count.sqrt();
+            for z in [-1.0, 0.0, 1.0] {
+                let eta = center + z * sd;
+                let (logp, grad) = grad_logp(&graph, &[eta]);
+                assert!((logp - (expected_mode - 0.5 * z * z)).abs() < 3e-6);
+                assert_eq!(grad[0], count - eta.exp());
+                assert_eq!(
+                    logp,
+                    crate::observation::log_density(ObsFamily::PoissonLog, count, eta, None)
+                        .unwrap()
+                );
+            }
+        }
+    }
+
+    /// Was `poisson_density.rs:66`: where the rate itself underflows, the log
+    /// density is still finite and equals `y*eta - ln(y!)`.
+    #[test]
+    fn reference_keeps_finite_densities_when_poisson_rates_underflow() {
+        for count in [0.0, 1.0, 20.0] {
+            for eta in [-740.0, -1000.0] {
+                let graph = poisson_graph(count);
+                let expected = count * eta - ln_gamma(count + 1.0);
+                let (logp, _) = grad_logp(&graph, &[eta]);
+                assert!(logp.is_finite(), "count={count} eta={eta} logp={logp}");
+                assert!((logp - expected).abs() < 1e-10);
             }
         }
     }

@@ -4,8 +4,6 @@ pub mod bayesian_forecast;
 pub mod bayesian_regression;
 pub mod bayesian_seasonal;
 pub mod bayesian_trend;
-#[path = "legacy/compiled_model.rs"]
-pub mod compiled_model;
 mod count_sampling;
 pub mod data;
 pub mod diagnostics;
@@ -32,10 +30,6 @@ pub mod state_space;
 pub mod structural;
 pub mod target;
 
-pub use compiled_model::{
-    ArtifactError, CompiledModelArtifact, CompiledModelRuntime, ModelMetadata, ModelStep, NodeRef,
-    ParameterBlock, SerializableObsFamily, SerializableParamTransform,
-};
 pub use data::{BindError, DataBinding, DataInputs, DataSchema, DataSlot, MatrixBinding, SlotKind};
 
 // Future: GPU-accelerated log-probability evaluation via wgpu.

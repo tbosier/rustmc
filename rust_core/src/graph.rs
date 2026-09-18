@@ -66,6 +66,70 @@ pub struct ObservationHead {
     pub n_obs: usize,
 }
 
+/// Logistic sigmoid, `1 / (1 + exp(-x))`, evaluated without overflow.
+///
+/// The textbook form overflows `exp(-x)` for `x < -709` and returns 0 where
+/// the true value is an ordinary subnormal, so branch on the sign and
+/// exponentiate the negative argument.
+#[inline]
+pub fn stable_sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let e = x.exp();
+        e / (1.0 + e)
+    }
+}
+
+/// Derivative of [`stable_sigmoid`].
+///
+/// Mathematically `s(x) * (1 - s(x))`, but `1 - s(x)` cancels to exactly zero
+/// once `s(x)` rounds to 1 (around `x = 37`), discarding a value that stays
+/// representable out to `x = 745`. `exp(-|x|) / (1 + exp(-|x|))^2` is the same
+/// quantity, is symmetric in `x` by construction, and needs one `exp`. Near
+/// `x = 0` the old form was marginally more accurate, because `1 - s` is exact
+/// there by Sterbenz; this one stays within about two ulp everywhere instead.
+#[inline]
+pub fn stable_sigmoid_derivative(x: f64) -> f64 {
+    let e = (-x.abs()).exp();
+    let d = 1.0 + e;
+    e / (d * d)
+}
+
+/// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
+///
+/// `-a / (b * b)` is the accurate form and is used wherever the squared
+/// denominator is a normal number: `b * b` is then either exact or off by half
+/// an ulp, so the result is within one ulp of the true quotient.
+///
+/// It fails outside that band, and not gracefully. `b * b` overflows to
+/// infinity for `|b| > 1.34e154`, so `-a / inf` returns `-0.0` and erases a
+/// derivative that is often perfectly representable (`a = b = 1e200` has
+/// derivative `-1e-200`). Going the other way it decays into the subnormals
+/// below `|b| = 1.49e-154` and reaches zero below `|b| = 1.58e-162`, so
+/// `-a / 0.0` fabricates an infinity where the true derivative is finite
+/// (`a = b = 1e-200` has derivative `-1e200`).
+///
+/// In that band divide twice instead. Two divisions never leave the exponent
+/// range, at the cost of a second rounding — which is why this is a fallback
+/// and not the only path: double rounding through the subnormals can turn a
+/// representable `-5e-324` into `-0.0` (`a = 1.5e-323`, `b = 2.2`), exactly
+/// the failure the fallback exists to prevent. Restricting it to the range
+/// where `-a / (b * b)` is already broken keeps both forms on the inputs they
+/// handle well.
+#[inline]
+fn div_denominator_derivative(a: f64, b: f64) -> f64 {
+    let square = b * b;
+    if square.is_normal() {
+        -a / square
+    } else {
+        // Covers b == 0 (the square is +0 either way, so both forms give the
+        // same signed infinity or NaN), the two overflow/underflow tails, and
+        // the subnormal square band in between.
+        -(a / b) / b
+    }
+}
+
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum ElementwiseOp {
@@ -95,14 +159,7 @@ impl ElementwiseOp {
             Self::Neg => -a,
             Self::Exp => a.exp(),
             Self::Log => a.ln(),
-            Self::Sigmoid => {
-                if a >= 0.0 {
-                    1.0 / (1.0 + (-a).exp())
-                } else {
-                    let e = a.exp();
-                    e / (1.0 + e)
-                }
-            }
+            Self::Sigmoid => stable_sigmoid(a),
             Self::Sqrt => a.sqrt(),
             Self::Tanh => a.tanh(),
             Self::Softplus => a.max(0.0) + (-a.abs()).exp().ln_1p(),
@@ -115,7 +172,7 @@ impl ElementwiseOp {
             Self::Add => (1.0, 1.0),
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
-            Self::Div => (1.0 / b, -a / (b * b)),
+            Self::Div => (1.0 / b, div_denominator_derivative(a, b)),
             Self::Pow => {
                 // x^0 is constant even at x=0. For positive exponents, 0^b
                 // is also constant in b; forming 0*log(0) gives a false NaN.
@@ -130,13 +187,10 @@ impl ElementwiseOp {
             Self::Neg => (-1.0, 0.0),
             Self::Exp => (a.exp(), 0.0),
             Self::Log => (1.0 / a, 0.0),
-            Self::Sigmoid => {
-                let v = self.value(a, b);
-                (v * (1.0 - v), 0.0)
-            }
+            Self::Sigmoid => (stable_sigmoid_derivative(a), 0.0),
             Self::Sqrt => (0.5 / a.sqrt(), 0.0),
             Self::Tanh => (1.0 - a.tanh().powi(2), 0.0),
-            Self::Softplus => (Self::Sigmoid.value(a, 0.0), 0.0),
+            Self::Softplus => (stable_sigmoid(a), 0.0),
             Self::Sin => (a.cos(), 0.0),
             Self::Cos => (-a.sin(), 0.0),
         }
@@ -169,14 +223,9 @@ pub enum Op {
     Data(usize),
     Add(NodeId, NodeId),
     Mul(NodeId, NodeId),
-    Sub(NodeId, NodeId),
-    Div(NodeId, NodeId),
-    Neg(NodeId),
     Exp(NodeId),
-    Log(NodeId),
     /// 1 / (1 + exp(-x))
     Sigmoid(NodeId),
-    Square(NodeId),
     /// Element-wise multiply: scalar * data vector.
     ScalarMulData(NodeId, NodeId),
     /// Element-wise addition of two vectors.
@@ -342,10 +391,31 @@ impl ParamTransform {
         match self {
             ParamTransform::Identity => raw,
             ParamTransform::Exp => raw.exp(),
-            ParamTransform::Sigmoid => 1.0 / (1.0 + (-raw).exp()),
+            ParamTransform::Sigmoid => stable_sigmoid(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                lower + (upper - lower) * s
+                // Anchor to whichever endpoint the value is nearest.
+                // `lower + span * s` cancels catastrophically once `s` is near
+                // 1 and `lower` is large and negative: with lower = -1e308 and
+                // upper = 1, raw = 710 gives -1e308 + 1e308 == 0 instead of
+                // 0.552371377432487. Both branches also round towards the
+                // endpoint they subtract from, so the result can never leave
+                // [lower, upper].
+                //
+                // Two limits remain. The branches can disagree by one ulp at
+                // raw == 0, so the mapping is not exactly monotone there
+                // (lower = 1, upper = 1e16 steps down by one ulp across zero);
+                // that is a rounding artefact of the reported value, and
+                // `derivative` below does not model it. And materialising the
+                // sigmoid before scaling still loses bounded values whose
+                // sigmoid underflows: lower = 0, upper = 1e308, raw = -746
+                // gives 0 where the true value is 1.0382848095158282e-16.
+                // Removing that needs the scaling folded into the sigmoid.
+                let span = upper - lower;
+                if raw >= 0.0 {
+                    upper - span * stable_sigmoid(-raw)
+                } else {
+                    lower + span * stable_sigmoid(raw)
+                }
             }
         }
     }
@@ -356,13 +426,9 @@ impl ParamTransform {
         match self {
             ParamTransform::Identity => 1.0,
             ParamTransform::Exp => raw.exp(),
-            ParamTransform::Sigmoid => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                s * (1.0 - s)
-            }
+            ParamTransform::Sigmoid => stable_sigmoid_derivative(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                let s = 1.0 / (1.0 + (-raw).exp());
-                (upper - lower) * s * (1.0 - s)
+                (upper - lower) * stable_sigmoid_derivative(raw)
             }
         }
     }
@@ -498,32 +564,12 @@ impl Graph {
         self.add_node(Op::Mul(a, b), None)
     }
 
-    pub fn sub(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        self.add_node(Op::Sub(a, b), None)
-    }
-
-    pub fn div(&mut self, a: NodeId, b: NodeId) -> NodeId {
-        self.add_node(Op::Div(a, b), None)
-    }
-
-    pub fn neg(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Neg(a), None)
-    }
-
     pub fn exp(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Exp(a), None)
     }
 
-    pub fn log(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Log(a), None)
-    }
-
     pub fn sigmoid(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Sigmoid(a), None)
-    }
-
-    pub fn square(&mut self, a: NodeId) -> NodeId {
-        self.add_node(Op::Square(a), None)
     }
 
     pub fn scalar_mul_data(&mut self, scalar: NodeId, data: NodeId) -> NodeId {
