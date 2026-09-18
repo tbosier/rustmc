@@ -1,4 +1,4 @@
-use rustmc_core::autodiff::{grad_logp, Evaluator};
+use rustmc_core::autodiff::Evaluator;
 use rustmc_core::distributions::Normal;
 use rustmc_core::graph::{Graph, ObsFamily};
 use rustmc_core::observation;
@@ -34,10 +34,6 @@ fn high_rate_poisson_density_curvature_and_gradients_are_preserved() {
             evaluator.compute(&graph, &[eta]);
             assert!((evaluator.total_logp - (expected_mode - 0.5 * z * z)).abs() < 3e-6);
             assert_eq!(evaluator.grad[0], count - eta.exp());
-            assert_eq!(
-                grad_logp(&graph, &[eta]),
-                (evaluator.total_logp, evaluator.grad.clone())
-            );
             let pointwise =
                 observation::log_density(ObsFamily::PoissonLog, count, eta, None).unwrap();
             assert_eq!(pointwise, evaluator.total_logp);
@@ -63,7 +59,6 @@ fn poisson_log_rate_tails_keep_finite_log_densities_when_rates_underflow() {
             let expected = count * eta - rustmc_core::autodiff::ln_gamma(count + 1.0);
             assert!((evaluator.total_logp - expected).abs() < 1e-10);
             assert!(evaluator.total_logp.is_finite());
-            assert_eq!(grad_logp(&graph, &[eta]).0, evaluator.total_logp);
         }
     }
     assert_eq!(

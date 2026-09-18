@@ -1311,12 +1311,18 @@ impl Evaluator {
 }
 
 // ---------------------------------------------------------------------------
-// Original free functions (kept for tests and simple use)
+// Reference evaluator — differential-testing oracle, not public API
 // ---------------------------------------------------------------------------
 
-pub use reference::{eval_logp, forward, grad_logp, Value};
+/// Allocating re-implementation of the whole IR, used only to cross-check the
+/// zero-allocation `Evaluator`. It is deliberately not exported: it has no
+/// non-test callers and it panics on its entry points when a node's shape is
+/// not what it expected.
+#[cfg(test)]
 #[path = "autodiff_reference.rs"]
-pub mod reference;
+mod reference;
+#[cfg(test)]
+pub(crate) use reference::{eval_logp, grad_logp};
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     if !sigma.is_finite() || sigma <= 0.0 {
@@ -1326,59 +1332,68 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - 0.5 * z * z
 }
 
-fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    let n = obs.len() as f64;
-    let sum_sq: f64 = mu
-        .iter()
-        .zip(obs.iter())
-        .map(|(m, o)| {
-            let d = (o - m) / sigma;
-            d * d
-        })
-        .sum();
-    n * log_norm - 0.5 * sum_sq
-}
+// Whole-vector observation kernels. Only the reference evaluator uses these:
+// the Evaluator fuses the same arithmetic into its own single pass.
+#[cfg(test)]
+mod obs_logp_sums {
+    use super::softplus;
 
-fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| y * e - softplus(*e))
-        .sum()
-}
+    pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        let n = obs.len() as f64;
+        let sum_sq: f64 = mu
+            .iter()
+            .zip(obs.iter())
+            .map(|(m, o)| {
+                let d = (o - m) / sigma;
+                d * d
+            })
+            .sum();
+        n * log_norm - 0.5 * sum_sq
+    }
 
-fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
-        .sum()
-}
+    pub(super) fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| y * e - softplus(*e))
+            .sum()
+    }
 
-fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| e - y * e.exp())
-        .sum()
-}
+    pub(super) fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
+            .sum()
+    }
 
-fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    mu.iter()
-        .zip(obs.iter())
-        .map(|(m, y)| {
-            let ly = y.ln();
-            let d = (ly - m) / sigma;
-            log_norm - ly - 0.5 * d * d
-        })
-        .sum()
-}
+    pub(super) fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| e - y * e.exp())
+            .sum()
+    }
 
-fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs)
-        .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
-        .sum()
+    pub(super) fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        mu.iter()
+            .zip(obs.iter())
+            .map(|(m, y)| {
+                let ly = y.ln();
+                let d = (ly - m) / sigma;
+                log_norm - ly - 0.5 * d * d
+            })
+            .sum()
+    }
+
+    pub(super) fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs)
+            .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
+            .sum()
+    }
 }
+#[cfg(test)]
+use obs_logp_sums::*;
 
 // Combined transformed densities avoid materializing exp(raw), and form
 // scale ratios in log space before squaring or multiplying extreme values.
