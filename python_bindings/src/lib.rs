@@ -1488,8 +1488,18 @@ impl FitResult {
                     let position =
                         posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
                     evaluator.compute(&graph, &position);
+                    // Same standard the prior predictive holds deterministics
+                    // to, and the same one `sampler` holds the parameters to:
+                    // a nonfinite value is a failed computation, not a result.
                     for i in 0..n.max(1) {
-                        values.push(evaluator.vec_elem(*node, i, &graph));
+                        let value = evaluator.vec_elem(*node, i, &graph);
+                        if !value.is_finite() {
+                            return Err(PyValueError::new_err(format!(
+                                "deterministic '{name}' is nonfinite at chain {chain_idx}, \
+                                 draw {draw_idx}"
+                            )));
+                        }
+                        values.push(value);
                     }
                 }
             }
