@@ -96,6 +96,51 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
     e / (d * d)
 }
 
+/// `lower + (upper - lower) * sigmoid(raw)`, evaluated so that neither the
+/// span nor either endpoint has to be representable on its own.
+///
+/// This is the single definition of the bounded transform. Both the
+/// constrained draw reported back to a caller ([`ParamTransform::apply`]) and
+/// the value the graph evaluates its density at ([`Op::BoundedSigmoid`]) call
+/// it, so they cannot drift into two formulas that disagree about where the
+/// model was evaluated.
+///
+/// Written as the convex combination `lower * s(-raw) + upper * s(raw)`, which
+/// is the same quantity and fixes three failures of the scaled form:
+///
+/// * `lower + span * s` cancels catastrophically once `s` rounds to 1 and
+///   `lower` is large and negative — `(-1e308, 1)` at raw 710 gives 0 instead
+///   of 0.552371377432487, because `s(710)` is exactly 1 in f64 while the
+///   information is all in `s(-710)`, which this form reads directly.
+/// * `upper - lower` overflows for `(-1e308, 1e308)`, so the scaled form
+///   returns `-inf` at raw 0 (true value: exactly 0) and `NaN` at raw -800
+///   (`inf * 0`). Neither endpoint is multiplied by the span here.
+/// * The two-branch endpoint-anchored form disagreed with itself by one ulp
+///   across raw 0. This form has no branch, so it is a single function of
+///   `raw` everywhere.
+///
+/// One limit is unchanged: a constrained value whose sigmoid underflows is
+/// still lost, because the sigmoid is materialised before scaling.
+/// `(0, 1e308)` at raw -746 gives 0 where the true value is 1.038e-16.
+/// Recovering it would need the scaling folded inside the exponential, at the
+/// cost of accuracy everywhere else.
+#[inline]
+pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
+    lower * stable_sigmoid(-raw) + upper * stable_sigmoid(raw)
+}
+
+/// d/draw of [`bounded_sigmoid`], i.e. `(upper - lower) * s'(raw)`.
+///
+/// Distributed over the two endpoints for the same reason as the value: the
+/// span need not be representable (`(-1e308, 1e308)` at raw 0 has derivative
+/// 5e307, not `inf`), and `span * s'` overflows in the other direction
+/// whenever the product is formed before the caller's adjoint is applied.
+#[inline]
+pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
+    let slope = stable_sigmoid_derivative(raw);
+    upper * slope - lower * slope
+}
+
 /// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
 ///
 /// `-a / (b * b)` is the accurate form and is used wherever the squared
@@ -226,6 +271,28 @@ pub enum Op {
     Exp(NodeId),
     /// 1 / (1 + exp(-x))
     Sigmoid(NodeId),
+    /// `lower + (upper - lower) * sigmoid(raw)` as one node.
+    ///
+    /// Fused rather than assembled from `Sigmoid`, `Mul` and `Add`, for two
+    /// reasons that a three-node chain cannot give:
+    ///
+    /// * The forward value is [`bounded_sigmoid`], the same call
+    ///   [`ParamTransform::apply`] makes, so the point the density is
+    ///   evaluated at is by construction the draw reported back to the caller.
+    ///   Assembled from nodes it was a second formula, and the two disagreed —
+    ///   by one ulp on `(0, 1)`, and by the whole value on `(-1e308, 1)`.
+    /// * The span never appears as a separate multiplicative factor, so
+    ///   reverse mode never has to materialise the sigmoid's adjoint with it
+    ///   already applied. `Uniform(0, 1e308)` at raw -710 under a `sigma = 0.1`
+    ///   likelihood needed `-44.76 * 1e308` in that chain and overflowed to
+    ///   `-inf`; here the scaling happens inside
+    ///   [`bounded_sigmoid_derivative`], where it cannot leave the exponent
+    ///   range.
+    BoundedSigmoid {
+        raw: NodeId,
+        lower: f64,
+        upper: f64,
+    },
     /// Element-wise multiply: scalar * data vector.
     ScalarMulData(NodeId, NodeId),
     /// Element-wise addition of two vectors.
@@ -392,31 +459,7 @@ impl ParamTransform {
             ParamTransform::Identity => raw,
             ParamTransform::Exp => raw.exp(),
             ParamTransform::Sigmoid => stable_sigmoid(raw),
-            ParamTransform::BoundedSigmoid { lower, upper } => {
-                // Anchor to whichever endpoint the value is nearest.
-                // `lower + span * s` cancels catastrophically once `s` is near
-                // 1 and `lower` is large and negative: with lower = -1e308 and
-                // upper = 1, raw = 710 gives -1e308 + 1e308 == 0 instead of
-                // 0.552371377432487. Both branches also round towards the
-                // endpoint they subtract from, so the result can never leave
-                // [lower, upper].
-                //
-                // Two limits remain. The branches can disagree by one ulp at
-                // raw == 0, so the mapping is not exactly monotone there
-                // (lower = 1, upper = 1e16 steps down by one ulp across zero);
-                // that is a rounding artefact of the reported value, and
-                // `derivative` below does not model it. And materialising the
-                // sigmoid before scaling still loses bounded values whose
-                // sigmoid underflows: lower = 0, upper = 1e308, raw = -746
-                // gives 0 where the true value is 1.0382848095158282e-16.
-                // Removing that needs the scaling folded into the sigmoid.
-                let span = upper - lower;
-                if raw >= 0.0 {
-                    upper - span * stable_sigmoid(-raw)
-                } else {
-                    lower + span * stable_sigmoid(raw)
-                }
-            }
+            ParamTransform::BoundedSigmoid { lower, upper } => bounded_sigmoid(raw, *lower, *upper),
         }
     }
 
@@ -428,7 +471,7 @@ impl ParamTransform {
             ParamTransform::Exp => raw.exp(),
             ParamTransform::Sigmoid => stable_sigmoid_derivative(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                (upper - lower) * stable_sigmoid_derivative(raw)
+                bounded_sigmoid_derivative(raw, *lower, *upper)
             }
         }
     }
@@ -570,6 +613,14 @@ impl Graph {
 
     pub fn sigmoid(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Sigmoid(a), None)
+    }
+
+    /// The constrained value of a [`ParamTransform::BoundedSigmoid`] parameter.
+    ///
+    /// Pair it with a parameter carrying the matching transform; see
+    /// [`Op::BoundedSigmoid`] for why this is one node rather than three.
+    pub fn bounded_sigmoid(&mut self, raw: NodeId, lower: f64, upper: f64) -> NodeId {
+        self.add_node(Op::BoundedSigmoid { raw, lower, upper }, None)
     }
 
     pub fn scalar_mul_data(&mut self, scalar: NodeId, data: NodeId) -> NodeId {

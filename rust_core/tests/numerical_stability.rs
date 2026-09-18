@@ -8,7 +8,9 @@
 //! formula.
 
 use rustmc_core::autodiff::Evaluator;
-use rustmc_core::distributions::{Normal, Uniform};
+use rustmc_core::distributions::{
+    BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Uniform,
+};
 use rustmc_core::graph::{ElementwiseOp, Graph, NodeId, ParamTransform};
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
@@ -377,14 +379,17 @@ fn bounded_sigmoid_transform_survives_both_tails() {
 /// round to 0, so the library evaluated a different density and its finite
 /// differences agreed with it.
 ///
-/// `Uniform::prior` builds the constrained value as
-/// `lower + (upper - lower) * sigmoid(raw)`, so reverse mode must materialise
-/// the adjoint of the sigmoid node with the `1e308` factor already applied.
-/// With `sigma = 0.1` that intermediate is `-4.5e309` and overflows, which no
-/// reassociation inside the evaluator can avoid; the log density is still
-/// exact and the gradient becomes a detectable infinity rather than a
-/// plausible wrong number. With `sigma = 1.0` the intermediate fits and the
-/// gradient is exact.
+/// The gradient is the second half of the same story. While the constrained
+/// value was built as the separate nodes `lower + (upper - lower) * sigmoid`,
+/// reverse mode had to materialise the sigmoid node's adjoint with the `1e308`
+/// factor already applied: with `sigma = 0.1` that intermediate is `-4.5e309`,
+/// it overflowed, and the gradient came back `-inf`. The fused bounded-sigmoid
+/// node never forms it, so both scales are now exact.
+///
+/// Expectations below are the analytic derivative of the model density,
+/// computed out of crate with Python's `decimal` at 1500 significant digits;
+/// `uniform_prior_gradient_matches_high_precision_finite_differences` checks
+/// the same numbers against central differences of that reference.
 #[test]
 fn wide_uniform_prior_density_and_gradient_at_minus_710() {
     let build = |sigma: f64| {
@@ -396,23 +401,25 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
         graph
     };
 
-    // The headline case: log density is now the true -718.6349, not -708.6164.
+    // The headline case: log density is the true -718.6349, not -708.6164.
     let (logp, grad) = evaluate(&build(0.1), &[-710.0]);
     assert!(
         (logp - -718.634922627295).abs() < 1e-9,
         "logp {logp} vs -718.634922627295"
     );
-    // Not the fixed value: reverse mode must form the sigmoid node's adjoint
-    // with the 1e308 factor already applied, and -44.76 * 1e308 overflows.
-    // Asserted exactly so this stays a characterisation of a known limit and
-    // cannot quietly start passing on some third wrong number.
-    assert_eq!(
-        grad[0],
-        f64::NEG_INFINITY,
-        "expected the documented intermediate overflow"
+    assert!(
+        grad[0].is_finite(),
+        "gradient must not overflow to an infinity: {}",
+        grad[0]
+    );
+    assert!(
+        (grad[0] - -19.037138374168897).abs() < 1e-9,
+        "grad {} vs -19.037138374168897",
+        grad[0]
     );
 
-    // Same prior, likelihood scale that keeps every adjoint representable.
+    // Same prior, likelihood scale that keeps every adjoint representable even
+    // under the old construction — this arm never regressed and must not move.
     let (logp, grad) = evaluate(&build(1.0), &[-710.0]);
     assert!(
         (logp - -711.0191242250755).abs() < 1e-9,
@@ -423,6 +430,230 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
         "grad {} vs 0.7996286162583109",
         grad[0]
     );
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — a bounded prior's density point is the draw the caller reads back
+// ---------------------------------------------------------------------------
+
+/// Bounded intervals the constrained value has to survive: two ordinary ones,
+/// each tail separately, one whose span `upper - lower` is not representable
+/// at all, and one where both endpoints are large and positive.
+const BOUNDED_INTERVALS: [(f64, f64); 6] = [
+    (0.0, 1.0),
+    (-2.0, 3.0),
+    (0.0, 1e308),
+    (-1e308, 1.0),
+    (-1e308, 1e308),
+    (1.0, 1e16),
+];
+
+/// `Uniform::prior` returns the node every downstream likelihood reads as the
+/// parameter's value; `ParamTransform::apply` produces the draw the caller
+/// reads back out of the posterior. If those are two different formulas then
+/// the posterior a user inspects is not the point the model was evaluated at,
+/// and no amount of accuracy in either one repairs that.
+///
+/// Asserted on the bit pattern rather than a tolerance, because the claim is
+/// identity and not agreement: `Uniform(-1e308, 1)` at raw 710 used to report
+/// 0.552371377432487 while the graph evaluated its density at 0.0.
+#[test]
+fn uniform_prior_density_point_is_the_reported_draw() {
+    for (lower, upper) in BOUNDED_INTERVALS {
+        let mut graph = Graph::new();
+        let theta = Uniform::prior(&mut graph, "theta", lower, upper);
+        let transform = ParamTransform::BoundedSigmoid { lower, upper };
+        let mut evaluator = Evaluator::new(&graph);
+        let mut raw = -800.0;
+        while raw <= 800.0 {
+            evaluator.compute(&graph, &[raw]);
+            let density_point = evaluator.scalar_at(theta);
+            let reported = transform.apply(raw);
+            assert_eq!(
+                density_point.to_bits(),
+                reported.to_bits(),
+                "Uniform({lower}, {upper}) at raw {raw}: density evaluated at \
+                 {density_point} but the reported draw is {reported}"
+            );
+            raw += 0.25;
+        }
+    }
+}
+
+/// The value both of them agree on has to be the right one. Constants below
+/// are the exact constrained value computed out of crate with Python's
+/// `decimal` at 1500 significant digits, written as the shortest decimal that
+/// round-trips to the nearest f64.
+#[test]
+fn uniform_prior_constrained_value_matches_high_precision_reference() {
+    for (lower, upper, raw, expected) in [
+        (0.0, 1.0, 0.0, 0.5),
+        (-2.0, 3.0, 1.0, 1.6552928931500244),
+        (-2.0, 3.0, -1.0, -0.6552928931500244),
+        (0.0, 1e308, -710.0, 0.447628622567513),
+        (-1e308, 1.0, 710.0, 0.552371377432487),
+        (-1e308, 1e308, 0.0, 0.0),
+        (-1e308, 1e308, 1.0, 4.621171572600098e307),
+    ] {
+        let mut graph = Graph::new();
+        let theta = Uniform::prior(&mut graph, "theta", lower, upper);
+        let mut evaluator = Evaluator::new(&graph);
+        evaluator.compute(&graph, &[raw]);
+        assert_close(
+            evaluator.scalar_at(theta),
+            expected,
+            &format!("Uniform({lower}, {upper}).value({raw})"),
+        );
+    }
+}
+
+/// `upper - lower` is not representable for every interval a caller may write
+/// down: `(-1e308, 1e308)` has span `inf`, so scaling a sigmoid by it returns
+/// `-inf` at raw 0 where the constrained value is exactly 0, and reports an
+/// infinite Jacobian everywhere. Folding both endpoints into the transform
+/// keeps every intermediate inside the exponent range.
+#[test]
+fn bounded_sigmoid_transform_survives_a_span_that_overflows() {
+    let full = ParamTransform::BoundedSigmoid {
+        lower: -1e308,
+        upper: 1e308,
+    };
+    assert_eq!(full.apply(0.0), 0.0);
+    assert_close(full.apply(1.0), 4.621171572600098e307, "apply(1)");
+    assert_close(full.apply(-1.0), -4.621171572600098e307, "apply(-1)");
+    assert_close(full.derivative(0.0), 5e307, "derivative(0)");
+    assert_close(full.derivative(710.0), 0.895257245135026, "derivative(710)");
+    assert_close(
+        full.derivative(-710.0),
+        0.895257245135026,
+        "derivative(-710)",
+    );
+}
+
+/// A constrained draw outside its own interval is a draw the model's support
+/// forbids, and it is finite, so no downstream finiteness check would catch
+/// it. Swept densely rather than checked at the tails, since the
+/// endpoint-anchored form rounds towards a different endpoint on each side of
+/// zero.
+#[test]
+fn uniform_prior_constrained_value_never_leaves_its_interval() {
+    for (lower, upper) in BOUNDED_INTERVALS {
+        let transform = ParamTransform::BoundedSigmoid { lower, upper };
+        let mut raw = -800.0;
+        while raw <= 800.0 {
+            let value = transform.apply(raw);
+            assert!(
+                value >= lower && value <= upper,
+                "Uniform({lower}, {upper}).apply({raw}) = {value} is outside the interval"
+            );
+            raw += 0.125;
+        }
+    }
+}
+
+/// The same identity for every other constrained family in `distributions`.
+/// `BetaDist::prior` builds its value with `Op::Sigmoid` and the exp-transform
+/// families with `Op::Exp`, each of which already calls exactly what its
+/// `ParamTransform` calls — this pins that rather than assuming it, since the
+/// bounded case shows how quietly the two can diverge.
+#[test]
+fn every_constrained_prior_evaluates_its_density_at_the_reported_draw() {
+    type Build = fn(&mut Graph) -> NodeId;
+    let families: [(&str, Build); 5] = [
+        ("Beta", |g| BetaDist::prior(g, "x", 2.0, 5.0)),
+        ("HalfNormal", |g| HalfNormal::prior(g, "x", 1.5)),
+        ("Exponential", |g| Exponential::prior(g, "x", 0.7)),
+        ("LogNormal", |g| LogNormal::prior(g, "x", 0.2, 1.1)),
+        ("Gamma", |g| Gamma::prior(g, "x", 3.0, 2.0)),
+    ];
+    for (family, build) in families {
+        let mut graph = Graph::new();
+        let value = build(&mut graph);
+        let transform = graph.param_transforms[0].clone();
+        let mut evaluator = Evaluator::new(&graph);
+        let mut raw = -750.0;
+        while raw <= 750.0 {
+            evaluator.compute(&graph, &[raw]);
+            let density_point = evaluator.scalar_at(value);
+            let reported = transform.apply(raw);
+            assert_eq!(
+                density_point.to_bits(),
+                reported.to_bits(),
+                "{family} at raw {raw}: density evaluated at {density_point} \
+                 but the reported draw is {reported}"
+            );
+            raw += 0.25;
+        }
+    }
+}
+
+/// The gradient at both wide tails, against central differences of the same
+/// high-precision reference the analytic constants come from — not against the
+/// library's own log density, which would agree with itself on a wrong
+/// constrained value. Reference central differences at h = 1e-6 are
+/// -19.037138374182256 and -25.7257238825765; they converge on the analytic
+/// derivatives asserted here as h shrinks.
+#[test]
+fn uniform_prior_gradient_matches_high_precision_finite_differences() {
+    let build = |lower: f64, upper: f64, sigma: f64| {
+        let mut graph = Graph::new();
+        let theta = Uniform::prior(&mut graph, "theta", lower, upper);
+        let observed = graph.add_constant(0.0);
+        let sigma = graph.add_constant(sigma);
+        graph.normal_logp(observed, theta, sigma);
+        graph
+    };
+
+    for (lower, upper, sigma, raw, logp_ref, grad_ref) in [
+        (
+            0.0,
+            1e308,
+            0.1,
+            -710.0,
+            -718.634922627295,
+            -19.037138374168897,
+        ),
+        (
+            0.0,
+            1e308,
+            1.0,
+            -710.0,
+            -711.0191242250755,
+            0.7996286162583109,
+        ),
+        (
+            -1e308,
+            1.0,
+            0.1,
+            710.0,
+            -723.8720603705437,
+            -25.725723882582397,
+        ),
+        (
+            -1e308,
+            1.0,
+            1.0,
+            710.0,
+            -711.071495602508,
+            -1.247257238825824,
+        ),
+    ] {
+        let (logp, grad) = evaluate(&build(lower, upper, sigma), &[raw]);
+        assert!(
+            (logp - logp_ref).abs() < 1e-9,
+            "Uniform({lower}, {upper}) sigma {sigma}: logp {logp} vs {logp_ref}"
+        );
+        assert!(
+            grad[0].is_finite(),
+            "Uniform({lower}, {upper}) sigma {sigma}: gradient {} is not finite",
+            grad[0]
+        );
+        assert!(
+            (grad[0] - grad_ref).abs() < 1e-9,
+            "Uniform({lower}, {upper}) sigma {sigma}: grad {} vs {grad_ref}",
+            grad[0]
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

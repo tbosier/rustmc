@@ -3,7 +3,7 @@ use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
 
 /// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
 pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
-use crate::graph::stable_sigmoid_derivative;
+use crate::graph::{bounded_sigmoid, bounded_sigmoid_derivative, stable_sigmoid_derivative};
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -423,6 +423,9 @@ impl Evaluator {
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
                 Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
+                Op::BoundedSigmoid { raw, lower, upper } => {
+                    self.scalars[idx] = bounded_sigmoid(self.scalars[raw.0], *lower, *upper);
+                }
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
                     let out_off = match self.node_kind[idx] {
@@ -870,6 +873,13 @@ impl Evaluator {
                 }
                 Op::Sigmoid(a) => {
                     self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
+                }
+                Op::BoundedSigmoid { raw, lower, upper } => {
+                    // The endpoints are folded into the slope before the
+                    // adjoint multiplies it, so a wide interval never forms an
+                    // intermediate outside the exponent range.
+                    self.adj_scalars[raw.0] +=
+                        a_s * bounded_sigmoid_derivative(self.scalars[raw.0], *lower, *upper);
                 }
 
                 Op::ScalarMulData(scalar, data) => {

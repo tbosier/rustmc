@@ -81,6 +81,9 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::Mul(a, b) => Value::Scalar(values[a.0].as_scalar() * values[b.0].as_scalar()),
             Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
             Op::Sigmoid(a) => Value::Scalar(sigmoid_stable(values[a.0].as_scalar())),
+            Op::BoundedSigmoid { raw, lower, upper } => Value::Scalar(
+                crate::graph::bounded_sigmoid(values[raw.0].as_scalar(), *lower, *upper),
+            ),
             Op::ScalarMulData(scalar, data) => {
                 let s = values[scalar.0].as_scalar();
                 let d = values[data.0].as_vector();
@@ -439,6 +442,14 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             Op::Sigmoid(a) => {
                 adj_scalar[a.0] +=
                     a_s * crate::graph::stable_sigmoid_derivative(values[a.0].as_scalar());
+            }
+            Op::BoundedSigmoid { raw, lower, upper } => {
+                adj_scalar[raw.0] += a_s
+                    * crate::graph::bounded_sigmoid_derivative(
+                        values[raw.0].as_scalar(),
+                        *lower,
+                        *upper,
+                    );
             }
             Op::ScalarMulData(scalar, data) => {
                 let s = values[scalar.0].as_scalar();
