@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import numbers
 import platform
 from pathlib import Path
 import subprocess
@@ -16,6 +17,15 @@ import sys
 import time
 
 import numpy as np
+
+
+#: The fixed-reference cases the gate must run, and how many seeds each runs under.
+#: This manifest is the gate's contract, not a description of it: ``run`` fails when a
+#: listed case does not produce its records and equally when ``reference_cases`` yields
+#: a case that is not listed, so neither dropping a case nor adding an unvetted one can
+#: slip through. Keep it in step with docs/statistical-validation.md.
+REFERENCE_CASES = ("normal_location", "correlated_regression", "beta_bernoulli", "gamma_poisson")
+REFERENCE_REPEATS = 3
 
 
 def reference_cases():
@@ -51,22 +61,135 @@ def reference_cases():
     yield "gamma_poisson", m.compile(), {"y": y}, ["rate"], np.array([a/b]), np.array([[a/b**2]])
 
 
+#: Per-parameter convergence diagnostic -> reported metric and its aggregation.
+CONVERGENCE_METRICS = (("r_hat", "max_rhat", max), ("ess_bulk", "min_ess_bulk", min),
+                       ("ess_tail", "min_ess_tail", min))
+#: Slack on the derived R-hat floor, far above the estimator's rounding error and far
+#: below the gap to any value a broken payload would carry.
+RHAT_FLOOR_SLACK = 1e-6
+#: Relative slack on the derived ESS ceiling, which is exact up to rounding.
+ESS_CEILING_SLACK = 1e-9
+
+
+def rhat_floor(draws):
+    """Smallest R-hat the estimator can return for chains of ``draws`` draws.
+
+    ``r_hat_chains`` in rust_core/src/diagnostics.rs splits every chain in half, so its
+    split length is ``draws // 2``, and ``basic_r_hat`` returns ``sqrt(var_hat / W)``
+    with ``var_hat = (n-1)/n * W + B/n``. B is a sum of squares and cannot be negative,
+    so the ratio bottoms out at ``(n-1)/n``. Anything below that is not a slightly
+    unlucky R-hat, it is a payload that does not come from the estimator - and only a
+    lower bound catches it, because ``max`` keeps the largest value and hides the rest.
+    """
+    split = max(int(draws) // 2, 2)
+    return math.sqrt((split - 1) / split)
+
+
+def ess_ceiling(chains, draws):
+    """Largest ESS the estimator can return for ``chains`` chains of ``draws`` draws.
+
+    ``ess_raw`` in rust_core/src/diagnostics.rs splits every chain in half and returns
+    ``total / tau`` with ``tau = (...).max(1.0 / total.log10())``, so the quotient
+    cannot exceed ``total * log10(total)``, where ``total`` is the split draw count.
+    ``min`` hides an impossibly large ESS behind a healthy neighbour exactly as ``max``
+    hides an impossibly small R-hat, so this bound is needed for the same reason.
+    """
+    total = 2 * max(int(chains), 1) * max(int(draws) // 2, 1)
+    return total * math.log10(total) if total > 1 else math.inf
+
+
+def divergence_total(counts, chains):
+    """Total divergences, or NaN when the telemetry is not one count per chain.
+
+    ``sum`` cancels and does not notice gaps: ``[1, -1, 0, 0]`` totals zero and reports
+    a clean run, and a single count for a four-chain fit accepts three missing chains.
+    Neither can be trusted before the counts themselves are checked.
+    """
+    failures = []
+    if len(counts) != chains:
+        failures.append(f"divergences[{len(counts)} counts for {chains} chains]")
+    for index, count in enumerate(counts):
+        value = _as_float(count)
+        if not math.isfinite(value) or value < 0 or value != int(value):
+            failures.append(f"divergences[chain {index}]")
+    return failures, math.nan if failures else sum(counts)
+
+
+def _as_float(value):
+    # float() silently drops the imaginary part of a complex value, which would turn a
+    # non-finite diagnostic into a plausible one, and raises OverflowError on a huge int.
+    # numbers.Complex rather than complex: np.complex64 and np.clongdouble are not
+    # subclasses of the builtin, so `isinstance(value, complex)` let them straight past.
+    if isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real):
+        return math.nan
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return math.nan
+
+
+def convergence_metrics(diagnostics, names, floor, ceiling):
+    """Aggregate per-parameter diagnostics, naming every invalid entry as a failure.
+
+    Builtin ``max``/``min`` return the non-NaN operand unless the NaN comes first, and
+    both silently keep a signed infinity that is not the extremum, so a single bad
+    parameter could otherwise pass the gate. Each parameter is screened before
+    aggregation, and an invalid entry is carried into the reported metric so the
+    failure survives into the JSON report rather than being replaced by a plausible
+    value from a neighbouring parameter. A parameter in ``names`` with no diagnostic
+    row at all is the same hole and fails too, since an absent row is never screened.
+
+    Screening is against each diagnostic's full domain, not only against finiteness.
+    A value outside what the estimators in rust_core/src/diagnostics.rs can return is a
+    payload that did not come from them, and each aggregation hides exactly the half of
+    the domain it does not select for: ``max`` hides a too-small R-hat, so r_hat
+    [1.0, -100.0, 1.0] reports a healthy 1.0, and ``min`` hides a too-large ESS, so
+    ess_bulk [10000.0, 1e100] reports a healthy 10000.0. Both ends are therefore bound.
+    """
+    failures, metrics = [], {}
+    labels = [diagnostic.get("name", index) for index, diagnostic in enumerate(diagnostics)]
+    if not diagnostics:
+        failures.append("diagnostics_empty")
+    failures += [f"diagnostics_missing[{name}]" for name in names if name not in labels]
+    domains = {"r_hat": (floor - RHAT_FLOOR_SLACK, math.inf),
+               "ess_bulk": (0., ceiling), "ess_tail": (0., ceiling)}
+    for key, metric, reduce in CONVERGENCE_METRICS:
+        low, high = domains[key]
+        values, invalid = [], []
+        for label, diagnostic in zip(labels, diagnostics):
+            value = _as_float(diagnostic.get(key))
+            # NaN fails every comparison, so finiteness has to be tested first.
+            if not math.isfinite(value) or value < low or value > high:
+                failures += [metric, f"{metric}[{label}]"]
+                invalid.append(value)
+            values.append(value)
+        metrics[metric] = invalid[0] if invalid else (reduce(values) if values else math.nan)
+    return failures, metrics
+
+
 def assess_fit(fit, names, reference_mean, reference_covariance):
     """Require convergence and marginal/joint posterior accuracy; keep failed metrics."""
     samples = np.stack([fit.get_samples_2d()[name] for name in names], axis=-1)
     flat = samples.reshape(-1, len(names))
     reference_sd = np.sqrt(np.diag(reference_covariance))
     covariance = np.atleast_2d(np.cov(flat, rowvar=False))
+    chains, draws = samples.shape[0], samples.shape[-2]
     diagnostics = fit.diagnostics()
+    convergence_failures, convergence = convergence_metrics(
+        diagnostics, names, rhat_floor(draws), ess_ceiling(chains, draws) * (1 + ESS_CEILING_SLACK))
+    divergence_failures, divergences = divergence_total(list(fit.divergences()), chains)
     metrics = {
-        "max_rhat": max(d["r_hat"] for d in diagnostics),
-        "min_ess_bulk": min(d["ess_bulk"] for d in diagnostics),
-        "min_ess_tail": min(d["ess_tail"] for d in diagnostics),
-        "divergences": sum(fit.divergences()),
+        **convergence,
+        # The error metrics take np.abs first, so every element is non-negative and
+        # np.max keeps both NaN and infinity for the finiteness sweep below; builtin
+        # max would not, so do not swap it in. divergence_total does the same job for
+        # the divergence counts, whose sum can cancel and cannot see a missing chain.
+        "divergences": divergences,
         "max_mean_error_sd": float(np.max(np.abs(flat.mean(axis=0)-reference_mean)/reference_sd)),
         "max_covariance_error_sd": float(np.max(np.abs(covariance-reference_covariance)/np.outer(reference_sd, reference_sd))),
     }
-    failures = [name for name, value in metrics.items() if not math.isfinite(value)]
+    failures = convergence_failures + divergence_failures
+    failures += [name for name, value in metrics.items() if not math.isfinite(value)]
     limits = {"max_rhat": 1.01, "max_mean_error_sd": .12, "max_covariance_error_sd": .15}
     failures += [name for name, limit in limits.items() if metrics[name] > limit]
     failures += [name for name in ("min_ess_bulk", "min_ess_tail") if metrics[name] < 400]
@@ -82,9 +205,37 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
     import rustmc._rustmc as native
     started = time.perf_counter()
     kwargs = dict(chains=4, draws=draws, warmup=warmup, target_accept=.95, show_progress=False)
-    records = []
-    for index, (name, model, data, names, mean, covariance) in enumerate(reference_cases()):
-        for repeat in range(3):
+    records, attempted = [], {}
+    # reference_cases() compiles its models as it is advanced. Advancing it inside the
+    # for-statement put that work outside the per-fit try, so a construction failure
+    # propagated out of run() and main() never reached write_text: the report promised
+    # "even if a gate fails" was never written, losing the attempts already completed.
+    def construction_failed(index, error):
+        records.append({"case": "reference_case_construction", "kind": "fixed_reference",
+                        "index": index, "passed": False,
+                        "error": f"{type(error).__name__}: {error}"})
+
+    try:
+        cases = reference_cases()
+    except Exception as error:  # a factory that raises before yielding anything
+        cases, _ = iter(()), construction_failed(-1, error)
+    index = -1
+    while True:
+        index += 1
+        try:
+            name, model, data, names, mean, covariance = next(cases)
+            # The name keys case_coverage below, where an unhashable one would raise
+            # outside every handler; check it here while a failure is still reportable.
+            if not isinstance(name, str):
+                raise TypeError(f"case name must be str, got {type(name).__name__}")
+        except StopIteration:
+            break
+        except Exception as error:
+            # Covers a malformed yield as well as a failed compile: either way the case
+            # is unusable, and case_coverage reports the ones that never ran.
+            construction_failed(index, error)
+            break
+        for repeat in range(REFERENCE_REPEATS):
             fit_seed = seed + index*100 + repeat
             record = {"case": name, "seed": fit_seed, "kind": "fixed_reference"}
             try:
@@ -93,23 +244,41 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
             except Exception as error:
                 record.update(passed=False, error=f"{type(error).__name__}: {error}")
             records.append(record)
+            attempted[name] = attempted.get(name, 0) + 1
+    # A gate that runs nothing passes everything: all() over no fixed-reference records
+    # is vacuously true, so the promised cases are checked against the manifest by name.
+    case_coverage = {"required": {name: REFERENCE_REPEATS for name in REFERENCE_CASES},
+                     "attempted": attempted,
+                     "missing": sorted(name for name in REFERENCE_CASES
+                                       if attempted.get(name, 0) != REFERENCE_REPEATS),
+                     "unlisted": sorted(set(attempted) - set(REFERENCE_CASES))}
+    case_coverage["passed"] = not case_coverage["missing"] and not case_coverage["unlisted"]
     rng = np.random.default_rng(seed)
-    m = mc.ModelBuilder()
-    beta = m.vector_normal_prior("beta", 2, 0., 1.)
-    m.normal_likelihood("obs", beta @ "X", .7, "y")
-    model = m.compile()
+    # Same shape as the reference cases: this compile ran outside every try.
+    try:
+        m = mc.ModelBuilder()
+        beta = m.vector_normal_prior("beta", 2, 0., 1.)
+        m.normal_likelihood("obs", beta @ "X", .7, "y")
+        model = m.compile()
+    except Exception as error:
+        model = None
+        records.append({"case": "prior_simulated_regression", "kind": "calibration",
+                        "passed": False, "error": f"{type(error).__name__}: {error}"})
     coverage, quantiles = [], []
-    for replicate in range(replicates):
-        theta = rng.normal(size=2)
-        x = np.column_stack((np.ones(30), rng.normal(size=30)))
-        y = x@theta + rng.normal(0., .7, len(x))
-        covariance = np.linalg.solve(np.eye(2) + x.T@x/.7**2, np.eye(2))
-        mean = covariance@(x.T@y/.7**2)
+    for replicate in range(replicates if model is not None else 0):
         fit_seed = seed + 1000 + replicate
         record = {"case": "prior_simulated_regression", "replicate": replicate, "seed": fit_seed,
-                  "kind": "calibration", "generating_beta": theta.tolist(),
-                  "data_sha256": hashlib.sha256(x.tobytes()+y.tobytes()).hexdigest()}
+                  "kind": "calibration"}
         try:
+            # Simulating the replicate belongs inside the handler too: np.linalg.solve
+            # raises on a singular design, and it ran outside every try.
+            theta = rng.normal(size=2)
+            x = np.column_stack((np.ones(30), rng.normal(size=30)))
+            y = x@theta + rng.normal(0., .7, len(x))
+            covariance = np.linalg.solve(np.eye(2) + x.T@x/.7**2, np.eye(2))
+            mean = covariance@(x.T@y/.7**2)
+            record.update(generating_beta=theta.tolist(),
+                          data_sha256=hashlib.sha256(x.tobytes()+y.tobytes()).hexdigest())
             fit = model.sample({"X": x, "y": y}, seed=fit_seed, **kwargs)
             record.update(assess_fit(fit, ["beta[0]", "beta[1]"], mean, covariance))
             values = np.stack([fit.get_samples_2d()[f"beta[{i}]"] for i in range(2)], axis=-1).reshape(-1, 2)
@@ -139,16 +308,47 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
             "rustmc": mc.__version__, "native_path": str(native_path),
             "native_sha256": hashlib.sha256(native_path.read_bytes()).hexdigest(),
             "command": sys.argv, "seed": seed, "sampling": kwargs, "records": records,
-            "calibration": calibration, "seconds": time.perf_counter()-started,
-            "passed": all(r["passed"] for r in records) and calibration["passed"]}
+            "calibration": calibration, "case_coverage": case_coverage,
+            "seconds": time.perf_counter()-started,
+            "passed": all(r["passed"] for r in records) and calibration["passed"]
+                      and case_coverage["passed"]}
 
 
 def json_safe(value):
+    """Normalize a report for ``json.dumps(..., allow_nan=False)``, keeping failures.
+
+    A failed metric is kept as a null rather than dropped, so the report still records
+    that the gate looked at it. The retained raw ``diagnostics`` are whatever the
+    bindings handed over, and today that is Python floats; a NumPy scalar among them
+    would be neither caught by the ``float`` test nor serializable, and the strict dump
+    in ``main`` would raise after every fit had run, writing no report at all. Unwrap
+    NumPy scalars and arrays to their Python equivalents first so the finiteness test
+    sees them. ``np.float64`` already subclasses ``float`` and round-trips unchanged.
+    """
     if isinstance(value, dict):
         return {key: json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, np.ndarray):
+        # tolist() yields nested lists, or a scalar for a 0-d array; both recurse.
+        return json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        unwrapped = value.item()
+        if isinstance(unwrapped, np.generic):
+            # np.longdouble.item() returns another np.longdouble on some platforms, so
+            # recursing on it would never terminate. Narrow to a width Python has.
+            unwrapped = (complex(value) if isinstance(value, numbers.Complex)
+                         and not isinstance(value, numbers.Real) else float(value))
+        return json_safe(unwrapped)
+    if isinstance(value, (list, tuple)):
         return [json_safe(item) for item in value]
-    if isinstance(value, float) and not math.isfinite(value):
+    if isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real):
+        # A complex diagnostic is already a gate failure by the time it reaches here.
+        # Keep it as a null: json.dumps cannot serialize it, and raising would throw
+        # away the whole report over a value the gate has already rejected.
+        return None
+    # Integral values, bool among them, are always finite, and math.isfinite raises
+    # OverflowError on an int too large to convert, so do not ask it about them.
+    if (isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral)
+            and not math.isfinite(value)):
         return None
     return value
 
