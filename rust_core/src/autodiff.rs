@@ -1516,6 +1516,15 @@ fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
 /// a sampler off in a direction the density does not support. At `p = 0` with
 /// `x = 1` the slope is genuinely infinite, which is the limit from inside the
 /// support and not a lost value.
+///
+/// `1 / p` overflows for every `p` below 5.6e-309, where `ln(p)` is still an
+/// ordinary -710. The composition through whatever produced `p` would often be
+/// representable — a `sigmoid` link makes it exactly 1 — but the adjoint at the
+/// `p` node is `1 / p` whatever order the factors are taken in, so there is
+/// nothing to reassociate: the intermediate itself is the unrepresentable
+/// quantity. The clamp this replaced returned 1e12 there, finite and wrong by
+/// 296 orders of magnitude; an infinity is refused at the sampler boundary
+/// instead of being believed.
 fn bernoulli_logp_dp(x: f64, p: f64) -> f64 {
     if !(0.0..=1.0).contains(&p) {
         return 0.0;
@@ -1541,9 +1550,18 @@ fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
 
 /// d/dlam of [`poisson_logp_scalar`], zero wherever that is a constant `-inf`.
 ///
-/// `x / lam - 1` is the score on the support. Off it the mass is `-inf` and the
-/// score is zero; at `x == 0` the mass is `-lam` and the score is `-1`, which
-/// the general form would compute as `0 / 0 - 1` when `lam` is also zero.
+/// `(x - lam) / lam` is the score on the support. Not `x / lam - 1`: the
+/// quotient rounds to something near 1 and the subtraction then cancels away
+/// most of what is left, which is precisely the region a count model lives in.
+/// At `x = 1` and `lam` one ulp below it the old form returned
+/// 2.220446049250313e-16 for a score of 1.1102230246251568e-16 — twice the
+/// right answer — and at `x = 1e14, lam = x + 1` it was 0.08% off. `x - lam` is
+/// exact whenever the two are within a factor of two of each other, by
+/// Sterbenz, so the new form has one rounding and no cancellation.
+///
+/// Off the support the mass is `-inf` and the score is zero; at `x == 0` the
+/// mass is `-lam` and the score is `-1`, which the general form would compute
+/// as `-0 / 0` when `lam` is also zero.
 fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     if !x.is_finite() || x < 0.0 || x.fract() != 0.0 || !lam.is_finite() || lam < 0.0 {
         return 0.0;
@@ -1551,7 +1569,7 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     if x == 0.0 {
         return -1.0;
     }
-    x / lam - 1.0
+    (x - lam) / lam
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {

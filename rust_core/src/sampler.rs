@@ -171,7 +171,11 @@ impl SampleResult {
     /// the representable range reports a finite mean rather than an infinity,
     /// and reports the same one `diagnostics()` does.
     pub fn mean(&self) -> Vec<f64> {
-        (0..self.param_names.len())
+        let n_params = self.param_names.len();
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
+        }
+        (0..n_params)
             .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
             .collect()
     }
@@ -183,12 +187,38 @@ impl SampleResult {
     /// the summary table has always reported; before the two paths were shared
     /// this one divided by `n` and the two disagreed by `sqrt(n / (n - 1))`.
     pub fn std(&self) -> Vec<f64> {
-        (0..self.param_names.len())
+        let n_params = self.param_names.len();
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
+        }
+        (0..n_params)
             .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
             .collect()
     }
 
-    /// Every draw of parameter `index`, chain-major.
+    /// Whether `samples` is the rectangular chain × draw × parameter array the
+    /// sampler produces.
+    ///
+    /// These fields are public, so a caller can assemble one that is not.
+    /// `compute_diagnostics` refuses such an array outright — a ragged one has
+    /// no chain axis to compute R-hat along — and reports NaN for every
+    /// parameter; the moments agree with it rather than indexing past the end
+    /// of a short draw or averaging different parameters over different numbers
+    /// of draws.
+    fn is_rectangular(&self) -> bool {
+        let Some(first) = self.samples.first() else {
+            return false;
+        };
+        let n_draws = first.len();
+        let n_params = self.param_names.len();
+        n_draws > 0
+            && self.samples.iter().all(|chain| {
+                chain.len() == n_draws && chain.iter().all(|draw| draw.len() == n_params)
+            })
+    }
+
+    /// Every draw of parameter `index`, chain-major. Requires
+    /// [`Self::is_rectangular`].
     ///
     /// The order is the order the naive loop accumulated in, and it is the
     /// order `BatchModelResult` accumulates in, so the two keep reporting the
@@ -712,16 +742,34 @@ pub fn sample_batch_bound(
 impl BatchModelResult {
     /// Posterior mean per parameter; see [`SampleResult::mean`].
     pub fn mean(&self) -> Vec<f64> {
-        (0..self.param_names.len())
+        let n_params = self.param_names.len();
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
+        }
+        (0..n_params)
             .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
             .collect()
     }
 
     /// Posterior standard deviation per parameter; see [`SampleResult::std`].
     pub fn std(&self) -> Vec<f64> {
-        (0..self.param_names.len())
+        let n_params = self.param_names.len();
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
+        }
+        (0..n_params)
             .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
             .collect()
+    }
+
+    /// Whether every draw carries every parameter; see
+    /// [`SampleResult::is_rectangular`].
+    fn is_rectangular(&self) -> bool {
+        !self.samples.is_empty()
+            && self
+                .samples
+                .iter()
+                .all(|draw| draw.len() == self.param_names.len())
     }
 
     /// Every draw of parameter `index`. `samples` is already chain-major, so

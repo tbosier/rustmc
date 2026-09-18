@@ -570,6 +570,15 @@ pub fn compute_transition_diagnostics(
 /// deviations themselves are unrepresentable (`-1e308` and `1e308` in one
 /// chain) the centring is dropped and the draws are scaled about zero instead.
 ///
+/// The trade the centring makes, which this has always made for the summary
+/// table and now makes for the moments a caller reads directly: each
+/// normalised draw is rounded once, so the error in the mean is of order one
+/// ulp of the draws' *spread* rather than of the mean itself. Draws
+/// `[1, -1, 1e-16, 1e-16]` report a mean of 0 where naive summation reports
+/// 5e-17. That is 1e-16 of a posterior's spread against a Monte Carlo standard
+/// error of order 1e-2 of it, so it is fourteen orders of magnitude below the
+/// uncertainty the number is reported with; the overflow it buys is not.
+///
 /// Returns `(NaN, NaN)` when any draw is not finite, matching what the summary
 /// reports for such a parameter, and a `NaN` standard deviation for a single
 /// draw, which does not define one. The denominator is `n - 1`: this is the

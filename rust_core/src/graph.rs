@@ -153,10 +153,18 @@ pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
 ///
 /// The way out is that the sigmoid *is* `exp(raw)` in that tail: once
 /// `exp(raw)` is below 2^-52, `1 + exp(raw)` rounds to exactly 1. And
-/// `exp(raw) == exp(raw / 2)^2` with `raw / 2` exact, so applying the span
-/// between the two halves keeps every intermediate normal: for
-/// `span = 1e308, raw = -746` that is `1e308 * 1.0e-162 * 1.0e-162`. No
-/// logarithm of the span is taken, so no precision is lost to one.
+/// `exp(raw) == exp(raw / 2)^2` with `raw / 2` exact, so the span goes between
+/// the two halves: for `span = 1e308, raw = -746` that is
+/// `1e308 * 1.0e-162 * 1.0e-162`. No logarithm of the span is taken, so no
+/// precision is lost to one.
+///
+/// The intermediate `span * exp(raw / 2)` is `sqrt(span * result)`, so it
+/// cannot underflow while the result is representable, and cannot overflow
+/// either: this branch is only taken for `raw < -708`, which bounds
+/// `exp(raw / 2)` below 1.1e-154 against a span of at most 1.8e308. It can be a
+/// subnormal, and lose bits, where the span and the result are both near the
+/// bottom of the range — `span = 1e-300, raw = -710` returns zero, which is
+/// also the exact answer.
 ///
 /// Accurate to 2.2e-16 relative from the gate down to `raw = -1416`, where
 /// `exp(raw / 2)` becomes subnormal itself and the halves start shedding bits;
@@ -401,10 +409,21 @@ fn needs_rescue(direct: f64, factors: &[f64]) -> bool {
 /// two-argument function can represent, while an upstream adjoint of `1e-200`
 /// makes the composed gradient exactly `1e200`. Multiplying afterwards has
 /// already lost it.
+///
+/// A local derivative that has merely gone *subnormal* is the same loss one
+/// step earlier and is rescued as well. `1e200 / b` at `b = 3.7e161` has
+/// `-(a/b)/b == -5e-324`, one bit of a true -7.3e-324, and the upstream adjoint
+/// then restores the scale and the error together: the composed gradient comes
+/// out 32% low, finite and plausible. The rescue is taken only when the
+/// composed result is itself a normal number, so the three subnormal results
+/// `div_denominator_derivative` already rounds correctly are left exactly as
+/// they are.
 #[inline]
 fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
-    let direct = upstream * div_denominator_derivative(a, b);
-    if !needs_rescue(direct, &[upstream, a, b]) {
+    let local = div_denominator_derivative(a, b);
+    let direct = upstream * local;
+    let quantized = local != 0.0 && !local.is_normal() && direct.is_normal();
+    if !quantized && !needs_rescue(direct, &[upstream, a, b]) {
         return direct;
     }
     scaled_ratio(&[upstream, a], &[b, b]).map_or(direct, |value| -value)
@@ -423,6 +442,20 @@ fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
 /// exactly 1 from `|a| = 19` while the slope runs to `|a| = 372` — so unlike
 /// `exp` or `sigmoid` this one loses a derivative the forward pass had every
 /// right to. That is what makes it a bug rather than a rounding boundary.
+///
+/// The last few units before 372 are subnormal and carry a bit or two: at
+/// `a = 372.5` this returns 2e-323 for a true 1e-323, because `exp(-745)`
+/// itself rounds from 2.6e-324 to the smallest subnormal. Below that the slope
+/// is zero, as the exact value is.
+///
+/// One consequence is deliberate and worth naming: from `|a| = 19` the
+/// computed `tanh` is flat while this slope is not, so a target that amplifies
+/// the difference enough will see the gradient disagree with its own density.
+/// `1e22 * (tanh(x) - 1)` at `x = 25` has a computed density of exactly 0 and a
+/// gradient of 7.71, and one leapfrog step at `epsilon = 0.1` then carries an
+/// energy error of 0.275. The alternative is a flat direction where the density
+/// is not flat, which a sampler cannot report; this way it diverges and says
+/// so. [`stable_sigmoid_derivative`] made the same choice for the same reason.
 #[inline]
 fn tanh_slope(a: f64) -> f64 {
     4.0 * stable_sigmoid_derivative(2.0 * a)
@@ -435,9 +468,15 @@ fn tanh_slope(a: f64) -> f64 {
 /// with `b = -1` has `a^b = 1e200` and `a^(b-1) = 1e400`. Rewriting the first
 /// derivative as `b a^b / a` keeps the whole composition inside the range.
 ///
-/// What remains outside it is a forward value that has itself overflowed. There
-/// the node's own value is already infinite and the density it feeds is
-/// infinite or NaN, so there is no finite gradient to preserve.
+/// `a^b` itself can leave the range too — `a = 1e-200, b = 3` has `a^b == 0`
+/// and `a^(b-1) == 0` while an adjoint of `1e200` makes the gradient
+/// `3e-200` — and then there is no in-range power left to rewrite through.
+/// That case goes through [`split_power_magnitude`], which is the one path here
+/// that pays a logarithm and is accurate to about 1e-13 rather than to a few
+/// ulp. It is the last resort, taken only where the alternative is 0 or an
+/// infinity, and only for a positive base: `powf` of a negative base is NaN
+/// unless the exponent is an integer, and a logarithm cannot tell the
+/// difference.
 fn pow_adjoints(upstream: f64, a: f64, b: f64) -> (f64, f64) {
     let (da, db) = ElementwiseOp::Pow.derivatives(a, b);
     let mut adjoint_a = upstream * da;
@@ -450,12 +489,57 @@ fn pow_adjoints(upstream: f64, a: f64, b: f64) -> (f64, f64) {
     }
     let value = a.powf(b);
     if rescue_a {
-        adjoint_a = scaled_ratio(&[upstream, b, value], &[a]).unwrap_or(adjoint_a);
+        adjoint_a = scaled_ratio(&[upstream, b, value], &[a])
+            .or_else(|| scaled_power_product(&[upstream, b], a, b - 1.0))
+            .unwrap_or(adjoint_a);
     }
     if rescue_b {
-        adjoint_b = scaled_ratio(&[upstream, value, log_a], &[]).unwrap_or(adjoint_b);
+        adjoint_b = scaled_ratio(&[upstream, value, log_a], &[])
+            .or_else(|| scaled_power_product(&[upstream, log_a], a, b))
+            .unwrap_or(adjoint_b);
     }
     (adjoint_a, adjoint_b)
+}
+
+/// `|a|^exponent` as `(mantissa, binary exponent)` with the mantissa in
+/// `[1, 2)`, for powers far outside what an f64 can hold.
+///
+/// `exponent * log2(|a|)` carries about one ulp of relative error, so an
+/// exponent of order 1000 leaves 1e-13 of absolute error in the logarithm and
+/// the same relative error in the result. Every other path in this module is
+/// accurate to a few ulp; this one is not, and it is used only where the
+/// alternative is zero or an infinity.
+fn split_power_magnitude(a: f64, exponent: f64) -> Option<(f64, i32)> {
+    let magnitude = a.abs();
+    if magnitude == 0.0 || !magnitude.is_finite() || !exponent.is_finite() {
+        return None;
+    }
+    let log2 = exponent * magnitude.log2();
+    if !log2.is_finite() || log2.abs() > 1e9 {
+        return None;
+    }
+    let whole = log2.floor();
+    Some((f64::powf(2.0, log2 - whole), whole as i32))
+}
+
+/// The product of `factors` with `a^exponent`, exponents accumulated
+/// separately. `None` for a base that is not strictly positive, or for a factor
+/// that is zero or not finite, where the direct product already said what there
+/// is to say.
+fn scaled_power_product(factors: &[f64], a: f64, exponent: f64) -> Option<f64> {
+    if a <= 0.0 {
+        return None;
+    }
+    let (mut mantissa, mut binary_exponent) = split_power_magnitude(a, exponent)?;
+    for &x in factors {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa *= m;
+        binary_exponent += e;
+    }
+    Some(apply_exponent(mantissa, binary_exponent))
 }
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.

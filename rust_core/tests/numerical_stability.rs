@@ -1323,6 +1323,74 @@ fn composed_power_gradient_survives_an_overflowing_local_derivative() {
     assert_close(grad[0], 1e200, "d/dx of (x^-1) * 1e-200 at x = 1e-200");
 }
 
+/// A local derivative that is finite but quantized is the same loss with a
+/// plausible face on it. `-(a/b)/b` at `a = 1, b = 3.7e161` is `-5e-324`, one
+/// bit of a true -7.3e-324; an upstream adjoint of `1e200` then restores the
+/// scale and the error together, and the composed gradient comes out 32% low
+/// rather than infinite. Rescuing only on an infinity or a zero misses it.
+///
+/// Expectations are `-upstream * a / b^2` as an exact rational over the f64
+/// operands, rounded once, computed out of crate.
+#[test]
+fn composed_division_gradient_survives_a_quantized_local_derivative() {
+    for (b, expected) in [
+        (4.5e161, -4.938271604938272e-124),
+        (4e161, -6.2499999999999995e-124),
+        (3.7e161, -7.304601899196495e-124),
+        (3.5e161, -8.16326530612245e-124),
+        (1e161, -9.999999999999999e-123),
+    ] {
+        let local = ElementwiseOp::Div.derivatives(1.0, b).1;
+        assert!(
+            local != 0.0 && !local.is_normal(),
+            "premise: the local derivative for b = {b} must be subnormal, got {local}"
+        );
+        let (_, db) = ElementwiseOp::Div.adjoints(1e200, 1.0, b);
+        assert!(
+            (db / expected - 1.0).abs() < 1e-14,
+            "d/db for 1e200 * d(1/{b}): {db} vs {expected}"
+        );
+    }
+}
+
+/// `Pow` where `a^b` has left the range too, in both directions. There is no
+/// in-range power left to rewrite the derivative through, so the rescue falls
+/// back to accumulating the exponent through a logarithm — the only path in
+/// the module that does, and the only one accurate to 1e-13 rather than to a
+/// few ulp.
+///
+/// Expectations are `upstream * b * a^(b-1)` as an exact rational over the f64
+/// operands (Python `fractions`), rounded once.
+#[test]
+fn composed_power_gradient_survives_a_value_that_left_the_range() {
+    // a^b == 1e-600 rounds to 0 and a^(b-1) == 1e-400 rounds to 0, while the
+    // composed gradient 3e-200 is an ordinary number.
+    assert_eq!(1e-200_f64.powf(2.0), 0.0, "premise: a^(b-1) underflows");
+    let (da, _) = ElementwiseOp::Pow.adjoints(1e200, 1e-200, 3.0);
+    assert!(
+        (da / 3e-200 - 1.0).abs() < 1e-12,
+        "d/da for 1e200 * d(1e-200^3): {da} vs 3e-200"
+    );
+
+    // The mirror: a^b == 1e600 and a^(b-1) == 1e400 both overflow, while the
+    // composed gradient 3e200 is an ordinary number.
+    assert_eq!(
+        1e200_f64.powf(2.0),
+        f64::INFINITY,
+        "premise: a^(b-1) overflows"
+    );
+    let (da, _) = ElementwiseOp::Pow.adjoints(1e-200, 1e200, 3.0);
+    assert!(
+        (da / 3e200 - 1.0).abs() < 1e-12,
+        "d/da for 1e-200 * d(1e200^3): {da} vs 3e200"
+    );
+
+    // A negative base keeps the direct answer: `powf` of one is NaN unless the
+    // exponent is an integer, and a logarithm cannot tell the difference.
+    let (da, db) = ElementwiseOp::Pow.adjoints(1e-200, -1e200, 3.5);
+    assert!(da.is_nan() && db.is_nan(), "negative base gave {da}, {db}");
+}
+
 /// `Log`'s local derivative `1 / a` is infinite for every subnormal `a`, while
 /// `upstream / a` is an ordinary number whenever the adjoint is small.
 ///
@@ -1457,8 +1525,9 @@ fn bernoulli_density_is_minus_infinity_off_its_support() {
 }
 
 /// An impossible outcome has no density, not a small one. The clamp to
-/// `[1e-12, 1 - 1e-12]` scored `x = 1, p = 0` at ln(1e-12), which is
-/// -27.631021115928547, and scored `x = 0, p = 1` the same way.
+/// `[1e-12, 1 - 1e-12]` scored `x = 1, p = 0` at `ln(1e-12)`, which is
+/// -27.631021115928547, and `x = 0, p = 1` at `ln(1 - (1 - 1e-12))`, which is
+/// -27.63104323789336 — the two differ because `1 - 1e-12` is not exact.
 #[test]
 fn impossible_bernoulli_outcomes_have_no_density() {
     assert_eq!(bernoulli_density(1.0, 0.0), f64::NEG_INFINITY);
@@ -1570,7 +1639,22 @@ fn poisson_density_and_score_agree_about_the_support() {
 
     // k ln(lam) - lam - ln(k!) at 80 digits, out of crate.
     assert_close(density(3.0, 2.0), -1.712317927548219, "Poisson(2) at 3");
-    assert_eq!(score(3.0, 2.0), 3.0 / 2.0 - 1.0);
+    assert_eq!(score(3.0, 2.0), 0.5);
+
+    // Near the mode, where a count model actually lives, `x / lam - 1` rounds
+    // the quotient to something near 1 and then cancels away most of what is
+    // left. Expectations are `(x - lam) / lam` as an exact rational over the
+    // f64 operands, out of crate.
+    let just_below_one = f64::from_bits(1.0_f64.to_bits() - 1);
+    assert_eq!(just_below_one, 0.9999999999999999);
+    for (x, lam, expected) in [
+        (1.0, just_below_one, 1.1102230246251568e-16),
+        (100.0, 100.0000000000001, -9.947598300641394e-16),
+        (1e14, 100000000000001.0, -9.9999999999999e-15),
+        (5.0, 5.0000000001, -2.000000165440742e-11),
+    ] {
+        assert_eq!(score(x, lam), expected, "score at x = {x}, lam = {lam}");
+    }
 }
 
 /// Negative control for the whole task: the Bernoulli-logit *observation*
@@ -1667,6 +1751,29 @@ fn posterior_moments_survive_draws_near_the_representable_maximum() {
     let report = result.diagnostics();
     assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
     assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+}
+
+/// The two paths agree on malformed input too, rather than one panicking and
+/// the other reporting. `SampleResult`'s fields are public, so a caller can
+/// assemble a ragged `samples` array; `diagnostics()` has always reported NaN
+/// for one, and indexing it would panic.
+#[test]
+fn posterior_moments_report_the_same_nan_diagnostics_does_for_ragged_draws() {
+    let mut result = result_with_draws(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+    result.param_names = vec!["a".to_string(), "b".to_string()];
+    // Second parameter present in three draws out of six.
+    result.samples[0] = vec![vec![1.0, 10.0], vec![2.0], vec![3.0, 30.0]];
+    result.samples[1] = vec![vec![4.0], vec![5.0, 50.0], vec![6.0]];
+
+    let report = result.diagnostics();
+    for (index, name) in ["a", "b"].iter().enumerate() {
+        assert!(
+            report.params[index].mean.is_nan(),
+            "diagnostics {name} mean"
+        );
+        assert!(result.mean()[index].is_nan(), "mean() for {name}");
+        assert!(result.std()[index].is_nan(), "std() for {name}");
+    }
 }
 
 /// The same agreement on a fitted posterior, reached the way a caller reaches
