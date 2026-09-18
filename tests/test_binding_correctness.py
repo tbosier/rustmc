@@ -258,3 +258,34 @@ def test_zero_prior_predictive_draws_is_rejected(rustmc_module):
         rustmc_module.sample_prior_predictive(
             _model(rustmc_module), n_samples=0
         )
+
+
+def test_prior_predictive_does_not_require_a_likelihood(rustmc_module):
+    """The docstring used to claim one was required; the behaviour never was.
+
+    With no likelihood there is nothing to predict, but the prior draws of the
+    parameters and of every deterministic are still exactly what "check whether
+    your priors make sense before fitting" asks for -- and are the only thing
+    available while the likelihood is still being decided.
+    """
+    x = np.arange(4, dtype=float)
+    builder = rustmc_module.ModelBuilder({"x": x})
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    builder.deterministic("signal", alpha * "x")
+    spec = builder.build()
+
+    draws = rustmc_module.sample_prior_predictive(spec, n_samples=16, seed=11)
+
+    assert set(draws) == {"alpha", "signal"}
+    assert draws["alpha"].shape == (16,)
+    assert draws["signal"].shape == (16, 4)
+    np.testing.assert_allclose(draws["signal"], draws["alpha"][:, None] * x)
+
+
+def test_prior_predictive_still_refuses_a_potential(rustmc_module):
+    """The one structural requirement there is, and it is not a likelihood."""
+    builder = rustmc_module.ModelBuilder({"x": np.arange(4, dtype=float)})
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    builder.potential("penalty", (alpha * "x").sum())
+    with pytest.raises(ValueError, match="potentials"):
+        rustmc_module.sample_prior_predictive(builder.build(), n_samples=4)

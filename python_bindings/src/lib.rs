@@ -134,7 +134,7 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
     ))
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 struct ModelSpec(rustmc_core::model::ModelSpec);
@@ -159,14 +159,14 @@ impl ModelSpec {
     }
 }
 
-#[pyclass(name = "BoundModel")]
+#[pyclass(name = "BoundModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyBoundModel {
     structure: Arc<Graph>,
     binding: CoreDataBinding,
 }
 
-#[pyclass(name = "CompiledModel")]
+#[pyclass(name = "CompiledModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyCompiledModel {
     definition: ModelSpec,
@@ -276,7 +276,7 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
     rustmc_core::model::template_data_for_spec(&spec.0).map_err(model_error)
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
     dimensions: HashMap<String, String>,
@@ -360,8 +360,9 @@ impl ModelBuilder {
         Ok(hp)
     }
 
-    /// Parse a likelihood predictor argument (`Expr` or bare `ParamRef`),
-    /// rejecting references that belong to a different model.
+    /// Parse a likelihood predictor argument (`Expr`, bare `ParamRef`, bare
+    /// data key or constant), rejecting references that belong to a different
+    /// model.
     fn likelihood_expr(
         &self,
         value: &Bound<'_, PyAny>,
@@ -374,12 +375,19 @@ impl ModelBuilder {
         } else if let Ok(p) = value.downcast::<ParamRef>() {
             let b = p.borrow();
             (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else if let Ok(data_key) = value.extract::<String>() {
+            // A bare "x" is the data column keyed x, as everywhere else in the
+            // DSL. Checked before `f64`, as in `extract_expr`, so that a string
+            // is never coerced to a number. Unowned, like a constant: it names
+            // no parameter, so it means the same thing in any model.
+            (MuExpr::Data(data_key), None)
         } else if let Ok(value) = value.extract::<f64>() {
             validate_finite(arg_name, value)?;
             (MuExpr::Const(value), None)
         } else {
             return Err(PyValueError::new_err(format!(
-                "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+                "{} must be an Expr (e.g. beta * 'x'), a ParamRef, or a data \
+                 key string naming one column (e.g. 'x')",
                 arg_name
             )));
         };
@@ -413,6 +421,21 @@ impl ModelBuilder {
                 arg_name
             )))
         }
+    }
+
+    /// Reject a data key this builder's bound data does not carry.
+    ///
+    /// The likelihood families do this through `validate_data_keys`, which
+    /// also checks the observed key. Potentials and deterministics have no
+    /// observed key, so they get the expression half on its own.
+    ///
+    /// With nothing bound there is nothing to check against, and the key is
+    /// named later at bind time -- the same deferral the likelihood path makes.
+    fn check_data_keys(&self, expr: &MuExpr) -> PyResult<()> {
+        if self.bound_data_1d.is_empty() && self.bound_data_2d.is_empty() {
+            return Ok(());
+        }
+        validate_expr_keys(expr, &self.bound_data_1d, &self.bound_data_2d)
     }
 
     /// Reject a `ParamRef`/`Expr` produced by a different `ModelBuilder`.
@@ -466,6 +489,7 @@ impl ModelBuilder {
         }
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "potential")?;
+        self.check_data_keys(&expr.inner)?;
         if !expr.inner.is_scalar() {
             return Err(PyValueError::new_err(
                 "potential requires a scalar expression; use .sum()",
@@ -481,6 +505,7 @@ impl ModelBuilder {
     fn deterministic(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<Expr> {
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "deterministic")?;
+        self.check_data_keys(&expr.inner)?;
         if name.is_empty()
             || self.deterministics.iter().any(|(n, _)| n == name)
             || self.priors.iter().any(|p| prior_name(p) == name)
@@ -1221,7 +1246,7 @@ fn validate_transition_chain_count(
     }
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct FitResult {
     definition: ModelSpec,
@@ -1480,8 +1505,18 @@ impl FitResult {
                     let position =
                         posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
                     evaluator.compute(&graph, &position);
+                    // Same standard the prior predictive holds deterministics
+                    // to, and the same one `sampler` holds the parameters to:
+                    // a nonfinite value is a failed computation, not a result.
                     for i in 0..n.max(1) {
-                        values.push(evaluator.vec_elem(*node, i, &graph));
+                        let value = evaluator.vec_elem(*node, i, &graph);
+                        if !value.is_finite() {
+                            return Err(PyValueError::new_err(format!(
+                                "deterministic '{name}' is nonfinite at chain {chain_idx}, \
+                                 draw {draw_idx}"
+                            )));
+                        }
+                        values.push(value);
                     }
                 }
             }
@@ -2271,7 +2306,7 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 /// Everything this exposes is read off the retained fit's display draws. It
 /// used to also hold a flattened `BatchModelResult` copy of those same draws,
 /// which made a third posterior per cell alongside the raw and display trees.
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct BatchResult {
     full_fit: Option<StoredBatchFit>,
@@ -2467,7 +2502,7 @@ impl BatchResult {
     }
 }
 
-#[pyclass(name = "BatchFit")]
+#[pyclass(name = "BatchFit", module = "rustmc")]
 struct PyBatchFit {
     ids: Vec<String>,
     results: Vec<Result<BatchResult, String>>,
@@ -2688,10 +2723,17 @@ fn regroup_draws_by_chain(flat: Vec<Vec<f64>>, num_draws: usize) -> Vec<Vec<Vec<
 /// then runs a forward pass to generate predicted observations.
 /// Use this to check whether your priors make sense before fitting.
 ///
+/// A likelihood is not required.  With none declared, the result carries the
+/// prior draws of the parameters and of any deterministic, and no predicted
+/// observations -- which is exactly what "check whether your priors make sense
+/// before fitting" means for a model whose likelihood is not written yet.
+/// Potentials *are* refused: a custom density term supplies no random
+/// generator, so a model carrying one has no prior to simulate from.
+///
 /// Parameters
 /// ----------
 /// model_spec : ModelSpec
-///     A compiled model (from `builder.build()`).  Must have at least one likelihood.
+///     A model definition, from `builder.build()`.
 /// data : dict or None
 ///     Data dict (same as `sample()`).  Needed for the predictor covariates (x values).
 /// n_samples : int
@@ -2928,7 +2970,7 @@ fn state_covariances_array<'py>(
 /// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
-#[pyclass(name = "LinearGaussianStateSpace")]
+#[pyclass(name = "LinearGaussianStateSpace", module = "rustmc")]
 #[derive(Clone)]
 struct PyLinearGaussianStateSpace {
     inner: CoreLinearGaussianStateSpace,
@@ -3132,7 +3174,7 @@ impl PyLinearGaussianStateSpace {
     }
 }
 
-#[pyclass(name = "KalmanFilterResult")]
+#[pyclass(name = "KalmanFilterResult", module = "rustmc")]
 struct PyKalmanFilterResult {
     inner: CoreKalmanFilterResult,
     dimension: usize,
@@ -3172,7 +3214,7 @@ impl PyKalmanFilterResult {
     }
 }
 
-#[pyclass(name = "KalmanSmootherResult")]
+#[pyclass(name = "KalmanSmootherResult", module = "rustmc")]
 struct PyKalmanSmootherResult {
     inner: CoreKalmanSmootherResult,
     dimension: usize,
@@ -3212,7 +3254,7 @@ impl PyKalmanSmootherResult {
     }
 }
 
-#[pyclass(name = "ForecastResult")]
+#[pyclass(name = "ForecastResult", module = "rustmc")]
 struct PyForecastResult {
     inner: CoreForecastResult,
     dimension: usize,
@@ -3543,7 +3585,7 @@ fn hierarchical_total_rollup_array<'py>(
 /// Ragged program series are fitted in one conjugate Gibbs posterior. This
 /// structure-aware sampler draws exact full conditionals and therefore avoids
 /// requiring NUTS to traverse a hierarchical funnel.
-#[pyclass(name = "BayesianHierarchicalMean", frozen)]
+#[pyclass(name = "BayesianHierarchicalMean", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianHierarchicalMean {
     population_mean_prior: f64,
@@ -3725,7 +3767,7 @@ fn validate_unique_names(names: &[String], expected: usize, field: &str) -> PyRe
     Ok(())
 }
 
-#[pyclass(name = "BayesianHierarchicalMeanFit")]
+#[pyclass(name = "BayesianHierarchicalMeanFit", module = "rustmc")]
 struct PyBayesianHierarchicalMeanFit {
     posterior: CoreHierarchicalMeanPosterior,
     time_counts: Vec<usize>,
@@ -3893,7 +3935,7 @@ impl PyBayesianHierarchicalMeanFit {
     }
 }
 
-#[pyclass(name = "BayesianHierarchicalForecast")]
+#[pyclass(name = "BayesianHierarchicalForecast", module = "rustmc")]
 struct PyBayesianHierarchicalForecast {
     inner: CoreHierarchicalMeanForecast,
     program_names: Vec<String>,
@@ -4117,7 +4159,7 @@ fn validate_probability(probability: f64) -> PyResult<()> {
 
 /// Inverse-gamma prior for a variance, parameterized by shape and scale.
 /// The density is proportional to x^(-shape-1) exp(-scale/x).
-#[pyclass(name = "InverseGammaPrior", frozen)]
+#[pyclass(name = "InverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone, Copy)]
 struct PyInverseGammaPrior {
     inner: CoreInverseGammaPrior,
@@ -4152,7 +4194,7 @@ impl PyInverseGammaPrior {
 
 /// Bayesian scalar Gaussian local-level model fitted with conjugate
 /// forward-filtering/backward-sampling Gibbs updates.
-#[pyclass(name = "BayesianLocalLevel", frozen)]
+#[pyclass(name = "BayesianLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevel {
     initial_mean: f64,
@@ -4325,7 +4367,7 @@ impl PyBayesianLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianLocalLevelFit")]
+#[pyclass(name = "BayesianLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevelFit {
     posterior: CoreLocalLevelPosterior,
@@ -4452,7 +4494,7 @@ impl PyBayesianLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianForecastResult")]
+#[pyclass(name = "BayesianForecastResult", module = "rustmc")]
 struct PyBayesianForecastResult {
     inner: CorePosteriorPredictiveForecast,
 }
@@ -4593,7 +4635,7 @@ where
 }
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
-#[pyclass(name = "BayesianSeasonalLocalLevel", frozen)]
+#[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevel {
     period: usize,
@@ -4772,7 +4814,7 @@ impl PyBayesianSeasonalLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+#[pyclass(name = "BayesianSeasonalLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevelFit {
     posterior: CoreSeasonalLocalLevelPosterior,
@@ -4904,7 +4946,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalForecast")]
+#[pyclass(name = "BayesianSeasonalForecast", module = "rustmc")]
 struct PyBayesianSeasonalForecast {
     inner: CoreSeasonalPosteriorPredictiveForecast,
 }
@@ -5101,7 +5143,7 @@ where
 }
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
-#[pyclass(name = "BayesianLocalLinearTrend", frozen)]
+#[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrend {
     initial_mean: [f64; 2],
@@ -5322,7 +5364,7 @@ impl PyBayesianLocalLinearTrend {
     }
 }
 
-#[pyclass(name = "BayesianLocalLinearTrendFit")]
+#[pyclass(name = "BayesianLocalLinearTrendFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrendFit {
     posterior: CoreLocalLinearTrendPosterior,
@@ -5462,7 +5504,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 }
 
-#[pyclass(name = "BayesianTrendForecast")]
+#[pyclass(name = "BayesianTrendForecast", module = "rustmc")]
 struct PyBayesianTrendForecast {
     inner: CoreTrendPosteriorPredictiveForecast,
 }
@@ -5659,7 +5701,7 @@ fn ar_coefficient_array<'py>(
 /// If beta contains ``[intercept, lag_1, ..., lag_p]``, then
 /// ``beta | sigma2 ~ Normal(mean, sigma2 * precision^-1)`` and
 /// ``sigma2 ~ InverseGamma(variance_shape, variance_scale)``.
-#[pyclass(name = "NormalInverseGammaPrior", frozen)]
+#[pyclass(name = "NormalInverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyNormalInverseGammaPrior {
     inner: CoreNormalInverseGammaPrior,
@@ -5734,7 +5776,7 @@ impl PyNormalInverseGammaPrior {
 ///
 /// This is distinct from ``LinearGaussianStateSpace.stationary_ar1``: the
 /// latter is a latent AR(1) observed with separate measurement noise.
-#[pyclass(name = "BayesianAutoRegression", frozen)]
+#[pyclass(name = "BayesianAutoRegression", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianAutoRegression {
     order: usize,
@@ -5853,7 +5895,7 @@ impl PyBayesianAutoRegression {
     }
 }
 
-#[pyclass(name = "BayesianARFit")]
+#[pyclass(name = "BayesianARFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianArFit {
     posterior: CoreBayesianArPosterior,
@@ -5959,7 +6001,7 @@ impl PyBayesianArFit {
     }
 }
 
-#[pyclass(name = "BayesianARForecast")]
+#[pyclass(name = "BayesianARForecast", module = "rustmc")]
 struct PyBayesianArForecast {
     inner: CoreBayesianArForecast,
 }

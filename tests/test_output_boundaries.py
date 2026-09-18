@@ -81,3 +81,60 @@ def test_valid_large_uniform_range_still_produces_finite_draws():
     assert np.isfinite(fit.get_samples()["x"]).all()
     restored = rustmc.FitResult.from_json(fit.to_json())
     np.testing.assert_array_equal(restored.get_samples()["x"], fit.get_samples()["x"])
+
+
+def _blowup_data(n=5):
+    return {"x": np.linspace(-1.0, 1.0, n), "y": np.zeros(n)}
+
+
+def test_nonfinite_prior_predictive_deterministic_is_rejected():
+    """A deterministic that overflows must fail, not ride along in the result.
+
+    The representability check covered the raw and display draws only, so a
+    `deterministic` evaluating to infinity was handed back inside an otherwise
+    successful prior predictive -- the one sampled output this library did not
+    guard.
+    """
+    builder = rustmc.ModelBuilder(_blowup_data())
+    alpha = builder.normal_prior("alpha", 800.0, 1.0)
+    builder.deterministic("blown", alpha.exp())
+    builder.normal_likelihood("obs", alpha * "x", 1.0, "y")
+    with pytest.raises(ValueError, match="deterministic 'blown' is nonfinite"):
+        rustmc.sample_prior_predictive(builder.build(), n_samples=4, seed=1)
+
+
+def test_finite_prior_predictive_deterministics_still_come_back():
+    """The guard must not cost a model whose deterministics are representable."""
+    builder = rustmc.ModelBuilder(_blowup_data())
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    builder.deterministic("scaled", alpha * 2.0)
+    builder.deterministic("per_obs", alpha * "x")
+    builder.normal_likelihood("obs", alpha * "x", 1.0, "y")
+    draws = rustmc.sample_prior_predictive(builder.build(), n_samples=8, seed=1)
+    assert np.isfinite(draws["scaled"]).all()
+    assert draws["per_obs"].shape == (8, 5)
+    assert np.isfinite(draws["per_obs"]).all()
+
+
+def test_nonfinite_posterior_deterministic_is_rejected():
+    """The posterior accessor had the same hole, and is closed the same way."""
+    builder = rustmc.ModelBuilder(_blowup_data())
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    builder.deterministic("blown", (alpha * 5000.0).exp())
+    builder.normal_likelihood("obs", alpha * "x", 1.0, "y")
+    fit = rustmc.sample(
+        builder.build(), chains=2, draws=200, warmup=200, seed=3, show_progress=False
+    )
+    with pytest.raises(ValueError, match="deterministic 'blown' is nonfinite"):
+        fit.deterministics()
+
+
+def test_finite_posterior_deterministics_still_come_back():
+    builder = rustmc.ModelBuilder(_blowup_data())
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    builder.deterministic("scaled", alpha * 2.0)
+    builder.normal_likelihood("obs", alpha * "x", 1.0, "y")
+    fit = rustmc.sample(
+        builder.build(), chains=1, draws=20, warmup=20, seed=3, show_progress=False
+    )
+    assert np.isfinite(fit.deterministics()["scaled"]).all()

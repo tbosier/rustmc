@@ -9,7 +9,7 @@ use rustmc_core::runoff::{fit_runoff, PaymentTriangle, RunoffConfig, RunoffPoste
 /// The last alpha entry is an unscheduled tail. Unknown ultimate counts use an
 /// independent Gamma(total_shape, rate=total_rate) Poisson intensity per cohort.
 /// This model does not accept currency as multinomial event counts.
-#[pyclass(name = "DirichletMultinomialRunoff")]
+#[pyclass(name = "DirichletMultinomialRunoff", module = "rustmc")]
 pub struct PyRunoff {
     alpha: Vec<f64>,
     total_shape: f64,
@@ -90,7 +90,7 @@ impl PyRunoff {
     }
 }
 
-#[pyclass(name = "RunoffFit")]
+#[pyclass(name = "RunoffFit", module = "rustmc")]
 pub struct PyRunoffFit {
     inner: RunoffPosterior,
 }

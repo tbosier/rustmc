@@ -359,9 +359,21 @@ pub fn prior_predictive<R: Rng + ?Sized>(
 
         // Forward pass to get predictions
         evaluator.compute(graph, &draw.raw);
-        for (j, (_, node)) in graph.deterministics.iter().enumerate() {
+        // `sample_prior_draw` has already refused a nonfinite parameter, but a
+        // representable draw can still push a deterministic out of range -- a
+        // finite `alpha` with an `alpha.exp()` deterministic is enough. A
+        // deterministic is a sampled output like any other, so it is held to
+        // the same standard rather than returned as an infinity inside an
+        // otherwise successful result.
+        for (j, (name, node)) in graph.deterministics.iter().enumerate() {
             for i in 0..deterministic_lens[j].max(1) {
-                deterministics[j].push(evaluator.vec_elem(*node, i, graph));
+                let value = evaluator.vec_elem(*node, i, graph);
+                if !value.is_finite() {
+                    return Err(ModelError::invalid(format!(
+                        "deterministic '{name}' is nonfinite in a prior predictive draw"
+                    )));
+                }
+                deterministics[j].push(value);
             }
         }
         for (li, head) in heads.iter().enumerate() {

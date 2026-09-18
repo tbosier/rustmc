@@ -18,20 +18,32 @@ pub(super) fn encode(model: &PyCompiledModel) -> PyResult<String> {
 }
 pub(super) fn decode(text: &str) -> PyResult<PyCompiledModel> {
     let model = GraphModel::from_json(text).map_err(model_error)?;
-    Ok(from_core(model))
+    from_core(model)
 }
-fn from_core(model: GraphModel) -> PyCompiledModel {
-    PyCompiledModel {
+/// A `CompiledModel` exists to be sampled from: `sample`, `sample_batch` and
+/// `log_density` are its whole surface, and `ModelBuilder.compile()` refuses a
+/// discrete prior for that reason. So this refuses one too, and the two ways of
+/// obtaining a `CompiledModel` agree.
+///
+/// The core's `GraphModel::from_artifact` is deliberately permissive, because a
+/// Rust caller loads an artifact to simulate its prior predictive as well as to
+/// fit it. The restriction is this crate's, not the format's, so it lives here.
+fn from_core(model: GraphModel) -> PyResult<PyCompiledModel> {
+    super::reject_discrete_priors_for_gradient_sampling(&model.definition.priors)?;
+    Ok(PyCompiledModel {
         definition: ModelSpec(model.definition),
         structure: model.structure,
         likelihood_names: model.likelihood_names,
         display_params: model.display_params,
         default_data_1d: HashMap::new(),
         default_data_2d: HashMap::new(),
-    }
+    })
 }
+/// Used by `FitResult.from_json`. A stored fit is a posterior, so a discrete
+/// prior in one is a fit that this library's sampler cannot have produced:
+/// refusing it here stops fractional draws being restored as Bernoulli or
+/// Poisson posterior samples.
 pub(super) fn reconstruct(artifact: Artifact) -> PyResult<PyCompiledModel> {
-    GraphModel::from_artifact(artifact)
-        .map(from_core)
-        .map_err(model_error)
+    let model = GraphModel::from_artifact(artifact).map_err(model_error)?;
+    from_core(model)
 }

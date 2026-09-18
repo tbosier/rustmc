@@ -522,7 +522,7 @@ pub(crate) fn fit_batch(
 }
 
 /// Results preserve requested cell order; failed cells have None in `results`.
-#[pyclass(name = "ForecastBatchFit")]
+#[pyclass(name = "ForecastBatchFit", module = "rustmc")]
 pub(crate) struct PyForecastBatchFit {
     ids: Vec<String>,
     results: Vec<Result<CellFit, String>>,
@@ -642,7 +642,7 @@ impl PyForecastBatchFit {
         })
     }
 }
-#[pyclass(name = "ForecastBatchForecast")]
+#[pyclass(name = "ForecastBatchForecast", module = "rustmc")]
 pub(crate) struct PyForecastBatchForecast {
     ids: Vec<String>,
     results: Vec<Result<CellForecast, String>>,

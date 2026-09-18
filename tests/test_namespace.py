@@ -168,3 +168,46 @@ def test_submodules_remain_reachable_by_explicit_import(rustmc):
 
     assert rustmc.evaluation.backtest is rustmc.backtest
     assert rustmc.forecasting.forecast_scenarios is rustmc.forecast_scenarios
+
+
+def _native_classes():
+    """Every class the compiled extension exports, deduplicated by identity.
+
+    ``BayesianAR`` is an alias bound to the same object as
+    ``BayesianAutoRegression``, so keying by the class itself reports one
+    offender rather than two, and names it by every spelling it answers to.
+    """
+    import rustmc._rustmc as native
+
+    classes: dict[type, list[str]] = {}
+    for name in _extension_exports():
+        value = getattr(native, name)
+        if inspect.isclass(value):
+            classes.setdefault(value, []).append(name)
+    return classes
+
+
+def test_every_native_class_reports_the_package_as_its_module():
+    """``__module__`` must say ``rustmc``, not ``builtins``.
+
+    A ``#[pyclass]`` without ``module = "rustmc"`` reports ``builtins``, which
+    is what ``help()``, ``repr()``, Sphinx's ``autodoc``, IDE completion and
+    pickle's error messages all read.  Derived from the extension's exports, so
+    a newly added class is covered without touching this file.
+    """
+    wrong = sorted(
+        f"{'/'.join(sorted(names))} (__module__={cls.__module__!r})"
+        for cls, names in _native_classes().items()
+        if cls.__module__ != "rustmc"
+    )
+    assert not wrong, (
+        "these native classes do not claim to live in rustmc -- add "
+        'module = "rustmc" to their #[pyclass] attribute: ' + ", ".join(wrong)
+    )
+
+
+def test_native_class_repr_names_the_package():
+    """The user-visible consequence, checked on one concrete instance."""
+    import rustmc
+
+    assert repr(rustmc.ModelBuilder()).startswith("<rustmc.ModelBuilder object at ")

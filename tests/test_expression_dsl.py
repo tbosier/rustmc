@@ -431,3 +431,209 @@ def test_random_slopes_recover_known_per_group_slopes(rustmc):
     for index, expected in enumerate(true_slopes):
         assert means[f"slope[{index}]"] == pytest.approx(expected, abs=0.05)
     assert means["intercept"] == pytest.approx(0.5, abs=0.05)
+
+
+# ── a bare string as the whole predictor ──────────────────────────────────
+
+
+def test_bare_string_is_accepted_as_a_whole_likelihood_predictor(rustmc, toy_data):
+    """``normal_likelihood("obs", "x", ...)`` -- the predictor *is* a column.
+
+    Every operand slot takes a bare key, and ``ModelBuilder::likelihood_expr``
+    was the one place that did its own downcasting and never reached
+    ``extract_expr``, so the shorthand died the moment it stood alone.
+    """
+    bare = rustmc.ModelBuilder(toy_data)
+    bare.normal_prior("alpha", 0.0, 10.0)
+    bare.normal_likelihood("obs", "x", 1.0, "y")
+
+    explicit = rustmc.ModelBuilder(toy_data)
+    explicit.normal_prior("alpha", 0.0, 10.0)
+    explicit.normal_likelihood("obs", explicit.data("x"), 1.0, "y")
+
+    assert _mu_expr_json(bare) == {"Data": "x"}
+    assert _mu_expr_json(bare) == _mu_expr_json(explicit)
+
+
+@pytest.mark.parametrize(
+    "family,extra,response",
+    [
+        ("normal_likelihood", (1.0,), "real"),
+        ("log_normal_likelihood", (1.0,), "positive"),
+        ("negative_binomial_likelihood", (1.0,), "count"),
+        ("bernoulli_logit_likelihood", (), "binary"),
+        ("poisson_log_likelihood", (), "count"),
+        ("exponential_likelihood", (), "positive"),
+    ],
+)
+def test_every_likelihood_family_takes_a_bare_predictor_key(
+    rustmc, family, extra, response
+):
+    """The shorthand belongs to the slot, not to one family.
+
+    Each family gets a response its own support admits, so the only thing that
+    can fail here is the predictor argument.
+    """
+    n = 12
+    responses = {
+        "real": np.linspace(-1.0, 1.0, n),
+        "positive": np.linspace(0.5, 3.0, n),
+        "count": np.arange(n, dtype=float),
+        "binary": np.tile([0.0, 1.0], n // 2),
+    }
+    builder = rustmc.ModelBuilder(
+        {"x": np.linspace(-1.0, 1.0, n), "y": responses[response]}
+    )
+    builder.normal_prior("alpha", 0.0, 10.0)
+    getattr(builder, family)("obs", "x", *extra, "y")
+    assert _mu_expr_json(builder) == {"Data": "x"}
+
+
+def test_bare_predictor_key_must_still_exist(rustmc, toy_data):
+    """The new arm must not smuggle an unknown key past validation."""
+    builder = rustmc.ModelBuilder(toy_data)
+    builder.normal_prior("alpha", 0.0, 10.0)
+    with pytest.raises(ValueError, match="no_such_column"):
+        builder.normal_likelihood("obs", "no_such_column", 1.0, "y")
+
+
+def test_bare_predictor_error_message_offers_a_data_key(rustmc, toy_data):
+    builder = rustmc.ModelBuilder(toy_data)
+    builder.normal_prior("alpha", 0.0, 10.0)
+    with pytest.raises(ValueError) as caught:
+        builder.normal_likelihood("obs", {"not": "an expression"}, 1.0, "y")
+    message = str(caught.value)
+    assert "data key" in message and "ParamRef" in message
+
+
+def test_bare_predictor_model_fits_and_recovers_its_scale(rustmc):
+    """End to end: the model built this way is the model the user meant.
+
+    ``y = x + noise`` has no free location parameter, so the only thing left
+    to learn is the noise scale -- which pins down that ``"x"`` really became
+    the predictor rather than a constant or an ignored term.
+    """
+    rng = np.random.default_rng(7)
+    n = 400
+    x = rng.normal(size=n)
+    y = x + rng.normal(scale=0.4, size=n)
+
+    builder = rustmc.ModelBuilder({"x": x, "y": y})
+    sigma = builder.half_normal_prior("sigma", 1.0)
+    builder.normal_likelihood("obs", "x", sigma, "y")
+
+    fit = rustmc.sample(
+        builder.build(), chains=2, draws=500, warmup=500, seed=5, show_progress=False
+    )
+    assert fit.mean()["sigma"] == pytest.approx(0.4, abs=0.05)
+
+
+# ── an unknown key in a potential or deterministic names itself ───────────
+
+
+@pytest.mark.parametrize("n_obs", [1, 3])
+@pytest.mark.parametrize("slot", ["potential", "deterministic"])
+def test_unknown_data_key_in_a_potential_or_deterministic_is_named(rustmc, slot, n_obs):
+    """The typo was always caught, but `compile()` described it as a length bug.
+
+    `validate_data_keys` ran for likelihood predictors only, so
+    `template_data_for_spec` invented a length-1 column for the unknown key and
+    the failure surfaced as whatever that column then broke: with several
+    observations, ``'typo_key' has length 1, expected 3 (from 'obs')``; with
+    one, ``missing required Vector data key 'typo_key'`` at bind time. Neither
+    says the key does not exist, and neither lists the keys that do. (The
+    `sample(spec, data=...)` path did name it -- ``Missing data key:
+    typo_key`` -- without listing the alternatives.)
+    """
+    data = {"x": np.arange(n_obs, dtype=float), "y": np.zeros(n_obs)}
+    builder = rustmc.ModelBuilder(data)
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+
+    with pytest.raises(ValueError) as caught:
+        if slot == "potential":
+            builder.potential("p", (alpha * "typo_key").sum())
+        else:
+            builder.deterministic("d", alpha * "typo_key")
+
+    message = str(caught.value)
+    assert "typo_key" in message
+    assert "not found in bound data" in message
+    # The keys that do exist, as the likelihood path already reports them.
+    assert "x" in message and "y" in message
+
+
+def test_unknown_matrix_key_in_a_deterministic_is_named(rustmc):
+    data = {"x": np.arange(3, dtype=float), "y": np.zeros(3)}
+    builder = rustmc.ModelBuilder(data)
+    beta = builder.vector_normal_prior("beta", 2, 0.0, 1.0)
+    with pytest.raises(ValueError, match="matrix key 'typo_matrix' not found"):
+        builder.deterministic("d", beta @ "typo_matrix")
+
+
+def test_known_keys_in_potentials_and_deterministics_still_work(rustmc, toy_data):
+    """The new check must not refuse a key that is really there."""
+    builder = rustmc.ModelBuilder(toy_data)
+    alpha = builder.normal_prior("alpha", 0.0, 10.0)
+    builder.deterministic("raw", "z")
+    builder.deterministic("scaled", alpha * "z" + 1.0)
+    builder.potential("penalty", (alpha * "x").sum())
+    builder.normal_likelihood("obs", alpha, 1.0, "y")
+    required = builder.compile().required_keys
+    assert "x" in required and "z" in required
+
+
+def test_unbound_builder_still_defers_the_key_check(rustmc, toy_data):
+    """With no data bound there is nothing to check against, exactly as for a
+    likelihood predictor -- the key is still named later, at bind time."""
+    builder = rustmc.ModelBuilder()
+    alpha = builder.normal_prior("alpha", 0.0, 10.0)
+    builder.deterministic("d", alpha * "no_such_column")
+    builder.normal_likelihood("obs", alpha, 1.0, "y")
+    with pytest.raises(ValueError, match="no_such_column"):
+        builder.compile().bind(toy_data)
+
+
+@pytest.mark.parametrize("slot", ["potential", "deterministic"])
+def test_a_key_supplied_only_at_sample_time_is_now_rejected_at_declaration(
+    rustmc, slot
+):
+    """The cost of the parity above, pinned so it stays deliberate.
+
+    A builder holding only part of its data used to accept a deterministic or
+    potential naming a key that arrived later through
+    ``sample(spec, data=...)``, ``batch_sample`` or
+    ``sample_prior_predictive``, all of which merge call-site data before
+    compiling. Checking the key at declaration ends that for these two slots.
+
+    It is the rule likelihood predictors have always had -- the second half of
+    this test shows the identical refusal -- so the three slots now agree, and
+    the pattern was never uniform anyway: ``compile()`` already failed on it
+    for more than one observation, because the invented length-1 column could
+    not match the observation axis.
+    """
+    n = 20
+    partial = {"y": np.zeros(n)}
+    later = np.arange(n, dtype=float)
+
+    builder = rustmc.ModelBuilder(partial)
+    alpha = builder.normal_prior("alpha", 0.0, 1.0)
+    with pytest.raises(ValueError, match="data key 'x' not found in bound data"):
+        if slot == "potential":
+            builder.potential("p", (alpha * "x").sum())
+        else:
+            builder.deterministic("d", alpha * "x")
+
+    # The same shape through a likelihood predictor, refused identically and
+    # unchanged by this commit.
+    other = rustmc.ModelBuilder(partial)
+    beta = other.normal_prior("beta", 0.0, 1.0)
+    with pytest.raises(ValueError, match="data key 'x' not found in bound data"):
+        other.normal_likelihood("obs", beta * "x", 1.0, "y")
+
+    # Binding the column up front is the way to write it, and still works.
+    whole = rustmc.ModelBuilder({"x": later, **partial})
+    gamma = whole.normal_prior("gamma", 0.0, 1.0)
+    whole.deterministic("d", gamma * "x")
+    whole.potential("p", (gamma * "x").sum())
+    whole.normal_likelihood("obs", gamma * "x", 1.0, "y")
+    assert "x" in whole.compile().required_keys

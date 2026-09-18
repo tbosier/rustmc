@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 /// Recursive expression tree built on the Python side, compiled to graph
 /// nodes at sampling time.
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct VectorParamRef {
     pub(super) name: String,
@@ -151,7 +151,7 @@ pub(super) fn first_param_name(expr: &MuExpr) -> String {
 
 /// Collect every parameter name referenced by an expression tree.
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct ParamRef {
     pub(super) name: String,
@@ -159,7 +159,7 @@ pub(super) struct ParamRef {
     pub(super) owner: u64,
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct Expr {
     pub(super) inner: MuExpr,
