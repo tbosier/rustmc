@@ -41,6 +41,7 @@ fn param_error(error: ParamRefError) -> ModelError {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     pub dimensions: HashMap<String, String>,
     pub potentials: Vec<(String, MuExpr)>,
@@ -54,6 +55,7 @@ pub struct ModelSpec {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum DisplayParamSpec {
     Raw {
         name: String,
@@ -83,6 +85,7 @@ pub enum HyperParam {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum PriorSpec {
     Normal {
         name: String,
@@ -156,6 +159,7 @@ pub enum LikelihoodFamily {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LikelihoodSpec {
     pub family: LikelihoodFamily,
     pub name: String,
@@ -165,6 +169,7 @@ pub struct LikelihoodSpec {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum MuExpr {
     Data(String),
     Gather {
@@ -1432,6 +1437,7 @@ fn validate_definition(spec: &ModelSpec) -> ModelResult<()> {
 
 /// The existing Python wire format, now owned by the Rust core.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelArtifact {
     pub format: String,
     pub version: u32,

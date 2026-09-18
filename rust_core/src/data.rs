@@ -7,6 +7,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum SlotKind {
     Vector,
     Observation { likelihood: String },
@@ -14,6 +15,7 @@ pub enum SlotKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataSlot {
     pub key: String,
     pub kind: SlotKind,
@@ -21,6 +23,7 @@ pub struct DataSlot {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DataSchema {
     pub vectors: Vec<DataSlot>,
     pub observations: Vec<DataSlot>,
