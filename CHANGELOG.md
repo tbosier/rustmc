@@ -38,6 +38,13 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   reject discrete latent parameters; they previously bypassed every guard.
 - **Breaking (alpha Rust API):** new `graph::Op::BoundedSigmoid` variant, which breaks
   an external exhaustive match on `Op`.
+- `FitResult.std()` and `BatchResult.std()` return the sample standard deviation
+  (`n - 1`), which is what `summary()` has always reported. The two paths previously
+  disagreed by `sqrt(n/(n-1))`, about 0.0125% at 4000 draws. `mean()` moves by under one
+  ulp at ordinary scales.
+- **Breaking (alpha Rust API):** new `graph::Op::BoundedSigmoid` forward and backward
+  helpers, and `ElementwiseOp::adjoints`, which reverse mode now calls instead of
+  `derivatives`. `derivatives` remains as the local-derivative API.
 - A `potential` or `deterministic` naming a data key is validated when it is declared,
   on the same "only when data is bound" rule the likelihood families use. A builder
   holding part of its data can no longer declare one naming a key that arrives later.
@@ -67,6 +74,32 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   below about -709. `Uniform` priors now compile to one fused `BoundedSigmoid` node,
   which also removes the span factor that made the gradient overflow: `Uniform(0, 1e308)`
   at raw -710 gave `-inf` and now gives -19.037138374168897.
+- **`tanh` lost its gradient entirely from |x| ~ 19.** `1 - tanh(x)^2` cancels to exactly
+  zero once `tanh` rounds to 1, so a saturated `tanh` reported a flat direction where the
+  density is not flat. One step before the cancellation the derivative was already 77%
+  high. The true slope stays representable to |x| = 372. This one needs no extreme
+  scales to reach.
+- **A representable gradient is no longer lost to an unrepresentable intermediate.**
+  Reverse mode computed each local derivative and multiplied by the upstream adjoint
+  afterwards, so `Div`, `Log` and `Pow` could overflow or underflow on their own while
+  the composed result was ordinary. `(1/b) * 1e-200` at `b = 1e-200` gave `inf` for a
+  true `1e200`.
+- **The Bernoulli and Poisson densities now have the support they claim.** The Bernoulli
+  log density was finite at `x = 0.5` -- constant over the whole real line at `p = 0.5` --
+  and scored the impossible `x = 1, p = 0` as `-27.63` because of a probability clamp.
+  Both are `-inf` off the support. The Poisson score also cancelled: `x/lam - 1` was
+  twice the correct value at `x = 1, lam = nextafter(1, 0)`.
+- **A wide bounded interval keeps its tail.** The fused transform applied the span after
+  materialising the sigmoid, so `Uniform(0, 1e308)` returned 0 below raw `-745` where the
+  constrained value is `1.04e-16`, and was already 75% high at `-745`. Folding the span
+  into the exponent extends full precision 670 units of raw further out.
+- **`FitResult.mean()` and `.std()` share one implementation with the summary table.**
+  They accumulated naively and overflowed where the summary did not, so the same fit
+  reported an infinite standard deviation from one accessor and a finite one from another.
+- **A fit artifact's `training` entries are checked against their own namespace.** The
+  schema's key set was flattened across observations, vectors and matrices, so a matrix
+  supplied under the name of a required vector passed as a known key and was dropped on
+  the next save.
 - **`a / b` gradients stay representable at extreme denominator scales.** `-a/(b*b)`
   collapsed to zero once `b*b` overflowed and to infinity once it underflowed, so a
   representable derivative was silently replaced.
