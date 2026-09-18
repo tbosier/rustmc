@@ -1,7 +1,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
-use crate::graph::{Graph, ParamTransform};
+use crate::graph::{Graph, Op, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
@@ -267,6 +267,105 @@ fn validate_initial_target(
     Ok(())
 }
 
+/// Reject discrete latent parameters before any gradient-based sampling.
+///
+/// HMC and NUTS evolve a continuous Euclidean state, so a discrete latent needs
+/// marginalisation or a discrete transition kernel. `Bernoulli::prior` and
+/// `Poisson::prior` build exactly that — `Op::BernoulliLogP` / `Op::PoissonLogP`
+/// over a free `Op::Param` — and the two fail differently, neither usefully:
+///
+/// - Bernoulli does not check its support at all (`bernoulli_logp_scalar` is
+///   `x * ln p + (1 - x) * ln(1 - p)`, which at `p = 0.5` is constant over all
+///   of R). The chain random-walks a flat direction and returns fractional
+///   "draws" for a parameter whose support is {0, 1}; 20 draws reach -813.
+/// - Poisson does check: `poisson_logp_scalar` delegates to
+///   `count_sampling::log_mass`, which returns -inf when `count.fract() != 0`.
+///   Every off-integer proposal is then rejected, so the chain is pinned to its
+///   integer initialization, reporting divergence on every transition while the
+///   step size collapses. Not a wrong number — no number at all.
+///
+/// Neither reports a support error, so without this check both look like an
+/// ordinary fit that simply mixed badly.
+///
+/// The `ModelSpec` layer already refuses these priors, but that check is
+/// upstream of the sampler: a Rust caller assembling a `Graph` by hand bypasses
+/// it entirely. This scan sits on the graph itself, so it covers every
+/// gradient-based entry point in this module, plus `model::GraphModel::sample`
+/// and `compiled_model::CompiledModelRuntime::sample`, which both funnel here.
+///
+/// Not covered: the raw kernels `nuts::run_chain`, `nuts::run_chain_bound`,
+/// `hmc::run_chain` and `hmc::run_chain_bound` are `pub` and return a bare
+/// `ChainResult` with no error channel, so they cannot report a rejection
+/// without a breaking signature change. A caller reaching past this module into
+/// those kernels can still drive a discrete latent.
+///
+/// Observed data is never rejected, and not by a heuristic: the observation
+/// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
+/// different op entirely — `Op::ObsLogP`, whose response is `obs_data_idx`, an
+/// index into the binding's observation vectors rather than a `NodeId` — so a
+/// sampled value cannot occupy the response side of one, and they are not
+/// visited here at all. A discrete *latent* is the other shape: `x: NodeId`
+/// pointing at `Op::Param`.
+///
+/// Known gap: this only recognises an `x` that *is* an `Op::Param`. A free
+/// parameter reaching `x` indirectly — `bernoulli_logp(graph.exp(param), p)`,
+/// or an artifact wiring an `Add`/`Sigmoid` between them — is not detected, and
+/// such a graph is equally invalid (worse, `Op::BernoulliLogP`'s backward pass
+/// propagates no adjoint to `x` at all, so the term moves the density without
+/// moving the gradient). Closing that needs a reachability walk from `x` over
+/// every `Op` variant's operands, which belongs beside the `Op` enum in
+/// `graph.rs` so it stays exhaustive as the enum grows. No constructor in this
+/// crate builds that shape: `Bernoulli::prior` and `Poisson::prior` both pass a
+/// bare parameter.
+fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
+    let mut offenders: Vec<(usize, &str, &str)> = Vec::new();
+    // Scan every node rather than just `graph.logp_terms`. The two are
+    // equivalent for a graph built through `Graph`'s own API, because
+    // `bernoulli_logp` and `poisson_logp` always register the term they create.
+    // They are not equivalent for a replayed artifact: `ModelStep::
+    // LogDensityTerms` replaces `logp_terms` wholesale, so a discrete term can
+    // still reach the total density indirectly (through, say, an `Add`
+    // registered in its place) while the discrete node itself is missing from
+    // the list. Scanning all nodes fails closed there, and costs one pass per
+    // `sample` call — nothing beside the sampling that follows.
+    for node in &graph.nodes {
+        let (x, family) = match node.op {
+            Op::BernoulliLogP { x, .. } => (x, "Bernoulli"),
+            Op::PoissonLogP { x, .. } => (x, "Poisson"),
+            _ => continue,
+        };
+        // A transform cannot rescue a discrete support, so every free parameter
+        // under one of these densities is an offender regardless of its
+        // `ParamTransform`.
+        let Some(Op::Param(index)) = graph.nodes.get(x.0).map(|node| &node.op) else {
+            continue;
+        };
+        let name = graph
+            .param_names
+            .get(*index)
+            .map_or("<unknown>", String::as_str);
+        offenders.push((*index, name, family));
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    offenders.sort_unstable();
+    offenders.dedup();
+    let listed: Vec<String> = offenders
+        .iter()
+        .map(|(_, name, family)| format!("'{name}' ({family})"))
+        .collect();
+    Err(format!(
+        "discrete latent parameter(s) {} cannot be sampled with HMC/NUTS: \
+         gradient-based samplers evolve a continuous state, so a discrete \
+         parameter requires marginalisation or a discrete transition kernel. \
+         Bernoulli and Poisson priors are available for prior-predictive \
+         simulation only; for discrete observations use a Bernoulli-logit or \
+         Poisson-log observation likelihood instead.",
+        listed.join(", ")
+    ))
+}
+
 fn validate_target_accept(target_accept: f64) -> Result<(), String> {
     if target_accept.is_finite() && target_accept > 0.0 && target_accept < 1.0 {
         Ok(())
@@ -299,6 +398,9 @@ pub fn sample_bound_with_init(
     initial: Option<Vec<Vec<f64>>>,
 ) -> Result<SampleResult, String> {
     config.validate()?;
+    // Single chokepoint: `sample`, `sample_bound`, both bound-batch entry points
+    // and `model::GraphModel::sample` all funnel through here.
+    reject_discrete_latent_parameters(&graph)?;
     let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
     binding.validate_for(&graph).map_err(|e| e.to_string())?;
     for position in &initial {
@@ -672,6 +774,9 @@ pub fn batch_sample_graphs(
 
     for graph in &models {
         graph.validate_shapes().map_err(|e| e.to_string())?;
+        // The only gradient-based entry point that does not reach
+        // `sample_bound_with_init`; it drives `run_chain` directly.
+        reject_discrete_latent_parameters(graph)?;
         let binding = DataBinding::from_graph(graph).map_err(|e| e.to_string())?;
         validate_initial_target(graph, binding, &vec![0.0; graph.param_count])?;
     }

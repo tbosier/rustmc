@@ -109,6 +109,13 @@ impl Uniform {
 pub struct Bernoulli;
 
 impl Bernoulli {
+    /// A discrete latent with support {0, 1}, for prior-predictive simulation only.
+    ///
+    /// The parameter is stored unconstrained and the density is not defined off
+    /// the integers, so every gradient-based sampling entry point in
+    /// [`crate::sampler`] rejects a graph containing this term. Discrete
+    /// *observations* belong in [`Graph::obs_logp_bernoulli_logit`], which is
+    /// unaffected.
     pub fn prior(graph: &mut Graph, name: &str, p: f64) -> NodeId {
         let param = graph.add_param(name);
         let p_node = graph.add_constant(p);
@@ -122,6 +129,12 @@ impl Bernoulli {
 pub struct Poisson;
 
 impl Poisson {
+    /// A discrete latent over the non-negative integers, for prior-predictive
+    /// simulation only.
+    ///
+    /// As with [`Bernoulli::prior`], gradient-based sampling rejects a graph
+    /// containing this term; count *observations* belong in
+    /// [`Graph::obs_logp_poisson_log`], which is unaffected.
     pub fn prior(graph: &mut Graph, name: &str, lam: f64) -> NodeId {
         let param = graph.add_param(name);
         let lam_node = graph.add_constant(lam);
