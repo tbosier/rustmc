@@ -1287,6 +1287,195 @@ fn saturated_tanh_still_moves_the_gradient() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 7 — discrete supports
+// ---------------------------------------------------------------------------
+
+/// `x ~ Bernoulli(p)` with both operands constant, so `total_logp` is the log
+/// mass itself.
+fn bernoulli_density(x: f64, p: f64) -> f64 {
+    let mut graph = Graph::new();
+    let x_node = graph.add_constant(x);
+    let p_node = graph.add_constant(p);
+    graph.bernoulli_logp(x_node, p_node);
+    evaluate(&graph, &[]).0
+}
+
+/// `x ~ Bernoulli(p)` with `p` free, so `grad[0]` is the score.
+fn bernoulli_score(x: f64, p: f64) -> f64 {
+    let mut graph = Graph::new();
+    let p_node = graph.add_param("p");
+    let x_node = graph.add_constant(x);
+    graph.bernoulli_logp(x_node, p_node);
+    evaluate(&graph, &[p]).1[0]
+}
+
+/// The support of a Bernoulli is `{0, 1}`. Nothing checked it, so `x = 0.5` had
+/// a finite density and at `p = 0.5` that density was constant over all of R.
+///
+/// Reachable through `GraphModel::log_density` on a loaded artifact, which is
+/// why this is about the density and not about sampling.
+#[test]
+fn bernoulli_density_is_minus_infinity_off_its_support() {
+    for x in [-1.0, -0.5, 0.5, 1.5, 2.0, 1e16, f64::NAN, f64::INFINITY] {
+        for p in [0.1, 0.5, 0.9] {
+            let value = bernoulli_density(x, p);
+            assert_eq!(
+                value,
+                f64::NEG_INFINITY,
+                "Bernoulli({p}) at x = {x} gave {value}"
+            );
+            assert_eq!(bernoulli_score(x, p), 0.0, "score off support at x = {x}");
+        }
+    }
+    // The support itself stays finite.
+    assert_eq!(bernoulli_density(1.0, 0.5), -std::f64::consts::LN_2);
+    assert_eq!(bernoulli_density(0.0, 0.5), -std::f64::consts::LN_2);
+}
+
+/// An impossible outcome has no density, not a small one. The clamp to
+/// `[1e-12, 1 - 1e-12]` scored `x = 1, p = 0` at ln(1e-12), which is
+/// -27.631021115928547, and scored `x = 0, p = 1` the same way.
+#[test]
+fn impossible_bernoulli_outcomes_have_no_density() {
+    assert_eq!(bernoulli_density(1.0, 0.0), f64::NEG_INFINITY);
+    assert_eq!(bernoulli_density(0.0, 1.0), f64::NEG_INFINITY);
+    // The certain outcomes at the same endpoints have log mass exactly zero.
+    assert_eq!(bernoulli_density(0.0, 0.0), 0.0);
+    assert_eq!(bernoulli_density(1.0, 1.0), 0.0);
+    // A p outside [0, 1] is not a probability at all.
+    for p in [-0.5, -1e-300, 1.0000001, 2.0, f64::NAN, f64::INFINITY] {
+        for x in [0.0, 1.0] {
+            assert_eq!(
+                bernoulli_density(x, p),
+                f64::NEG_INFINITY,
+                "Bernoulli({p}) at x = {x}"
+            );
+            assert_eq!(bernoulli_score(x, p), 0.0, "score for p = {p}, x = {x}");
+        }
+    }
+}
+
+/// On the support the density is `ln p` and `ln(1 - p)` over the whole of
+/// `[0, 1]`, not over `[1e-12, 1 - 1e-12]`. Expectations are those logarithms at
+/// 80 significant digits out of crate, rounded once to f64; the last two rows
+/// are where the clamp used to replace the answer outright.
+#[test]
+fn bernoulli_density_matches_closed_form_across_the_unit_interval() {
+    for (p, ln_p) in [
+        (0.5, -std::f64::consts::LN_2),
+        (0.25, -1.3862943611198906),
+        (0.7, -0.35667494393873245),
+        (1e-12, -27.631021115928547),
+        (1e-300, -690.7755278982137),
+        (5e-324, -744.4400719213812),
+    ] {
+        assert_close(bernoulli_density(1.0, p), ln_p, &format!("ln({p})"));
+    }
+    // `ln_1p(-p)`, not `(1 - p).ln()`: the subtraction rounds to exactly 1
+    // below p = 1e-16 and discards the whole of -p.
+    for (p, ln_1m_p) in [
+        (0.5, -std::f64::consts::LN_2),
+        (0.25, -0.2876820724517809),
+        (0.7, -1.203972804325936),
+        (1e-18, -1e-18),
+        (1e-300, -1e-300),
+    ] {
+        assert_close(bernoulli_density(0.0, p), ln_1m_p, &format!("ln(1 - {p})"));
+        assert_eq!(1.0 - p == 1.0, p < 1e-16, "premise about (1 - p) for {p}");
+    }
+}
+
+/// On the support the score is `1/p` and `-1/(1 - p)` exactly, over the whole
+/// interval rather than a clamped band, and it agrees with central differences.
+#[test]
+fn bernoulli_score_matches_the_closed_form_on_its_support() {
+    assert_eq!(bernoulli_score(1.0, 0.7), 1.0 / 0.7);
+    assert_eq!(bernoulli_score(0.0, 0.7), -1.0 / (1.0 - 0.7));
+    // Inside the old clamp band the score was pinned at 1e12.
+    assert_eq!(bernoulli_score(1.0, 1e-300), 1.0 / 1e-300);
+    assert_eq!(bernoulli_score(1.0, 0.0), f64::INFINITY);
+
+    let mut graph = Graph::new();
+    let p_node = graph.add_param("p");
+    let x_node = graph.add_constant(1.0);
+    graph.bernoulli_logp(x_node, p_node);
+    for p in [0.1, 0.5, 0.9] {
+        let numeric = central_difference(&graph, &[p], 0, 1e-7);
+        let analytic = evaluate(&graph, &[p]).1[0];
+        assert!(
+            (analytic - numeric).abs() / (1.0 + numeric.abs()) < 1e-6,
+            "score at p = {p}: {analytic} vs {numeric}"
+        );
+    }
+}
+
+/// The Poisson mass already refused a fractional count, and carries no clamp.
+/// Pinned here so it stays that way, together with the score, which did *not*
+/// refuse the same inputs before and moved where the mass was flat `-inf`.
+#[test]
+fn poisson_density_and_score_agree_about_the_support() {
+    let density = |x: f64, lam: f64| {
+        let mut graph = Graph::new();
+        let x_node = graph.add_constant(x);
+        let lam_node = graph.add_constant(lam);
+        graph.poisson_logp(x_node, lam_node);
+        evaluate(&graph, &[]).0
+    };
+    let score = |x: f64, lam: f64| {
+        let mut graph = Graph::new();
+        let lam_node = graph.add_param("lam");
+        let x_node = graph.add_constant(x);
+        graph.poisson_logp(x_node, lam_node);
+        evaluate(&graph, &[lam]).1[0]
+    };
+
+    for x in [-1.0, 0.5, 2.5, -0.0001, f64::NAN, f64::INFINITY] {
+        assert_eq!(density(x, 2.0), f64::NEG_INFINITY, "Poisson(2) at x = {x}");
+        assert_eq!(score(x, 2.0), 0.0, "score off support at x = {x}");
+    }
+    for lam in [-1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(density(3.0, lam), f64::NEG_INFINITY, "Poisson({lam}) at 3");
+        assert_eq!(score(3.0, lam), 0.0, "score for lam = {lam}");
+    }
+
+    // rate == 0 is the point mass at zero, and its score is -1 either way.
+    assert_eq!(density(0.0, 0.0), 0.0);
+    assert_eq!(density(1.0, 0.0), f64::NEG_INFINITY);
+    assert_eq!(score(0.0, 0.0), -1.0);
+    assert_eq!(score(0.0, 4.0), -1.0);
+
+    // k ln(lam) - lam - ln(k!) at 80 digits, out of crate.
+    assert_close(density(3.0, 2.0), -1.712317927548219, "Poisson(2) at 3");
+    assert_eq!(score(3.0, 2.0), 3.0 / 2.0 - 1.0);
+}
+
+/// Negative control for the whole task: the Bernoulli-logit *observation*
+/// likelihood is a different op over observed data, and none of the above
+/// touches it. This is the shape the release gate's beta-Bernoulli case fits.
+#[test]
+fn the_bernoulli_logit_observation_likelihood_is_unaffected() {
+    let mut graph = Graph::new();
+    let eta = Normal::prior(&mut graph, "eta", 0.0, 2.0);
+    let obs = graph.add_obs_data(vec![1.0, 0.0, 1.0, 1.0, 0.0]);
+    let linpred = graph.broadcast_observation(eta, obs);
+    graph.obs_logp_bernoulli_logit(linpred, obs);
+
+    for eta0 in [-2.0, -0.3, 0.0, 0.8, 3.0] {
+        let (logp, grad) = evaluate(&graph, &[eta0]);
+        assert!(logp.is_finite(), "log density at eta = {eta0} is {logp}");
+        // Closed form: sum over observations of (y - sigmoid(eta)), less the
+        // prior score eta / 4.
+        let s = 1.0 / (1.0 + (-eta0).exp());
+        let expected = (3.0 - 5.0 * s) - eta0 / 4.0;
+        assert!(
+            (grad[0] - expected).abs() / (1.0 + expected.abs()) < 1e-12,
+            "gradient at eta = {eta0}: {} vs {expected}",
+            grad[0]
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Task 5 — posterior moments
 // ---------------------------------------------------------------------------
 

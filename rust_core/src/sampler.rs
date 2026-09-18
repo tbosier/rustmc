@@ -274,18 +274,19 @@ fn validate_initial_target(
 /// `Poisson::prior` build exactly that — `Op::BernoulliLogP` / `Op::PoissonLogP`
 /// over a free `Op::Param` — and the two fail differently, neither usefully:
 ///
-/// - Bernoulli does not check its support at all (`bernoulli_logp_scalar` is
-///   `x * ln p + (1 - x) * ln(1 - p)`, which at `p = 0.5` is constant over all
-///   of R). The chain random-walks a flat direction and returns fractional
-///   "draws" for a parameter whose support is {0, 1}; 20 draws reach -813.
-/// - Poisson does check: `poisson_logp_scalar` delegates to
-///   `count_sampling::log_mass`, which returns -inf when `count.fract() != 0`.
-///   Every off-integer proposal is then rejected, so the chain is pinned to its
-///   integer initialization, reporting divergence on every transition while the
-///   step size collapses. Not a wrong number — no number at all.
+/// Both densities now check their support — `bernoulli_logp_scalar` returns
+/// -inf off `{0, 1}` and `count_sampling::log_mass` returns -inf for a
+/// fractional count — so every off-integer proposal is rejected and the chain
+/// is pinned to its integer initialization, reporting divergence on every
+/// transition while the step size collapses. Not a wrong number, but no number
+/// at all, and no support error either: without this check the run looks like
+/// an ordinary fit that simply mixed badly.
 ///
-/// Neither reports a support error, so without this check both look like an
-/// ordinary fit that simply mixed badly.
+/// Before the support check landed, Bernoulli failed worse than that rather
+/// than better: `x * ln p + (1 - x) * ln(1 - p)` is constant over all of R at
+/// `p = 0.5`, so the chain random-walked a flat direction and returned
+/// fractional "draws" for a parameter whose support is `{0, 1}`, reaching -813
+/// within 20 draws.
 ///
 /// The `ModelSpec` layer already refuses these priors, but that check is
 /// upstream of the sampler: a Rust caller assembling a `Graph` by hand bypasses
