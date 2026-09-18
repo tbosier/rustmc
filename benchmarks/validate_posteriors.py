@@ -210,19 +210,30 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
     # for-statement put that work outside the per-fit try, so a construction failure
     # propagated out of run() and main() never reached write_text: the report promised
     # "even if a gate fails" was never written, losing the attempts already completed.
-    cases, index = reference_cases(), -1
+    def construction_failed(index, error):
+        records.append({"case": "reference_case_construction", "kind": "fixed_reference",
+                        "index": index, "passed": False,
+                        "error": f"{type(error).__name__}: {error}"})
+
+    try:
+        cases = reference_cases()
+    except Exception as error:  # a factory that raises before yielding anything
+        cases, _ = iter(()), construction_failed(-1, error)
+    index = -1
     while True:
         index += 1
         try:
             name, model, data, names, mean, covariance = next(cases)
+            # The name keys case_coverage below, where an unhashable one would raise
+            # outside every handler; check it here while a failure is still reportable.
+            if not isinstance(name, str):
+                raise TypeError(f"case name must be str, got {type(name).__name__}")
         except StopIteration:
             break
         except Exception as error:
             # Covers a malformed yield as well as a failed compile: either way the case
             # is unusable, and case_coverage reports the ones that never ran.
-            records.append({"case": "reference_case_construction", "kind": "fixed_reference",
-                            "index": index, "passed": False,
-                            "error": f"{type(error).__name__}: {error}"})
+            construction_failed(index, error)
             break
         for repeat in range(REFERENCE_REPEATS):
             fit_seed = seed + index*100 + repeat
@@ -255,16 +266,19 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
                         "passed": False, "error": f"{type(error).__name__}: {error}"})
     coverage, quantiles = [], []
     for replicate in range(replicates if model is not None else 0):
-        theta = rng.normal(size=2)
-        x = np.column_stack((np.ones(30), rng.normal(size=30)))
-        y = x@theta + rng.normal(0., .7, len(x))
-        covariance = np.linalg.solve(np.eye(2) + x.T@x/.7**2, np.eye(2))
-        mean = covariance@(x.T@y/.7**2)
         fit_seed = seed + 1000 + replicate
         record = {"case": "prior_simulated_regression", "replicate": replicate, "seed": fit_seed,
-                  "kind": "calibration", "generating_beta": theta.tolist(),
-                  "data_sha256": hashlib.sha256(x.tobytes()+y.tobytes()).hexdigest()}
+                  "kind": "calibration"}
         try:
+            # Simulating the replicate belongs inside the handler too: np.linalg.solve
+            # raises on a singular design, and it ran outside every try.
+            theta = rng.normal(size=2)
+            x = np.column_stack((np.ones(30), rng.normal(size=30)))
+            y = x@theta + rng.normal(0., .7, len(x))
+            covariance = np.linalg.solve(np.eye(2) + x.T@x/.7**2, np.eye(2))
+            mean = covariance@(x.T@y/.7**2)
+            record.update(generating_beta=theta.tolist(),
+                          data_sha256=hashlib.sha256(x.tobytes()+y.tobytes()).hexdigest())
             fit = model.sample({"X": x, "y": y}, seed=fit_seed, **kwargs)
             record.update(assess_fit(fit, ["beta[0]", "beta[1]"], mean, covariance))
             values = np.stack([fit.get_samples_2d()[f"beta[{i}]"] for i in range(2)], axis=-1).reshape(-1, 2)
@@ -317,9 +331,20 @@ def json_safe(value):
         # tolist() yields nested lists, or a scalar for a 0-d array; both recurse.
         return json_safe(value.tolist())
     if isinstance(value, np.generic):
-        return json_safe(value.item())
+        unwrapped = value.item()
+        if isinstance(unwrapped, np.generic):
+            # np.longdouble.item() returns another np.longdouble on some platforms, so
+            # recursing on it would never terminate. Narrow to a width Python has.
+            unwrapped = (complex(value) if isinstance(value, numbers.Complex)
+                         and not isinstance(value, numbers.Real) else float(value))
+        return json_safe(unwrapped)
     if isinstance(value, (list, tuple)):
         return [json_safe(item) for item in value]
+    if isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real):
+        # A complex diagnostic is already a gate failure by the time it reaches here.
+        # Keep it as a null: json.dumps cannot serialize it, and raising would throw
+        # away the whole report over a value the gate has already rejected.
+        return None
     # Integral values, bool among them, are always finite, and math.isfinite raises
     # OverflowError on an int too large to convert, so do not ask it about them.
     if (isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral)

@@ -2,6 +2,7 @@
 import json
 import math
 import os
+import sys
 import numpy as np
 import pytest
 
@@ -515,6 +516,104 @@ def test_json_safe_keeps_a_numpy_scalar_from_breaking_the_strict_dump():
 def test_json_safe_leaves_an_oversized_integer_alone():
     """math.isfinite raises OverflowError on a huge int; integers are finite anyway."""
     assert json_safe({"n": 10**1000})["n"] == 10**1000
+
+
+def test_json_safe_terminates_on_a_scalar_that_does_not_unwrap():
+    """np.longdouble.item() returns another np.longdouble, so naive recursion hangs."""
+    for value in (np.longdouble("nan"), np.longdouble(1.5), np.clongdouble(complex(1., np.inf))):
+        safe = json_safe({"x": value})          # must not raise RecursionError
+        json.dumps(safe, allow_nan=False)
+    assert json_safe({"x": np.longdouble("nan")})["x"] is None
+    assert json_safe({"x": np.longdouble(1.5)})["x"] == 1.5
+    assert json_safe({"x": np.clongdouble(complex(1., np.inf))})["x"] is None
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128", "clongdouble"])
+def test_a_rejected_complex_diagnostic_does_not_abort_the_dump(dtype):
+    """The gate already failed it; serialization must not then throw the report away."""
+    payload = {"diagnostics": [{"name": "p0", "r_hat": getattr(np, dtype)(complex(1., np.inf))}]}
+    safe = json_safe(payload)
+    assert safe["diagnostics"][0]["r_hat"] is None
+    json.dumps(safe, allow_nan=False)
+
+
+def test_main_writes_the_report_even_when_a_case_cannot_be_built(tmp_path, monkeypatch):
+    """The CLI guarantee itself, not a stand-in: main() must leave a file behind."""
+    import benchmarks.validate_posteriors as gate
+    original = gate.reference_cases
+
+    def one_then_boom():
+        yield next(iter(original()))
+        raise RuntimeError("model construction blew up")
+
+    out = tmp_path / "report.json"
+    monkeypatch.setattr(gate, "reference_cases", one_then_boom)
+    monkeypatch.setattr(sys, "argv", ["validate_posteriors", "--replicates", "2",
+                                      "--draws", "2000", "--warmup", "1000",
+                                      "--output", str(out)])
+    assert gate.main() == 1
+    report = json.loads(out.read_text())
+    assert report["passed"] is False
+    assert any(r["case"] == "reference_case_construction" for r in report["records"])
+    assert report["case_coverage"]["missing"] == sorted(gate.REFERENCE_CASES[1:])
+
+
+def test_a_factory_that_raises_before_yielding_is_reported(monkeypatch):
+    """reference_cases() itself was called outside the handler."""
+    import benchmarks.validate_posteriors as gate
+
+    def boom():
+        raise RuntimeError("factory blew up")
+
+    monkeypatch.setattr(gate, "reference_cases", boom)
+    report = gate.run(replicates=2, draws=2000, warmup=1000)
+    assert report["passed"] is False
+    broken = [r for r in report["records"] if r["case"] == "reference_case_construction"]
+    assert len(broken) == 1
+    assert "RuntimeError: factory blew up" in broken[0]["error"]
+
+
+def test_an_unhashable_case_name_is_reported_rather_than_raised(monkeypatch):
+    """The name keys case_coverage, where an unhashable one raised outside every try."""
+    import benchmarks.validate_posteriors as gate
+    first = next(iter(gate.reference_cases()))
+    monkeypatch.setattr(gate, "reference_cases",
+                        lambda: iter([(["unhashable"],) + tuple(first[1:])]))
+    report = gate.run(replicates=2, draws=2000, warmup=1000)
+    assert report["passed"] is False
+    broken = [r for r in report["records"] if r["case"] == "reference_case_construction"]
+    assert len(broken) == 1 and "TypeError" in broken[0]["error"]
+
+
+def test_a_failure_simulating_a_calibration_replicate_is_reported(monkeypatch):
+    """np.linalg.solve ran outside the per-replicate handler."""
+    import benchmarks.validate_posteriors as gate
+    real_solve = np.linalg.solve
+    state = {"calls": 0}
+
+    # How many solves the reference phase itself consumes, measured rather than assumed.
+    def counting(a, b):
+        state["calls"] += 1
+        return real_solve(a, b)
+
+    monkeypatch.setattr(np.linalg, "solve", counting)
+    list(gate.reference_cases())
+    baseline = state["calls"]
+
+    def flaky(a, b):
+        state["calls"] += 1
+        if state["calls"] > 2 * baseline:  # let the reference cases build, then break
+            raise np.linalg.LinAlgError("singular design")
+        return real_solve(a, b)
+
+    state["calls"] = 0
+    monkeypatch.setattr(np.linalg, "solve", flaky)
+    report = gate.run(replicates=2, draws=2000, warmup=1000)
+    assert report["passed"] is False
+    failed = [r for r in report["records"]
+              if r["kind"] == "calibration" and "LinAlgError" in r.get("error", "")]
+    assert failed, [r.get("error") for r in report["records"] if r["kind"] == "calibration"]
+    assert report["calibration"]["passed"] is False
 
 
 def test_all_analytic_cases_have_a_finite_target_and_gradient():
