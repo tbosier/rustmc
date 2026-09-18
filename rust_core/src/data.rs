@@ -283,13 +283,36 @@ impl DataBinding {
             }
         }
         if strict {
+            // Check each input against the namespace it was supplied in, not against
+            // the union of all three. `required_keys()` flattens observations,
+            // vectors and matrices together, so a matrix supplied under the name of
+            // a required *vector* looked like a known key, passed this check, and was
+            // then silently dropped when the binding was re-saved. The union is still
+            // the right set to draw a "did you mean" suggestion from.
+            let one_d: BTreeSet<&str> = schema
+                .observations
+                .iter()
+                .chain(&schema.vectors)
+                .map(|slot| slot.key.as_str())
+                .collect();
+            let two_d: BTreeSet<&str> = schema
+                .matrices
+                .iter()
+                .map(|slot| slot.key.as_str())
+                .collect();
             let required: BTreeSet<&str> = schema.required_keys().into_iter().collect();
             let mut extras: Vec<&str> = inputs
                 .vectors
                 .keys()
-                .chain(inputs.matrices.keys())
                 .map(String::as_str)
-                .filter(|k| !required.contains(k))
+                .filter(|k| !one_d.contains(k))
+                .chain(
+                    inputs
+                        .matrices
+                        .keys()
+                        .map(String::as_str)
+                        .filter(|k| !two_d.contains(k)),
+                )
                 .collect();
             extras.sort_unstable();
             if let Some(key) = extras.first() {

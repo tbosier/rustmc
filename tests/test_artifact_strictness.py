@@ -147,3 +147,50 @@ def test_the_artifact_still_round_trips(name, loaders):
     assert json.loads(resaved) == json.loads(text)
     if name in BYTE_STABLE:
         assert resaved == text
+
+
+def test_a_training_entry_in_the_wrong_namespace_is_rejected():
+    """A key is checked against the namespace it was supplied in.
+
+    `DataSchema::required_keys` flattens observations, vectors and matrices into
+    one set. Checking inputs against that union let a *matrix* keyed with the name
+    of a required *vector* pass as a known key; the binding then dropped it on the
+    next save, so a round trip silently lost data the artifact claimed to carry.
+    A genuinely unknown key was always rejected, which is why this hid.
+    """
+    import json
+
+    import numpy as np
+
+    import rustmc
+
+    matrix_builder = rustmc.ModelBuilder()
+    beta = matrix_builder.vector_normal_prior("beta", 2, 0.0, 1.0)
+    matrix_builder.normal_likelihood("obs", beta @ "X", 1.0, "y")
+    matrix_model = matrix_builder.compile()
+    design = np.column_stack([np.ones(6), np.linspace(-1.0, 1.0, 6)])
+    matrix_fit = matrix_model.sample(
+        {"X": design, "y": np.linspace(0.0, 1.0, 6)},
+        chains=1, warmup=50, draws=50, seed=1, show_progress=False,
+    )
+    serialized_matrix = json.loads(matrix_fit.to_json())["training"]["matrices"]["X"]
+
+    builder = rustmc.ModelBuilder()
+    slope = builder.normal_prior("a", 0.0, 1.0)
+    builder.normal_likelihood("obs", slope * "x", 1.0, "y")
+    compiled = builder.compile()
+    predictor = np.linspace(-1.0, 1.0, 6)
+    fit = compiled.sample(
+        {"x": predictor, "y": 0.5 * predictor + 0.1},
+        chains=1, warmup=50, draws=50, seed=1, show_progress=False,
+    )
+
+    # "x" is a required vector and "y" a required observation; neither is a matrix.
+    for stolen in ("x", "y"):
+        artifact = json.loads(fit.to_json())
+        artifact["training"]["matrices"][stolen] = serialized_matrix
+        with pytest.raises(ValueError, match=stolen):
+            rustmc.FitResult.from_json(json.dumps(artifact))
+
+    # The unchanged artifact still round-trips, so the check is not merely strict.
+    assert rustmc.FitResult.from_json(fit.to_json()).mean() == fit.mean()

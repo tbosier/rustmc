@@ -86,7 +86,11 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   the Python and artifact layers, including when they reach their density through a
   transform, and including through the raw `nuts`/`hmc` kernels. A discrete prior can
   still be loaded and simulated for prior prediction, which it could not before.
-- Artifacts with unknown fields are rejected instead of being silently truncated.
+- Artifacts with unknown fields are rejected instead of being silently truncated,
+  across every field of every struct and named enum variant reachable from the five
+  `from_json` loaders. A graph fit's `training` entries are matched against the model
+  schema per namespace, so a matrix supplied under the name of a required vector is
+  refused rather than accepted and dropped on the next save.
 - An unknown data key in a `potential` or `deterministic` is named, with the available
   keys listed, instead of surfacing as a confusing length mismatch.
 - The diagnostics tables size themselves to their contents. Parameter names longer than
