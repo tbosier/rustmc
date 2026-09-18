@@ -293,11 +293,11 @@ fn validate_initial_target(
 /// gradient-based entry point in this module, plus `model::GraphModel::sample`
 /// and `compiled_model::CompiledModelRuntime::sample`, which both funnel here.
 ///
-/// Not covered: the raw kernels `nuts::run_chain`, `nuts::run_chain_bound`,
-/// `hmc::run_chain` and `hmc::run_chain_bound` are `pub` and return a bare
-/// `ChainResult` with no error channel, so they cannot report a rejection
-/// without a breaking signature change. A caller reaching past this module into
-/// those kernels can still drive a discrete latent.
+/// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
+/// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
+/// they call this directly. That is why they return a `Result` rather than a
+/// bare `ChainResult`. `sampler`'s own call sites use the `_unguarded` variants
+/// instead, having already run this once at their boundary.
 ///
 /// Observed data is never rejected, and not by a heuristic: the observation
 /// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
@@ -307,17 +307,17 @@ fn validate_initial_target(
 /// visited here at all. A discrete *latent* is the other shape: `x: NodeId`
 /// pointing at `Op::Param`.
 ///
-/// Known gap: this only recognises an `x` that *is* an `Op::Param`. A free
-/// parameter reaching `x` indirectly — `bernoulli_logp(graph.exp(param), p)`,
-/// or an artifact wiring an `Add`/`Sigmoid` between them — is not detected, and
-/// such a graph is equally invalid (worse, `Op::BernoulliLogP`'s backward pass
-/// propagates no adjoint to `x` at all, so the term moves the density without
-/// moving the gradient). Closing that needs a reachability walk from `x` over
-/// every `Op` variant's operands, which belongs beside the `Op` enum in
-/// `graph.rs` so it stays exhaustive as the enum grows. No constructor in this
-/// crate builds that shape: `Bernoulli::prior` and `Poisson::prior` both pass a
-/// bare parameter.
-fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
+/// A free parameter reaching `x` indirectly counts too —
+/// `bernoulli_logp(graph.exp(param), p)`, or an artifact wiring an
+/// `Add`/`Sigmoid` between them. Such a graph is equally invalid, and worse in
+/// one respect: `Op::BernoulliLogP`'s backward pass propagates no adjoint to
+/// `x` at all, so the term moves the density without moving the gradient.
+/// `Graph::reachable_param` does the walk, over an exhaustive match on `Op`
+/// that lives beside the enum so it cannot fall behind it. No constructor in
+/// this crate builds that shape — `Bernoulli::prior` and `Poisson::prior` both
+/// pass a bare parameter — so this is about what the published `Graph` API
+/// lets a caller assemble.
+pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
     let mut offenders: Vec<(usize, &str, &str)> = Vec::new();
     // Scan every node rather than just `graph.logp_terms`. The two are
     // equivalent for a graph built through `Graph`'s own API, because
@@ -326,8 +326,13 @@ fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
     // LogDensityTerms` replaces `logp_terms` wholesale, so a discrete term can
     // still reach the total density indirectly (through, say, an `Add`
     // registered in its place) while the discrete node itself is missing from
-    // the list. Scanning all nodes fails closed there, and costs one pass per
-    // `sample` call — nothing beside the sampling that follows.
+    // the list. Scanning all nodes fails closed there.
+    //
+    // Cost is one pass over the nodes, plus one operand walk per discrete term
+    // found. Models with no `Bernoulli`/`Poisson` prior — which is nearly all
+    // of them — pay only the pass; a model with `d` discrete terms pays `d`
+    // walks, each allocating and clearing one bitmap over the nodes. Both are
+    // negligible beside the sampling that follows.
     for node in &graph.nodes {
         let (x, family) = match node.op {
             Op::BernoulliLogP { x, .. } => (x, "Bernoulli"),
@@ -336,15 +341,17 @@ fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
         };
         // A transform cannot rescue a discrete support, so every free parameter
         // under one of these densities is an offender regardless of its
-        // `ParamTransform`.
-        let Some(Op::Param(index)) = graph.nodes.get(x.0).map(|node| &node.op) else {
+        // `ParamTransform` — and regardless of how many nodes separate it from
+        // the density. A discrete term over a constant reaches no parameter and
+        // is not a latent, so it is left alone.
+        let Some(index) = graph.reachable_param(x) else {
             continue;
         };
         let name = graph
             .param_names
-            .get(*index)
+            .get(index)
             .map_or("<unknown>", String::as_str);
-        offenders.push((*index, name, family));
+        offenders.push((index, name, family));
     }
     if offenders.is_empty() {
         return Ok(());
@@ -447,7 +454,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        nuts::run_chain_bound(
+                        nuts::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &nuts_config,
@@ -464,7 +471,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        hmc::run_chain_bound(
+                        hmc::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &hmc_config,
@@ -802,6 +809,12 @@ pub fn batch_sample_graphs(
             .enumerate()
             .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
+                // Built once per model rather than once per chain. The loop
+                // above already proved every graph binds, and the kernels take
+                // a binding by value, so this is the same `from_graph` call
+                // `run_chain` used to make internally on each pass.
+                let binding = DataBinding::from_graph(&graph)
+                    .expect("graph data must have consistent shapes");
                 let mut samples: Vec<Vec<f64>> = Vec::new();
                 let mut unconstrained_samples = graph
                     .param_transforms
@@ -829,7 +842,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                            nuts::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &nuts_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                         SamplerType::Hmc => {
                             let hmc_config = HmcConfig {
@@ -839,7 +859,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                            hmc::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &hmc_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                     };
 
@@ -932,7 +959,8 @@ mod tests {
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
                 None,
-            );
+            )
+            .expect("continuous test model must run");
             assert_eq!(chain, &expected.samples);
             assert!(chain.iter().all(|q| q[0].is_finite() && q[0] > 39.0));
             assert!(result.samples[chain_index].iter().all(|q| q[0] == 1.0));

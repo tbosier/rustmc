@@ -96,6 +96,106 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
     e / (d * d)
 }
 
+/// `lower + (upper - lower) * sigmoid(raw)`, anchored to whichever endpoint the
+/// value is nearest.
+///
+/// This is the single definition of the bounded transform. Both the
+/// constrained draw reported back to a caller ([`ParamTransform::apply`]) and
+/// the value the graph evaluates its density at ([`Op::BoundedSigmoid`]) call
+/// it, so they cannot drift into two formulas that disagree about where the
+/// model was evaluated. That drift is what this function exists to prevent —
+/// the formula itself is unchanged.
+///
+/// `lower + span * s` cancels catastrophically once `s` is near 1 and `lower`
+/// is large and negative: with lower = -1e308 and upper = 1, raw = 710 gives
+/// -1e308 + 1e308 == 0 instead of 0.552371377432487. Both branches also round
+/// towards the endpoint they subtract from, so for any interval whose span is
+/// representable the result can never leave `[lower, upper]`. That guarantee is
+/// why the branch is here rather than the branch-free convex combination
+/// `lower * s(-raw) + upper * s(raw)`: the latter is the same quantity in exact
+/// arithmetic, but its two separately rounded products can land outside a
+/// narrow interval far from zero — `(1e16, 1e16 + 2)` at raw -34.5 gives
+/// 9999999999999998, below `lower` — and can overflow to infinity when both
+/// endpoints are near `f64::MAX`.
+///
+/// Three limits remain, none of them new:
+///
+/// * The branches can disagree by one ulp at raw == 0, so the mapping is not
+///   exactly monotone there (lower = 1, upper = 1e16 steps down by one ulp
+///   across zero); that is a rounding artefact of the reported value, and
+///   [`bounded_sigmoid_derivative`] does not model it.
+/// * Materialising the sigmoid before scaling loses bounded values whose
+///   sigmoid underflows: lower = 0, upper = 1e308, raw = -746 gives 0 where the
+///   true value is 1.0382848095158282e-16. Removing that needs the scaling
+///   folded into the sigmoid.
+/// * An interval whose span is not representable — `(-1e308, 1e308)` has
+///   `upper - lower == inf` — yields `-inf` or `NaN` here. Such an interval is
+///   not a usable `Uniform` prior in any case: both `uniform_bounds_valid` and
+///   `model`'s `validate_positive_finite("uniform width", ...)` require a
+///   finite width, so its density is `-inf` everywhere regardless of the
+///   transform.
+#[inline]
+pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
+    let span = upper - lower;
+    if raw >= 0.0 {
+        upper - span * stable_sigmoid(-raw)
+    } else {
+        lower + span * stable_sigmoid(raw)
+    }
+}
+
+/// d/draw of [`bounded_sigmoid`], i.e. `(upper - lower) * s'(raw)`.
+///
+/// `span * s'` cannot overflow: `s'` never exceeds 0.25, so the product is at
+/// most a quarter of a representable span. Distributing it over the endpoints
+/// as `upper * s' - lower * s'` would not be safer — for `(1e16, 1e16 + 2)` at
+/// raw 0.176 the two products round to the same f64 and cancel to exactly 0,
+/// discarding a derivative of 0.4961479024771348.
+#[inline]
+pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
+    (upper - lower) * stable_sigmoid_derivative(raw)
+}
+
+/// `adjoint * (upper - lower) * s'(raw)`, associated so that the product stays
+/// inside the exponent range wherever the exact value is representable.
+///
+/// Reverse mode has three factors to multiply and only two orders worth
+/// considering, and each fails where the other succeeds:
+///
+/// * Applying the span to the adjoint first is what the old three-node
+///   `sigmoid`/`mul`/`add` chain did, and it overflows: `Uniform(0, 1e308)` at
+///   raw -710 under a `sigma = 0.1` likelihood has an adjoint of -44.76, and
+///   `-44.76 * 1e308` is `-inf` where the true gradient is -19.04.
+/// * Applying the span to the slope first — [`bounded_sigmoid_derivative`] —
+///   fixes that, but underflows in the mirror case: `(0, 1e-308)` at raw -40
+///   has `span * s' == 4.2e-326`, which rounds to zero and erases a gradient of
+///   4.248354255291588e-18 under an adjoint of 1e308.
+///
+/// So take the second order, and fall back to the first only when it lost the
+/// value outright. The fallback cannot itself overflow: `span * s'` only
+/// underflows when the span is tiny, and multiplying the adjoint by a tiny span
+/// moves it towards zero.
+///
+/// The band where the fallback fires is narrow. `s / s'` is `1 + e^-|raw|`,
+/// which never exceeds 2, so `span * s'` and the constrained value's distance
+/// from its nearer endpoint underflow within a factor of two of each other:
+/// almost everywhere `span * s'` rounds to zero, the value is pinned at an
+/// endpoint and a zero gradient is the honest derivative of the rounded map.
+/// A subnormal span near raw 0 is the exception — `(0, 1e-323)` has
+/// `span * s' == 2.5e-324`, which rounds to zero while the value still moves —
+/// and that is the case this order rescues.
+#[inline]
+pub fn bounded_sigmoid_adjoint(adjoint: f64, raw: f64, lower: f64, upper: f64) -> f64 {
+    let slope = stable_sigmoid_derivative(raw);
+    let span = upper - lower;
+    let scaled = span * slope;
+    if scaled == 0.0 && span != 0.0 && slope != 0.0 {
+        (adjoint * span) * slope
+    } else {
+        adjoint * scaled
+    }
+}
+
 /// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
 ///
 /// `-a / (b * b)` is the accurate form and is used wherever the squared
@@ -226,6 +326,28 @@ pub enum Op {
     Exp(NodeId),
     /// 1 / (1 + exp(-x))
     Sigmoid(NodeId),
+    /// `lower + (upper - lower) * sigmoid(raw)` as one node.
+    ///
+    /// Fused rather than assembled from `Sigmoid`, `Mul` and `Add`, for two
+    /// reasons that a three-node chain cannot give:
+    ///
+    /// * The forward value is [`bounded_sigmoid`], the same call
+    ///   [`ParamTransform::apply`] makes, so the point the density is
+    ///   evaluated at is by construction the draw reported back to the caller.
+    ///   Assembled from nodes it was a second formula, and the two disagreed —
+    ///   by one ulp on `(0, 1)`, and by the whole value on `(-1e308, 1)`.
+    /// * The span never appears as a separate multiplicative factor, so
+    ///   reverse mode never has to materialise the sigmoid's adjoint with it
+    ///   already applied. `Uniform(0, 1e308)` at raw -710 under a `sigma = 0.1`
+    ///   likelihood needed `-44.76 * 1e308` in that chain and overflowed to
+    ///   `-inf`; here the scaling happens inside
+    ///   [`bounded_sigmoid_derivative`], where it cannot leave the exponent
+    ///   range.
+    BoundedSigmoid {
+        raw: NodeId,
+        lower: f64,
+        upper: f64,
+    },
     /// Element-wise multiply: scalar * data vector.
     ScalarMulData(NodeId, NodeId),
     /// Element-wise addition of two vectors.
@@ -365,6 +487,154 @@ pub enum Op {
     },
 }
 
+impl Op {
+    /// Everything this op reads: other nodes, and the free-parameter slots it
+    /// indexes out of the parameter vector without going through a node.
+    ///
+    /// The match below is exhaustive and deliberately has no catch-all arm.
+    /// Callers use it to decide whether a model is one the samplers can
+    /// evaluate at all (see [`Graph::reachable_param`]), so a new `Op` variant
+    /// that silently reported no dependencies would reopen a hole rather than
+    /// fail a build. Adding a variant must not compile until someone has
+    /// written down what it forwards.
+    ///
+    /// This is a *data* dependency, not the reverse-mode adjoint path: several
+    /// ops here read an operand whose adjoint they never propagate to.
+    pub(crate) fn visit_dependencies(
+        &self,
+        visit_node: &mut impl FnMut(NodeId),
+        visit_params: &mut impl FnMut(usize, usize),
+    ) {
+        match self {
+            Op::Elementwise { a, b, .. } => {
+                visit_node(*a);
+                if let Some(b) = b {
+                    visit_node(*b);
+                }
+            }
+            Op::Gather {
+                param_start,
+                n_params,
+                indices,
+            } => {
+                visit_params(*param_start, *n_params);
+                visit_node(*indices);
+            }
+            Op::Sum(a) => visit_node(*a),
+            Op::BroadcastObservation { scalar, .. } => visit_node(*scalar),
+            Op::Param(index) => visit_params(*index, 1),
+            Op::Constant(_) | Op::Data(_) => {}
+            Op::Add(a, b)
+            | Op::Mul(a, b)
+            | Op::ScalarMulData(a, b)
+            | Op::VectorAdd(a, b)
+            | Op::ScalarBroadcastAdd(a, b) => {
+                visit_node(*a);
+                visit_node(*b);
+            }
+            Op::Exp(a) | Op::Sigmoid(a) | Op::ScalarBroadcast(a) => visit_node(*a),
+            Op::BoundedSigmoid { raw, .. } => visit_node(*raw),
+            Op::NormalLogP { x, mu, sigma } => {
+                visit_node(*x);
+                visit_node(*mu);
+                visit_node(*sigma);
+            }
+            Op::ObsLogP {
+                linpred_vec, aux, ..
+            } => {
+                visit_node(*linpred_vec);
+                if let Some(aux) = aux {
+                    visit_node(*aux);
+                }
+            }
+            Op::LogHalfNormalLogP { x, sigma } | Op::HalfNormalLogP { x, sigma } => {
+                visit_node(*x);
+                visit_node(*sigma);
+            }
+            Op::StudentTLogP { x, nu, mu, sigma } => {
+                visit_node(*x);
+                visit_node(*nu);
+                visit_node(*mu);
+                visit_node(*sigma);
+            }
+            Op::PositiveSupport { x } => visit_node(*x),
+            Op::UniformLogP { x, lower, upper } => {
+                visit_node(*x);
+                visit_node(*lower);
+                visit_node(*upper);
+            }
+            Op::BernoulliLogP { x, p } => {
+                visit_node(*x);
+                visit_node(*p);
+            }
+            Op::PoissonLogP { x, lam } => {
+                visit_node(*x);
+                visit_node(*lam);
+            }
+            Op::LogGammaLogP { x, alpha, beta }
+            | Op::GammaLogP { x, alpha, beta }
+            | Op::BetaLogP { x, alpha, beta } => {
+                visit_node(*x);
+                visit_node(*alpha);
+                visit_node(*beta);
+            }
+            Op::FusedLinearMu {
+                param_nodes,
+                intercept,
+                ..
+            } => {
+                for node in param_nodes {
+                    visit_node(*node);
+                }
+                if let Some(intercept) = intercept {
+                    visit_node(*intercept);
+                }
+            }
+            Op::MatVecMul {
+                param_start,
+                n_params,
+                intercept,
+                ..
+            } => {
+                visit_params(*param_start, *n_params);
+                if let Some(intercept) = intercept {
+                    visit_node(*intercept);
+                }
+            }
+            Op::VectorNormalLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorHalfNormalLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorStudentTLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorGammaLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorBetaLogP {
+                param_start,
+                n_params,
+                ..
+            }
+            | Op::VectorUniformLogP {
+                param_start,
+                n_params,
+                ..
+            } => visit_params(*param_start, *n_params),
+        }
+    }
+}
+
 /// A single node in the computation graph.
 #[derive(Debug, Clone)]
 pub struct Node {
@@ -392,31 +662,7 @@ impl ParamTransform {
             ParamTransform::Identity => raw,
             ParamTransform::Exp => raw.exp(),
             ParamTransform::Sigmoid => stable_sigmoid(raw),
-            ParamTransform::BoundedSigmoid { lower, upper } => {
-                // Anchor to whichever endpoint the value is nearest.
-                // `lower + span * s` cancels catastrophically once `s` is near
-                // 1 and `lower` is large and negative: with lower = -1e308 and
-                // upper = 1, raw = 710 gives -1e308 + 1e308 == 0 instead of
-                // 0.552371377432487. Both branches also round towards the
-                // endpoint they subtract from, so the result can never leave
-                // [lower, upper].
-                //
-                // Two limits remain. The branches can disagree by one ulp at
-                // raw == 0, so the mapping is not exactly monotone there
-                // (lower = 1, upper = 1e16 steps down by one ulp across zero);
-                // that is a rounding artefact of the reported value, and
-                // `derivative` below does not model it. And materialising the
-                // sigmoid before scaling still loses bounded values whose
-                // sigmoid underflows: lower = 0, upper = 1e308, raw = -746
-                // gives 0 where the true value is 1.0382848095158282e-16.
-                // Removing that needs the scaling folded into the sigmoid.
-                let span = upper - lower;
-                if raw >= 0.0 {
-                    upper - span * stable_sigmoid(-raw)
-                } else {
-                    lower + span * stable_sigmoid(raw)
-                }
-            }
+            ParamTransform::BoundedSigmoid { lower, upper } => bounded_sigmoid(raw, *lower, *upper),
         }
     }
 
@@ -428,7 +674,7 @@ impl ParamTransform {
             ParamTransform::Exp => raw.exp(),
             ParamTransform::Sigmoid => stable_sigmoid_derivative(raw),
             ParamTransform::BoundedSigmoid { lower, upper } => {
-                (upper - lower) * stable_sigmoid_derivative(raw)
+                bounded_sigmoid_derivative(raw, *lower, *upper)
             }
         }
     }
@@ -472,6 +718,52 @@ impl Graph {
             deterministics: Vec::new(),
             name_to_node: HashMap::new(),
         }
+    }
+
+    /// The lowest-indexed free parameter `root`'s value depends on, if any.
+    ///
+    /// Walks operands transitively through [`Op::visit_dependencies`], so a
+    /// parameter reached through any number of intervening nodes counts — a
+    /// direct `Op::Param` is just the zero-step case. Used by the samplers to
+    /// refuse a density they cannot evaluate; the lowest index is taken rather
+    /// than the first one found so the error message does not depend on the
+    /// traversal order.
+    ///
+    /// The dependence is syntactic, not semantic. An op that reads a parameter
+    /// and ignores it — `theta.powf(0.0)`, which is identically 1 — still
+    /// counts as reaching it, and an op that indexes a parameter span reports
+    /// the span's first slot rather than the element it will select at runtime,
+    /// so a `Gather` over `coef[1]` names `coef[0]`. Both are deliberate: this
+    /// backs a safety check, where naming a neighbouring parameter or refusing
+    /// a pathological spelling of a constant is the cheap failure, and missing
+    /// a real dependence is the expensive one.
+    ///
+    /// Termination does not rest on the node order: `nodes` is public and a
+    /// `NodeId` is an unchecked index, so a caller can build a graph that is
+    /// not topologically sorted. The `expanded` set is what bounds the walk —
+    /// each node is expanded at most once even under a cycle.
+    pub(crate) fn reachable_param(&self, root: NodeId) -> Option<usize> {
+        let mut expanded = vec![false; self.nodes.len()];
+        let mut stack = vec![root];
+        let mut lowest: Option<usize> = None;
+        while let Some(id) = stack.pop() {
+            let Some(node) = self.nodes.get(id.0) else {
+                continue;
+            };
+            if std::mem::replace(&mut expanded[id.0], true) {
+                continue;
+            }
+            node.op.visit_dependencies(
+                &mut |next| stack.push(next),
+                &mut |param_start, n_params| {
+                    if n_params > 0 {
+                        lowest =
+                            Some(lowest.map_or(param_start, |seen: usize| seen.min(param_start)));
+                    }
+                },
+            );
+        }
+        lowest
     }
 
     fn add_node(&mut self, op: Op, name: Option<String>) -> NodeId {
@@ -570,6 +862,14 @@ impl Graph {
 
     pub fn sigmoid(&mut self, a: NodeId) -> NodeId {
         self.add_node(Op::Sigmoid(a), None)
+    }
+
+    /// The constrained value of a [`ParamTransform::BoundedSigmoid`] parameter.
+    ///
+    /// Pair it with a parameter carrying the matching transform; see
+    /// [`Op::BoundedSigmoid`] for why this is one node rather than three.
+    pub fn bounded_sigmoid(&mut self, raw: NodeId, lower: f64, upper: f64) -> NodeId {
+        self.add_node(Op::BoundedSigmoid { raw, lower, upper }, None)
     }
 
     pub fn scalar_mul_data(&mut self, scalar: NodeId, data: NodeId) -> NodeId {

@@ -3,6 +3,7 @@ use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
+use crate::sampler::reject_discrete_latent_parameters;
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -79,19 +80,53 @@ pub struct ChainResult {
 ///
 /// All workspace buffers are pre-allocated. The `Evaluator` performs
 /// zero-allocation gradient computation.
+/// # Errors
+///
+/// Returns the rejection message from
+/// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
+/// discrete latent. This entry point does not go through `sampler`, so the
+/// check has to happen here or not at all — see [`run_chain_bound`].
 pub fn run_chain(
     graph: &Graph,
     config: &HmcConfig,
     rng: &mut ChaCha8Rng,
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
-) -> ChainResult {
+) -> Result<ChainResult, String> {
+    reject_discrete_latent_parameters(graph)?;
     let binding = DataBinding::from_graph(graph).expect("graph data must have consistent shapes");
-    run_chain_bound(graph, binding, config, rng, init, progress)
+    Ok(run_chain_bound_unguarded(
+        graph, binding, config, rng, init, progress,
+    ))
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
+///
+/// # Errors
+///
+/// As [`run_chain`]. These kernels are `pub`, so a caller can reach them
+/// without passing through any `sampler` entry point; refusing a model the
+/// gradient-based samplers cannot evaluate needs an error channel here, which
+/// is why both return a `Result` rather than a bare [`ChainResult`].
 pub fn run_chain_bound(
+    graph: &Graph,
+    binding: DataBinding,
+    config: &HmcConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+) -> Result<ChainResult, String> {
+    reject_discrete_latent_parameters(graph)?;
+    Ok(run_chain_bound_unguarded(
+        graph, binding, config, rng, init, progress,
+    ))
+}
+
+/// [`run_chain_bound`] without the discrete-latent check.
+///
+/// For callers inside `sampler`, which run the check once at their own
+/// boundary and would otherwise repeat a whole-graph scan per chain.
+pub(crate) fn run_chain_bound_unguarded(
     graph: &Graph,
     binding: DataBinding,
     config: &HmcConfig,
@@ -436,7 +471,8 @@ mod tests {
             ..HmcConfig::default()
         };
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+            .expect("continuous test model must run");
         let first_after_reset = &chain.transitions[91];
         let second_after_reset = &chain.transitions[92];
         assert!((first_after_reset.step_size - config.step_size).abs() > 1e-3);
@@ -460,7 +496,8 @@ mod tests {
         };
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
-        let chain = run_chain(&graph, &config, &mut rng, None, None);
+        let chain = run_chain(&graph, &config, &mut rng, None, None)
+            .expect("continuous test model must run");
 
         assert_eq!(chain.samples.len(), 3);
         assert_eq!(chain.transitions.len(), 5);
@@ -531,7 +568,8 @@ mod tests {
             &mut rng,
             None,
             None,
-        );
+        )
+        .expect("continuous test model must run");
         assert!(unstable.transitions[0].energy_error.is_finite());
         assert!(unstable.transitions[0].energy_error > MAX_DELTA_H);
         assert!(unstable.transitions[0].divergent);
@@ -550,7 +588,8 @@ mod tests {
             &mut rng,
             None,
             None,
-        );
+        )
+        .expect("continuous test model must run");
         assert!(!stable.transitions[0].divergent);
     }
 
