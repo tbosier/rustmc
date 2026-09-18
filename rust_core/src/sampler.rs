@@ -290,8 +290,8 @@ fn validate_initial_target(
 /// The `ModelSpec` layer already refuses these priors, but that check is
 /// upstream of the sampler: a Rust caller assembling a `Graph` by hand bypasses
 /// it entirely. This scan sits on the graph itself, so it covers every
-/// gradient-based entry point in this module, plus `model::GraphModel::sample`
-/// and `compiled_model::CompiledModelRuntime::sample`, which both funnel here.
+/// gradient-based entry point in this module, plus `model::GraphModel::sample`,
+/// which funnels here.
 ///
 /// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
 /// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
@@ -319,14 +319,12 @@ fn validate_initial_target(
 /// lets a caller assemble.
 pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
     let mut offenders: Vec<(usize, &str, &str)> = Vec::new();
-    // Scan every node rather than just `graph.logp_terms`. The two are
-    // equivalent for a graph built through `Graph`'s own API, because
-    // `bernoulli_logp` and `poisson_logp` always register the term they create.
-    // They are not equivalent for a replayed artifact: `ModelStep::
-    // LogDensityTerms` replaces `logp_terms` wholesale, so a discrete term can
-    // still reach the total density indirectly (through, say, an `Add`
-    // registered in its place) while the discrete node itself is missing from
-    // the list. Scanning all nodes fails closed there.
+    // Scan every node rather than just `graph.logp_terms`. For a graph built
+    // through `Graph`'s own API the two are equivalent, because `bernoulli_logp`
+    // and `poisson_logp` always register the term they create. Scanning all
+    // nodes costs one extra pass and does not rely on that invariant holding for
+    // every future constructor, so it fails closed if one ever forgets to
+    // register its term.
     //
     // Cost is one pass over the nodes, plus one operand walk per discrete term
     // found. Models with no `Bernoulli`/`Poisson` prior — which is nearly all
