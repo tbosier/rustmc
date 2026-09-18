@@ -19,7 +19,12 @@ _ExpressionLike = float | ParamRef | Expr
 # A bare `"key"` string means the data column with that key -- the same
 # expression `ModelBuilder.data("key")` returns. Accepted wherever an
 # expression *operand* is taken (either side of every operator, and
-# potential/deterministic), but not as a whole likelihood predictor.
+# `deterministic`), and as a whole likelihood predictor.
+#
+# `potential` keeps `_ExpressionLike`: it takes a bare string at runtime but
+# then refuses it, because a data column is a vector and a potential must be
+# scalar. There is no key for which `potential(name, "key")` is valid, so the
+# stub does not offer one.
 _ExpressionOperand = _ExpressionLike | str
 _Data = dict[str, ArrayLike]
 _Diagnostic = TypedDict(
@@ -1251,29 +1256,29 @@ class ModelBuilder:
     def normal_likelihood(
         self,
         name: str,
-        mu_expr: _ExpressionLike,
+        mu_expr: _ExpressionOperand,
         sigma: float | ParamRef,
         observed_key: str,
     ) -> None: ...
     def bernoulli_logit_likelihood(
         self,
         name: str,
-        eta_expr: _ExpressionLike,
+        eta_expr: _ExpressionOperand,
         observed_key: str,
     ) -> None: ...
-    def poisson_log_likelihood(self, name: str, eta_expr: _ExpressionLike, observed_key: str) -> None: ...
-    def exponential_likelihood(self, name: str, eta_expr: _ExpressionLike, observed_key: str) -> None: ...
+    def poisson_log_likelihood(self, name: str, eta_expr: _ExpressionOperand, observed_key: str) -> None: ...
+    def exponential_likelihood(self, name: str, eta_expr: _ExpressionOperand, observed_key: str) -> None: ...
     def log_normal_likelihood(
         self,
         name: str,
-        mu_expr: _ExpressionLike,
+        mu_expr: _ExpressionOperand,
         sigma: float | ParamRef,
         observed_key: str,
     ) -> None: ...
     def negative_binomial_likelihood(
         self,
         name: str,
-        eta_expr: _ExpressionLike,
+        eta_expr: _ExpressionOperand,
         alpha: float | ParamRef,
         observed_key: str,
     ) -> None: ...

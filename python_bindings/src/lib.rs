@@ -360,8 +360,9 @@ impl ModelBuilder {
         Ok(hp)
     }
 
-    /// Parse a likelihood predictor argument (`Expr` or bare `ParamRef`),
-    /// rejecting references that belong to a different model.
+    /// Parse a likelihood predictor argument (`Expr`, bare `ParamRef`, bare
+    /// data key or constant), rejecting references that belong to a different
+    /// model.
     fn likelihood_expr(
         &self,
         value: &Bound<'_, PyAny>,
@@ -374,12 +375,19 @@ impl ModelBuilder {
         } else if let Ok(p) = value.downcast::<ParamRef>() {
             let b = p.borrow();
             (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else if let Ok(data_key) = value.extract::<String>() {
+            // A bare "x" is the data column keyed x, as everywhere else in the
+            // DSL. Checked before `f64`, as in `extract_expr`, so that a string
+            // is never coerced to a number. Unowned, like a constant: it names
+            // no parameter, so it means the same thing in any model.
+            (MuExpr::Data(data_key), None)
         } else if let Ok(value) = value.extract::<f64>() {
             validate_finite(arg_name, value)?;
             (MuExpr::Const(value), None)
         } else {
             return Err(PyValueError::new_err(format!(
-                "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+                "{} must be an Expr (e.g. beta * 'x'), a ParamRef, or a data \
+                 key string naming one column (e.g. 'x')",
                 arg_name
             )));
         };

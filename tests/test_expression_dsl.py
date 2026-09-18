@@ -431,3 +431,98 @@ def test_random_slopes_recover_known_per_group_slopes(rustmc):
     for index, expected in enumerate(true_slopes):
         assert means[f"slope[{index}]"] == pytest.approx(expected, abs=0.05)
     assert means["intercept"] == pytest.approx(0.5, abs=0.05)
+
+
+# ── a bare string as the whole predictor ──────────────────────────────────
+
+
+def test_bare_string_is_accepted_as_a_whole_likelihood_predictor(rustmc, toy_data):
+    """``normal_likelihood("obs", "x", ...)`` -- the predictor *is* a column.
+
+    Every operand slot takes a bare key, and ``ModelBuilder::likelihood_expr``
+    was the one place that did its own downcasting and never reached
+    ``extract_expr``, so the shorthand died the moment it stood alone.
+    """
+    bare = rustmc.ModelBuilder(toy_data)
+    bare.normal_prior("alpha", 0.0, 10.0)
+    bare.normal_likelihood("obs", "x", 1.0, "y")
+
+    explicit = rustmc.ModelBuilder(toy_data)
+    explicit.normal_prior("alpha", 0.0, 10.0)
+    explicit.normal_likelihood("obs", explicit.data("x"), 1.0, "y")
+
+    assert _mu_expr_json(bare) == {"Data": "x"}
+    assert _mu_expr_json(bare) == _mu_expr_json(explicit)
+
+
+@pytest.mark.parametrize(
+    "family,extra,response",
+    [
+        ("normal_likelihood", (1.0,), "real"),
+        ("log_normal_likelihood", (1.0,), "positive"),
+        ("negative_binomial_likelihood", (1.0,), "count"),
+        ("bernoulli_logit_likelihood", (), "binary"),
+        ("poisson_log_likelihood", (), "count"),
+        ("exponential_likelihood", (), "positive"),
+    ],
+)
+def test_every_likelihood_family_takes_a_bare_predictor_key(
+    rustmc, family, extra, response
+):
+    """The shorthand belongs to the slot, not to one family.
+
+    Each family gets a response its own support admits, so the only thing that
+    can fail here is the predictor argument.
+    """
+    n = 12
+    responses = {
+        "real": np.linspace(-1.0, 1.0, n),
+        "positive": np.linspace(0.5, 3.0, n),
+        "count": np.arange(n, dtype=float),
+        "binary": np.tile([0.0, 1.0], n // 2),
+    }
+    builder = rustmc.ModelBuilder(
+        {"x": np.linspace(-1.0, 1.0, n), "y": responses[response]}
+    )
+    builder.normal_prior("alpha", 0.0, 10.0)
+    getattr(builder, family)("obs", "x", *extra, "y")
+    assert _mu_expr_json(builder) == {"Data": "x"}
+
+
+def test_bare_predictor_key_must_still_exist(rustmc, toy_data):
+    """The new arm must not smuggle an unknown key past validation."""
+    builder = rustmc.ModelBuilder(toy_data)
+    builder.normal_prior("alpha", 0.0, 10.0)
+    with pytest.raises(ValueError, match="no_such_column"):
+        builder.normal_likelihood("obs", "no_such_column", 1.0, "y")
+
+
+def test_bare_predictor_error_message_offers_a_data_key(rustmc, toy_data):
+    builder = rustmc.ModelBuilder(toy_data)
+    builder.normal_prior("alpha", 0.0, 10.0)
+    with pytest.raises(ValueError) as caught:
+        builder.normal_likelihood("obs", {"not": "an expression"}, 1.0, "y")
+    message = str(caught.value)
+    assert "data key" in message and "ParamRef" in message
+
+
+def test_bare_predictor_model_fits_and_recovers_its_scale(rustmc):
+    """End to end: the model built this way is the model the user meant.
+
+    ``y = x + noise`` has no free location parameter, so the only thing left
+    to learn is the noise scale -- which pins down that ``"x"`` really became
+    the predictor rather than a constant or an ignored term.
+    """
+    rng = np.random.default_rng(7)
+    n = 400
+    x = rng.normal(size=n)
+    y = x + rng.normal(scale=0.4, size=n)
+
+    builder = rustmc.ModelBuilder({"x": x, "y": y})
+    sigma = builder.half_normal_prior("sigma", 1.0)
+    builder.normal_likelihood("obs", "x", sigma, "y")
+
+    fit = rustmc.sample(
+        builder.build(), chains=2, draws=500, warmup=500, seed=5, show_progress=False
+    )
+    assert fit.mean()["sigma"] == pytest.approx(0.4, abs=0.05)
