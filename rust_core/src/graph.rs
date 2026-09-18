@@ -230,6 +230,179 @@ fn div_denominator_derivative(a: f64, b: f64) -> f64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Composing an upstream adjoint with a local derivative
+// ---------------------------------------------------------------------------
+//
+// Reverse mode never wants a local derivative on its own; it wants the local
+// derivative times the adjoint flowing in from above. Forming the local factor
+// first discards the composition whenever that factor alone leaves the exponent
+// range while the product does not — and a local-derivative API has no way to
+// express that, because it has nothing to scale against. The helpers below take
+// the upstream adjoint as an argument so they can associate the three factors
+// in an order that survives.
+
+/// `2^exponent`, for an exponent inside the normal range.
+#[inline]
+fn two_pow(exponent: i32) -> f64 {
+    debug_assert!((-1022..=1023).contains(&exponent));
+    f64::from_bits(((exponent + 1023) as u64) << 52)
+}
+
+/// Split a finite, nonzero `x` into `(mantissa, exponent)` with the mantissa in
+/// `[0.5, 1)`. Exact: `mantissa * 2^exponent == x`.
+fn split_exponent(x: f64) -> (f64, i32) {
+    debug_assert!(x.is_finite() && x != 0.0);
+    let bits = x.to_bits();
+    let raw = ((bits >> 52) & 0x7ff) as i32;
+    if raw == 0 {
+        // Subnormal. Scaling by 2^64 is exact and lands every nonzero
+        // subnormal in the normals, where the mantissa can be read off.
+        let (mantissa, exponent) = split_exponent(x * two_pow(64));
+        return (mantissa, exponent - 64);
+    }
+    let mantissa = f64::from_bits((bits & !(0x7ff_u64 << 52)) | (1022_u64 << 52));
+    (mantissa, raw - 1022)
+}
+
+/// `mantissa * 2^exponent`, applied in steps so that an exponent far outside
+/// the representable range cannot overflow or underflow an intermediate.
+fn apply_exponent(mantissa: f64, exponent: i32) -> f64 {
+    const STEP: i32 = 512;
+    let mut value = mantissa;
+    let mut remaining = exponent;
+    while remaining > STEP {
+        value *= two_pow(STEP);
+        if !value.is_finite() {
+            return value;
+        }
+        remaining -= STEP;
+    }
+    while remaining < -STEP {
+        value *= two_pow(-STEP);
+        if value == 0.0 {
+            return value;
+        }
+        remaining += STEP;
+    }
+    value * two_pow(remaining)
+}
+
+/// The product of `numerators` divided by the product of `denominators`, with
+/// the exponents accumulated separately so that no intermediate leaves the
+/// exponent range while the result is representable.
+///
+/// Every operand contributes a mantissa in `[0.5, 1)`; with at most three
+/// numerators and two denominators the running mantissa stays inside
+/// `(0.125, 4)`, which is normal, and the exponent is reapplied once at the
+/// end. The cost is one rounding per operand rather than one per product, which
+/// is why this is a fallback: the direct form is more accurate wherever it
+/// works at all.
+///
+/// Returns `None` when any operand is zero or not finite. The scaled form has
+/// nothing to say there that the direct product has not already said, and it
+/// would turn a signed infinity or a NaN into a wrong finite number.
+fn scaled_ratio(numerators: &[f64], denominators: &[f64]) -> Option<f64> {
+    let mut mantissa = 1.0_f64;
+    let mut exponent = 0_i32;
+    for &x in numerators {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa *= m;
+        exponent += e;
+    }
+    for &x in denominators {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa /= m;
+        exponent -= e;
+    }
+    Some(apply_exponent(mantissa, exponent))
+}
+
+/// Whether `direct` has left the exponent range although the exact product of
+/// `factors` has not: an infinity, a NaN, or a zero produced from factors that
+/// were every one of them finite and nonzero.
+///
+/// The `factors` list is what makes a legitimate zero legitimate. `Pow`'s
+/// derivative with respect to its base is exactly zero when the exponent is
+/// zero, and with respect to its exponent when the base is one; passing the
+/// exponent and `ln(base)` in this list keeps those from being "rescued" into
+/// something else.
+#[inline]
+fn needs_rescue(direct: f64, factors: &[f64]) -> bool {
+    (!direct.is_finite() || direct == 0.0) && factors.iter().all(|f| f.is_finite() && *f != 0.0)
+}
+
+/// `upstream * (-a / b^2)` over the whole representable range.
+///
+/// [`div_denominator_derivative`] already keeps the *local* derivative finite
+/// wherever it can be, but that is not enough one node upstream: `1e200 / b` at
+/// `b = 1e-200` has local derivative `-1e400`, which no ordering of a
+/// two-argument function can represent, while an upstream adjoint of `1e-200`
+/// makes the composed gradient exactly `1e200`. Multiplying afterwards has
+/// already lost it.
+#[inline]
+fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
+    let direct = upstream * div_denominator_derivative(a, b);
+    if !needs_rescue(direct, &[upstream, a, b]) {
+        return direct;
+    }
+    scaled_ratio(&[upstream, a], &[b, b]).map_or(direct, |value| -value)
+}
+
+/// `d/da tanh(a)`, as `4 s'(2a)`.
+///
+/// Not `1 - tanh(a)^2`: that cancels to exactly zero the moment `tanh` rounds to
+/// 1, at `|a| = 19.06`, and is already 77% high one step before it (`x = 19`
+/// gives 2.220446e-16 for a true 1.2556531168192118e-16). The true derivative
+/// stays representable out to `|a| = 372`. `sech^2(a) == 4 s'(2a)` is the same
+/// quantity written through [`stable_sigmoid_derivative`], which was made
+/// cancellation-free for exactly this reason, and `2.0 * a` is exact.
+///
+/// The value and the slope saturate at different points here — `tanh` is
+/// exactly 1 from `|a| = 19` while the slope runs to `|a| = 372` — so unlike
+/// `exp` or `sigmoid` this one loses a derivative the forward pass had every
+/// right to. That is what makes it a bug rather than a rounding boundary.
+#[inline]
+fn tanh_slope(a: f64) -> f64 {
+    4.0 * stable_sigmoid_derivative(2.0 * a)
+}
+
+/// `upstream * (b a^(b-1), a^b ln a)`.
+///
+/// `a^(b-1)` can leave the range on its own while `a^b` — the value the forward
+/// pass already computed and the density already used — does not: `a = 1e-200`
+/// with `b = -1` has `a^b = 1e200` and `a^(b-1) = 1e400`. Rewriting the first
+/// derivative as `b a^b / a` keeps the whole composition inside the range.
+///
+/// What remains outside it is a forward value that has itself overflowed. There
+/// the node's own value is already infinite and the density it feeds is
+/// infinite or NaN, so there is no finite gradient to preserve.
+fn pow_adjoints(upstream: f64, a: f64, b: f64) -> (f64, f64) {
+    let (da, db) = ElementwiseOp::Pow.derivatives(a, b);
+    let mut adjoint_a = upstream * da;
+    let mut adjoint_b = upstream * db;
+    let log_a = a.ln();
+    let rescue_a = needs_rescue(adjoint_a, &[upstream, a, b]);
+    let rescue_b = needs_rescue(adjoint_b, &[upstream, a, log_a]);
+    if !rescue_a && !rescue_b {
+        return (adjoint_a, adjoint_b);
+    }
+    let value = a.powf(b);
+    if rescue_a {
+        adjoint_a = scaled_ratio(&[upstream, b, value], &[a]).unwrap_or(adjoint_a);
+    }
+    if rescue_b {
+        adjoint_b = scaled_ratio(&[upstream, value, log_a], &[]).unwrap_or(adjoint_b);
+    }
+    (adjoint_a, adjoint_b)
+}
+
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum ElementwiseOp {
@@ -289,10 +462,54 @@ impl ElementwiseOp {
             Self::Log => (1.0 / a, 0.0),
             Self::Sigmoid => (stable_sigmoid_derivative(a), 0.0),
             Self::Sqrt => (0.5 / a.sqrt(), 0.0),
-            Self::Tanh => (1.0 - a.tanh().powi(2), 0.0),
+            Self::Tanh => (tanh_slope(a), 0.0),
             Self::Softplus => (stable_sigmoid(a), 0.0),
             Self::Sin => (a.cos(), 0.0),
             Self::Cos => (-a.sin(), 0.0),
+        }
+    }
+
+    /// `upstream * derivatives(a, b)`, associated so that the product stays
+    /// inside the exponent range wherever the exact product is representable.
+    ///
+    /// This is what reverse mode calls. [`Self::derivatives`] remains the
+    /// local-derivative API, unchanged and still correct on its own terms; it
+    /// simply cannot express a composition, because a derivative of `-1e400`
+    /// has no representation to hand back however the caller intends to scale
+    /// it. See the helpers above for what each operator does about that.
+    ///
+    /// The other eleven operators defer to `derivatives`, and the reason is the
+    /// same in each case: their local derivative can only leave the exponent
+    /// range where the node's own value already has, so there is no
+    /// representable composed gradient left to lose.
+    ///
+    /// * `Add`, `Sub`, `Neg`, `Sin`, `Cos` — local derivatives bounded by 1.
+    /// * `Mul` — the local derivative is one of its own operands, so
+    ///   `upstream * b` is one correctly rounded product either way.
+    /// * `Sqrt` — `0.5 / sqrt(a)` spans only `[3.7e-155, 2.2e161]` over every
+    ///   positive `a`, which cannot leave the range at all. At `a == 0` it is
+    ///   infinite, which is the true derivative and not a lost composition.
+    /// * `Exp` — the derivative *is* the value, so they overflow together.
+    /// * `Sigmoid`, `Softplus`, `Tanh` — the slope decays into the subnormals
+    ///   past `|a| = 708` and reaches zero at 745, which is also where the
+    ///   value itself is pinned at an endpoint. Between 708 and 745 the slope
+    ///   is a subnormal and a very large adjoint would see it with fewer than
+    ///   53 bits; that is a precision boundary, not a lost value, and it is not
+    ///   rescued here. `Tanh`'s separate cancellation, which *did* lose a
+    ///   representable derivative, is fixed in [`tanh_slope`] instead.
+    pub fn adjoints(self, upstream: f64, a: f64, b: f64) -> (f64, f64) {
+        match self {
+            // `upstream / b` is `upstream * (1 / b)` with one rounding instead
+            // of two, and it overflows only when the composition does: `1 / b`
+            // alone becomes infinite for every subnormal `b`, whatever `a / b`
+            // and the adjoint are.
+            Self::Div => (upstream / b, div_denominator_adjoint(upstream, a, b)),
+            Self::Log => (upstream / a, 0.0),
+            Self::Pow => pow_adjoints(upstream, a, b),
+            _ => {
+                let (da, db) = self.derivatives(a, b);
+                (upstream * da, upstream * db)
+            }
         }
     }
 }

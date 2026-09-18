@@ -822,10 +822,15 @@ impl Evaluator {
                         if upstream == 0.0 {
                             continue;
                         }
-                        let (da, db) = operator.derivatives(av, bv);
-                        self.accumulate(*a, i, upstream * da);
+                        // Composed with the upstream adjoint rather than
+                        // multiplied by it afterwards: several of these local
+                        // derivatives leave the exponent range on their own
+                        // while the product does not. See
+                        // `ElementwiseOp::adjoints`.
+                        let (da, db) = operator.adjoints(upstream, av, bv);
+                        self.accumulate(*a, i, da);
                         if let Some(b) = b {
-                            self.accumulate(*b, i, upstream * db);
+                            self.accumulate(*b, i, db);
                         }
                     }
                 }

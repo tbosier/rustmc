@@ -1081,6 +1081,212 @@ fn gathered_constrained_vector_parameters_agree_with_finite_differences() {
 }
 
 // ---------------------------------------------------------------------------
+// Task 6 — composing the upstream adjoint with the local derivative
+// ---------------------------------------------------------------------------
+
+/// `b ~ Normal(scale, scale)` and `0 ~ Normal((1 / b) * scale, 1)`, evaluated
+/// at `b = scale`.
+///
+/// `1 / b` is representable and so is the composed gradient, but the local
+/// derivative between them, `-1 / b^2`, is not, and it is scaled by the `scale`
+/// factor one node upstream. The whole-graph gradient is the closed form
+/// `scale^2 / b^3`, which at `b = scale` is `1 / scale`; the prior contributes
+/// nothing, since `b` sits exactly at its mean.
+fn scaled_reciprocal_target(scale: f64) -> Graph {
+    let mut graph = Graph::new();
+    let b = Normal::prior(&mut graph, "b", scale, scale);
+    let one = graph.add_constant(1.0);
+    let inverse = graph.elementwise(ElementwiseOp::Div, one, Some(b));
+    let factor = graph.add_constant(scale);
+    let mu = graph.elementwise(ElementwiseOp::Mul, inverse, Some(factor));
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, mu, sigma);
+    graph
+}
+
+/// The reported bug: a small upstream factor. `-1/b^2` at `b = 1e-200` is
+/// `-1e400`, so it overflowed to `-inf` before reverse mode could multiply it
+/// by the upstream adjoint of `-1e-200` — and `inf` was what came out where the
+/// composed gradient is the ordinary number `1e200`.
+///
+/// `1e200` is `scale^2 / b^3` at `b = scale = 1e-200`, evaluated out of crate
+/// as an exact rational over the f64 values of those constants.
+#[test]
+fn composed_division_gradient_survives_a_small_upstream_factor() {
+    let graph = scaled_reciprocal_target(1e-200);
+    let (logp, grad) = evaluate(&graph, &[1e-200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0].is_finite(), "gradient blew up to {}", grad[0]);
+    assert_close(grad[0], 1e200, "d/db of (1/b) * 1e-200 at b = 1e-200");
+
+    let numeric = central_difference(&graph, &[1e-200], 0, 1e-206);
+    assert!(
+        (grad[0] / numeric - 1.0).abs() < 1e-6,
+        "analytic {} vs central difference {numeric}",
+        grad[0]
+    );
+}
+
+/// The mirror: a large upstream factor. `-1/b^2` at `b = 1e200` underflows to
+/// `-0.0`, so the composed gradient came out as `+0.0` where it is `1e-200`.
+///
+/// This is the failure the other way round, and it is the reason the fix cannot
+/// simply be "divide twice": `-(a/b)/b` is what produced the zero here.
+#[test]
+fn composed_division_gradient_survives_a_large_upstream_factor() {
+    let graph = scaled_reciprocal_target(1e200);
+    let (logp, grad) = evaluate(&graph, &[1e200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0] != 0.0, "gradient collapsed to {}", grad[0]);
+    assert_close(grad[0], 1e-200, "d/db of (1/b) * 1e200 at b = 1e200");
+
+    let numeric = central_difference(&graph, &[1e200], 0, 1e194);
+    assert!(
+        (grad[0] / numeric - 1.0).abs() < 1e-5,
+        "analytic {} vs central difference {numeric}",
+        grad[0]
+    );
+}
+
+/// No regression in the ordinary range: the composed adjoints are still
+/// `upstream / b` and `-upstream * a / b^2`.
+///
+/// Expectations are those two closed forms evaluated out of crate as exact
+/// rationals over the f64 operands, then rounded once to f64. The numerator
+/// adjoint is one division and matches exactly; the denominator adjoint is
+/// `upstream * (-a / (b * b))` and rounds three times, so it is checked to
+/// within a few ulp — the last row misses the once-rounded value by one
+/// (`-2.0000000000000002e-16` against `-2e-16`), and did so before this change
+/// as well.
+#[test]
+fn composed_division_adjoints_are_unchanged_in_the_ordinary_range() {
+    for (upstream, a, b, expected_a, expected_b) in [
+        (1.0, 3.0, 2.0, 0.5, -0.75),
+        (0.5, -7.5, 0.25, 2.0, 60.0),
+        (-2.0, 1.0, 13.0, -0.15384615384615385, 0.011834319526627219),
+        (3.25, 5.0, 7.0, 0.4642857142857143, -0.33163265306122447),
+        (1e-8, 2.0, 1e4, 1e-12, -2e-16),
+    ] {
+        let (da, db) = ElementwiseOp::Div.adjoints(upstream, a, b);
+        assert_eq!(da, expected_a, "d/da for {upstream} * d({a}/{b})");
+        assert!(
+            (db / expected_b - 1.0).abs() < 1e-15,
+            "d/db for {upstream} * d({a}/{b}): {db} vs {expected_b}"
+        );
+    }
+}
+
+/// `Pow` reaches the same wall through a different door: `x^-1` is
+/// representable at `x = 1e-200` but its derivative `-x^-2` is `-1e400`, and
+/// the `1e-200` factor above it makes the composed gradient `1e200`.
+#[test]
+fn composed_power_gradient_survives_an_overflowing_local_derivative() {
+    let mut graph = Graph::new();
+    let x = Normal::prior(&mut graph, "x", 1e-200, 1e-200);
+    let minus_one = graph.add_constant(-1.0);
+    let inverse = graph.elementwise(ElementwiseOp::Pow, x, Some(minus_one));
+    let factor = graph.add_constant(1e-200);
+    let mu = graph.elementwise(ElementwiseOp::Mul, inverse, Some(factor));
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, mu, sigma);
+
+    let (logp, grad) = evaluate(&graph, &[1e-200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0].is_finite(), "gradient blew up to {}", grad[0]);
+    // Same closed form as the Div case: 1e-200^2 / x^3 at x = 1e-200.
+    assert_close(grad[0], 1e200, "d/dx of (x^-1) * 1e-200 at x = 1e-200");
+}
+
+/// `Log`'s local derivative `1 / a` is infinite for every subnormal `a`, while
+/// `upstream / a` is an ordinary number whenever the adjoint is small.
+///
+/// `1e-300 * ln(a)` at `a = 1e-320` has gradient `1e-300 / 1e-320`, which is
+/// 1.0000111329412581e20 — the exact rational quotient of the two f64 constants,
+/// rounded once, computed out of crate. It is not exactly 1e20 because 1e-320 is
+/// a subnormal and carries only about 20 significant bits.
+#[test]
+fn composed_logarithm_gradient_survives_a_subnormal_argument() {
+    let mut graph = Graph::new();
+    let a = graph.add_param("a");
+    let log_a = graph.elementwise(ElementwiseOp::Log, a, None);
+    let factor = graph.add_constant(1e-300);
+    let term = graph.elementwise(ElementwiseOp::Mul, log_a, Some(factor));
+    graph.add_logp_term(term);
+
+    assert_eq!(1.0 / 1e-320, f64::INFINITY, "1/a must overflow for this a");
+    let (logp, grad) = evaluate(&graph, &[1e-320]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert_eq!(
+        grad[0], 1.0000111329412581e20,
+        "d/da of 1e-300 * ln(a) at a = 1e-320"
+    );
+}
+
+/// `1 - tanh(a)^2` is not `sech^2(a)` in floating point: `tanh` rounds to 1 at
+/// `|a| = 19.06` and the difference cancels to exactly zero from there on, while
+/// the true derivative stays representable out to `|a| = 372`. One step before
+/// the cliff, at `a = 19`, the old form is already 77% too large.
+///
+/// The reference is `4 e^-2|a| / (1 + e^-2|a|)^2` evaluated out of crate with
+/// Python `decimal` at 120 significant digits. As elsewhere in this file the
+/// comparison is to 1e-12 relative, because `exp` is not correctly rounded.
+#[test]
+fn tanh_derivative_does_not_cancel_once_tanh_saturates() {
+    for (a, expected) in [
+        (0.0, 1.0),
+        (0.5, 0.7864477329659274),
+        (1.0, 0.4199743416140261),
+        (5.0, 0.0001815832309438067),
+        (10.0, 8.244614455767397e-09),
+        (19.0, 1.2556531168192118e-16),
+        (19.1, 1.0280418219381054e-16),
+        (20.0, 1.6993417021166355e-17),
+        (25.0, 7.714999391855671e-22),
+        (40.0, 7.219405551381661e-35),
+        (100.0, 5.53558610694695e-87),
+        (300.0, 1.0601586212017243e-260),
+    ] {
+        for signed in [a, -a] {
+            let (slope, _) = ElementwiseOp::Tanh.derivatives(signed, 0.0);
+            assert_close(slope, expected, &format!("d/da tanh({signed})"));
+        }
+    }
+}
+
+/// The same cancellation as a user meets it: `0 ~ Normal(tanh(eta), 1)` with
+/// `eta` pushed into saturation. The gradient is `-tanh(eta) sech^2(eta)`,
+/// which is exactly `-sech^2(eta)` once `tanh` rounds to 1, and it used to be
+/// exactly zero for every `|eta| > 19` — a flat direction where the density is
+/// not flat.
+#[test]
+fn saturated_tanh_still_moves_the_gradient() {
+    let mut graph = Graph::new();
+    let eta = graph.add_param("eta");
+    let squashed = graph.elementwise(ElementwiseOp::Tanh, eta, None);
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, squashed, sigma);
+
+    // sech^2 at 120 significant digits, out of crate; tanh is exactly 1 at all
+    // three of these, so the gradient is exactly its negation.
+    for (eta0, sech_squared) in [
+        (25.0, 7.714999391855671e-22),
+        (40.0, 7.219405551381661e-35),
+        (100.0, 5.53558610694695e-87),
+    ] {
+        let (logp, grad) = evaluate(&graph, &[eta0]);
+        assert!(logp.is_finite(), "log density {logp}");
+        assert!(
+            grad[0] != 0.0,
+            "the gradient collapsed to zero at eta = {eta0}"
+        );
+        assert_close(grad[0], -sech_squared, &format!("d/deta at {eta0}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Task 5 — posterior moments
 // ---------------------------------------------------------------------------
 
