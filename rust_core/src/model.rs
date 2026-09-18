@@ -41,6 +41,7 @@ fn param_error(error: ParamRefError) -> ModelError {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelSpec {
     pub dimensions: HashMap<String, String>,
     pub potentials: Vec<(String, MuExpr)>,
@@ -54,6 +55,7 @@ pub struct ModelSpec {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum DisplayParamSpec {
     Raw {
         name: String,
@@ -83,6 +85,7 @@ pub enum HyperParam {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum PriorSpec {
     Normal {
         name: String,
@@ -156,6 +159,7 @@ pub enum LikelihoodFamily {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LikelihoodSpec {
     pub family: LikelihoodFamily,
     pub name: String,
@@ -165,6 +169,7 @@ pub struct LikelihoodSpec {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum MuExpr {
     Data(String),
     Gather {
@@ -405,6 +410,18 @@ pub fn reject_discrete_priors_for_gradient_sampling(priors: &[PriorSpec]) -> Mod
          parameters or explicit marginalisation.",
         discrete.join(", ")
     )))
+}
+
+/// A potential is a bare log-density term with no random generator attached,
+/// so a model carrying one has no prior that can be simulated forward.
+pub fn reject_potentials_for_prior_predictive(potentials: &[(String, MuExpr)]) -> ModelResult<()> {
+    if potentials.is_empty() {
+        Ok(())
+    } else {
+        Err(ModelError::invalid(
+            "prior predictive simulation is not defined for models with potentials; custom density terms do not supply a prior random generator",
+        ))
+    }
 }
 
 pub fn validate_finite(name: &str, value: f64) -> ModelResult<()> {
@@ -1420,6 +1437,7 @@ fn validate_definition(spec: &ModelSpec) -> ModelResult<()> {
 
 /// The existing Python wire format, now owned by the Rust core.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ModelArtifact {
     pub format: String,
     pub version: u32,
@@ -1533,6 +1551,66 @@ impl GraphModel {
             raw,
             samples,
         })
+    }
+    /// Auto-promoted vector parameters, recovered from the stored schema.
+    ///
+    /// `collect_matvec_params` only reads each matrix's column count, which the
+    /// schema carries, so the artifact alone is enough — no data needed.
+    fn auto_vector_params(&self) -> ModelResult<HashMap<String, usize>> {
+        let mut matrices: Data2d = HashMap::new();
+        for slot in &self.structure.schema.matrices {
+            let SlotKind::Matrix { n_cols } = slot.kind else {
+                return Err(ModelError::invalid("invalid matrix schema"));
+            };
+            matrices.insert(slot.key.clone(), (Vec::new(), 0, n_cols));
+        }
+        collect_matvec_params(&self.definition, &matrices)
+    }
+    /// One draw from the prior, needing no data and no fit.
+    ///
+    /// `PriorDraw::raw` uses the same unconstrained axis as `log_density`;
+    /// `PriorDraw::display` uses the reported parameter order.
+    ///
+    /// A potential contributes to the target but has no generator, so for such
+    /// a model the priors alone are not the prior and this refuses rather than
+    /// returning draws from a distribution the model does not have.
+    pub fn sample_prior<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+    ) -> ModelResult<crate::prior_sampling::PriorDraw> {
+        reject_potentials_for_prior_predictive(&self.definition.potentials)?;
+        crate::prior_sampling::sample_prior_draw(
+            &self.structure,
+            &self.definition.priors,
+            &self.display_params,
+            &self.auto_vector_params()?,
+            rng,
+        )
+    }
+    /// Prior predictive simulation: parameters drawn from the priors and
+    /// observations simulated through the likelihood at the bound covariates.
+    ///
+    /// `PriorPredictive::params` is indexed like `display_params`, and
+    /// `PriorPredictive::predictions` like `likelihood_names`.
+    pub fn prior_predictive<R: rand::Rng + ?Sized>(
+        &self,
+        binding: &DataBinding,
+        n_samples: usize,
+        rng: &mut R,
+    ) -> ModelResult<crate::prior_sampling::PriorPredictive> {
+        reject_potentials_for_prior_predictive(&self.definition.potentials)?;
+        binding
+            .validate_for(&self.structure)
+            .map_err(|e| ModelError::invalid(e.to_string()))?;
+        let graph = self.structure.with_binding(binding);
+        crate::prior_sampling::prior_predictive(
+            &graph,
+            &self.definition.priors,
+            &self.display_params,
+            &self.auto_vector_params()?,
+            n_samples,
+            rng,
+        )
     }
 }
 

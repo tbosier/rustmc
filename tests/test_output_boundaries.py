@@ -19,6 +19,35 @@ def test_uniform_overflowing_width_is_rejected_by_builder_and_artifact():
         rustmc.CompiledModel.from_json(json.dumps(artifact))
 
 
+@pytest.mark.parametrize(
+    "path,field",
+    [
+        ([], "provenance"),
+        (["schema"], "scalars"),
+        (["schema", "observations", 0], "stride"),
+        (["definition"], "constraints"),
+        (["definition", "priors", 0, "Uniform"], "tau"),
+        (["definition", "likelihoods", 0], "weights"),
+    ],
+)
+def test_artifact_fields_this_version_cannot_carry_are_rejected(path, field):
+    """A field we would silently drop must fail the load, not survive as a lie.
+
+    Round-tripping such an artifact used to return one with the field gone,
+    so a newer or corrupted writer lost data with no error anywhere.
+    """
+    builder = rustmc.ModelBuilder()
+    x = builder.uniform_prior("x", -1.0, 1.0)
+    builder.normal_likelihood("obs", x, 1.0, "y")
+    artifact = json.loads(builder.compile().to_json())
+    target = artifact
+    for step in path:
+        target = target[step]
+    target[field] = "this version cannot carry me"
+    with pytest.raises(ValueError, match=f"unknown field `{field}`"):
+        rustmc.CompiledModel.from_json(json.dumps(artifact))
+
+
 @pytest.mark.parametrize("entrypoint", ["sample", "batch", "legacy_batch"])
 def test_nonfinite_constrained_draws_are_rejected(entrypoint):
     builder = rustmc.ModelBuilder()

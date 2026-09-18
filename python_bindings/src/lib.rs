@@ -33,9 +33,8 @@ use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Normal as NormalDist};
 use rustmc_core::autodiff::Evaluator;
 use rustmc_core::bayesian_ar::{
     fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
@@ -913,21 +912,14 @@ fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
     Ok(())
 }
 
+/// Adapters over the core validators. The rule and its wording live in
+/// `rustmc_core::model` so the Python surface and the Rust core cannot drift.
 fn validate_finite(name: &str, value: f64) -> PyResult<()> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be finite", name)))
-    }
+    rustmc_core::model::validate_finite(name, value).map_err(model_error)
 }
 
 fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
-    validate_finite(name, value)?;
-    if value > 0.0 {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be > 0", name)))
-    }
+    rustmc_core::model::validate_positive_finite(name, value).map_err(model_error)
 }
 
 /// Merge call-site data over bound data while ensuring a key has exactly one
@@ -1020,7 +1012,7 @@ fn validate_expr_keys(
 }
 
 fn logit_stable(p: f64) -> f64 {
-    p.ln() - (-p).ln_1p()
+    rustmc_core::prior_sampling::logit_stable(p)
 }
 
 fn invert_param_transform(transform: &ParamTransform, value: f64) -> f64 {
@@ -1100,29 +1092,6 @@ fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam>
             "'{}' must be a float or a ParamRef (e.g. from normal_prior / half_normal_prior)",
             arg_name
         )))
-    }
-}
-
-/// Resolve a `HyperParam` against already-computed parameter values.
-///
-/// `context` names the model location doing the referencing, so the error can
-/// say *which* prior or derived parameter is broken. There is deliberately no
-/// default value: a missing hyperparameter must never be silently replaced.
-fn resolve_hyper_value(
-    hp: &HyperParam,
-    values: &HashMap<String, f64>,
-    context: &str,
-) -> PyResult<f64> {
-    rustmc_core::model::resolve_hyper_value(hp, values, context).map_err(model_error)
-}
-
-fn should_auto_noncenter(prior: &PriorSpec, auto_vector_params: &HashMap<String, usize>) -> bool {
-    match prior {
-        PriorSpec::Normal { name, mu, sigma } => {
-            !auto_vector_params.contains_key(name)
-                && (matches!(mu, HyperParam::Param(_)) || matches!(sigma, HyperParam::Param(_)))
-        }
-        _ => false,
     }
 }
 
@@ -2590,9 +2559,8 @@ fn sample_prior_predictive<'py>(
     if n_samples == 0 {
         return Err(PyValueError::new_err("n_samples must be >= 1"));
     }
-    if !model_spec.potentials.is_empty() {
-        return Err(PyValueError::new_err("prior predictive simulation is not defined for models with potentials; custom density terms do not supply a prior random generator"));
-    }
+    rustmc_core::model::reject_potentials_for_prior_predictive(&model_spec.potentials)
+        .map_err(model_error)?;
     // ── Build data maps ───────────────────────────────────────────────────────
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
@@ -2610,67 +2578,18 @@ fn sample_prior_predictive<'py>(
     let heads = graph.observation_heads();
 
     // ── Sample from priors and run forward passes ─────────────────────────────
+    // The generator itself lives in the core so a `GraphModel` loaded outside
+    // Python simulates from exactly the same code.
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let mut evaluator = Evaluator::new(&graph);
-
-    let mut param_prior_draws: Vec<Vec<f64>> =
-        vec![Vec::with_capacity(n_samples); compiled.display_params.len()];
-    // predictions[lik_idx] = flat Vec (n_samples * n_obs)
-    let mut preds: Vec<Vec<f64>> = heads
-        .iter()
-        .map(|head| Vec::with_capacity(n_samples * head.n_obs))
-        .collect();
-
-    let mut deterministic_draws: Vec<Vec<f64>> = graph
-        .deterministics
-        .iter()
-        .map(|(_, node)| Vec::with_capacity(n_samples * evaluator.node_len(*node).max(1)))
-        .collect();
-    for _ in 0..n_samples {
-        // Sample raw parameters from priors (in declaration order)
-        let raw = sample_prior_raw(&model_spec.priors, &compiled.auto_vector_params, &mut rng)?;
-        if raw.len() != graph.param_count {
-            return Err(PyValueError::new_err(format!(
-                "prior sampler produced {} raw values, but the compiled model requires {}",
-                raw.len(),
-                graph.param_count
-            )));
-        }
-        let constrained_raw: Vec<f64> = raw
-            .iter()
-            .enumerate()
-            .map(|(pi, &r)| graph.param_transforms[pi].apply(r))
-            .collect();
-        let display_draw = derive_display_draw(&constrained_raw, &compiled.display_params)?;
-        if raw
-            .iter()
-            .chain(&display_draw)
-            .any(|value| !value.is_finite())
-        {
-            return Err(PyValueError::new_err("prior draw is not representable"));
-        }
-        for (pi, &value) in display_draw.iter().enumerate() {
-            param_prior_draws[pi].push(value);
-        }
-
-        // Forward pass to get predictions
-        evaluator.compute(&graph, &raw);
-        for (j, (_, node)) in graph.deterministics.iter().enumerate() {
-            for i in 0..evaluator.node_len(*node).max(1) {
-                deterministic_draws[j].push(evaluator.vec_elem(*node, i, &graph));
-            }
-        }
-        for (li, head) in heads.iter().enumerate() {
-            for i in 0..head.n_obs {
-                let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                let aux = head.aux.map(|node| evaluator.scalar_at(node));
-                preds[li].push(
-                    rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
-                        .map_err(PyValueError::new_err)?,
-                );
-            }
-        }
-    }
+    let draws = rustmc_core::prior_sampling::prior_predictive(
+        &graph,
+        &model_spec.priors,
+        &compiled.display_params,
+        &compiled.auto_vector_params,
+        n_samples,
+        &mut rng,
+    )
+    .map_err(model_error)?;
 
     // ── Package results ───────────────────────────────────────────────────────
     let dict = PyDict::new(py);
@@ -2679,229 +2598,32 @@ fn sample_prior_predictive<'py>(
             DisplayParamSpec::Raw { name, .. } => name,
             DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name,
         };
-        let arr = PyArray1::from_vec(py, param_prior_draws[pi].clone());
+        let arr = PyArray1::from_vec(py, draws.params[pi].clone());
         dict.set_item(name, arr)?;
     }
     for (li, name) in likelihood_names.iter().enumerate() {
         let n_obs = heads[li].n_obs;
-        let arr = Array2::from_shape_vec((n_samples, n_obs), preds[li].clone())
+        let arr = Array2::from_shape_vec((n_samples, n_obs), draws.predictions[li].clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         dict.set_item(name, arr.into_pyarray(py))?;
     }
-    for (j, (name, node)) in graph.deterministics.iter().enumerate() {
-        let n = evaluator.node_len(*node);
+    for (j, (name, _)) in graph.deterministics.iter().enumerate() {
+        let n = draws.deterministic_lens[j];
         if n == 0 {
-            dict.set_item(name, PyArray1::from_vec(py, deterministic_draws[j].clone()))?;
+            dict.set_item(
+                name,
+                PyArray1::from_vec(py, draws.deterministics[j].clone()),
+            )?;
         } else {
             dict.set_item(
                 name,
-                Array2::from_shape_vec((n_samples, n), deterministic_draws[j].clone())
+                Array2::from_shape_vec((n_samples, n), draws.deterministics[j].clone())
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
                     .into_pyarray(py),
             )?;
         }
     }
     Ok(dict)
-}
-
-/// Sample raw (unconstrained) parameters from the model priors.
-/// Processes priors in declaration order so hierarchical hyperpriors work.
-fn sample_prior_raw(
-    priors: &[PriorSpec],
-    auto_vector_params: &HashMap<String, usize>,
-    rng: &mut ChaCha8Rng,
-) -> Result<Vec<f64>, PyErr> {
-    use rand::distributions::Open01;
-    use rand_distr::{StandardNormal, StudentT as StudentTDist};
-    use rustmc_core::prior_sampling;
-
-    let mut raw: Vec<f64> = Vec::new();
-    // Track post-transform values for HyperParam::Param resolution
-    let mut sampled_values: HashMap<String, f64> = HashMap::new();
-
-    // A hyperparameter that is not yet available is a broken model, not a
-    // reason to substitute 1.0: doing so returns plausible-but-wrong prior
-    // predictive draws with no warning.
-    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>, owner: &str| -> Result<f64, PyErr> {
-        resolve_hyper_value(hp, sv, &format!("prior '{}'", owner))
-    };
-
-    for prior in priors {
-        match prior {
-            PriorSpec::Normal { name, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let dist = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for k in 0..n {
-                        let x = dist.sample(rng);
-                        if k == 0 {
-                            sampled_values.insert(name.clone(), x);
-                        }
-                        raw.push(x);
-                    }
-                } else if should_auto_noncenter(prior, auto_vector_params) {
-                    let z: f64 = StandardNormal.sample(rng);
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    sampled_values.insert(name.clone(), mu_v + sigma_v * z);
-                    raw.push(z);
-                } else {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let x = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?
-                        .sample(rng);
-                    sampled_values.insert(name.clone(), x);
-                    raw.push(x); // identity transform
-                }
-            }
-            PriorSpec::HalfNormal { name, sigma } => {
-                let sigma_v = resolve(sigma, &sampled_values, name)?;
-                validate_positive_finite("sigma", sigma_v)?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_half_normal(sigma_v, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Exponential { name, rate } => {
-                let rate_v = resolve(rate, &sampled_values, name)?;
-                validate_positive_finite("rate", rate_v)?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_gamma(1.0, rate_v, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::LogNormal { name, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let dist = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for k in 0..n {
-                        let raw_draw = dist.sample(rng);
-                        if k == 0 {
-                            sampled_values.insert(name.clone(), raw_draw.exp());
-                        }
-                        raw.push(raw_draw);
-                    }
-                } else {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let raw_draw = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?
-                        .sample(rng);
-                    let x = raw_draw.exp();
-                    sampled_values.insert(name.clone(), x);
-                    raw.push(raw_draw);
-                }
-            }
-            PriorSpec::StudentT {
-                name,
-                nu,
-                mu,
-                sigma,
-            } => {
-                let dist =
-                    StudentTDist::new(*nu).map_err(|e| PyValueError::new_err(e.to_string()))?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let x = mu + sigma * dist.sample(rng);
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(x);
-                }
-            }
-            PriorSpec::Uniform { name, lower, upper } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let p: f64 = rng.sample(Open01);
-                    let draw = logit_stable(p);
-                    let x = ParamTransform::BoundedSigmoid {
-                        lower: *lower,
-                        upper: *upper,
-                    }
-                    .apply(draw);
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Gamma { name, alpha, beta } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_gamma(*alpha, *beta, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Beta { name, alpha, beta } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::logit_beta(*alpha, *beta, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), ParamTransform::Sigmoid.apply(draw));
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Bernoulli { name, p } => {
-                let x: f64 = if rng.gen::<f64>() < *p { 1.0 } else { 0.0 };
-                sampled_values.insert(name.clone(), x);
-                raw.push(x);
-            }
-            PriorSpec::Poisson { name, lam } => {
-                let x = if *lam == 0.0 {
-                    0.0
-                } else {
-                    rustmc_core::observation::sample(
-                        rustmc_core::graph::ObsFamily::PoissonLog,
-                        lam.ln(),
-                        None,
-                        rng,
-                    )
-                    .map_err(PyValueError::new_err)?
-                };
-                sampled_values.insert(name.clone(), x);
-                raw.push(x);
-            }
-            PriorSpec::VectorNormal { name, n, mu, sigma } => {
-                let dist = NormalDist::new(*mu, *sigma)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                for k in 0..*n {
-                    let x = dist.sample(rng);
-                    // Store only the first component for HyperParam resolution (rare case)
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(x); // identity transform
-                }
-            }
-        }
-    }
-    Ok(raw)
 }
 
 fn state_space_error(error: CoreStateSpaceError) -> PyErr {
