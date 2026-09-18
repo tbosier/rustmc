@@ -1256,6 +1256,106 @@ struct FitResult {
     likelihood_names: Vec<String>,
 }
 
+impl FitResult {
+    /// Forward-simulate the observation model at the given `(chain, draw)`
+    /// posterior coordinates.
+    ///
+    /// Returns one flat `coordinates.len() * n_obs` vector per likelihood, in
+    /// the order the coordinates were supplied.
+    fn simulate_predictive(
+        &self,
+        graph: &Graph,
+        heads: &[rustmc_core::graph::ObservationHead],
+        coordinates: &[(usize, usize)],
+        expected: bool,
+        rng: &mut ChaCha8Rng,
+    ) -> PyResult<Vec<Vec<f64>>> {
+        let mut evaluator = Evaluator::new(graph);
+        let mut preds: Vec<Vec<f64>> = heads
+            .iter()
+            .map(|head| Vec::with_capacity(coordinates.len() * head.n_obs))
+            .collect();
+
+        for &(chain_idx, draw_idx) in coordinates {
+            let position = posterior_position(&self.raw_result, graph, chain_idx, draw_idx);
+            evaluator.compute(graph, &position);
+            for (li, head) in heads.iter().enumerate() {
+                for i in 0..head.n_obs {
+                    let eta = evaluator.vec_elem(head.linpred, i, graph);
+                    let aux = head.aux.map(|node| evaluator.scalar_at(node));
+                    preds[li].push(
+                        if expected {
+                            rustmc_core::observation::mean(head.family, eta, aux)
+                        } else {
+                            rustmc_core::observation::sample(head.family, eta, aux, rng)
+                        }
+                        .map_err(PyValueError::new_err)?,
+                    );
+                }
+            }
+        }
+        Ok(preds)
+    }
+
+    /// Posterior-predictive draws laid out on the posterior's own
+    /// `(chain, draw, obs)` grid, so every predictive draw stays paired with the
+    /// parameter draw that produced it.
+    ///
+    /// When `n_samples` asks for fewer draws than were sampled, the thinning is
+    /// chain-stratified: one shared set of per-chain draw indices is retained in
+    /// every chain. That keeps the exported block rectangular (ArviZ groups must
+    /// be dense arrays), represents every chain equally, and leaves a single
+    /// `draw` coordinate vector that identifies exactly which posterior draws
+    /// were kept. The second return value holds those retained draw indices, or
+    /// `None` when nothing was thinned away.
+    fn posterior_predictive_grid<'py>(
+        &self,
+        py: Python<'py>,
+        n_samples: Option<usize>,
+        seed: u64,
+    ) -> PyResult<(Bound<'py, PyDict>, Option<Vec<i64>>)> {
+        let graph = prediction_graph(&self.graph, None, None)?;
+        graph
+            .validate_shapes()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let heads = graph.observation_heads();
+
+        let n_chains = self.raw_result.samples.len();
+        let n_draws = self.raw_result.samples.first().map_or(0, Vec::len);
+        let per_chain = match n_samples {
+            // A request of fewer draws than there are chains still keeps one
+            // draw per chain: dropping whole chains would be worse than
+            // overshooting the budget by a handful of draws.
+            Some(requested) if n_chains > 0 => (requested / n_chains).max(1).min(n_draws),
+            _ => n_draws,
+        };
+        let retained = select_posterior_draw_indices(n_draws, Some(per_chain), &mut rng);
+
+        let coordinates: Vec<(usize, usize)> = (0..n_chains)
+            .flat_map(|chain_idx| retained.iter().map(move |&draw_idx| (chain_idx, draw_idx)))
+            .collect();
+        let mut preds = self.simulate_predictive(&graph, &heads, &coordinates, false, &mut rng)?;
+
+        let dict = PyDict::new(py);
+        for (li, name) in self.likelihood_names.iter().enumerate() {
+            let n_obs = heads[li].n_obs;
+            let arr = Array3::from_shape_vec(
+                (n_chains, retained.len(), n_obs),
+                std::mem::take(&mut preds[li]),
+            )
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            dict.set_item(name, arr.into_pyarray(py))?;
+        }
+
+        let thinned = retained.len() < n_draws;
+        Ok((
+            dict,
+            thinned.then(|| retained.iter().map(|&index| index as i64).collect()),
+        ))
+    }
+}
+
 #[pymethods]
 impl FitResult {
     /// Versioned JSON including bound training data, stored graph draws, and sampler telemetry.
@@ -1477,7 +1577,6 @@ impl FitResult {
         graph
             .validate_shapes()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let mut evaluator = Evaluator::new(&graph);
         let heads = graph.observation_heads();
 
         // Flatten all chain draws in order, then subsample without replacement
@@ -1493,37 +1592,18 @@ impl FitResult {
             .collect();
         let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
         let n = chosen_indices.len();
-
-        // Pre-allocate: predictions[likelihood_idx] = flat Vec of n * n_obs values
-        let mut preds: Vec<Vec<f64>> = heads
-            .iter()
-            .map(|head| Vec::with_capacity(n * head.n_obs))
+        let coordinates: Vec<(usize, usize)> = chosen_indices
+            .into_iter()
+            .map(|index| all_draws[index])
             .collect();
 
-        for draw_idx in chosen_indices {
-            let (chain_idx, draw_idx) = all_draws[draw_idx];
-            let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
-            evaluator.compute(&graph, &position);
-            for (li, head) in heads.iter().enumerate() {
-                for i in 0..head.n_obs {
-                    let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                    let aux = head.aux.map(|node| evaluator.scalar_at(node));
-                    preds[li].push(
-                        if expected {
-                            rustmc_core::observation::mean(head.family, eta, aux)
-                        } else {
-                            rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
-                        }
-                        .map_err(PyValueError::new_err)?,
-                    );
-                }
-            }
-        }
+        let mut preds =
+            self.simulate_predictive(&graph, &heads, &coordinates, expected, &mut rng)?;
 
         let dict = PyDict::new(py);
         for (li, name) in self.likelihood_names.iter().enumerate() {
             let n_obs = heads[li].n_obs;
-            let arr = Array2::from_shape_vec((n, n_obs), preds[li].clone())
+            let arr = Array2::from_shape_vec((n, n_obs), std::mem::take(&mut preds[li]))
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             dict.set_item(name, arr.into_pyarray(py))?;
         }
@@ -1577,7 +1657,21 @@ impl FitResult {
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
     ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
     ///   - `observed_data`         — the fitted response vector for each likelihood
+    ///   - `log_likelihood`        — (n_chains × n_draws × n_obs) pointwise values
     ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
+    ///
+    /// `posterior_predictive` is exported on the posterior's own
+    /// `(chain, draw, obs)` axes, so predictive draw `(c, d)` is the one
+    /// generated from posterior draw `(c, d)`. LOO/PSIS and per-chain
+    /// predictive diagnostics need that pairing.
+    ///
+    /// `ppc_samples` thins the draw axis rather than the flattened sample list:
+    /// the same `ppc_samples // n_chains` draw indices are retained in every
+    /// chain, and the `posterior_predictive` group's `draw` coordinate records
+    /// which posterior draws they were, so
+    /// `idata.posterior.sel(draw=idata.posterior_predictive.draw)` recovers the
+    /// matching parameters. (Before this, `ppc_samples` subsampled a flattened
+    /// pool and the export was collapsed to a single fake chain.)
     ///
     /// Example
     /// -------
@@ -1668,23 +1762,25 @@ impl FitResult {
             groups.set_item("log_likelihood", log_likelihood)?;
         }
 
+        // Posterior-predictive draws keep the posterior's own (chain, draw)
+        // axes so a consumer can pair a predictive draw with the parameters
+        // that produced it. `retained_draws` is Some only when `ppc_samples`
+        // thinned the draw axis, and then carries the kept draw indices.
+        let mut retained_draws = None;
         if include_ppc && !self.likelihood_names.is_empty() {
-            let ppc_dict =
-                self.posterior_predictive(py, ppc_samples, ppc_seed, None, false, None)?;
-            // Reshape (n_samples, n_obs) → (1, n_samples, n_obs) for ArviZ convention
-            // ArviZ expects posterior_predictive as (chain, draw, obs)
-            // We treat all samples as a single chain.
-            let ppc_reshaped = PyDict::new(py);
-            let np = py.import("numpy")?;
-            for (key, arr) in ppc_dict.iter() {
-                // arr is (n_samples, n_obs); expand_dims to (1, n_samples, n_obs)
-                let expanded = np.call_method1("expand_dims", (arr, 0))?;
-                ppc_reshaped.set_item(key, expanded)?;
-            }
-            groups.set_item("posterior_predictive", ppc_reshaped)?;
+            let (ppc_dict, retained) = self.posterior_predictive_grid(py, ppc_samples, ppc_seed)?;
+            groups.set_item("posterior_predictive", ppc_dict)?;
+            retained_draws = retained;
         }
 
-        arviz_from_groups(&az, groups)
+        let arviz_major = arviz_api_generation(&az)?;
+        let container = arviz_from_groups_versioned(&az, arviz_major, groups)?;
+        if let Some(retained) = retained_draws {
+            // Label the thinned axis with the posterior draw indices it came
+            // from, so `posterior.sel(draw=ppc.draw)` lines the groups back up.
+            assign_posterior_predictive_draw_coords(py, arviz_major, &container, &retained)?;
+        }
+        Ok(container)
     }
 
     fn __repr__(&self) -> String {
@@ -2916,15 +3012,10 @@ fn hierarchical_error(error: CoreBayesianForecastError) -> PyErr {
     InferenceError::new_err(error.to_string())
 }
 
-/// Call the version-native ArviZ dictionary converter.
-fn arviz_from_groups<'py>(
-    az: &Bound<'py, PyModule>,
-    groups: Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
-    // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
-    // from one keyword per group to a single nested group dictionary.
+/// Major version of the installed ArviZ, which selects its conversion API.
+fn arviz_api_generation(az: &Bound<'_, PyModule>) -> PyResult<u64> {
     let arviz_version: String = az.getattr("__version__")?.extract()?;
-    let arviz_major = arviz_version
+    arviz_version
         .split('.')
         .next()
         .and_then(|part| part.parse::<u64>().ok())
@@ -2932,12 +3023,85 @@ fn arviz_from_groups<'py>(
             PyValueError::new_err(format!(
                 "cannot determine the ArviZ API generation from version '{arviz_version}'"
             ))
-        })?;
+        })
+}
+
+/// Call the version-native ArviZ dictionary converter.
+fn arviz_from_groups<'py>(
+    az: &Bound<'py, PyModule>,
+    groups: Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let arviz_major = arviz_api_generation(az)?;
+    arviz_from_groups_versioned(az, arviz_major, groups)
+}
+
+fn arviz_from_groups_versioned<'py>(
+    az: &Bound<'py, PyModule>,
+    arviz_major: u64,
+    groups: Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
+    // from one keyword per group to a single nested group dictionary.
     if arviz_major >= 1 {
         az.call_method1("from_dict", (groups,))
     } else {
         az.call_method("from_dict", (), Some(&groups))
     }
+}
+
+/// The dataset for one group of an ArviZ container.
+///
+/// ArviZ 0.x returns an `InferenceData` whose groups are Dataset attributes;
+/// 1.x returns an xarray `DataTree` whose children are nodes wrapping one.
+fn arviz_group<'py>(
+    arviz_major: u64,
+    container: &Bound<'py, PyAny>,
+    name: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    if arviz_major >= 1 {
+        container.get_item(name)?.getattr("dataset")
+    } else {
+        container.getattr(name)
+    }
+}
+
+/// Relabel the `posterior_predictive` draw axis with the posterior draw labels
+/// that survived thinning.
+///
+/// ArviZ groups are independent datasets, so a shorter predictive draw axis is
+/// legal — but without labels it is anonymous, and the pairing between a
+/// predictive draw and its parameter draw is lost. Writing the retained draws'
+/// labels as the `draw` coordinate restores it: xarray can then align or
+/// `.sel()` the posterior down to exactly the draws that were simulated.
+///
+/// `retained` holds positions along the posterior's draw axis, and the labels
+/// are read back off the posterior group rather than assumed: ArviZ's
+/// `data.index_origin` decides where the `draw` coordinate starts, so writing
+/// bare indices would silently offset the two groups wherever it is not zero.
+fn assign_posterior_predictive_draw_coords(
+    py: Python<'_>,
+    arviz_major: u64,
+    container: &Bound<'_, PyAny>,
+    retained: &[i64],
+) -> PyResult<()> {
+    let positions = PyArray1::from_slice(py, retained);
+    let labels = arviz_group(arviz_major, container, "posterior")?
+        .getattr("draw")?
+        .getattr("values")?
+        .get_item(positions)?;
+    let coords = PyDict::new(py);
+    coords.set_item("draw", labels)?;
+    let relabelled = arviz_group(arviz_major, container, "posterior_predictive")?.call_method(
+        "assign_coords",
+        (),
+        Some(&coords),
+    )?;
+    if arviz_major >= 1 {
+        container.set_item("posterior_predictive", relabelled)?;
+    } else {
+        container.setattr("posterior_predictive", relabelled)?;
+    }
+    Ok(())
 }
 
 fn state_space_matrix(name: &str, value: PyReadonlyArray2<'_, f64>) -> PyResult<(Vec<f64>, usize)> {
