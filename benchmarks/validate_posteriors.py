@@ -18,6 +18,15 @@ import time
 import numpy as np
 
 
+#: The fixed-reference cases the gate must run, and how many seeds each runs under.
+#: This manifest is the gate's contract, not a description of it: ``run`` fails when a
+#: listed case does not produce its records and equally when ``reference_cases`` yields
+#: a case that is not listed, so neither dropping a case nor adding an unvetted one can
+#: slip through. Keep it in step with docs/statistical-validation.md.
+REFERENCE_CASES = ("normal_location", "correlated_regression", "beta_bernoulli", "gamma_poisson")
+REFERENCE_REPEATS = 3
+
+
 def reference_cases():
     """Small fixed datasets; moments follow conjugate formulas, independent of rustmc."""
     import rustmc as mc
@@ -130,9 +139,9 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
     import rustmc._rustmc as native
     started = time.perf_counter()
     kwargs = dict(chains=4, draws=draws, warmup=warmup, target_accept=.95, show_progress=False)
-    records = []
+    records, attempted = [], {}
     for index, (name, model, data, names, mean, covariance) in enumerate(reference_cases()):
-        for repeat in range(3):
+        for repeat in range(REFERENCE_REPEATS):
             fit_seed = seed + index*100 + repeat
             record = {"case": name, "seed": fit_seed, "kind": "fixed_reference"}
             try:
@@ -141,6 +150,15 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
             except Exception as error:
                 record.update(passed=False, error=f"{type(error).__name__}: {error}")
             records.append(record)
+            attempted[name] = attempted.get(name, 0) + 1
+    # A gate that runs nothing passes everything: all() over no fixed-reference records
+    # is vacuously true, so the promised cases are checked against the manifest by name.
+    case_coverage = {"required": {name: REFERENCE_REPEATS for name in REFERENCE_CASES},
+                     "attempted": attempted,
+                     "missing": sorted(name for name in REFERENCE_CASES
+                                       if attempted.get(name, 0) != REFERENCE_REPEATS),
+                     "unlisted": sorted(set(attempted) - set(REFERENCE_CASES))}
+    case_coverage["passed"] = not case_coverage["missing"] and not case_coverage["unlisted"]
     rng = np.random.default_rng(seed)
     m = mc.ModelBuilder()
     beta = m.vector_normal_prior("beta", 2, 0., 1.)
@@ -187,8 +205,10 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
             "rustmc": mc.__version__, "native_path": str(native_path),
             "native_sha256": hashlib.sha256(native_path.read_bytes()).hexdigest(),
             "command": sys.argv, "seed": seed, "sampling": kwargs, "records": records,
-            "calibration": calibration, "seconds": time.perf_counter()-started,
-            "passed": all(r["passed"] for r in records) and calibration["passed"]}
+            "calibration": calibration, "case_coverage": case_coverage,
+            "seconds": time.perf_counter()-started,
+            "passed": all(r["passed"] for r in records) and calibration["passed"]
+                      and case_coverage["passed"]}
 
 
 def json_safe(value):

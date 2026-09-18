@@ -135,6 +135,49 @@ def test_nonfinite_divergence_and_accuracy_metrics_fail_closed():
     assert "max_mean_error_sd" in accuracy["failed_metrics"]
 
 
+def test_the_gate_fails_when_a_promised_reference_case_did_not_run():
+    """all() over no fixed-reference records is vacuously true; the manifest is not."""
+    import benchmarks.validate_posteriors as gate
+    original = gate.reference_cases
+    try:
+        gate.reference_cases = lambda: iter(())
+        report = gate.run(replicates=2, draws=2000, warmup=1000)
+        assert report["passed"] is False
+        assert [r for r in report["records"] if r["kind"] == "fixed_reference"] == []
+        assert report["case_coverage"]["passed"] is False
+        assert report["case_coverage"]["missing"] == sorted(gate.REFERENCE_CASES)
+
+        first = next(iter(original()))
+        gate.reference_cases = lambda: iter([first])
+        partial = gate.run(replicates=2, draws=2000, warmup=1000)
+        assert partial["passed"] is False
+        assert first[0] not in partial["case_coverage"]["missing"]
+        assert partial["case_coverage"]["attempted"][first[0]] == gate.REFERENCE_REPEATS
+        assert len(partial["case_coverage"]["missing"]) == len(gate.REFERENCE_CASES) - 1
+    finally:
+        gate.reference_cases = original
+
+
+def test_an_unlisted_reference_case_is_itself_a_failure():
+    """The manifest is the source of truth, so an unvetted case cannot be smuggled in."""
+    import benchmarks.validate_posteriors as gate
+    original = gate.reference_cases
+    try:
+        cases = list(original())
+        gate.reference_cases = lambda: iter(cases + [("smuggled_in",) + tuple(cases[0][1:])])
+        report = gate.run(replicates=2, draws=2000, warmup=1000)
+        assert report["passed"] is False
+        assert report["case_coverage"]["unlisted"] == ["smuggled_in"]
+        assert report["case_coverage"]["missing"] == []
+    finally:
+        gate.reference_cases = original
+
+
+def test_the_manifest_matches_the_cases_actually_defined():
+    import benchmarks.validate_posteriors as gate
+    assert [case[0] for case in gate.reference_cases()] == list(gate.REFERENCE_CASES)
+
+
 def test_all_analytic_cases_have_a_finite_target_and_gradient():
     for _, model, data, names, mean, covariance in reference_cases():
         assert covariance.shape == (len(names), len(names))
