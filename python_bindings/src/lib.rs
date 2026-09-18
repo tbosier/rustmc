@@ -913,21 +913,14 @@ fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
     Ok(())
 }
 
+/// Adapters over the core validators. The rule and its wording live in
+/// `rustmc_core::model` so the Python surface and the Rust core cannot drift.
 fn validate_finite(name: &str, value: f64) -> PyResult<()> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be finite", name)))
-    }
+    rustmc_core::model::validate_finite(name, value).map_err(model_error)
 }
 
 fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
-    validate_finite(name, value)?;
-    if value > 0.0 {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be > 0", name)))
-    }
+    rustmc_core::model::validate_positive_finite(name, value).map_err(model_error)
 }
 
 /// Merge call-site data over bound data while ensuring a key has exactly one
@@ -1114,16 +1107,6 @@ fn resolve_hyper_value(
     context: &str,
 ) -> PyResult<f64> {
     rustmc_core::model::resolve_hyper_value(hp, values, context).map_err(model_error)
-}
-
-fn should_auto_noncenter(prior: &PriorSpec, auto_vector_params: &HashMap<String, usize>) -> bool {
-    match prior {
-        PriorSpec::Normal { name, mu, sigma } => {
-            !auto_vector_params.contains_key(name)
-                && (matches!(mu, HyperParam::Param(_)) || matches!(sigma, HyperParam::Param(_)))
-        }
-        _ => false,
-    }
 }
 
 fn select_posterior_draw_indices(
@@ -2742,7 +2725,7 @@ fn sample_prior_raw(
                         }
                         raw.push(x);
                     }
-                } else if should_auto_noncenter(prior, auto_vector_params) {
+                } else if rustmc_core::model::should_auto_noncenter(prior, auto_vector_params) {
                     let z: f64 = StandardNormal.sample(rng);
                     let mu_v = resolve(mu, &sampled_values, name)?;
                     let sigma_v = resolve(sigma, &sampled_values, name)?;
