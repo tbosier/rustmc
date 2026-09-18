@@ -16,6 +16,11 @@ also declares a data expression's dimension. Parameter indexing uses a data key,
 for example `z["group"]`; indices must be finite integers within the vector
 parameter's declared bounds.
 
+A bare data-key string is accepted wherever an expression operand is, so a gathered
+parameter can multiply a predictor directly: `beta["group"] * "x"` gives each group its
+own slope on `x`. `builder.data("x")` is the explicit spelling of the same operand, and
+is the one to use when a dimension needs declaring with `dim=`.
+
 ```python
 import numpy as np
 import rustmc
@@ -77,8 +82,9 @@ can use the separate `LogDensity` interface.
 artifact. `rustmc.CompiledModel.from_json(text)` recompiles and validates it. The
 artifact stores dimensions, matrix widths, priors, likelihoods, potentials, and
 deterministics; training payloads and binding defaults are excluded. A restored
-model must be bound to data before fitting. It is separate from the older Rust
-`CompiledModelArtifact` JSON format, whose public imports remain available.
+model must be bound to data before fitting. This is now the only compiled-model
+artifact format: the older data-owning Rust `CompiledModelArtifact` and the
+`rustmc_core::compiled_model` module it lived in have been removed.
 
 ## Saving a fitted graph model
 

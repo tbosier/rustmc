@@ -68,6 +68,14 @@ columns. Use an explicit small number of harmonics and regularizing coefficient
 priors. This is fixed harmonic seasonality; it differs from stochastic dummy
 seasonality in `BayesianSeasonalLocalLevel`.
 
+The result has shape `(count, 2 * harmonics)`, with columns ordered
+`sin(1), cos(1), sin(2), cos(2), ...`, and no intercept column. The one exception is
+the Nyquist harmonic: when `2 * harmonics == period` its sine is identically zero and
+is omitted, so `fourier_design(5, 12, 6)` has 11 columns, not 12. `harmonics` must lie
+between 1 and `period // 2`, and `period` must be at least 2. `start` shifts the phase,
+so `fourier_design(12, period, harmonics, start=len(y))` continues the training design
+without a discontinuity.
+
 ```python
 period, harmonics = 12, 2
 X = rmc.fourier_design(len(y), period, harmonics)

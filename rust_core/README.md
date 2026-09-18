@@ -45,8 +45,12 @@ correctly. Missing observations are represented by `NaN` in state-space APIs.
 
 For related ragged series, `hierarchical::fit_hierarchical_mean` fits one joint
 population → group → program Gaussian posterior with a specialized conjugate Gibbs
-kernel. Its forecast paths are indexed `[chain][draw][program][step]`, so downstream
-Rust code can aggregate aligned draws without discarding cross-program dependence.
+kernel. `HierarchicalMeanForecast::observation_paths` is indexed
+`[chain][draw][program * horizon + step]`: every program's whole path is contiguous
+inside one per-draw vector, not a separate allocation per program. `state_means` is
+indexed `[chain][draw][program]`, because the latent level is static over the horizon.
+Both share a draw axis, so downstream Rust code can aggregate aligned draws without
+discarding cross-program dependence.
 
 `bayesian_regression` jointly samples Gaussian coefficient, structural-state, and
 variance uncertainty with time-varying designs. `forecast_batch` provides independent

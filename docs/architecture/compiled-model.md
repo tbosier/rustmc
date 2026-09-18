@@ -34,11 +34,11 @@ See [execution options](../forecasting-workflows.md#custom-models-and-independen
 Legacy `sample()` and `batch_sample()` remain available; the latter retains positional
 seeds. Generic fits can predict on a new binding without response placeholders.
 
-The pre-existing JSON `CompiledModelArtifact` remains a legacy, data-owning
-format and is not emitted or accepted by the new Python `CompiledModel` API.
-This explicit boundary prevents a data-owning v1 artifact from being mistaken
-for a re-bindable compiled model. Python `CompiledModel.to_json/from_json` uses a
-separate versioned declarative format, preserving schema widths/dimensions and omitting
+The earlier data-owning JSON `CompiledModelArtifact`, and the
+`rustmc_core::compiled_model` module that defined it, have been removed. It was never
+emitted or accepted by the Python `CompiledModel` API, so nothing that used that API
+changes. Python `CompiledModel.to_json/from_json` uses a
+versioned declarative format, preserving schema widths/dimensions and omitting
 bound training payloads. Loading rebuilds through the validated compiler. Generic fit
 artifacts additionally retain training inputs and posterior/telemetry arrays for
 prediction; see [artifact semantics](../custom-models.md).
@@ -53,8 +53,9 @@ The declarative model definition, expression compiler, prediction binder, and ar
 loader live in `rustmc_core::model`. Python provides construction and input adapters.
 See [standalone Rust execution](../native-models.md). The core evaluator owns per-node lengths so that
 named dimensions affect computation. One native observation simulator supplies prior
-and posterior generation. Reference autodiff and the older data-owning artifact remain
-isolated for validation and compatibility.
+and posterior generation. A second, independently written reference autodiff
+implementation cross-checks the production evaluator's gradients. It is compiled only
+under `#[cfg(test)]`, so it is test scaffolding rather than public API.
 
 Structural components compile into validated state blocks handled by Gaussian
 FFBS/Gibbs (with Student-t latent precision updates when requested). Dynamic GLMs

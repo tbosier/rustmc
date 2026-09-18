@@ -53,6 +53,9 @@ nav:
     - Payment-count runoff: runoff.md
   - Architecture:
     - Compiled models: architecture/compiled-model.md
+  - Project:
+    - Statistical release checks: statistical-validation.md
+    - Releasing: releasing.md
 
 plugins:
   - search

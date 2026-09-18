@@ -75,6 +75,73 @@ CRPS, and Monte Carlo uncertainty. Its companion pilot retains short-run converg
 failures. These checks average over generating priors under correct specification;
 they do not establish calibration on every dataset or under misspecification.
 
+## Score draws and baselines directly
+
+The scoring functions `backtest` uses are exported, so any set of draws can be scored
+without going through a fold loop. Each takes `samples` shaped `(sample, *target)` or
+`(chain, draw, *target)` and `actual` shaped `target`, flattens the leading axes, and
+returns an array of shape `target`. Draws must be non-empty and finite; `actual` may be
+NaN for a missing outcome and the NaN propagates into the score. Lower is better for
+every loss below.
+
+`crps(samples, actual)` is the empirical CRPS, `mean|X - y| - mean|X - X'| / 2`, using
+the `1/n**2` normalization rather than the unbiased `1/(n*(n-1))` one. It is computed
+from sorted draws, so cost is `O(n log n)` and no pairwise matrix is formed.
+
+`weighted_interval_score(samples, actual, levels=(.5, .8, .95))` is the standard WIS:
+the median term plus one weighted interval score per level, divided by `K + .5` for `K`
+levels. `levels` are central-interval coverages, must be one-dimensional, unique, and
+strictly inside `(0, 1)`.
+
+`interval_score(actual, lower, upper, alpha=.05)` scores one interval from precomputed
+bounds: `(upper - lower) + (2/alpha) * (lower - y)+ + (2/alpha) * (y - upper)+`.
+Arguments broadcast against each other. Note the polarity: `alpha` here is the
+non-coverage probability, so `alpha=.05` and `levels=(.95,)` describe the same interval.
+
+`score_forecast(samples, actual, levels=(.5, .8, .95))` returns a dict with `bias`,
+`absolute_error`, `squared_error`, `crps`, `wis`, and `coverage_<level>` /
+`width_<level>` for each level, every value shaped like `actual`. `bias` is
+`mean(draws) - actual`, and `absolute_error` and `squared_error` are that one error's
+absolute value and square. They are point scores on the predictive mean, not the mean
+absolute or squared error of the draws.
+
+Two baselines produce comparison forecasts from observations shaped `(*series, time)`.
+`seasonal_naive(observations, steps, period=1)` repeats the last complete cycle and
+returns `(*series, steps)`; it needs `time >= period` and finite values in that final
+cycle, but tolerates NaN earlier. `naive_forecast(observations, steps, *, period=1,
+draws=1000, seed=42)` is its probabilistic counterpart: the same point path plus a
+bootstrap of centred seasonal differences, accumulated so spread grows every `period`
+steps. It returns `(1, draws, *series, steps)` — a leading singleton chain axis, so the
+result can be passed straight to `score_forecast`. Innovations are resampled as whole
+time columns, which preserves empirical cross-series dependence, and a time column is
+dropped if any series is non-finite there. It needs `time > period`, one seasonal
+difference more than `seasonal_naive`, and it does not integrate uncertainty in the
+innovation distribution.
+
+```python
+import numpy as np
+import rustmc as r
+
+rng = np.random.default_rng(0)
+y = 10. + np.tile([0., 3.], 10) + rng.normal(0., 1., 20)   # 20 periods, cycle of 2
+baseline = r.naive_forecast(y[:16], 4, period=2, draws=500, seed=9)   # (1, 500, 4)
+actual = y[16:]
+
+r.crps(baseline, actual)                       # (4,)
+r.weighted_interval_score(baseline, actual)    # (4,)
+scores = r.score_forecast(baseline, actual, levels=(.5, .95))
+scores["crps"], scores["coverage_0.95"], scores["width_0.95"]
+
+lower, upper = np.quantile(baseline.reshape(-1, 4), [.025, .975], axis=0)
+r.interval_score(actual, lower, upper, alpha=.05)
+r.seasonal_naive(y[:16], 4, 2)                 # (4,) point forecast
+```
+
+`backtest(model, observations, *, horizon, ...)` wraps this loop over rolling origins
+and returns a `BacktestResult` whose `.folds` are `BacktestFold` records. Its `errors`
+argument defaults to `"raise"`, so one failing fold aborts the run unless
+`errors="collect"` is passed.
+
 ## Named predictors, scenarios, and updates
 
 `NamedDesign(array, ("price", "holiday"))` records feature identity and order. Wrap a

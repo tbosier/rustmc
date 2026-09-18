@@ -83,7 +83,14 @@ variance parameters, and the terminal log level using `diagnostics()`/`summary()
 `to_arviz()` exports parameter draws and the observed amounts when ArviZ is installed.
 
 The standalone `hurdle_lognormal_logp(y, payment_probability, log_level, log_variance)`
-evaluates the mixed point-mass/continuous density. This release exposes a specialized
+evaluates the mixed point-mass/continuous density. It takes scalars and returns a
+float; it does not broadcast over arrays. `payment_probability` is the probability of a
+positive amount, so `y == 0` scores `log(1 - payment_probability)`. `log_level` is the
+mean of `log y` and `log_variance` is the **variance** of `log y`, which must be
+strictly positive. The density is that of `y` itself, including the `-log(y)` Jacobian
+term, so it differs from a normal density evaluated at `log(y)`. Probabilities of
+exactly 0 or 1 are accepted and return `-inf` for the contradicted outcome rather than
+raising. This release exposes a specialized
 dynamic fitted model; it does not add a new generic graph-builder likelihood or claim
 that arbitrary non-Gaussian observations can use the Gaussian FFBS kernel.
 
