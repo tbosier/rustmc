@@ -67,6 +67,8 @@ CONVERGENCE_METRICS = (("r_hat", "max_rhat", max), ("ess_bulk", "min_ess_bulk", 
 #: Slack on the derived R-hat floor, far above the estimator's rounding error and far
 #: below the gap to any value a broken payload would carry.
 RHAT_FLOOR_SLACK = 1e-6
+#: Relative slack on the derived ESS ceiling, which is exact up to rounding.
+ESS_CEILING_SLACK = 1e-9
 
 
 def rhat_floor(draws):
@@ -83,10 +85,42 @@ def rhat_floor(draws):
     return math.sqrt((split - 1) / split)
 
 
+def ess_ceiling(chains, draws):
+    """Largest ESS the estimator can return for ``chains`` chains of ``draws`` draws.
+
+    ``ess_raw`` in rust_core/src/diagnostics.rs splits every chain in half and returns
+    ``total / tau`` with ``tau = (...).max(1.0 / total.log10())``, so the quotient
+    cannot exceed ``total * log10(total)``, where ``total`` is the split draw count.
+    ``min`` hides an impossibly large ESS behind a healthy neighbour exactly as ``max``
+    hides an impossibly small R-hat, so this bound is needed for the same reason.
+    """
+    total = 2 * max(int(chains), 1) * max(int(draws) // 2, 1)
+    return total * math.log10(total) if total > 1 else math.inf
+
+
+def divergence_total(counts, chains):
+    """Total divergences, or NaN when the telemetry is not one count per chain.
+
+    ``sum`` cancels and does not notice gaps: ``[1, -1, 0, 0]`` totals zero and reports
+    a clean run, and a single count for a four-chain fit accepts three missing chains.
+    Neither can be trusted before the counts themselves are checked.
+    """
+    failures = []
+    if len(counts) != chains:
+        failures.append(f"divergences[{len(counts)} counts for {chains} chains]")
+    for index, count in enumerate(counts):
+        value = _as_float(count)
+        if not math.isfinite(value) or value < 0 or value != int(value):
+            failures.append(f"divergences[chain {index}]")
+    return failures, math.nan if failures else sum(counts)
+
+
 def _as_float(value):
     # float() silently drops the imaginary part of a complex value, which would turn a
     # non-finite diagnostic into a plausible one, and raises OverflowError on a huge int.
-    if isinstance(value, complex):
+    # numbers.Complex rather than complex: np.complex64 and np.clongdouble are not
+    # subclasses of the builtin, so `isinstance(value, complex)` let them straight past.
+    if isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real):
         return math.nan
     try:
         return float(value)
@@ -94,7 +128,7 @@ def _as_float(value):
         return math.nan
 
 
-def convergence_metrics(diagnostics, names, floor):
+def convergence_metrics(diagnostics, names, floor, ceiling):
     """Aggregate per-parameter diagnostics, naming every invalid entry as a failure.
 
     Builtin ``max``/``min`` return the non-NaN operand unless the NaN comes first, and
@@ -105,23 +139,27 @@ def convergence_metrics(diagnostics, names, floor):
     value from a neighbouring parameter. A parameter in ``names`` with no diagnostic
     row at all is the same hole and fails too, since an absent row is never screened.
 
-    Screening is against each diagnostic's domain, not only against finiteness. An
-    R-hat below ``floor`` or an ESS below zero cannot come from the estimators in
-    rust_core/src/diagnostics.rs, and ``max`` hides a too-small R-hat exactly as it
-    hides a NaN: with r_hat [1.0, -100.0, 1.0] the reported maximum is a healthy 1.0.
+    Screening is against each diagnostic's full domain, not only against finiteness.
+    A value outside what the estimators in rust_core/src/diagnostics.rs can return is a
+    payload that did not come from them, and each aggregation hides exactly the half of
+    the domain it does not select for: ``max`` hides a too-small R-hat, so r_hat
+    [1.0, -100.0, 1.0] reports a healthy 1.0, and ``min`` hides a too-large ESS, so
+    ess_bulk [10000.0, 1e100] reports a healthy 10000.0. Both ends are therefore bound.
     """
     failures, metrics = [], {}
     labels = [diagnostic.get("name", index) for index, diagnostic in enumerate(diagnostics)]
     if not diagnostics:
         failures.append("diagnostics_empty")
     failures += [f"diagnostics_missing[{name}]" for name in names if name not in labels]
-    floors = {"r_hat": floor - RHAT_FLOOR_SLACK, "ess_bulk": 0., "ess_tail": 0.}
+    domains = {"r_hat": (floor - RHAT_FLOOR_SLACK, math.inf),
+               "ess_bulk": (0., ceiling), "ess_tail": (0., ceiling)}
     for key, metric, reduce in CONVERGENCE_METRICS:
+        low, high = domains[key]
         values, invalid = [], []
         for label, diagnostic in zip(labels, diagnostics):
             value = _as_float(diagnostic.get(key))
             # NaN fails every comparison, so finiteness has to be tested first.
-            if not math.isfinite(value) or value < floors[key]:
+            if not math.isfinite(value) or value < low or value > high:
                 failures += [metric, f"{metric}[{label}]"]
                 invalid.append(value)
             values.append(value)
@@ -135,21 +173,23 @@ def assess_fit(fit, names, reference_mean, reference_covariance):
     flat = samples.reshape(-1, len(names))
     reference_sd = np.sqrt(np.diag(reference_covariance))
     covariance = np.atleast_2d(np.cov(flat, rowvar=False))
+    chains, draws = samples.shape[0], samples.shape[-2]
     diagnostics = fit.diagnostics()
     convergence_failures, convergence = convergence_metrics(
-        diagnostics, names, rhat_floor(samples.shape[-2]))
-    divergences = list(fit.divergences())
+        diagnostics, names, rhat_floor(draws), ess_ceiling(chains, draws) * (1 + ESS_CEILING_SLACK))
+    divergence_failures, divergences = divergence_total(list(fit.divergences()), chains)
     metrics = {
         **convergence,
         # The error metrics take np.abs first, so every element is non-negative and
         # np.max keeps both NaN and infinity for the finiteness sweep below; builtin
-        # max would not, so do not swap it in. An absent divergence count is not a
-        # zero count: sum(()) would report a clean run from missing telemetry.
-        "divergences": sum(divergences) if divergences else math.nan,
+        # max would not, so do not swap it in. divergence_total does the same job for
+        # the divergence counts, whose sum can cancel and cannot see a missing chain.
+        "divergences": divergences,
         "max_mean_error_sd": float(np.max(np.abs(flat.mean(axis=0)-reference_mean)/reference_sd)),
         "max_covariance_error_sd": float(np.max(np.abs(covariance-reference_covariance)/np.outer(reference_sd, reference_sd))),
     }
-    failures = convergence_failures + [name for name, value in metrics.items() if not math.isfinite(value)]
+    failures = convergence_failures + divergence_failures
+    failures += [name for name, value in metrics.items() if not math.isfinite(value)]
     limits = {"max_rhat": 1.01, "max_mean_error_sd": .12, "max_covariance_error_sd": .15}
     failures += [name for name, limit in limits.items() if metrics[name] > limit]
     failures += [name for name in ("min_ess_bulk", "min_ess_tail") if metrics[name] < 400]

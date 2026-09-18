@@ -11,7 +11,9 @@ if os.environ.get("RUSTMC_REQUIRE_SITE_PACKAGES") == "1":
 from benchmarks.validate_posteriors import assess_fit, json_safe, reference_cases
 
 
-HEALTHY = {"r_hat": 1., "ess_bulk": 10000., "ess_tail": 10000.}
+# ESS values a real estimator could return for the smallest fixture here (4 x 500
+# draws, whose ceiling is ~6602), so the fixtures stay inside their own domain.
+HEALTHY = {"r_hat": 1., "ess_bulk": 5000., "ess_tail": 5000.}
 # Accurate draws for three independent standard normals, so only the diagnostics differ.
 ACCURATE = np.random.default_rng(7).normal(size=(4, 5000, 3))
 
@@ -82,7 +84,7 @@ def test_healthy_multiparameter_diagnostics_do_not_trip_the_finiteness_check():
 
 def test_unnamed_and_missing_diagnostics_still_fail_closed():
     fit = ReferenceFit(np.zeros((4, 500, 2)))
-    fit.diagnostics = lambda: [dict(HEALTHY), {"r_hat": 1., "ess_tail": 10000.}]
+    fit.diagnostics = lambda: [dict(HEALTHY), {"r_hat": 1., "ess_tail": 5000.}]
     result = assess_fit(fit, ["p0", "p1"], np.zeros(2), np.eye(2))
     assert result["passed"] is False
     assert "min_ess_bulk[1]" in result["failed_metrics"], result["failed_metrics"]
@@ -135,6 +137,80 @@ def test_nonfinite_divergence_and_accuracy_metrics_fail_closed():
     accuracy = assess_fit(infinite, ["p0"], np.array([0.]), np.eye(1))
     assert accuracy["passed"] is False
     assert "max_mean_error_sd" in accuracy["failed_metrics"]
+
+
+@pytest.mark.parametrize("key, metric", [("ess_bulk", "min_ess_bulk"), ("ess_tail", "min_ess_tail")])
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("bad", [1e100, 1e6, 90000.])
+def test_an_impossible_ess_cannot_hide_under_a_healthy_minimum(key, metric, position, bad):
+    """min() keeps the smallest value, so only an upper bound can catch a huge ESS."""
+    names = ["p0", "p1", "p2"]
+    diagnostics = [dict(HEALTHY, name=name) for name in names]
+    diagnostics[position][key] = bad
+    fit = ReferenceFit(ACCURATE)
+    fit.diagnostics = lambda: diagnostics
+    result = assess_fit(fit, names, np.zeros(3), np.eye(3))
+    assert result["passed"] is False
+    assert f"{metric}[{names[position]}]" in result["failed_metrics"], result["failed_metrics"]
+    assert result["metrics"][metric] == bad
+
+
+def test_the_ess_ceiling_is_the_one_the_estimator_can_actually_reach():
+    """Derived from ess_raw: total / tau with tau >= 1 / log10(total), total = 2*chains*(draws//2)."""
+    import benchmarks.validate_posteriors as gate
+    for chains, draws in ((4, 2000), (4, 500), (2, 1000)):
+        total = 2 * chains * (draws // 2)
+        assert gate.ess_ceiling(chains, draws) == pytest.approx(total * math.log10(total))
+    assert gate.ess_ceiling(4, 2000) == pytest.approx(31224.719895935552)
+
+
+def test_real_ess_values_stay_well_inside_the_ceiling():
+    """The gate's own recorded ESS must not be anywhere near the bound."""
+    import benchmarks.validate_posteriors as gate
+    # Observed for the correlated_regression case at chains=4, draws=2000.
+    assert 2928.224634872191 < gate.ess_ceiling(4, 2000) / 10
+
+
+@pytest.mark.parametrize("counts, reason", [
+    ([1, -1, 0, 0], "cancellation"),
+    ([0], "three missing chains"),
+    ([0, 0, 0], "one missing chain"),
+    ([0, 0, 0, 0, 0], "an extra chain"),
+    ([0, 0, 0, -3], "a negative count"),
+    ([0, 0, 0, 1.5], "a fractional count"),
+])
+def test_divergence_telemetry_must_be_one_whole_nonnegative_count_per_chain(counts, reason):
+    """sum() cancels and cannot see a gap, so the counts are checked before summing."""
+    fit = ReferenceFit(ACCURATE)
+    fit.divergences = lambda: counts
+    result = assess_fit(fit, ["p0", "p1", "p2"], np.zeros(3), np.eye(3))
+    assert result["passed"] is False, reason
+    assert "divergences" in result["failed_metrics"], reason
+    assert json_safe(result)["metrics"]["divergences"] is None
+
+
+def test_a_clean_four_chain_divergence_count_still_passes():
+    fit = ReferenceFit(ACCURATE)
+    fit.divergences = lambda: [0, 0, 0, 0]
+    result = assess_fit(fit, ["p0", "p1", "p2"], np.zeros(3), np.eye(3))
+    assert result["passed"] is True, result["failed_metrics"]
+    assert result["metrics"]["divergences"] == 0
+    fit.divergences = lambda: [0, 2, 0, 1]
+    flagged = assess_fit(fit, ["p0", "p1", "p2"], np.zeros(3), np.eye(3))
+    assert flagged["passed"] is False
+    assert flagged["metrics"]["divergences"] == 3
+
+
+@pytest.mark.parametrize("dtype", ["complex64", "complex128", "clongdouble"])
+def test_every_complex_width_is_rejected_not_silently_truncated(dtype):
+    """float() drops the imaginary part; np.complex64 is not a builtin complex."""
+    bad = getattr(np, dtype)(complex(1., np.inf))
+    fit = ReferenceFit(ACCURATE)
+    fit.diagnostics = lambda: [dict(HEALTHY, name="p0"), dict(HEALTHY, name="p1"),
+                               dict(HEALTHY, name="p2", r_hat=bad)]
+    result = assess_fit(fit, ["p0", "p1", "p2"], np.zeros(3), np.eye(3))
+    assert result["passed"] is False, dtype
+    assert "max_rhat[p2]" in result["failed_metrics"], dtype
 
 
 @pytest.mark.parametrize("position", [0, 1, 2])
