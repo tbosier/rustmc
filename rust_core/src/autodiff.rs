@@ -822,10 +822,15 @@ impl Evaluator {
                         if upstream == 0.0 {
                             continue;
                         }
-                        let (da, db) = operator.derivatives(av, bv);
-                        self.accumulate(*a, i, upstream * da);
+                        // Composed with the upstream adjoint rather than
+                        // multiplied by it afterwards: several of these local
+                        // derivatives leave the exponent range on their own
+                        // while the product does not. See
+                        // `ElementwiseOp::adjoints`.
+                        let (da, db) = operator.adjoints(upstream, av, bv);
+                        self.accumulate(*a, i, da);
                         if let Some(b) = b {
-                            self.accumulate(*b, i, upstream * db);
+                            self.accumulate(*b, i, db);
                         }
                     }
                 }
@@ -987,14 +992,12 @@ impl Evaluator {
                     }
                 }
                 Op::BernoulliLogP { x, p } => {
-                    let xv = self.scalars[x.0];
-                    let pv = self.scalars[p.0].clamp(1e-12, 1.0 - 1e-12);
-                    self.adj_scalars[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+                    self.adj_scalars[p.0] +=
+                        a_s * bernoulli_logp_dp(self.scalars[x.0], self.scalars[p.0]);
                 }
                 Op::PoissonLogP { x, lam } => {
-                    let xv = self.scalars[x.0];
-                    let lv = self.scalars[lam.0];
-                    self.adj_scalars[lam.0] += a_s * (xv / lv - 1.0);
+                    self.adj_scalars[lam.0] +=
+                        a_s * poisson_logp_dlam(self.scalars[x.0], self.scalars[lam.0]);
                 }
                 Op::LogGammaLogP { x, alpha, beta } => {
                     let raw = self.scalars[x.0];
@@ -1475,13 +1478,98 @@ fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
     }
 }
 
+/// Bernoulli log mass. `-inf` off the support, which is `{0, 1}`.
+///
+/// This is reachable: `model::GraphModel::log_density` evaluates it for a
+/// loaded artifact, so it has to be the density it claims to be even though
+/// gradient-based *sampling* of a discrete latent is refused elsewhere.
+/// Without the support check `x = 0.5` had a finite density, and at `p = 0.5`
+/// the "density" was constant over all of R.
+///
+/// There is no clamp on `p`, and that is the other half of the fix. Clamping to
+/// `[1e-12, 1 - 1e-12]` gave the impossible outcome `x = 1, p = 0` a log mass of
+/// about -27.6 — merely unlikely — and it moved every `p` outside that band. The
+/// clamp existed to avoid `0 * ln(0)`, which is NaN where the limit is 0; that
+/// is handled here by branching on `x` instead of multiplying by it, so the term
+/// that would be multiplied by zero is never formed at all.
+///
+/// `ln_1p(-p)` rather than `(1 - p).ln()`: for `p` below about 1e-16 the
+/// subtraction rounds to exactly 1 and the log to exactly 0, discarding the
+/// whole of `-p`.
 fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
-    let p_clamped = p.clamp(1e-12, 1.0 - 1e-12);
-    x * p_clamped.ln() + (1.0 - x) * (1.0 - p_clamped).ln()
+    if !(0.0..=1.0).contains(&p) {
+        return f64::NEG_INFINITY;
+    }
+    if x == 1.0 {
+        p.ln()
+    } else if x == 0.0 {
+        (-p).ln_1p()
+    } else {
+        f64::NEG_INFINITY
+    }
 }
 
+/// d/dp of [`bernoulli_logp_scalar`], zero wherever that is a constant `-inf`.
+///
+/// A density that is `-inf` everywhere in a neighbourhood has no slope, and a
+/// score that moves while the density does not is worse than no score: it sends
+/// a sampler off in a direction the density does not support. At `p = 0` with
+/// `x = 1` the slope is genuinely infinite, which is the limit from inside the
+/// support and not a lost value.
+///
+/// `1 / p` overflows for every `p` below 5.6e-309, where `ln(p)` is still an
+/// ordinary -710. The composition through whatever produced `p` would often be
+/// representable — a `sigmoid` link makes it exactly 1 — but the adjoint at the
+/// `p` node is `1 / p` whatever order the factors are taken in, so there is
+/// nothing to reassociate: the intermediate itself is the unrepresentable
+/// quantity. The clamp this replaced returned 1e12 there, finite and wrong by
+/// 296 orders of magnitude; an infinity is refused at the sampler boundary
+/// instead of being believed.
+fn bernoulli_logp_dp(x: f64, p: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) {
+        return 0.0;
+    }
+    if x == 1.0 {
+        1.0 / p
+    } else if x == 0.0 {
+        -1.0 / (1.0 - p)
+    } else {
+        0.0
+    }
+}
+
+/// Poisson log mass, over the exactly representable count range.
+///
+/// [`crate::count_sampling::log_mass`] already refuses a negative, fractional or
+/// nonfinite count and a negative or nonfinite rate, and treats `rate == 0` as
+/// the point mass at zero. It carries no clamp of any kind, so unlike the
+/// Bernoulli case there was nothing here to correct.
 fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
     crate::count_sampling::log_mass(x, lam)
+}
+
+/// d/dlam of [`poisson_logp_scalar`], zero wherever that is a constant `-inf`.
+///
+/// `(x - lam) / lam` is the score on the support. Not `x / lam - 1`: the
+/// quotient rounds to something near 1 and the subtraction then cancels away
+/// most of what is left, which is precisely the region a count model lives in.
+/// At `x = 1` and `lam` one ulp below it the old form returned
+/// 2.220446049250313e-16 for a score of 1.1102230246251568e-16 — twice the
+/// right answer — and at `x = 1e14, lam = x + 1` it was 0.08% off. `x - lam` is
+/// exact whenever the two are within a factor of two of each other, by
+/// Sterbenz, so the new form has one rounding and no cancellation.
+///
+/// Off the support the mass is `-inf` and the score is zero; at `x == 0` the
+/// mass is `-lam` and the score is `-1`, which the general form would compute
+/// as `-0 / 0` when `lam` is also zero.
+fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
+    if !x.is_finite() || x < 0.0 || x.fract() != 0.0 || !lam.is_finite() || lam < 0.0 {
+        return 0.0;
+    }
+    if x == 0.0 {
+        return -1.0;
+    }
+    (x - lam) / lam
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {

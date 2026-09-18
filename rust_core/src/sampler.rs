@@ -163,40 +163,70 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
+    /// Posterior mean per parameter, from the same implementation the summary
+    /// table uses.
+    ///
+    /// See [`diagnostics::scaled_moments`]: the draws are centred and scaled
+    /// before they are summed, so a posterior whose draws sit near the top of
+    /// the representable range reports a finite mean rather than an infinity,
+    /// and reports the same one `diagnostics()` does.
     pub fn mean(&self) -> Vec<f64> {
         let n_params = self.param_names.len();
-        let mut sums = vec![0.0; n_params];
-        let mut count = 0usize;
-
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    sums[i] += v;
-                }
-                count += 1;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-
-        sums.iter().map(|s| s / count as f64).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter, from the same implementation
+    /// the summary table uses.
+    ///
+    /// This is the sample standard deviation (`n - 1` in the denominator), as
+    /// the summary table has always reported; before the two paths were shared
+    /// this one divided by `n` and the two disagreed by `sqrt(n / (n - 1))`.
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
         let n_params = self.param_names.len();
-        let mut sum_sq = vec![0.0; n_params];
-        let mut count = 0usize;
-
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    let diff = v - means[i];
-                    sum_sq[i] += diff * diff;
-                }
-                count += 1;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
 
-        sum_sq.iter().map(|s| (s / count as f64).sqrt()).collect()
+    /// Whether `samples` is the rectangular chain × draw × parameter array the
+    /// sampler produces.
+    ///
+    /// These fields are public, so a caller can assemble one that is not.
+    /// `compute_diagnostics` refuses such an array outright — a ragged one has
+    /// no chain axis to compute R-hat along — and reports NaN for every
+    /// parameter; the moments agree with it rather than indexing past the end
+    /// of a short draw or averaging different parameters over different numbers
+    /// of draws.
+    fn is_rectangular(&self) -> bool {
+        let Some(first) = self.samples.first() else {
+            return false;
+        };
+        let n_draws = first.len();
+        let n_params = self.param_names.len();
+        n_draws > 0
+            && self.samples.iter().all(|chain| {
+                chain.len() == n_draws && chain.iter().all(|draw| draw.len() == n_params)
+            })
+    }
+
+    /// Every draw of parameter `index`, chain-major. Requires
+    /// [`Self::is_rectangular`].
+    ///
+    /// The order is the order the naive loop accumulated in, and it is the
+    /// order `BatchModelResult` accumulates in, so the two keep reporting the
+    /// same value for the same draws.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples
+            .iter()
+            .flat_map(move |chain| chain.iter().map(move |draw| draw[index]))
     }
 
     pub fn total_divergences(&self) -> usize {
@@ -274,18 +304,19 @@ fn validate_initial_target(
 /// `Poisson::prior` build exactly that — `Op::BernoulliLogP` / `Op::PoissonLogP`
 /// over a free `Op::Param` — and the two fail differently, neither usefully:
 ///
-/// - Bernoulli does not check its support at all (`bernoulli_logp_scalar` is
-///   `x * ln p + (1 - x) * ln(1 - p)`, which at `p = 0.5` is constant over all
-///   of R). The chain random-walks a flat direction and returns fractional
-///   "draws" for a parameter whose support is {0, 1}; 20 draws reach -813.
-/// - Poisson does check: `poisson_logp_scalar` delegates to
-///   `count_sampling::log_mass`, which returns -inf when `count.fract() != 0`.
-///   Every off-integer proposal is then rejected, so the chain is pinned to its
-///   integer initialization, reporting divergence on every transition while the
-///   step size collapses. Not a wrong number — no number at all.
+/// Both densities now check their support — `bernoulli_logp_scalar` returns
+/// -inf off `{0, 1}` and `count_sampling::log_mass` returns -inf for a
+/// fractional count — so every off-integer proposal is rejected and the chain
+/// is pinned to its integer initialization, reporting divergence on every
+/// transition while the step size collapses. Not a wrong number, but no number
+/// at all, and no support error either: without this check the run looks like
+/// an ordinary fit that simply mixed badly.
 ///
-/// Neither reports a support error, so without this check both look like an
-/// ordinary fit that simply mixed badly.
+/// Before the support check landed, Bernoulli failed worse than that rather
+/// than better: `x * ln p + (1 - x) * ln(1 - p)` is constant over all of R at
+/// `p = 0.5`, so the chain random-walked a flat direction and returned
+/// fractional "draws" for a parameter whose support is `{0, 1}`, reaching -813
+/// within 20 draws.
 ///
 /// The `ModelSpec` layer already refuses these priors, but that check is
 /// upstream of the sampler: a Rust caller assembling a `Graph` by hand bypasses
@@ -709,30 +740,42 @@ pub fn sample_batch_bound(
 }
 
 impl BatchModelResult {
+    /// Posterior mean per parameter; see [`SampleResult::mean`].
     pub fn mean(&self) -> Vec<f64> {
         let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sums = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                sums[i] += v;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-        sums.iter().map(|s| s / n_draws as f64).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter; see [`SampleResult::std`].
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
         let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sum_sq = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                let d = v - means[i];
-                sum_sq[i] += d * d;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-        sum_sq.iter().map(|s| (s / n_draws as f64).sqrt()).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
+
+    /// Whether every draw carries every parameter; see
+    /// [`SampleResult::is_rectangular`].
+    fn is_rectangular(&self) -> bool {
+        !self.samples.is_empty()
+            && self
+                .samples
+                .iter()
+                .all(|draw| draw.len() == self.param_names.len())
+    }
+
+    /// Every draw of parameter `index`. `samples` is already chain-major, so
+    /// this is the same sequence `SampleResult::draws_of` yields.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples.iter().map(move |draw| draw[index])
     }
 
     pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {

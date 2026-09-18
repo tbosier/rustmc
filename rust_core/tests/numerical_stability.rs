@@ -15,6 +15,7 @@ use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, 
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
 };
+use rustmc_core::sampler::{sample, SampleResult, SamplerConfig};
 use std::collections::HashMap;
 
 fn evaluate(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
@@ -429,6 +430,130 @@ fn wide_uniform_prior_density_and_gradient_at_minus_710() {
     assert!(
         (grad[0] - 0.7996286162583109).abs() < 1e-9,
         "grad {} vs 0.7996286162583109",
+        grad[0]
+    );
+}
+
+/// `(raw, span * sigmoid(raw))` for `span = 1e308`, from Python `decimal` at
+/// 200 significant digits. The slope `span * s'(raw)` is the same number to
+/// every digit shown here, since `1 + exp(raw)` is 1 throughout.
+///
+/// Applying the span to a materialised sigmoid lost this whole table below
+/// -708: the sigmoid is a subnormal from there and sheds bits (at -740 the
+/// result was 0.26% high, at -745 it was 75% high), and below -745.13 it is
+/// zero outright.
+const WIDE_SPAN_TAIL: [(f64, f64); 11] = [
+    (-710.0, 0.447628622567513),
+    (-720.0, 2.0322308024242932e-05),
+    (-730.0, 9.226313569122114e-10),
+    (-740.0, 4.188739880048049e-14),
+    (-745.0, 2.822350730471937e-16),
+    (-746.0, 1.0382848095158282e-16),
+    (-750.0, 1.9016849634750064e-18),
+    (-760.0, 8.633636377213886e-23),
+    (-800.0, 3.667874584177687e-40),
+    (-1000.0, 5.075958897549457e-127),
+    (-1400.0, 9.721322154756662e-301),
+];
+
+/// The tail the fused transform used to erase: `Uniform(0, 1e308)` at
+/// raw = -746 returned exactly 0 for a constrained value of
+/// 1.0382848095158282e-16.
+///
+/// Folding the span into the exponent needs no logarithm of the span: the
+/// sigmoid is `exp(raw)` throughout this range, `exp(raw) == exp(raw / 2)^2`,
+/// and `raw / 2` is exact, so the span goes between the two halves.
+#[test]
+fn bounded_sigmoid_tail_survives_a_sigmoid_that_underflows() {
+    let wide = ParamTransform::BoundedSigmoid {
+        lower: 0.0,
+        upper: 1e308,
+    };
+    for (raw, expected) in WIDE_SPAN_TAIL {
+        assert_close(wide.apply(raw), expected, &format!("apply({raw})"));
+        assert_close(
+            wide.derivative(raw),
+            expected,
+            &format!("derivative({raw})"),
+        );
+        // The mirror interval reaches the same distance from its upper end.
+        let mirrored = ParamTransform::BoundedSigmoid {
+            lower: -1e308,
+            upper: 0.0,
+        };
+        assert_close(
+            -mirrored.apply(-raw),
+            expected,
+            &format!("mirrored apply({})", -raw),
+        );
+    }
+}
+
+/// Where the rescue itself stops, pinned so it is a known edge and not a
+/// surprise. `exp(raw / 2)` is normal down to `raw = -1416.79`; below that the
+/// two halves are subnormals and shed bits like the sigmoid used to, and the
+/// value reaches zero near `raw = -1454` for the widest representable span.
+///
+/// That is 670 units of raw further out than before, and past the point where
+/// `f64` can represent the constrained value at all for any narrower interval.
+#[test]
+fn bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows() {
+    let wide = ParamTransform::BoundedSigmoid {
+        lower: 0.0,
+        upper: 1e308,
+    };
+    // Last raw whose halves are both normal, and the first that is not.
+    assert!((2.0 * f64::MIN_POSITIVE.ln() + 1416.7928370645282).abs() < 1e-9);
+    assert!((0.5 * -1416.0_f64).exp().is_normal());
+    assert!(!(0.5 * -1418.0_f64).exp().is_normal());
+
+    // Still full precision just inside the boundary.
+    assert_close(wide.apply(-1416.0), 1.0939906871877455e-307, "apply(-1416)");
+    // Degraded but not lost just outside it: the exact value is a subnormal
+    // with only a handful of bits left in any case.
+    let beyond = wide.apply(-1440.0);
+    assert!(
+        beyond > 0.0 && (beyond / 4.129964e-318 - 1.0).abs() < 1e-3,
+        "apply(-1440) = {beyond}"
+    );
+    // And zero once the exact value is no longer representable.
+    assert_eq!(wide.apply(-1460.0), 0.0, "apply(-1460)");
+    assert_eq!(wide.apply(-2000.0), 0.0, "apply(-2000)");
+    // Never outside the interval, at any raw.
+    for raw in [-2000.0, -1454.0, -746.0, -1.0, 0.0, 1.0, 746.0, 2000.0] {
+        let value = wide.apply(raw);
+        assert!((0.0..=1e308).contains(&value), "apply({raw}) = {value}");
+    }
+}
+
+/// The gradient half of the same story, end to end: `Uniform(0, 1e308)` at
+/// raw = -746 under a `sigma = 1e-17` likelihood. With the constrained value
+/// rounded to 0 the likelihood penalty vanished and the gradient was the
+/// Jacobian term alone, exactly `+1`, pointing the wrong way.
+///
+/// The density and the gradient below are the analytic expressions evaluated
+/// out of crate with Python `decimal` at 200 significant digits.
+#[test]
+fn wide_uniform_prior_gradient_at_minus_746_under_a_tight_likelihood() {
+    let mut graph = Graph::new();
+    let theta = Uniform::prior(&mut graph, "theta", 0.0, 1e308);
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1e-17);
+    graph.normal_logp(observed, theta, sigma);
+
+    let (logp, grad) = evaluate(&graph, &[-746.0]);
+    assert!(
+        (logp / -761.6767592358718 - 1.0).abs() < 1e-12,
+        "logp {logp} vs -761.6767592358718"
+    );
+    assert!(
+        grad[0] < 0.0,
+        "the likelihood penalty vanished again: gradient {}",
+        grad[0]
+    );
+    assert!(
+        (grad[0] / -106.80353456713196 - 1.0).abs() < 1e-9,
+        "grad {} vs -106.80353456713196",
         grad[0]
     );
 }
@@ -1077,4 +1202,635 @@ fn gathered_constrained_vector_parameters_agree_with_finite_differences() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 6 — composing the upstream adjoint with the local derivative
+// ---------------------------------------------------------------------------
+
+/// `b ~ Normal(scale, scale)` and `0 ~ Normal((1 / b) * scale, 1)`, evaluated
+/// at `b = scale`.
+///
+/// `1 / b` is representable and so is the composed gradient, but the local
+/// derivative between them, `-1 / b^2`, is not, and it is scaled by the `scale`
+/// factor one node upstream. The whole-graph gradient is the closed form
+/// `scale^2 / b^3`, which at `b = scale` is `1 / scale`; the prior contributes
+/// nothing, since `b` sits exactly at its mean.
+fn scaled_reciprocal_target(scale: f64) -> Graph {
+    let mut graph = Graph::new();
+    let b = Normal::prior(&mut graph, "b", scale, scale);
+    let one = graph.add_constant(1.0);
+    let inverse = graph.elementwise(ElementwiseOp::Div, one, Some(b));
+    let factor = graph.add_constant(scale);
+    let mu = graph.elementwise(ElementwiseOp::Mul, inverse, Some(factor));
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, mu, sigma);
+    graph
+}
+
+/// The reported bug: a small upstream factor. `-1/b^2` at `b = 1e-200` is
+/// `-1e400`, so it overflowed to `-inf` before reverse mode could multiply it
+/// by the upstream adjoint of `-1e-200` — and `inf` was what came out where the
+/// composed gradient is the ordinary number `1e200`.
+///
+/// `1e200` is `scale^2 / b^3` at `b = scale = 1e-200`, evaluated out of crate
+/// as an exact rational over the f64 values of those constants.
+#[test]
+fn composed_division_gradient_survives_a_small_upstream_factor() {
+    let graph = scaled_reciprocal_target(1e-200);
+    let (logp, grad) = evaluate(&graph, &[1e-200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0].is_finite(), "gradient blew up to {}", grad[0]);
+    assert_close(grad[0], 1e200, "d/db of (1/b) * 1e-200 at b = 1e-200");
+
+    let numeric = central_difference(&graph, &[1e-200], 0, 1e-206);
+    assert!(
+        (grad[0] / numeric - 1.0).abs() < 1e-6,
+        "analytic {} vs central difference {numeric}",
+        grad[0]
+    );
+}
+
+/// The mirror: a large upstream factor. `-1/b^2` at `b = 1e200` underflows to
+/// `-0.0`, so the composed gradient came out as `+0.0` where it is `1e-200`.
+///
+/// This is the failure the other way round, and it is the reason the fix cannot
+/// simply be "divide twice": `-(a/b)/b` is what produced the zero here.
+#[test]
+fn composed_division_gradient_survives_a_large_upstream_factor() {
+    let graph = scaled_reciprocal_target(1e200);
+    let (logp, grad) = evaluate(&graph, &[1e200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0] != 0.0, "gradient collapsed to {}", grad[0]);
+    assert_close(grad[0], 1e-200, "d/db of (1/b) * 1e200 at b = 1e200");
+
+    let numeric = central_difference(&graph, &[1e200], 0, 1e194);
+    assert!(
+        (grad[0] / numeric - 1.0).abs() < 1e-5,
+        "analytic {} vs central difference {numeric}",
+        grad[0]
+    );
+}
+
+/// No regression in the ordinary range: the composed adjoints are still
+/// `upstream / b` and `-upstream * a / b^2`.
+///
+/// Expectations are those two closed forms evaluated out of crate as exact
+/// rationals over the f64 operands, then rounded once to f64. The numerator
+/// adjoint is one division and matches exactly; the denominator adjoint is
+/// `upstream * (-a / (b * b))` and rounds three times, so it is checked to
+/// within a few ulp — the last row misses the once-rounded value by one
+/// (`-2.0000000000000002e-16` against `-2e-16`), and did so before this change
+/// as well.
+#[test]
+fn composed_division_adjoints_are_unchanged_in_the_ordinary_range() {
+    for (upstream, a, b, expected_a, expected_b) in [
+        (1.0, 3.0, 2.0, 0.5, -0.75),
+        (0.5, -7.5, 0.25, 2.0, 60.0),
+        (-2.0, 1.0, 13.0, -0.15384615384615385, 0.011834319526627219),
+        (3.25, 5.0, 7.0, 0.4642857142857143, -0.33163265306122447),
+        (1e-8, 2.0, 1e4, 1e-12, -2e-16),
+    ] {
+        let (da, db) = ElementwiseOp::Div.adjoints(upstream, a, b);
+        assert_eq!(da, expected_a, "d/da for {upstream} * d({a}/{b})");
+        assert!(
+            (db / expected_b - 1.0).abs() < 1e-15,
+            "d/db for {upstream} * d({a}/{b}): {db} vs {expected_b}"
+        );
+    }
+}
+
+/// `Pow` reaches the same wall through a different door: `x^-1` is
+/// representable at `x = 1e-200` but its derivative `-x^-2` is `-1e400`, and
+/// the `1e-200` factor above it makes the composed gradient `1e200`.
+#[test]
+fn composed_power_gradient_survives_an_overflowing_local_derivative() {
+    let mut graph = Graph::new();
+    let x = Normal::prior(&mut graph, "x", 1e-200, 1e-200);
+    let minus_one = graph.add_constant(-1.0);
+    let inverse = graph.elementwise(ElementwiseOp::Pow, x, Some(minus_one));
+    let factor = graph.add_constant(1e-200);
+    let mu = graph.elementwise(ElementwiseOp::Mul, inverse, Some(factor));
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, mu, sigma);
+
+    let (logp, grad) = evaluate(&graph, &[1e-200]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert!(grad[0].is_finite(), "gradient blew up to {}", grad[0]);
+    // Same closed form as the Div case: 1e-200^2 / x^3 at x = 1e-200.
+    assert_close(grad[0], 1e200, "d/dx of (x^-1) * 1e-200 at x = 1e-200");
+}
+
+/// A local derivative that is finite but quantized is the same loss with a
+/// plausible face on it. `-(a/b)/b` at `a = 1, b = 3.7e161` is `-5e-324`, one
+/// bit of a true -7.3e-324; an upstream adjoint of `1e200` then restores the
+/// scale and the error together, and the composed gradient comes out 32% low
+/// rather than infinite. Rescuing only on an infinity or a zero misses it.
+///
+/// Expectations are `-upstream * a / b^2` as an exact rational over the f64
+/// operands, rounded once, computed out of crate.
+#[test]
+fn composed_division_gradient_survives_a_quantized_local_derivative() {
+    for (b, expected) in [
+        (4.5e161, -4.938271604938272e-124),
+        (4e161, -6.2499999999999995e-124),
+        (3.7e161, -7.304601899196495e-124),
+        (3.5e161, -8.16326530612245e-124),
+        (1e161, -9.999999999999999e-123),
+    ] {
+        let local = ElementwiseOp::Div.derivatives(1.0, b).1;
+        assert!(
+            local != 0.0 && !local.is_normal(),
+            "premise: the local derivative for b = {b} must be subnormal, got {local}"
+        );
+        let (_, db) = ElementwiseOp::Div.adjoints(1e200, 1.0, b);
+        assert!(
+            (db / expected - 1.0).abs() < 1e-14,
+            "d/db for 1e200 * d(1/{b}): {db} vs {expected}"
+        );
+    }
+}
+
+/// `Pow` where `a^b` has left the range too, in both directions. There is no
+/// in-range power left to rewrite the derivative through, so the rescue falls
+/// back to accumulating the exponent through a logarithm — the only path in
+/// the module that does, and the only one accurate to 1e-13 rather than to a
+/// few ulp.
+///
+/// Expectations are `upstream * b * a^(b-1)` as an exact rational over the f64
+/// operands (Python `fractions`), rounded once.
+#[test]
+fn composed_power_gradient_survives_a_value_that_left_the_range() {
+    // a^b == 1e-600 rounds to 0 and a^(b-1) == 1e-400 rounds to 0, while the
+    // composed gradient 3e-200 is an ordinary number.
+    assert_eq!(1e-200_f64.powf(2.0), 0.0, "premise: a^(b-1) underflows");
+    let (da, _) = ElementwiseOp::Pow.adjoints(1e200, 1e-200, 3.0);
+    assert!(
+        (da / 3e-200 - 1.0).abs() < 1e-12,
+        "d/da for 1e200 * d(1e-200^3): {da} vs 3e-200"
+    );
+
+    // The mirror: a^b == 1e600 and a^(b-1) == 1e400 both overflow, while the
+    // composed gradient 3e200 is an ordinary number.
+    assert_eq!(
+        1e200_f64.powf(2.0),
+        f64::INFINITY,
+        "premise: a^(b-1) overflows"
+    );
+    let (da, _) = ElementwiseOp::Pow.adjoints(1e-200, 1e200, 3.0);
+    assert!(
+        (da / 3e200 - 1.0).abs() < 1e-12,
+        "d/da for 1e-200 * d(1e200^3): {da} vs 3e200"
+    );
+
+    // A negative base keeps the direct answer: `powf` of one is NaN unless the
+    // exponent is an integer, and a logarithm cannot tell the difference.
+    let (da, db) = ElementwiseOp::Pow.adjoints(1e-200, -1e200, 3.5);
+    assert!(da.is_nan() && db.is_nan(), "negative base gave {da}, {db}");
+}
+
+/// `Log`'s local derivative `1 / a` is infinite for every subnormal `a`, while
+/// `upstream / a` is an ordinary number whenever the adjoint is small.
+///
+/// `1e-300 * ln(a)` at `a = 1e-320` has gradient `1e-300 / 1e-320`, which is
+/// 1.0000111329412581e20 — the exact rational quotient of the two f64 constants,
+/// rounded once, computed out of crate. It is not exactly 1e20 because 1e-320 is
+/// a subnormal and carries only about 20 significant bits.
+#[test]
+fn composed_logarithm_gradient_survives_a_subnormal_argument() {
+    let mut graph = Graph::new();
+    let a = graph.add_param("a");
+    let log_a = graph.elementwise(ElementwiseOp::Log, a, None);
+    let factor = graph.add_constant(1e-300);
+    let term = graph.elementwise(ElementwiseOp::Mul, log_a, Some(factor));
+    graph.add_logp_term(term);
+
+    assert_eq!(1.0 / 1e-320, f64::INFINITY, "1/a must overflow for this a");
+    let (logp, grad) = evaluate(&graph, &[1e-320]);
+    assert!(logp.is_finite(), "log density {logp}");
+    assert_eq!(
+        grad[0], 1.0000111329412581e20,
+        "d/da of 1e-300 * ln(a) at a = 1e-320"
+    );
+}
+
+/// `1 - tanh(a)^2` is not `sech^2(a)` in floating point: `tanh` rounds to 1 at
+/// `|a| = 19.06` and the difference cancels to exactly zero from there on, while
+/// the true derivative stays representable out to `|a| = 372`. One step before
+/// the cliff, at `a = 19`, the old form is already 77% too large.
+///
+/// The reference is `4 e^-2|a| / (1 + e^-2|a|)^2` evaluated out of crate with
+/// Python `decimal` at 120 significant digits. As elsewhere in this file the
+/// comparison is to 1e-12 relative, because `exp` is not correctly rounded.
+#[test]
+fn tanh_derivative_does_not_cancel_once_tanh_saturates() {
+    for (a, expected) in [
+        (0.0, 1.0),
+        (0.5, 0.7864477329659274),
+        (1.0, 0.4199743416140261),
+        (5.0, 0.0001815832309438067),
+        (10.0, 8.244614455767397e-09),
+        (19.0, 1.2556531168192118e-16),
+        (19.1, 1.0280418219381054e-16),
+        (20.0, 1.6993417021166355e-17),
+        (25.0, 7.714999391855671e-22),
+        (40.0, 7.219405551381661e-35),
+        (100.0, 5.53558610694695e-87),
+        (300.0, 1.0601586212017243e-260),
+    ] {
+        for signed in [a, -a] {
+            let (slope, _) = ElementwiseOp::Tanh.derivatives(signed, 0.0);
+            assert_close(slope, expected, &format!("d/da tanh({signed})"));
+        }
+    }
+}
+
+/// The same cancellation as a user meets it: `0 ~ Normal(tanh(eta), 1)` with
+/// `eta` pushed into saturation. The gradient is `-tanh(eta) sech^2(eta)`,
+/// which is exactly `-sech^2(eta)` once `tanh` rounds to 1, and it used to be
+/// exactly zero for every `|eta| > 19` — a flat direction where the density is
+/// not flat.
+#[test]
+fn saturated_tanh_still_moves_the_gradient() {
+    let mut graph = Graph::new();
+    let eta = graph.add_param("eta");
+    let squashed = graph.elementwise(ElementwiseOp::Tanh, eta, None);
+    let observed = graph.add_constant(0.0);
+    let sigma = graph.add_constant(1.0);
+    graph.normal_logp(observed, squashed, sigma);
+
+    // sech^2 at 120 significant digits, out of crate; tanh is exactly 1 at all
+    // three of these, so the gradient is exactly its negation.
+    for (eta0, sech_squared) in [
+        (25.0, 7.714999391855671e-22),
+        (40.0, 7.219405551381661e-35),
+        (100.0, 5.53558610694695e-87),
+    ] {
+        let (logp, grad) = evaluate(&graph, &[eta0]);
+        assert!(logp.is_finite(), "log density {logp}");
+        assert!(
+            grad[0] != 0.0,
+            "the gradient collapsed to zero at eta = {eta0}"
+        );
+        assert_close(grad[0], -sech_squared, &format!("d/deta at {eta0}"));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 7 — discrete supports
+// ---------------------------------------------------------------------------
+
+/// `x ~ Bernoulli(p)` with both operands constant, so `total_logp` is the log
+/// mass itself.
+fn bernoulli_density(x: f64, p: f64) -> f64 {
+    let mut graph = Graph::new();
+    let x_node = graph.add_constant(x);
+    let p_node = graph.add_constant(p);
+    graph.bernoulli_logp(x_node, p_node);
+    evaluate(&graph, &[]).0
+}
+
+/// `x ~ Bernoulli(p)` with `p` free, so `grad[0]` is the score.
+fn bernoulli_score(x: f64, p: f64) -> f64 {
+    let mut graph = Graph::new();
+    let p_node = graph.add_param("p");
+    let x_node = graph.add_constant(x);
+    graph.bernoulli_logp(x_node, p_node);
+    evaluate(&graph, &[p]).1[0]
+}
+
+/// The support of a Bernoulli is `{0, 1}`. Nothing checked it, so `x = 0.5` had
+/// a finite density and at `p = 0.5` that density was constant over all of R.
+///
+/// Reachable through `GraphModel::log_density` on a loaded artifact, which is
+/// why this is about the density and not about sampling.
+#[test]
+fn bernoulli_density_is_minus_infinity_off_its_support() {
+    for x in [-1.0, -0.5, 0.5, 1.5, 2.0, 1e16, f64::NAN, f64::INFINITY] {
+        for p in [0.1, 0.5, 0.9] {
+            let value = bernoulli_density(x, p);
+            assert_eq!(
+                value,
+                f64::NEG_INFINITY,
+                "Bernoulli({p}) at x = {x} gave {value}"
+            );
+            assert_eq!(bernoulli_score(x, p), 0.0, "score off support at x = {x}");
+        }
+    }
+    // The support itself stays finite.
+    assert_eq!(bernoulli_density(1.0, 0.5), -std::f64::consts::LN_2);
+    assert_eq!(bernoulli_density(0.0, 0.5), -std::f64::consts::LN_2);
+}
+
+/// An impossible outcome has no density, not a small one. The clamp to
+/// `[1e-12, 1 - 1e-12]` scored `x = 1, p = 0` at `ln(1e-12)`, which is
+/// -27.631021115928547, and `x = 0, p = 1` at `ln(1 - (1 - 1e-12))`, which is
+/// -27.63104323789336 — the two differ because `1 - 1e-12` is not exact.
+#[test]
+fn impossible_bernoulli_outcomes_have_no_density() {
+    assert_eq!(bernoulli_density(1.0, 0.0), f64::NEG_INFINITY);
+    assert_eq!(bernoulli_density(0.0, 1.0), f64::NEG_INFINITY);
+    // The certain outcomes at the same endpoints have log mass exactly zero.
+    assert_eq!(bernoulli_density(0.0, 0.0), 0.0);
+    assert_eq!(bernoulli_density(1.0, 1.0), 0.0);
+    // A p outside [0, 1] is not a probability at all.
+    for p in [-0.5, -1e-300, 1.0000001, 2.0, f64::NAN, f64::INFINITY] {
+        for x in [0.0, 1.0] {
+            assert_eq!(
+                bernoulli_density(x, p),
+                f64::NEG_INFINITY,
+                "Bernoulli({p}) at x = {x}"
+            );
+            assert_eq!(bernoulli_score(x, p), 0.0, "score for p = {p}, x = {x}");
+        }
+    }
+}
+
+/// On the support the density is `ln p` and `ln(1 - p)` over the whole of
+/// `[0, 1]`, not over `[1e-12, 1 - 1e-12]`. Expectations are those logarithms at
+/// 80 significant digits out of crate, rounded once to f64; the last two rows
+/// are where the clamp used to replace the answer outright.
+#[test]
+fn bernoulli_density_matches_closed_form_across_the_unit_interval() {
+    for (p, ln_p) in [
+        (0.5, -std::f64::consts::LN_2),
+        (0.25, -1.3862943611198906),
+        (0.7, -0.35667494393873245),
+        (1e-12, -27.631021115928547),
+        (1e-300, -690.7755278982137),
+        (5e-324, -744.4400719213812),
+    ] {
+        assert_close(bernoulli_density(1.0, p), ln_p, &format!("ln({p})"));
+    }
+    // `ln_1p(-p)`, not `(1 - p).ln()`: the subtraction rounds to exactly 1
+    // below p = 1e-16 and discards the whole of -p.
+    for (p, ln_1m_p) in [
+        (0.5, -std::f64::consts::LN_2),
+        (0.25, -0.2876820724517809),
+        (0.7, -1.203972804325936),
+        (1e-18, -1e-18),
+        (1e-300, -1e-300),
+    ] {
+        assert_close(bernoulli_density(0.0, p), ln_1m_p, &format!("ln(1 - {p})"));
+        assert_eq!(1.0 - p == 1.0, p < 1e-16, "premise about (1 - p) for {p}");
+    }
+}
+
+/// On the support the score is `1/p` and `-1/(1 - p)` exactly, over the whole
+/// interval rather than a clamped band, and it agrees with central differences.
+#[test]
+fn bernoulli_score_matches_the_closed_form_on_its_support() {
+    assert_eq!(bernoulli_score(1.0, 0.7), 1.0 / 0.7);
+    assert_eq!(bernoulli_score(0.0, 0.7), -1.0 / (1.0 - 0.7));
+    // Inside the old clamp band the score was pinned at 1e12.
+    assert_eq!(bernoulli_score(1.0, 1e-300), 1.0 / 1e-300);
+    assert_eq!(bernoulli_score(1.0, 0.0), f64::INFINITY);
+
+    let mut graph = Graph::new();
+    let p_node = graph.add_param("p");
+    let x_node = graph.add_constant(1.0);
+    graph.bernoulli_logp(x_node, p_node);
+    for p in [0.1, 0.5, 0.9] {
+        let numeric = central_difference(&graph, &[p], 0, 1e-7);
+        let analytic = evaluate(&graph, &[p]).1[0];
+        assert!(
+            (analytic - numeric).abs() / (1.0 + numeric.abs()) < 1e-6,
+            "score at p = {p}: {analytic} vs {numeric}"
+        );
+    }
+}
+
+/// The Poisson mass already refused a fractional count, and carries no clamp.
+/// Pinned here so it stays that way, together with the score, which did *not*
+/// refuse the same inputs before and moved where the mass was flat `-inf`.
+#[test]
+fn poisson_density_and_score_agree_about_the_support() {
+    let density = |x: f64, lam: f64| {
+        let mut graph = Graph::new();
+        let x_node = graph.add_constant(x);
+        let lam_node = graph.add_constant(lam);
+        graph.poisson_logp(x_node, lam_node);
+        evaluate(&graph, &[]).0
+    };
+    let score = |x: f64, lam: f64| {
+        let mut graph = Graph::new();
+        let lam_node = graph.add_param("lam");
+        let x_node = graph.add_constant(x);
+        graph.poisson_logp(x_node, lam_node);
+        evaluate(&graph, &[lam]).1[0]
+    };
+
+    for x in [-1.0, 0.5, 2.5, -0.0001, f64::NAN, f64::INFINITY] {
+        assert_eq!(density(x, 2.0), f64::NEG_INFINITY, "Poisson(2) at x = {x}");
+        assert_eq!(score(x, 2.0), 0.0, "score off support at x = {x}");
+    }
+    for lam in [-1.0, f64::NAN, f64::INFINITY] {
+        assert_eq!(density(3.0, lam), f64::NEG_INFINITY, "Poisson({lam}) at 3");
+        assert_eq!(score(3.0, lam), 0.0, "score for lam = {lam}");
+    }
+
+    // rate == 0 is the point mass at zero, and its score is -1 either way.
+    assert_eq!(density(0.0, 0.0), 0.0);
+    assert_eq!(density(1.0, 0.0), f64::NEG_INFINITY);
+    assert_eq!(score(0.0, 0.0), -1.0);
+    assert_eq!(score(0.0, 4.0), -1.0);
+
+    // k ln(lam) - lam - ln(k!) at 80 digits, out of crate.
+    assert_close(density(3.0, 2.0), -1.712317927548219, "Poisson(2) at 3");
+    assert_eq!(score(3.0, 2.0), 0.5);
+
+    // Near the mode, where a count model actually lives, `x / lam - 1` rounds
+    // the quotient to something near 1 and then cancels away most of what is
+    // left. Expectations are `(x - lam) / lam` as an exact rational over the
+    // f64 operands, out of crate.
+    let just_below_one = f64::from_bits(1.0_f64.to_bits() - 1);
+    assert_eq!(just_below_one, 0.9999999999999999);
+    for (x, lam, expected) in [
+        (1.0, just_below_one, 1.1102230246251568e-16),
+        (100.0, 100.0000000000001, -9.947598300641394e-16),
+        (1e14, 100000000000001.0, -9.9999999999999e-15),
+        (5.0, 5.0000000001, -2.000000165440742e-11),
+    ] {
+        assert_eq!(score(x, lam), expected, "score at x = {x}, lam = {lam}");
+    }
+}
+
+/// Negative control for the whole task: the Bernoulli-logit *observation*
+/// likelihood is a different op over observed data, and none of the above
+/// touches it. This is the shape the release gate's beta-Bernoulli case fits.
+#[test]
+fn the_bernoulli_logit_observation_likelihood_is_unaffected() {
+    let mut graph = Graph::new();
+    let eta = Normal::prior(&mut graph, "eta", 0.0, 2.0);
+    let obs = graph.add_obs_data(vec![1.0, 0.0, 1.0, 1.0, 0.0]);
+    let linpred = graph.broadcast_observation(eta, obs);
+    graph.obs_logp_bernoulli_logit(linpred, obs);
+
+    for eta0 in [-2.0, -0.3, 0.0, 0.8, 3.0] {
+        let (logp, grad) = evaluate(&graph, &[eta0]);
+        assert!(logp.is_finite(), "log density at eta = {eta0} is {logp}");
+        // Closed form: sum over observations of (y - sigmoid(eta)), less the
+        // prior score eta / 4.
+        let s = 1.0 / (1.0 + (-eta0).exp());
+        let expected = (3.0 - 5.0 * s) - eta0 / 4.0;
+        assert!(
+            (grad[0] - expected).abs() / (1.0 + expected.abs()) < 1e-12,
+            "gradient at eta = {eta0}: {} vs {expected}",
+            grad[0]
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Task 5 — posterior moments
+// ---------------------------------------------------------------------------
+
+/// A `SampleResult` carrying exactly these draws, one parameter, chain-major.
+///
+/// Built directly rather than fitted, because the point is the arithmetic that
+/// turns draws into moments and a fitted posterior cannot be asked to land on
+/// chosen draws. `posterior_moments_agree_across_paths_on_a_real_fit` covers
+/// the same code reached the way a user reaches it.
+fn result_with_draws(chains: &[&[f64]]) -> SampleResult {
+    SampleResult {
+        samples: chains
+            .iter()
+            .map(|chain| chain.iter().map(|&v| vec![v]).collect())
+            .collect(),
+        unconstrained_samples: None,
+        accept_rates: vec![1.0; chains.len()],
+        step_sizes: vec![0.1; chains.len()],
+        divergences: vec![0; chains.len()],
+        transitions: chains.iter().map(|_| Vec::new()).collect(),
+        param_names: vec!["theta".to_string()],
+    }
+}
+
+/// Draws near the top of the representable range: both naive accumulators
+/// overflow (`9e307 + ... + 2e307` is `inf`, and every `diff * diff` is `inf`),
+/// so `mean()` used to report an infinite mean and `std()` a NaN while
+/// `diagnostics()` reported the right numbers for the very same draws.
+///
+/// Expectations are the exact rational mean and variance of these eight f64
+/// values, evaluated out of crate with Python `fractions.Fraction` and the
+/// square root taken with `decimal` at 80 significant digits:
+///   mean = 5.5000000000000000167258431908505089157e307
+///   sd   = 2.4494897427831782313051785197920223420e307
+/// The standard deviation is the sample one, `n - 1` in the denominator, which
+/// is what the summary table reports.
+#[test]
+fn posterior_moments_survive_draws_near_the_representable_maximum() {
+    const EXPECTED_MEAN: f64 = 5.5e307;
+    const EXPECTED_STD: f64 = 2.4494897427831783e307;
+
+    let result = result_with_draws(&[&[9e307, 8e307, 7e307, 6e307], &[5e307, 4e307, 3e307, 2e307]]);
+
+    // The accumulator this replaced, so the test cannot pass by accident.
+    assert!(
+        !result
+            .samples
+            .iter()
+            .flatten()
+            .map(|draw| draw[0])
+            .sum::<f64>()
+            .is_finite(),
+        "the naive running sum must still overflow on these draws"
+    );
+
+    let mean = result.mean()[0];
+    let std = result.std()[0];
+    assert!(
+        mean.is_finite() && std.is_finite(),
+        "mean {mean}, std {std}"
+    );
+    assert_close(mean, EXPECTED_MEAN, "mean of draws near f64::MAX");
+    assert_close(std, EXPECTED_STD, "std of draws near f64::MAX");
+
+    let report = result.diagnostics();
+    assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
+    assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+}
+
+/// The two paths agree on malformed input too, rather than one panicking and
+/// the other reporting. `SampleResult`'s fields are public, so a caller can
+/// assemble a ragged `samples` array; `diagnostics()` has always reported NaN
+/// for one, and indexing it would panic.
+#[test]
+fn posterior_moments_report_the_same_nan_diagnostics_does_for_ragged_draws() {
+    let mut result = result_with_draws(&[&[1.0, 2.0, 3.0], &[4.0, 5.0, 6.0]]);
+    result.param_names = vec!["a".to_string(), "b".to_string()];
+    // Second parameter present in three draws out of six.
+    result.samples[0] = vec![vec![1.0, 10.0], vec![2.0], vec![3.0, 30.0]];
+    result.samples[1] = vec![vec![4.0], vec![5.0, 50.0], vec![6.0]];
+
+    let report = result.diagnostics();
+    for (index, name) in ["a", "b"].iter().enumerate() {
+        assert!(
+            report.params[index].mean.is_nan(),
+            "diagnostics {name} mean"
+        );
+        assert!(result.mean()[index].is_nan(), "mean() for {name}");
+        assert!(result.std()[index].is_nan(), "std() for {name}");
+    }
+}
+
+/// The same agreement on a fitted posterior, reached the way a caller reaches
+/// it. `HalfNormal(1e307)` is sampled on a log scale, so the chain reaches the
+/// top of the range from the usual zero initialization, and the draws it
+/// reports are of order 1e307: the naive sum over 2000 of them overflows.
+///
+/// The posterior is the prior, whose moments are closed forms —
+/// `sigma * sqrt(2/pi)` and `sigma * sqrt(1 - 2/pi)` — so this checks the
+/// reported numbers against something other than the other in-repo path too.
+#[test]
+fn posterior_moments_agree_across_paths_on_a_real_fit() {
+    let sigma = 1e307;
+    let mut graph = Graph::new();
+    HalfNormal::prior(&mut graph, "theta", sigma);
+    let result = sample(
+        graph,
+        SamplerConfig {
+            num_chains: 2,
+            num_draws: 1000,
+            num_warmup: 1000,
+            seed: 20260918,
+            show_progress: false,
+            ..SamplerConfig::default()
+        },
+    )
+    .expect("a HalfNormal prior at 1e307 must still fit");
+
+    let naive: f64 = result
+        .samples
+        .iter()
+        .flatten()
+        .map(|draw| draw[0])
+        .sum::<f64>();
+    assert!(
+        !naive.is_finite(),
+        "the naive running sum must overflow for this posterior, got {naive}"
+    );
+
+    let mean = result.mean()[0];
+    let std = result.std()[0];
+    let report = result.diagnostics();
+    assert!(
+        mean.is_finite() && std.is_finite(),
+        "mean {mean}, std {std}"
+    );
+    assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
+    assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+
+    let expected_mean = sigma * (2.0 / std::f64::consts::PI).sqrt();
+    let expected_std = sigma * (1.0 - 2.0 / std::f64::consts::PI).sqrt();
+    assert!(
+        (mean / expected_mean - 1.0).abs() < 0.2,
+        "posterior mean {mean} vs the half-normal mean {expected_mean}"
+    );
+    assert!(
+        (std / expected_std - 1.0).abs() < 0.25,
+        "posterior std {std} vs the half-normal sd {expected_std}"
+    );
 }

@@ -118,16 +118,14 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
 /// 9999999999999998, below `lower` — and can overflow to infinity when both
 /// endpoints are near `f64::MAX`.
 ///
-/// Three limits remain, none of them new:
+/// The distance from the endpoint is [`span_times_sigmoid`], which folds the
+/// span into the exponent rather than applying it to a materialised sigmoid.
+/// Two limits remain:
 ///
 /// * The branches can disagree by one ulp at raw == 0, so the mapping is not
 ///   exactly monotone there (lower = 1, upper = 1e16 steps down by one ulp
 ///   across zero); that is a rounding artefact of the reported value, and
 ///   [`bounded_sigmoid_derivative`] does not model it.
-/// * Materialising the sigmoid before scaling loses bounded values whose
-///   sigmoid underflows: lower = 0, upper = 1e308, raw = -746 gives 0 where the
-///   true value is 1.0382848095158282e-16. Removing that needs the scaling
-///   folded into the sigmoid.
 /// * An interval whose span is not representable — `(-1e308, 1e308)` has
 ///   `upper - lower == inf` — yields `-inf` or `NaN` here. Such an interval is
 ///   not a usable `Uniform` prior in any case: both `uniform_bounds_valid` and
@@ -138,10 +136,71 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
 pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
     let span = upper - lower;
     if raw >= 0.0 {
-        upper - span * stable_sigmoid(-raw)
+        upper - span_times_sigmoid(span, -raw)
     } else {
-        lower + span * stable_sigmoid(raw)
+        lower + span_times_sigmoid(span, raw)
     }
+}
+
+/// `span * sigmoid(raw)` for `raw <= 0`, over the whole range where the product
+/// is representable rather than only where the sigmoid is.
+///
+/// Applying the span to a materialised sigmoid loses the tail twice over. Below
+/// `raw = -708.4` the sigmoid is a subnormal and sheds bits — at `raw = -740`,
+/// `span = 1e308` it is already 0.26% high, and at -745 it is 75% high — and
+/// below `raw = -745.13` it is zero outright, so `Uniform(0, 1e308)` at
+/// raw = -746 returned 0 for a value of 1.0382848095158282e-16.
+///
+/// The way out is that the sigmoid *is* `exp(raw)` in that tail: once
+/// `exp(raw)` is below 2^-52, `1 + exp(raw)` rounds to exactly 1. And
+/// `exp(raw) == exp(raw / 2)^2` with `raw / 2` exact, so the span goes between
+/// the two halves: for `span = 1e308, raw = -746` that is
+/// `1e308 * 1.0e-162 * 1.0e-162`. No logarithm of the span is taken, so no
+/// precision is lost to one.
+///
+/// The intermediate `span * exp(raw / 2)` is `sqrt(span * result)`, so it
+/// cannot underflow while the result is representable, and cannot overflow
+/// either: this branch is only taken for `raw < -708`, which bounds
+/// `exp(raw / 2)` below 1.1e-154 against a span of at most 1.8e308. It can be a
+/// subnormal, and lose bits, where the span and the result are both near the
+/// bottom of the range — `span = 1e-300, raw = -710` returns zero, which is
+/// also the exact answer.
+///
+/// Accurate to 2.2e-16 relative from the gate down to `raw = -1416`, where
+/// `exp(raw / 2)` becomes subnormal itself and the halves start shedding bits;
+/// the value reaches zero around `raw = -1454` for the widest representable
+/// span. Both boundaries are pinned by
+/// `bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows`.
+///
+/// The direct product is kept wherever the sigmoid is a normal number, so
+/// ordinary intervals and ordinary raw values are bit for bit unchanged, and an
+/// unrepresentable span keeps returning the infinity or NaN it did before.
+#[inline]
+fn span_times_sigmoid(span: f64, raw: f64) -> f64 {
+    let s = stable_sigmoid(raw);
+    if s.is_normal() || !span.is_finite() {
+        return span * s;
+    }
+    let half = (0.5 * raw).exp();
+    (span * half) * half
+}
+
+/// `span * s'(raw)`, the same rescue as [`span_times_sigmoid`] applied to the
+/// slope.
+///
+/// `s'(raw)` is `exp(-|raw|) / (1 + exp(-|raw|))^2`, and once `exp(-|raw|)` is
+/// subnormal the squared denominator rounds to exactly 1, so the slope is
+/// `exp(-|raw|)` there and splits into two halves the same way. Without this
+/// the derivative of a wide interval went to zero at `|raw| = 745` alongside
+/// the value.
+#[inline]
+fn span_times_sigmoid_slope(span: f64, raw: f64) -> f64 {
+    let slope = stable_sigmoid_derivative(raw);
+    if slope.is_normal() || !span.is_finite() {
+        return span * slope;
+    }
+    let half = (-0.5 * raw.abs()).exp();
+    (span * half) * half
 }
 
 /// d/draw of [`bounded_sigmoid`], i.e. `(upper - lower) * s'(raw)`.
@@ -153,7 +212,7 @@ pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
 /// discarding a derivative of 0.4961479024771348.
 #[inline]
 pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
-    (upper - lower) * stable_sigmoid_derivative(raw)
+    span_times_sigmoid_slope(upper - lower, raw)
 }
 
 /// `adjoint * (upper - lower) * s'(raw)`, associated so that the product stays
@@ -184,11 +243,15 @@ pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
 /// A subnormal span near raw 0 is the exception — `(0, 1e-323)` has
 /// `span * s' == 2.5e-324`, which rounds to zero while the value still moves —
 /// and that is the case this order rescues.
+///
+/// The wide-span tail is no longer one of these cases:
+/// [`span_times_sigmoid_slope`] keeps `span * s'` alive past `|raw| = 745`, so
+/// the fallback now fires only for a genuinely tiny span.
 #[inline]
 pub fn bounded_sigmoid_adjoint(adjoint: f64, raw: f64, lower: f64, upper: f64) -> f64 {
     let slope = stable_sigmoid_derivative(raw);
     let span = upper - lower;
-    let scaled = span * slope;
+    let scaled = span_times_sigmoid_slope(span, raw);
     if scaled == 0.0 && span != 0.0 && slope != 0.0 {
         (adjoint * span) * slope
     } else {
@@ -228,6 +291,255 @@ fn div_denominator_derivative(a: f64, b: f64) -> f64 {
         // the subnormal square band in between.
         -(a / b) / b
     }
+}
+
+// ---------------------------------------------------------------------------
+// Composing an upstream adjoint with a local derivative
+// ---------------------------------------------------------------------------
+//
+// Reverse mode never wants a local derivative on its own; it wants the local
+// derivative times the adjoint flowing in from above. Forming the local factor
+// first discards the composition whenever that factor alone leaves the exponent
+// range while the product does not — and a local-derivative API has no way to
+// express that, because it has nothing to scale against. The helpers below take
+// the upstream adjoint as an argument so they can associate the three factors
+// in an order that survives.
+
+/// `2^exponent`, for an exponent inside the normal range.
+#[inline]
+fn two_pow(exponent: i32) -> f64 {
+    debug_assert!((-1022..=1023).contains(&exponent));
+    f64::from_bits(((exponent + 1023) as u64) << 52)
+}
+
+/// Split a finite, nonzero `x` into `(mantissa, exponent)` with the mantissa in
+/// `[0.5, 1)`. Exact: `mantissa * 2^exponent == x`.
+fn split_exponent(x: f64) -> (f64, i32) {
+    debug_assert!(x.is_finite() && x != 0.0);
+    let bits = x.to_bits();
+    let raw = ((bits >> 52) & 0x7ff) as i32;
+    if raw == 0 {
+        // Subnormal. Scaling by 2^64 is exact and lands every nonzero
+        // subnormal in the normals, where the mantissa can be read off.
+        let (mantissa, exponent) = split_exponent(x * two_pow(64));
+        return (mantissa, exponent - 64);
+    }
+    let mantissa = f64::from_bits((bits & !(0x7ff_u64 << 52)) | (1022_u64 << 52));
+    (mantissa, raw - 1022)
+}
+
+/// `mantissa * 2^exponent`, applied in steps so that an exponent far outside
+/// the representable range cannot overflow or underflow an intermediate.
+fn apply_exponent(mantissa: f64, exponent: i32) -> f64 {
+    const STEP: i32 = 512;
+    let mut value = mantissa;
+    let mut remaining = exponent;
+    while remaining > STEP {
+        value *= two_pow(STEP);
+        if !value.is_finite() {
+            return value;
+        }
+        remaining -= STEP;
+    }
+    while remaining < -STEP {
+        value *= two_pow(-STEP);
+        if value == 0.0 {
+            return value;
+        }
+        remaining += STEP;
+    }
+    value * two_pow(remaining)
+}
+
+/// The product of `numerators` divided by the product of `denominators`, with
+/// the exponents accumulated separately so that no intermediate leaves the
+/// exponent range while the result is representable.
+///
+/// Every operand contributes a mantissa in `[0.5, 1)`; with at most three
+/// numerators and two denominators the running mantissa stays inside
+/// `(0.125, 4)`, which is normal, and the exponent is reapplied once at the
+/// end. The cost is one rounding per operand rather than one per product, which
+/// is why this is a fallback: the direct form is more accurate wherever it
+/// works at all.
+///
+/// Returns `None` when any operand is zero or not finite. The scaled form has
+/// nothing to say there that the direct product has not already said, and it
+/// would turn a signed infinity or a NaN into a wrong finite number.
+fn scaled_ratio(numerators: &[f64], denominators: &[f64]) -> Option<f64> {
+    let mut mantissa = 1.0_f64;
+    let mut exponent = 0_i32;
+    for &x in numerators {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa *= m;
+        exponent += e;
+    }
+    for &x in denominators {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa /= m;
+        exponent -= e;
+    }
+    Some(apply_exponent(mantissa, exponent))
+}
+
+/// Whether `direct` has left the exponent range although the exact product of
+/// `factors` has not: an infinity, a NaN, or a zero produced from factors that
+/// were every one of them finite and nonzero.
+///
+/// The `factors` list is what makes a legitimate zero legitimate. `Pow`'s
+/// derivative with respect to its base is exactly zero when the exponent is
+/// zero, and with respect to its exponent when the base is one; passing the
+/// exponent and `ln(base)` in this list keeps those from being "rescued" into
+/// something else.
+#[inline]
+fn needs_rescue(direct: f64, factors: &[f64]) -> bool {
+    (!direct.is_finite() || direct == 0.0) && factors.iter().all(|f| f.is_finite() && *f != 0.0)
+}
+
+/// `upstream * (-a / b^2)` over the whole representable range.
+///
+/// [`div_denominator_derivative`] already keeps the *local* derivative finite
+/// wherever it can be, but that is not enough one node upstream: `1e200 / b` at
+/// `b = 1e-200` has local derivative `-1e400`, which no ordering of a
+/// two-argument function can represent, while an upstream adjoint of `1e-200`
+/// makes the composed gradient exactly `1e200`. Multiplying afterwards has
+/// already lost it.
+///
+/// A local derivative that has merely gone *subnormal* is the same loss one
+/// step earlier and is rescued as well. `1e200 / b` at `b = 3.7e161` has
+/// `-(a/b)/b == -5e-324`, one bit of a true -7.3e-324, and the upstream adjoint
+/// then restores the scale and the error together: the composed gradient comes
+/// out 32% low, finite and plausible. The rescue is taken only when the
+/// composed result is itself a normal number, so the three subnormal results
+/// `div_denominator_derivative` already rounds correctly are left exactly as
+/// they are.
+#[inline]
+fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
+    let local = div_denominator_derivative(a, b);
+    let direct = upstream * local;
+    let quantized = local != 0.0 && !local.is_normal() && direct.is_normal();
+    if !quantized && !needs_rescue(direct, &[upstream, a, b]) {
+        return direct;
+    }
+    scaled_ratio(&[upstream, a], &[b, b]).map_or(direct, |value| -value)
+}
+
+/// `d/da tanh(a)`, as `4 s'(2a)`.
+///
+/// Not `1 - tanh(a)^2`: that cancels to exactly zero the moment `tanh` rounds to
+/// 1, at `|a| = 19.06`, and is already 77% high one step before it (`x = 19`
+/// gives 2.220446e-16 for a true 1.2556531168192118e-16). The true derivative
+/// stays representable out to `|a| = 372`. `sech^2(a) == 4 s'(2a)` is the same
+/// quantity written through [`stable_sigmoid_derivative`], which was made
+/// cancellation-free for exactly this reason, and `2.0 * a` is exact.
+///
+/// The value and the slope saturate at different points here — `tanh` is
+/// exactly 1 from `|a| = 19` while the slope runs to `|a| = 372` — so unlike
+/// `exp` or `sigmoid` this one loses a derivative the forward pass had every
+/// right to. That is what makes it a bug rather than a rounding boundary.
+///
+/// The last few units before 372 are subnormal and carry a bit or two: at
+/// `a = 372.5` this returns 2e-323 for a true 1e-323, because `exp(-745)`
+/// itself rounds from 2.6e-324 to the smallest subnormal. Below that the slope
+/// is zero, as the exact value is.
+///
+/// One consequence is deliberate and worth naming: from `|a| = 19` the
+/// computed `tanh` is flat while this slope is not, so a target that amplifies
+/// the difference enough will see the gradient disagree with its own density.
+/// `1e22 * (tanh(x) - 1)` at `x = 25` has a computed density of exactly 0 and a
+/// gradient of 7.71, and one leapfrog step at `epsilon = 0.1` then carries an
+/// energy error of 0.275. The alternative is a flat direction where the density
+/// is not flat, which a sampler cannot report; this way it diverges and says
+/// so. [`stable_sigmoid_derivative`] made the same choice for the same reason.
+#[inline]
+fn tanh_slope(a: f64) -> f64 {
+    4.0 * stable_sigmoid_derivative(2.0 * a)
+}
+
+/// `upstream * (b a^(b-1), a^b ln a)`.
+///
+/// `a^(b-1)` can leave the range on its own while `a^b` — the value the forward
+/// pass already computed and the density already used — does not: `a = 1e-200`
+/// with `b = -1` has `a^b = 1e200` and `a^(b-1) = 1e400`. Rewriting the first
+/// derivative as `b a^b / a` keeps the whole composition inside the range.
+///
+/// `a^b` itself can leave the range too — `a = 1e-200, b = 3` has `a^b == 0`
+/// and `a^(b-1) == 0` while an adjoint of `1e200` makes the gradient
+/// `3e-200` — and then there is no in-range power left to rewrite through.
+/// That case goes through [`split_power_magnitude`], which is the one path here
+/// that pays a logarithm and is accurate to about 1e-13 rather than to a few
+/// ulp. It is the last resort, taken only where the alternative is 0 or an
+/// infinity, and only for a positive base: `powf` of a negative base is NaN
+/// unless the exponent is an integer, and a logarithm cannot tell the
+/// difference.
+fn pow_adjoints(upstream: f64, a: f64, b: f64) -> (f64, f64) {
+    let (da, db) = ElementwiseOp::Pow.derivatives(a, b);
+    let mut adjoint_a = upstream * da;
+    let mut adjoint_b = upstream * db;
+    let log_a = a.ln();
+    let rescue_a = needs_rescue(adjoint_a, &[upstream, a, b]);
+    let rescue_b = needs_rescue(adjoint_b, &[upstream, a, log_a]);
+    if !rescue_a && !rescue_b {
+        return (adjoint_a, adjoint_b);
+    }
+    let value = a.powf(b);
+    if rescue_a {
+        adjoint_a = scaled_ratio(&[upstream, b, value], &[a])
+            .or_else(|| scaled_power_product(&[upstream, b], a, b - 1.0))
+            .unwrap_or(adjoint_a);
+    }
+    if rescue_b {
+        adjoint_b = scaled_ratio(&[upstream, value, log_a], &[])
+            .or_else(|| scaled_power_product(&[upstream, log_a], a, b))
+            .unwrap_or(adjoint_b);
+    }
+    (adjoint_a, adjoint_b)
+}
+
+/// `|a|^exponent` as `(mantissa, binary exponent)` with the mantissa in
+/// `[1, 2)`, for powers far outside what an f64 can hold.
+///
+/// `exponent * log2(|a|)` carries about one ulp of relative error, so an
+/// exponent of order 1000 leaves 1e-13 of absolute error in the logarithm and
+/// the same relative error in the result. Every other path in this module is
+/// accurate to a few ulp; this one is not, and it is used only where the
+/// alternative is zero or an infinity.
+fn split_power_magnitude(a: f64, exponent: f64) -> Option<(f64, i32)> {
+    let magnitude = a.abs();
+    if magnitude == 0.0 || !magnitude.is_finite() || !exponent.is_finite() {
+        return None;
+    }
+    let log2 = exponent * magnitude.log2();
+    if !log2.is_finite() || log2.abs() > 1e9 {
+        return None;
+    }
+    let whole = log2.floor();
+    Some((f64::powf(2.0, log2 - whole), whole as i32))
+}
+
+/// The product of `factors` with `a^exponent`, exponents accumulated
+/// separately. `None` for a base that is not strictly positive, or for a factor
+/// that is zero or not finite, where the direct product already said what there
+/// is to say.
+fn scaled_power_product(factors: &[f64], a: f64, exponent: f64) -> Option<f64> {
+    if a <= 0.0 {
+        return None;
+    }
+    let (mut mantissa, mut binary_exponent) = split_power_magnitude(a, exponent)?;
+    for &x in factors {
+        if x == 0.0 || !x.is_finite() {
+            return None;
+        }
+        let (m, e) = split_exponent(x);
+        mantissa *= m;
+        binary_exponent += e;
+    }
+    Some(apply_exponent(mantissa, binary_exponent))
 }
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
@@ -289,10 +601,54 @@ impl ElementwiseOp {
             Self::Log => (1.0 / a, 0.0),
             Self::Sigmoid => (stable_sigmoid_derivative(a), 0.0),
             Self::Sqrt => (0.5 / a.sqrt(), 0.0),
-            Self::Tanh => (1.0 - a.tanh().powi(2), 0.0),
+            Self::Tanh => (tanh_slope(a), 0.0),
             Self::Softplus => (stable_sigmoid(a), 0.0),
             Self::Sin => (a.cos(), 0.0),
             Self::Cos => (-a.sin(), 0.0),
+        }
+    }
+
+    /// `upstream * derivatives(a, b)`, associated so that the product stays
+    /// inside the exponent range wherever the exact product is representable.
+    ///
+    /// This is what reverse mode calls. [`Self::derivatives`] remains the
+    /// local-derivative API, unchanged and still correct on its own terms; it
+    /// simply cannot express a composition, because a derivative of `-1e400`
+    /// has no representation to hand back however the caller intends to scale
+    /// it. See the helpers above for what each operator does about that.
+    ///
+    /// The other eleven operators defer to `derivatives`, and the reason is the
+    /// same in each case: their local derivative can only leave the exponent
+    /// range where the node's own value already has, so there is no
+    /// representable composed gradient left to lose.
+    ///
+    /// * `Add`, `Sub`, `Neg`, `Sin`, `Cos` — local derivatives bounded by 1.
+    /// * `Mul` — the local derivative is one of its own operands, so
+    ///   `upstream * b` is one correctly rounded product either way.
+    /// * `Sqrt` — `0.5 / sqrt(a)` spans only `[3.7e-155, 2.2e161]` over every
+    ///   positive `a`, which cannot leave the range at all. At `a == 0` it is
+    ///   infinite, which is the true derivative and not a lost composition.
+    /// * `Exp` — the derivative *is* the value, so they overflow together.
+    /// * `Sigmoid`, `Softplus`, `Tanh` — the slope decays into the subnormals
+    ///   past `|a| = 708` and reaches zero at 745, which is also where the
+    ///   value itself is pinned at an endpoint. Between 708 and 745 the slope
+    ///   is a subnormal and a very large adjoint would see it with fewer than
+    ///   53 bits; that is a precision boundary, not a lost value, and it is not
+    ///   rescued here. `Tanh`'s separate cancellation, which *did* lose a
+    ///   representable derivative, is fixed in [`tanh_slope`] instead.
+    pub fn adjoints(self, upstream: f64, a: f64, b: f64) -> (f64, f64) {
+        match self {
+            // `upstream / b` is `upstream * (1 / b)` with one rounding instead
+            // of two, and it overflows only when the composition does: `1 / b`
+            // alone becomes infinite for every subnormal `b`, whatever `a / b`
+            // and the adjoint are.
+            Self::Div => (upstream / b, div_denominator_adjoint(upstream, a, b)),
+            Self::Log => (upstream / a, 0.0),
+            Self::Pow => pow_adjoints(upstream, a, b),
+            _ => {
+                let (da, db) = self.derivatives(a, b);
+                (upstream * da, upstream * db)
+            }
         }
     }
 }
