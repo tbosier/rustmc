@@ -63,6 +63,23 @@ def reference_cases():
 #: Per-parameter convergence diagnostic -> reported metric and its aggregation.
 CONVERGENCE_METRICS = (("r_hat", "max_rhat", max), ("ess_bulk", "min_ess_bulk", min),
                        ("ess_tail", "min_ess_tail", min))
+#: Slack on the derived R-hat floor, far above the estimator's rounding error and far
+#: below the gap to any value a broken payload would carry.
+RHAT_FLOOR_SLACK = 1e-6
+
+
+def rhat_floor(draws):
+    """Smallest R-hat the estimator can return for chains of ``draws`` draws.
+
+    ``r_hat_chains`` in rust_core/src/diagnostics.rs splits every chain in half, so its
+    split length is ``draws // 2``, and ``basic_r_hat`` returns ``sqrt(var_hat / W)``
+    with ``var_hat = (n-1)/n * W + B/n``. B is a sum of squares and cannot be negative,
+    so the ratio bottoms out at ``(n-1)/n``. Anything below that is not a slightly
+    unlucky R-hat, it is a payload that does not come from the estimator - and only a
+    lower bound catches it, because ``max`` keeps the largest value and hides the rest.
+    """
+    split = max(int(draws) // 2, 2)
+    return math.sqrt((split - 1) / split)
 
 
 def _as_float(value):
@@ -76,31 +93,38 @@ def _as_float(value):
         return math.nan
 
 
-def convergence_metrics(diagnostics, names):
-    """Aggregate per-parameter diagnostics, naming every non-finite entry as a failure.
+def convergence_metrics(diagnostics, names, floor):
+    """Aggregate per-parameter diagnostics, naming every invalid entry as a failure.
 
     Builtin ``max``/``min`` return the non-NaN operand unless the NaN comes first, and
     both silently keep a signed infinity that is not the extremum, so a single bad
     parameter could otherwise pass the gate. Each parameter is screened before
-    aggregation, and a non-finite entry is carried into the reported metric so the
+    aggregation, and an invalid entry is carried into the reported metric so the
     failure survives into the JSON report rather than being replaced by a plausible
     value from a neighbouring parameter. A parameter in ``names`` with no diagnostic
     row at all is the same hole and fails too, since an absent row is never screened.
+
+    Screening is against each diagnostic's domain, not only against finiteness. An
+    R-hat below ``floor`` or an ESS below zero cannot come from the estimators in
+    rust_core/src/diagnostics.rs, and ``max`` hides a too-small R-hat exactly as it
+    hides a NaN: with r_hat [1.0, -100.0, 1.0] the reported maximum is a healthy 1.0.
     """
     failures, metrics = [], {}
     labels = [diagnostic.get("name", index) for index, diagnostic in enumerate(diagnostics)]
     if not diagnostics:
         failures.append("diagnostics_empty")
     failures += [f"diagnostics_missing[{name}]" for name in names if name not in labels]
+    floors = {"r_hat": floor - RHAT_FLOOR_SLACK, "ess_bulk": 0., "ess_tail": 0.}
     for key, metric, reduce in CONVERGENCE_METRICS:
-        values = []
+        values, invalid = [], []
         for label, diagnostic in zip(labels, diagnostics):
             value = _as_float(diagnostic.get(key))
-            if not math.isfinite(value):
-                failures.append(f"{metric}[{label}]")
+            # NaN fails every comparison, so finiteness has to be tested first.
+            if not math.isfinite(value) or value < floors[key]:
+                failures += [metric, f"{metric}[{label}]"]
+                invalid.append(value)
             values.append(value)
-        nonfinite = [value for value in values if not math.isfinite(value)]
-        metrics[metric] = nonfinite[0] if nonfinite else (reduce(values) if values else math.nan)
+        metrics[metric] = invalid[0] if invalid else (reduce(values) if values else math.nan)
     return failures, metrics
 
 
@@ -111,7 +135,8 @@ def assess_fit(fit, names, reference_mean, reference_covariance):
     reference_sd = np.sqrt(np.diag(reference_covariance))
     covariance = np.atleast_2d(np.cov(flat, rowvar=False))
     diagnostics = fit.diagnostics()
-    convergence_failures, convergence = convergence_metrics(diagnostics, names)
+    convergence_failures, convergence = convergence_metrics(
+        diagnostics, names, rhat_floor(samples.shape[-2]))
     divergences = list(fit.divergences())
     metrics = {
         **convergence,

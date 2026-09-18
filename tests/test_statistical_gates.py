@@ -1,5 +1,6 @@
 """Release checks must reject plausible-looking but wrong posterior draws."""
 import json
+import math
 import os
 import numpy as np
 import pytest
@@ -134,6 +135,60 @@ def test_nonfinite_divergence_and_accuracy_metrics_fail_closed():
     accuracy = assess_fit(infinite, ["p0"], np.array([0.]), np.eye(1))
     assert accuracy["passed"] is False
     assert "max_mean_error_sd" in accuracy["failed_metrics"]
+
+
+@pytest.mark.parametrize("position", [0, 1, 2])
+@pytest.mark.parametrize("bad", [-100., -1., 0., 0.5, 0.9])
+def test_an_out_of_domain_rhat_cannot_hide_under_a_healthy_maximum(position, bad):
+    """max() keeps the largest value, so only a lower bound can catch a small R-hat."""
+    names = ["p0", "p1", "p2"]
+    diagnostics = [dict(HEALTHY, name=name) for name in names]
+    diagnostics[position]["r_hat"] = bad
+    fit = ReferenceFit(ACCURATE)
+    fit.diagnostics = lambda: diagnostics
+    result = assess_fit(fit, names, np.zeros(3), np.eye(3))
+    assert result["passed"] is False
+    assert f"max_rhat[{names[position]}]" in result["failed_metrics"], result["failed_metrics"]
+    assert "max_rhat" in result["failed_metrics"]
+    assert result["metrics"]["max_rhat"] == bad
+
+
+@pytest.mark.parametrize("key, metric", [("ess_bulk", "min_ess_bulk"), ("ess_tail", "min_ess_tail")])
+@pytest.mark.parametrize("position", [0, 1, 2])
+def test_a_negative_ess_names_the_parameter_it_came_from(key, metric, position):
+    names = ["p0", "p1", "p2"]
+    diagnostics = [dict(HEALTHY, name=name) for name in names]
+    diagnostics[position][key] = -5.
+    fit = ReferenceFit(ACCURATE)
+    fit.diagnostics = lambda: diagnostics
+    result = assess_fit(fit, names, np.zeros(3), np.eye(3))
+    assert result["passed"] is False
+    assert f"{metric}[{names[position]}]" in result["failed_metrics"], result["failed_metrics"]
+
+
+def test_the_rhat_floor_is_the_one_the_estimator_can_actually_reach():
+    """Derived from basic_r_hat: sqrt(var_hat/W) >= sqrt((n-1)/n) with n = draws // 2."""
+    import benchmarks.validate_posteriors as gate
+    for draws, split in ((500, 250), (1000, 500), (2000, 1000), (5000, 2500)):
+        assert gate.rhat_floor(draws) == pytest.approx(math.sqrt((split - 1) / split))
+    assert gate.rhat_floor(1000) == pytest.approx(0.9989994995, abs=1e-9)
+    assert gate.rhat_floor(2000) == pytest.approx(0.9994998749, abs=1e-9)
+    # Real R-hat values dip just below 1. The lowest in this repo's recorded results is
+    # 0.9991131788628178 from benchmarks/results/2026-09-09-calibration-pilot.json, whose
+    # settings record draws=1000, so it must sit above the floor for that chain length.
+    assert 0.9991131788628178 > gate.rhat_floor(1000) - gate.RHAT_FLOOR_SLACK
+
+
+@pytest.mark.parametrize("r_hat", [0.9991131788628178, 0.9997664331946711, 0.9999823466170655, 1.0])
+def test_legitimate_rhat_values_just_below_one_still_pass(r_hat):
+    """Values observed from the real estimator must not be rejected as out of domain."""
+    values = np.random.default_rng(11).normal(size=(4, 1000, 2))
+    fit = ReferenceFit(values)
+    fit.diagnostics = lambda: [dict(HEALTHY, name="p0", r_hat=r_hat),
+                               dict(HEALTHY, name="p1", r_hat=r_hat)]
+    result = assess_fit(fit, ["p0", "p1"], np.zeros(2), np.eye(2))
+    assert result["passed"] is True, result["failed_metrics"]
+    assert result["metrics"]["max_rhat"] == r_hat
 
 
 def test_the_gate_fails_when_a_promised_reference_case_did_not_run():
