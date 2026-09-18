@@ -8,8 +8,8 @@ use rustmc_core::hmc::TransitionStats;
 use rustmc_core::sampler::SampleResult;
 
 use super::{
-    compile_python_model, constrained_draw_to_raw, core_binding_from_maps,
-    derive_display_sample_result, model_artifact, Data1d, Data2d, FitResult, PyCompiledModel,
+    compile_python_model, constrained_draw_to_raw, core_binding_from_maps, display_sample_result,
+    model_artifact, Data1d, Data2d, FitResult, PyCompiledModel,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -264,8 +264,12 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     graph
         .validate_shapes()
         .map_err(|error| invalid(&error.to_string()))?;
-    let raw_result = validate_posterior(artifact.posterior, &graph, artifact.version)?;
-    let display_result = derive_display_sample_result(&raw_result, &compiled.display_params)?;
+    let raw_result = Arc::new(validate_posterior(
+        artifact.posterior,
+        &graph,
+        artifact.version,
+    )?);
+    let display_result = display_sample_result(&raw_result, &compiled.display_params)?;
     if display_result
         .samples
         .iter()
