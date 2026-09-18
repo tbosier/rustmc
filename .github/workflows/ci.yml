@@ -72,6 +72,15 @@ jobs:
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
+      # Nothing ran the examples before, so two of them grew to ~57 and ~42
+      # minutes and drifted out of examples/README.md unnoticed. The README
+      # tables are the manifest; a script in neither a table nor an excluded
+      # section fails this step.
+      - name: Run every documented example under a time budget
+        if: matrix.python-version == '3.11'
+        run: >-
+          ${{ runner.temp }}/source-env/bin/python scripts/run_examples.py
+          --timeout 180 --jobs 2
       - name: Check reference posteriors and repeated simulations
         if: matrix.python-version == '3.11'
         run: >-
