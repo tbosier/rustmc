@@ -6,8 +6,93 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-18
+
+This release closes a repository-wide correctness review. The headline item is a
+regression in 0.12.0 that silently transposed Fortran-ordered design matrices; if
+you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
+
+### Added
+
+
+- `rustmc_core::model::GraphModel::sample_prior` and `GraphModel::prior_predictive`,
+  so a loaded model artifact can be simulated from Rust. Model-level prior generation
+  moved out of the Python binding crate into `rustmc_core::prior_sampling`. The move
+  itself does not change any draw; six of the eight prior families are bit-identical to
+  0.12.x for a given seed. `Uniform` and `Beta` draws differ in the last bit, because
+  the bounded transform they share was corrected in this same release (see Fixed).
+- A bare data-key string is accepted anywhere an expression operand is accepted, so
+  `beta["group"] * "x"` (random slopes) and `builder.normal_likelihood("obs", "x", ...)`
+  work like `beta * "x"` already did. The fused linear-predictor fast path is preserved.
+- `rustmc.__all__`, so `from rustmc import *` no longer pulls in the `evaluation` and
+  `forecasting` submodules.
+- `scripts/run_examples.py`, run in CI: every example documented in
+  `examples/README.md` must run inside a time budget, and a script in neither a README
+  table nor an excluded section fails the build.
+
+### Changed
+
+
+- **Breaking (alpha Rust API):** `nuts::run_chain`, `nuts::run_chain_bound`,
+  `hmc::run_chain` and `hmc::run_chain_bound` return `Result<ChainResult, String>` and
+  reject discrete latent parameters; they previously bypassed every guard.
+- **Breaking (alpha Rust API):** new `graph::Op::BoundedSigmoid` variant, which breaks
+  an external exhaustive match on `Op`.
+- A `potential` or `deterministic` naming a data key is validated when it is declared,
+  on the same "only when data is bound" rule the likelihood families use. A builder
+  holding part of its data can no longer declare one naming a key that arrives later.
+- `examples/fixed_effects_panel_forecast.py` and `examples/large_linear_regression.py`
+  were rewritten; they ran for about 57 and 42 minutes and now take 27s and 5s. The
+  panel example used 168 dense one-hot indicator columns instead of the library's own
+  group indexing, measured at 63x the cost per gradient, and stacked four nested
+  intercept blocks that were not identified.
+
 ### Fixed
 
+
+- **Fortran-ordered and otherwise non-C-contiguous 2-D inputs are no longer read as
+  row-major.** In 0.12.0 a design matrix in column-major order was reinterpreted
+  against its own shape, silently producing a different model and a wrong posterior
+  with no error.
+- **Structural fits and forecasts no longer share an RNG stream.** `structural.rs` was
+  the only fit-then-forecast module without a domain separator, so passing one seed to
+  both `fit()` and `forecast()` replayed the fitting draws: each forecast's first
+  innovations were the standard normals that built its own terminal state. Measured on
+  two fixed-variance levels, step-1 predictive variance was 6.14 against an analytic
+  2.75-3.8 depending on the configuration, and the terminal state correlated with its
+  first innovation at +0.93. Seeded structural forecast output therefore differs from
+  0.12.0 for every seed, not only colliding ones.
+- **A bounded prior's density is evaluated at the point it reports as the draw.** The
+  logistic transform had three implementations, two of which overflowed for arguments
+  below about -709. `Uniform` priors now compile to one fused `BoundedSigmoid` node,
+  which also removes the span factor that made the gradient overflow: `Uniform(0, 1e308)`
+  at raw -710 gave `-inf` and now gives -19.037138374168897.
+- **`a / b` gradients stay representable at extreme denominator scales.** `-a/(b*b)`
+  collapsed to zero once `b*b` overflowed and to infinity once it underflowed, so a
+  representable derivative was silently replaced.
+- **The statistical release gate screens every parameter.** It aggregated with builtin
+  `max`/`min`, which drop a NaN that is not first, so a fit whose second or later
+  parameter had a NaN R-hat or ESS passed. Diagnostics are now checked per parameter
+  against the full range their estimators can produce, a promised reference case that
+  did not run fails the run, and the report is written even when a case cannot be built.
+- **Posterior-predictive draws keep their chain and draw identity in `to_arviz`.** They
+  were flattened into a single fake chain, so a four-chain fit exported posterior
+  parameters as `(4, draws, ...)` and predictive draws as `(1, 4*draws, ...)`, leaving
+  no way to pair them. `ppc_samples` is now chain-stratified and exports the retained
+  draw coordinates.
+- Non-finite deterministics are rejected instead of being returned inside an otherwise
+  successful `sample_prior_predictive` or `FitResult.deterministics()` result.
+- Discrete latent parameters are rejected at the sampler boundary rather than only in
+  the Python and artifact layers, including when they reach their density through a
+  transform, and including through the raw `nuts`/`hmc` kernels. A discrete prior can
+  still be loaded and simulated for prior prediction, which it could not before.
+- Artifacts with unknown fields are rejected instead of being silently truncated.
+- An unknown data key in a `potential` or `deterministic` is named, with the available
+  keys listed, instead of surfacing as a confusing length mismatch.
+- The diagnostics tables size themselves to their contents. Parameter names longer than
+  12 characters, which the library's own models emit, shifted every later column; both
+  horizontal rules were also the wrong length.
+- Every native class reports `__module__ == "rustmc"` instead of `"builtins"`.
 - Preserve posterior means, standard deviations and Monte Carlo standard errors
   across parameter units without overflow or arbitrary variance cutoffs.
 - Allow smoothing and FFBS for valid deterministic state transitions with singular
@@ -40,6 +125,22 @@ versioning while the public API is stabilized.
 - Match pointwise observation likelihoods to the fitted model without arbitrary
   scale or response floors, including very small positive LogNormal observations.
 - Apply unit-independent covariance symmetry checks to specialized Gaussian models.
+
+### Removed
+
+
+- **Breaking (alpha Rust API):** `rustmc_core::compiled_model` and its re-exports
+  (`ArtifactError`, `CompiledModelArtifact`, `CompiledModelRuntime`, `ModelMetadata`,
+  `ModelStep`, `NodeRef`, `ParameterBlock`, `SerializableObsFamily`,
+  `SerializableParamTransform`). 1,866 lines with no consumer: the Python
+  `CompiledModel` API never emitted or accepted this format.
+- **Breaking (alpha Rust API):** `rustmc_core::autodiff::{reference, eval_logp, forward,
+  grad_logp, Value}`. The allocating reference evaluator is a differential-testing
+  oracle that panics on unexpected node shapes; it is now `#[cfg(test)]` and still
+  checks the optimised evaluator.
+- **Breaking (alpha Rust API):** the `Op::Sub`, `Op::Div`, `Op::Neg`, `Op::Log` and
+  `Op::Square` IR variants and their `Graph` builders, which only the deleted legacy
+  module constructed. `ElementwiseOp` carries all of them.
 
 ## [0.12.0] - 2026-09-09
 
