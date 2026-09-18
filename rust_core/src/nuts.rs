@@ -14,6 +14,7 @@ use crate::graph::Graph;
 use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
 use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
 use crate::progress::ProgressState;
+use crate::sampler::reject_discrete_latent_parameters;
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -90,19 +91,53 @@ struct TreeResult {
 ///       sampler can re-converge with the new metric.
 ///   Terminal buffer (~50 draws or 10% of warmup):
 ///       step-size dual-averaging only, final fixed mass matrix.
+/// # Errors
+///
+/// Returns the rejection message from
+/// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
+/// discrete latent. This entry point does not go through `sampler`, so the
+/// check has to happen here or not at all — see [`run_chain_bound`].
 pub fn run_chain(
     graph: &Graph,
     config: &NutsConfig,
     rng: &mut ChaCha8Rng,
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
-) -> ChainResult {
+) -> Result<ChainResult, String> {
+    reject_discrete_latent_parameters(graph)?;
     let binding = DataBinding::from_graph(graph).expect("graph data must have consistent shapes");
-    run_chain_bound(graph, binding, config, rng, init, progress)
+    Ok(run_chain_bound_unguarded(
+        graph, binding, config, rng, init, progress,
+    ))
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
+///
+/// # Errors
+///
+/// As [`run_chain`]. These kernels are `pub`, so a caller can reach them
+/// without passing through any `sampler` entry point; refusing a model the
+/// gradient-based samplers cannot evaluate needs an error channel here, which
+/// is why both return a `Result` rather than a bare [`ChainResult`].
 pub fn run_chain_bound(
+    graph: &Graph,
+    binding: DataBinding,
+    config: &NutsConfig,
+    rng: &mut ChaCha8Rng,
+    init: Option<Vec<f64>>,
+    progress: Option<&ProgressState>,
+) -> Result<ChainResult, String> {
+    reject_discrete_latent_parameters(graph)?;
+    Ok(run_chain_bound_unguarded(
+        graph, binding, config, rng, init, progress,
+    ))
+}
+
+/// [`run_chain_bound`] without the discrete-latent check.
+///
+/// For callers inside `sampler`, which run the check once at their own
+/// boundary and would otherwise repeat a whole-graph scan per chain.
+pub(crate) fn run_chain_bound_unguarded(
     graph: &Graph,
     binding: DataBinding,
     config: &NutsConfig,
@@ -710,12 +745,14 @@ mod tests {
             ..NutsConfig::default()
         };
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let baseline = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let baseline = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+            .expect("continuous test model must run");
         let square = graph.elementwise(ElementwiseOp::Mul, x, Some(x));
         let abs = graph.elementwise(ElementwiseOp::Sqrt, square, None);
         graph.deterministics.push(("abs_x".into(), abs));
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let actual = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let actual = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+            .expect("continuous test model must run");
         assert_eq!(actual.samples, baseline.samples);
         assert_eq!(actual.divergences, baseline.divergences);
     }
@@ -733,7 +770,8 @@ mod tests {
                 ..NutsConfig::default()
             };
             let mut rng = ChaCha8Rng::seed_from_u64(42);
-            let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+            let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+                .expect("continuous test model must run");
             let stats = &chain.transitions[0];
             assert_eq!(stats.num_leapfrog_steps, 1);
             assert_eq!(stats.tree_depth, Some(1));
@@ -751,7 +789,8 @@ mod tests {
             ..NutsConfig::default()
         };
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let chain = run_chain(&graph, &config, &mut rng, Some(vec![-1000.0]), None);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![-1000.0]), None)
+            .expect("continuous test model must run");
         let fraction = chain.samples.iter().filter(|q| q[0] < -1000.0).count() as f64
             / chain.samples.len() as f64;
         // For x=exp(-1000), Gamma(.001,1)'s lower CDF is
@@ -773,7 +812,8 @@ mod tests {
             ..NutsConfig::default()
         };
         let mut rng = ChaCha8Rng::seed_from_u64(42);
-        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+            .expect("continuous test model must run");
         for sign in [-1.0, 1.0] {
             let fraction = chain.samples.iter().filter(|q| sign * q[0] > 40.0).count() as f64
                 / chain.samples.len() as f64;
@@ -829,7 +869,8 @@ mod tests {
         };
         let mut rng = ChaCha8Rng::seed_from_u64(9);
 
-        let chain = run_chain(&graph, &config, &mut rng, None, None);
+        let chain = run_chain(&graph, &config, &mut rng, None, None)
+            .expect("continuous test model must run");
         let posterior: Vec<_> = chain
             .transitions
             .iter()

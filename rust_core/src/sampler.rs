@@ -449,7 +449,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        nuts::run_chain_bound(
+                        nuts::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &nuts_config,
@@ -466,7 +466,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        hmc::run_chain_bound(
+                        hmc::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &hmc_config,
@@ -804,6 +804,12 @@ pub fn batch_sample_graphs(
             .enumerate()
             .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
+                // Built once per model rather than once per chain. The loop
+                // above already proved every graph binds, and the kernels take
+                // a binding by value, so this is the same `from_graph` call
+                // `run_chain` used to make internally on each pass.
+                let binding = DataBinding::from_graph(&graph)
+                    .expect("graph data must have consistent shapes");
                 let mut samples: Vec<Vec<f64>> = Vec::new();
                 let mut unconstrained_samples = graph
                     .param_transforms
@@ -831,7 +837,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                            nuts::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &nuts_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                         SamplerType::Hmc => {
                             let hmc_config = HmcConfig {
@@ -841,7 +854,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                            hmc::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &hmc_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                     };
 
@@ -934,7 +954,8 @@ mod tests {
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
                 None,
-            );
+            )
+            .expect("continuous test model must run");
             assert_eq!(chain, &expected.samples);
             assert!(chain.iter().all(|q| q[0].is_finite() && q[0] > 39.0));
             assert!(result.samples[chain_index].iter().all(|q| q[0] == 1.0));
