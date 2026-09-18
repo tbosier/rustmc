@@ -140,7 +140,24 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
     started = time.perf_counter()
     kwargs = dict(chains=4, draws=draws, warmup=warmup, target_accept=.95, show_progress=False)
     records, attempted = [], {}
-    for index, (name, model, data, names, mean, covariance) in enumerate(reference_cases()):
+    # reference_cases() compiles its models as it is advanced. Advancing it inside the
+    # for-statement put that work outside the per-fit try, so a construction failure
+    # propagated out of run() and main() never reached write_text: the report promised
+    # "even if a gate fails" was never written, losing the attempts already completed.
+    cases, index = reference_cases(), -1
+    while True:
+        index += 1
+        try:
+            name, model, data, names, mean, covariance = next(cases)
+        except StopIteration:
+            break
+        except Exception as error:
+            # Covers a malformed yield as well as a failed compile: either way the case
+            # is unusable, and case_coverage reports the ones that never ran.
+            records.append({"case": "reference_case_construction", "kind": "fixed_reference",
+                            "index": index, "passed": False,
+                            "error": f"{type(error).__name__}: {error}"})
+            break
         for repeat in range(REFERENCE_REPEATS):
             fit_seed = seed + index*100 + repeat
             record = {"case": name, "seed": fit_seed, "kind": "fixed_reference"}
@@ -160,12 +177,18 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
                      "unlisted": sorted(set(attempted) - set(REFERENCE_CASES))}
     case_coverage["passed"] = not case_coverage["missing"] and not case_coverage["unlisted"]
     rng = np.random.default_rng(seed)
-    m = mc.ModelBuilder()
-    beta = m.vector_normal_prior("beta", 2, 0., 1.)
-    m.normal_likelihood("obs", beta @ "X", .7, "y")
-    model = m.compile()
+    # Same shape as the reference cases: this compile ran outside every try.
+    try:
+        m = mc.ModelBuilder()
+        beta = m.vector_normal_prior("beta", 2, 0., 1.)
+        m.normal_likelihood("obs", beta @ "X", .7, "y")
+        model = m.compile()
+    except Exception as error:
+        model = None
+        records.append({"case": "prior_simulated_regression", "kind": "calibration",
+                        "passed": False, "error": f"{type(error).__name__}: {error}"})
     coverage, quantiles = [], []
-    for replicate in range(replicates):
+    for replicate in range(replicates if model is not None else 0):
         theta = rng.normal(size=2)
         x = np.column_stack((np.ones(30), rng.normal(size=30)))
         y = x@theta + rng.normal(0., .7, len(x))

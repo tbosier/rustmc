@@ -1,4 +1,5 @@
 """Release checks must reject plausible-looking but wrong posterior draws."""
+import json
 import os
 import numpy as np
 import pytest
@@ -171,6 +172,80 @@ def test_an_unlisted_reference_case_is_itself_a_failure():
         assert report["case_coverage"]["missing"] == []
     finally:
         gate.reference_cases = original
+
+
+def test_a_case_construction_failure_still_produces_a_written_report(tmp_path):
+    """The report must survive a failure while building a case, not be lost with it."""
+    import benchmarks.validate_posteriors as gate
+    original = gate.reference_cases
+
+    def one_then_boom():
+        yield next(iter(original()))
+        raise RuntimeError("model construction blew up")
+
+    try:
+        gate.reference_cases = one_then_boom
+        report = gate.run(replicates=2, draws=2000, warmup=1000)
+    finally:
+        gate.reference_cases = original
+    assert report["passed"] is False
+    broken = [r for r in report["records"] if r["case"] == "reference_case_construction"]
+    assert len(broken) == 1
+    assert broken[0]["passed"] is False
+    assert "RuntimeError: model construction blew up" in broken[0]["error"]
+    # The three fits that did complete are still in the report, not thrown away.
+    assert len([r for r in report["records"] if r["case"] == gate.REFERENCE_CASES[0]]) == 3
+    assert report["case_coverage"]["missing"] == sorted(gate.REFERENCE_CASES[1:])
+    out = tmp_path / "report.json"
+    out.write_text(json.dumps(json_safe(report), indent=2, allow_nan=False) + "\n")
+    assert json.loads(out.read_text())["passed"] is False
+
+
+def test_a_malformed_reference_case_is_reported_rather_than_raised():
+    import benchmarks.validate_posteriors as gate
+    original = gate.reference_cases
+    try:
+        gate.reference_cases = lambda: iter([("too", "few", "fields")])
+        report = gate.run(replicates=2, draws=2000, warmup=1000)
+    finally:
+        gate.reference_cases = original
+    assert report["passed"] is False
+    broken = [r for r in report["records"] if r["case"] == "reference_case_construction"]
+    assert len(broken) == 1 and broken[0]["passed"] is False
+
+
+def test_a_calibration_model_failure_is_reported_rather_than_raised(monkeypatch):
+    """The calibration model compiled outside every try, the same shape of hole."""
+    import benchmarks.validate_posteriors as gate
+    import rustmc as mc
+    original = gate.reference_cases
+    state = {"seen": 0}
+
+    class Design:  # supports `beta @ "X"` so construction reaches compile()
+        def __matmul__(self, other):
+            return self
+
+    class Exploding:  # the native ModelBuilder is not subclassable
+        def vector_normal_prior(self, *args, **kwargs):
+            return Design()
+        def normal_likelihood(self, *args, **kwargs):
+            return None
+        def compile(self):
+            state["seen"] += 1
+            raise RuntimeError("calibration compile blew up")
+
+    try:
+        gate.reference_cases = lambda: iter(())
+        monkeypatch.setattr(mc, "ModelBuilder", Exploding)
+        report = gate.run(replicates=2, draws=2000, warmup=1000)
+    finally:
+        gate.reference_cases = original
+    assert state["seen"] == 1
+    assert report["passed"] is False
+    assert report["calibration"]["passed"] is False
+    failed = [r for r in report["records"] if r["kind"] == "calibration"]
+    assert len(failed) == 1
+    assert "RuntimeError: calibration compile blew up" in failed[0]["error"]
 
 
 def test_the_manifest_matches_the_cases_actually_defined():
