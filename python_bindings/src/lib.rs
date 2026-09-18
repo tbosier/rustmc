@@ -423,6 +423,21 @@ impl ModelBuilder {
         }
     }
 
+    /// Reject a data key this builder's bound data does not carry.
+    ///
+    /// The likelihood families do this through `validate_data_keys`, which
+    /// also checks the observed key. Potentials and deterministics have no
+    /// observed key, so they get the expression half on its own.
+    ///
+    /// With nothing bound there is nothing to check against, and the key is
+    /// named later at bind time -- the same deferral the likelihood path makes.
+    fn check_data_keys(&self, expr: &MuExpr) -> PyResult<()> {
+        if self.bound_data_1d.is_empty() && self.bound_data_2d.is_empty() {
+            return Ok(());
+        }
+        validate_expr_keys(expr, &self.bound_data_1d, &self.bound_data_2d)
+    }
+
     /// Reject a `ParamRef`/`Expr` produced by a different `ModelBuilder`.
     fn check_owner(&self, owner: Option<u64>, name: &str, context: &str) -> PyResult<()> {
         match owner {
@@ -474,6 +489,7 @@ impl ModelBuilder {
         }
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "potential")?;
+        self.check_data_keys(&expr.inner)?;
         if !expr.inner.is_scalar() {
             return Err(PyValueError::new_err(
                 "potential requires a scalar expression; use .sum()",
@@ -489,6 +505,7 @@ impl ModelBuilder {
     fn deterministic(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<Expr> {
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "deterministic")?;
+        self.check_data_keys(&expr.inner)?;
         if name.is_empty()
             || self.deterministics.iter().any(|(n, _)| n == name)
             || self.priors.iter().any(|p| prior_name(p) == name)
