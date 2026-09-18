@@ -1465,7 +1465,30 @@ impl GraphModel {
             ));
         }
         let mut definition = artifact.definition.structure_definition();
-        reject_discrete_priors_for_gradient_sampling(&definition.priors)?;
+        // No discrete-prior rejection here. Bernoulli and Poisson priors are
+        // deliberately kept for prior-predictive simulation and refused only
+        // for gradient sampling, so refusing them at *load* time made the
+        // simulation they are kept for unreachable from an artifact.
+        //
+        // What covers sampling instead: `GraphModel::sample` goes through
+        // `sampler::sample_bound_with_init`, which calls
+        // `reject_discrete_latent_parameters`. Every `PriorSpec::Bernoulli` and
+        // `PriorSpec::Poisson` compiles to exactly the shape that scan looks
+        // for -- a `BernoulliLogP`/`PoissonLogP` term over an `Op::Param` -- so
+        // across the priors this loader can carry, the two checks accept and
+        // reject the same models.
+        //
+        // What it does not cover, and did not before either: the `pub`
+        // `nuts::run_chain`/`hmc::run_chain` kernels, which take a graph
+        // directly, and a discrete density reaching a free parameter
+        // indirectly rather than through a bare `Op::Param` -- a gap
+        // `reject_discrete_latent_parameters` documents on itself. Neither is
+        // reachable *from an artifact*, whose definition is a declarative
+        // `ModelSpec` that can only name priors.
+        //
+        // The Python bindings keep a stricter rule of their own:
+        // `CompiledModel` and `FitResult` are posterior-sampling objects, so
+        // `model_artifact::from_core` refuses a discrete prior in either.
         for slot in &artifact.schema.matrices {
             let SlotKind::Matrix { n_cols } = slot.kind else {
                 return Err(ModelError::invalid("invalid matrix schema"));

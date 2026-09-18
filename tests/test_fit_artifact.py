@@ -112,3 +112,81 @@ def test_matrix_training_data_and_future_width_roundtrip():
     artifact['training']['matrices']['X'][2]=3
     with pytest.raises(ValueError):
         rustmc.FitResult.from_json(json.dumps(artifact))
+
+def _discrete_prior_fit_artifact():
+    """A saved fit whose definition has been edited to declare a discrete prior.
+
+    The library will not produce one -- `compile()` refuses a discrete prior --
+    so it has to be built by hand. That is the point: a hand-edited, corrupted
+    or future-version artifact is exactly what a loader has to refuse.
+    """
+    import json
+
+    n = 8
+    data = {"x": np.linspace(-1.0, 1.0, n), "y": np.zeros(n)}
+    builder = rustmc.ModelBuilder(data)
+    flag = builder.normal_prior("flag", 0.0, 1.0)
+    builder.normal_likelihood("obs", flag * "x", 1.0, "y")
+    fit = rustmc.sample(
+        builder.build(), chains=1, draws=6, warmup=6, seed=2, show_progress=False
+    )
+    artifact = json.loads(fit.to_json())
+    artifact["model"]["definition"]["priors"][0] = {
+        "Bernoulli": {"name": "flag", "p": 0.5}
+    }
+    return artifact
+
+
+def test_fit_artifact_with_a_discrete_prior_is_refused():
+    """Restoring one would present continuous draws as a Bernoulli posterior.
+
+    A stored fit is a posterior. HMC and NUTS cannot have produced one for a
+    discrete latent, so an artifact claiming they did is describing a fit that
+    does not exist, and its draws are not samples from the prior it names.
+    """
+    import json
+
+    artifact = _discrete_prior_fit_artifact()
+    with pytest.raises(ValueError, match="cannot be sampled with HMC/NUTS"):
+        rustmc.FitResult.from_json(json.dumps(artifact))
+
+
+def test_model_artifact_with_a_discrete_prior_is_refused():
+    """`CompiledModel.from_json` must agree with `ModelBuilder.compile()`.
+
+    Both produce the same object, whose whole surface is sampling, so a
+    definition one refuses cannot be one the other accepts.
+    """
+    import json
+
+    artifact = _discrete_prior_fit_artifact()
+    model = {
+        "format": "rustmc.graph-model",
+        "version": 1,
+        "definition": artifact["model"]["definition"],
+        "schema": artifact["model"]["schema"],
+    }
+    with pytest.raises(ValueError, match="cannot be sampled with HMC/NUTS"):
+        rustmc.CompiledModel.from_json(json.dumps(model))
+
+    builder = rustmc.ModelBuilder()
+    builder.bernoulli_prior("flag", 0.5)
+    with pytest.raises(ValueError, match="cannot be sampled with HMC/NUTS"):
+        builder.compile()
+
+
+def test_continuous_fit_artifacts_still_round_trip():
+    """The guard must not cost an ordinary fit its restore path."""
+    n = 8
+    data = {"x": np.linspace(-1.0, 1.0, n), "y": np.zeros(n)}
+    builder = rustmc.ModelBuilder(data)
+    flag = builder.normal_prior("flag", 0.0, 1.0)
+    builder.normal_likelihood("obs", flag * "x", 1.0, "y")
+    fit = rustmc.sample(
+        builder.build(), chains=1, draws=6, warmup=6, seed=2, show_progress=False
+    )
+    restored = rustmc.FitResult.from_json(fit.to_json())
+    np.testing.assert_array_equal(
+        restored.get_samples()["flag"], fit.get_samples()["flag"]
+    )
+    rustmc.CompiledModel.from_json(builder.compile().to_json())
