@@ -9,6 +9,7 @@ import argparse
 import hashlib
 import json
 import math
+import numbers
 import platform
 from pathlib import Path
 import subprocess
@@ -260,11 +261,29 @@ def run(*, replicates=64, seed=20260911, draws=2000, warmup=1000):
 
 
 def json_safe(value):
+    """Normalize a report for ``json.dumps(..., allow_nan=False)``, keeping failures.
+
+    A failed metric is kept as a null rather than dropped, so the report still records
+    that the gate looked at it. The retained raw ``diagnostics`` are whatever the
+    bindings handed over, and today that is Python floats; a NumPy scalar among them
+    would be neither caught by the ``float`` test nor serializable, and the strict dump
+    in ``main`` would raise after every fit had run, writing no report at all. Unwrap
+    NumPy scalars and arrays to their Python equivalents first so the finiteness test
+    sees them. ``np.float64`` already subclasses ``float`` and round-trips unchanged.
+    """
     if isinstance(value, dict):
         return {key: json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
+    if isinstance(value, np.ndarray):
+        # tolist() yields nested lists, or a scalar for a 0-d array; both recurse.
+        return json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return json_safe(value.item())
+    if isinstance(value, (list, tuple)):
         return [json_safe(item) for item in value]
-    if isinstance(value, float) and not math.isfinite(value):
+    # Integral values, bool among them, are always finite, and math.isfinite raises
+    # OverflowError on an int too large to convert, so do not ask it about them.
+    if (isinstance(value, numbers.Real) and not isinstance(value, numbers.Integral)
+            and not math.isfinite(value)):
         return None
     return value
 

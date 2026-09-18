@@ -308,6 +308,139 @@ def test_the_manifest_matches_the_cases_actually_defined():
     assert [case[0] for case in gate.reference_cases()] == list(gate.REFERENCE_CASES)
 
 
+# One record's worth of the exact value types the gate produces today: Python floats
+# and ints from the bindings, bools, strings, nested lists from .tolist(), and a NaN
+# metric that must survive as null. Pinned byte-for-byte so the NumPy hardening in
+# json_safe is provably inert on the payload that actually occurs.
+TODAYS_PAYLOAD = {
+    "format": "rustmc.posterior-validation", "version": 1, "dirty": False,
+    "records": [{"case": "correlated_regression", "seed": 20260911, "kind": "fixed_reference",
+                 "passed": False, "failed_metrics": ["max_rhat", "max_rhat[beta[1]]"],
+                 "metrics": {"max_rhat": float("nan"), "min_ess_bulk": 2928.224634872191,
+                             "min_ess_tail": 2670.823398331719, "divergences": 0,
+                             "max_mean_error_sd": 0.01366020525234996,
+                             "max_covariance_error_sd": 0.009526813215620373},
+                 "reference_mean": [0.1, -0.2], "reference_covariance": [[1.0, 0.0], [0.0, 1.0]],
+                 "posterior_mean": [0.10001, -0.19998],
+                 "diagnostics": [{"name": "beta[0]", "r_hat": 1.0004558411941582,
+                                  "ess_bulk": 2928.224634872191, "mcse_mean": 0.001},
+                                 {"name": "beta[1]", "r_hat": float("nan"),
+                                  "ess_bulk": float("inf"), "mcse_mean": float("-inf")}]}],
+    "calibration": {"nominal": 0.9, "coverage": [1.0, 1.0], "replicates": 2,
+                    "passed": True, "rank_histograms": [[0, 1], [1, 0]]},
+    "seconds": 0.4123,
+}
+TODAYS_JSON = """{
+  "format": "rustmc.posterior-validation",
+  "version": 1,
+  "dirty": false,
+  "records": [
+    {
+      "case": "correlated_regression",
+      "seed": 20260911,
+      "kind": "fixed_reference",
+      "passed": false,
+      "failed_metrics": [
+        "max_rhat",
+        "max_rhat[beta[1]]"
+      ],
+      "metrics": {
+        "max_rhat": null,
+        "min_ess_bulk": 2928.224634872191,
+        "min_ess_tail": 2670.823398331719,
+        "divergences": 0,
+        "max_mean_error_sd": 0.01366020525234996,
+        "max_covariance_error_sd": 0.009526813215620373
+      },
+      "reference_mean": [
+        0.1,
+        -0.2
+      ],
+      "reference_covariance": [
+        [
+          1.0,
+          0.0
+        ],
+        [
+          0.0,
+          1.0
+        ]
+      ],
+      "posterior_mean": [
+        0.10001,
+        -0.19998
+      ],
+      "diagnostics": [
+        {
+          "name": "beta[0]",
+          "r_hat": 1.0004558411941582,
+          "ess_bulk": 2928.224634872191,
+          "mcse_mean": 0.001
+        },
+        {
+          "name": "beta[1]",
+          "r_hat": null,
+          "ess_bulk": null,
+          "mcse_mean": null
+        }
+      ]
+    }
+  ],
+  "calibration": {
+    "nominal": 0.9,
+    "coverage": [
+      1.0,
+      1.0
+    ],
+    "replicates": 2,
+    "passed": true,
+    "rank_histograms": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        0
+      ]
+    ]
+  },
+  "seconds": 0.4123
+}"""
+
+
+def test_json_safe_output_is_unchanged_on_the_payload_that_occurs_today():
+    """Pin the serialization so the NumPy hardening is provably inert."""
+    assert json.dumps(json_safe(TODAYS_PAYLOAD), indent=2, allow_nan=False) == TODAYS_JSON
+    # Types, not just rendering: a bool must not become 1, an int must not become 1.0.
+    safe = json_safe(TODAYS_PAYLOAD)
+    assert safe["dirty"] is False
+    assert isinstance(safe["version"], int) and not isinstance(safe["version"], bool)
+    assert isinstance(safe["records"][0]["metrics"]["divergences"], int)
+    assert safe["calibration"]["passed"] is True
+
+
+def test_json_safe_keeps_a_numpy_scalar_from_breaking_the_strict_dump():
+    """A non-float numeric in the retained raw diagnostics used to abort the write."""
+    payload = {"metrics": {"max_rhat": np.float32("nan")},
+               "diagnostics": [{"name": "p0", "r_hat": np.float32("nan"),
+                                "ess_bulk": np.float32(10.), "ess_tail": np.int64(7),
+                                "hdi": np.array([1.5, np.inf]), "converged": np.bool_(False)}]}
+    safe = json_safe(payload)
+    assert safe["metrics"]["max_rhat"] is None
+    assert safe["diagnostics"][0]["r_hat"] is None
+    assert safe["diagnostics"][0]["ess_bulk"] == 10.
+    assert safe["diagnostics"][0]["ess_tail"] == 7
+    assert safe["diagnostics"][0]["hdi"] == [1.5, None]
+    assert safe["diagnostics"][0]["converged"] is False
+    json.dumps(safe, allow_nan=False)  # must not raise
+
+
+def test_json_safe_leaves_an_oversized_integer_alone():
+    """math.isfinite raises OverflowError on a huge int; integers are finite anyway."""
+    assert json_safe({"n": 10**1000})["n"] == 10**1000
+
+
 def test_all_analytic_cases_have_a_finite_target_and_gradient():
     for _, model, data, names, mean, covariance in reference_cases():
         assert covariance.shape == (len(names), len(names))
