@@ -982,8 +982,9 @@ mod tests {
         // 0.5/2 = 0.25, against truths of 0.12, 0.025 and 0.35. The first is 0.005 from
         // its truth and the second is exactly equal to it, so under the tolerances this
         // test used to carry, prior draws satisfied all three assertions: it asserted
-        // nothing about the observations. Fit with priors deliberately an order of
-        // magnitude below every truth instead. The negative control below keeps it so.
+        // nothing about the observations. Fit with priors whose means are 0.025, 0.0025
+        // and 0.025 instead, a factor of 4.8, 10 and 14 below the three truths. The
+        // negative control below keeps them outside the accepted windows.
         fit_config.level_variance_prior = InverseGammaPrior {
             shape: 3.0,
             scale: 0.05,

@@ -139,7 +139,7 @@ RECOVERY_PRIOR = (3.0, 0.08)
 #: away, so the window excludes them by a factor of three or more.
 RECOVERY_TOLERANCE = 0.30
 #: Long enough that the conjugate update's data term (count/2 added to the shape)
-#: dominates the prior shape of 3 by two and a half orders of magnitude.
+#: outweighs the prior shape of 3 by a factor of 250.
 RECOVERY_COUNT = 1500
 
 
@@ -159,9 +159,10 @@ def test_the_recovery_prior_cannot_by_itself_reach_the_window_recovery_asserts()
     """Negative control for the test below, so the window can never be widened onto it.
 
     Under InverseGamma(3, 0.08) alone the probability of a single draw even reaching
-    the bottom of each accepted window is 0.0017, 0.0204 and 0.0002, so the median of
-    prior draws cannot land inside one. Whatever the recovery test below observes, the
-    observations put it there.
+    the bottom of each accepted window is 0.0017, 0.0204 and 0.0002. The median of 600
+    such draws therefore lands inside a window only if a majority clear a threshold at
+    most one draw in forty-nine reaches, which is not something that happens by chance.
+    Whatever the recovery test below observes, the observations put it there.
     """
     shape, scale = RECOVERY_PRIOR
     tails = {}
