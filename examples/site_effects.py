@@ -60,9 +60,19 @@ print(fit.summary())
 
 # %% Site means and intervals
 means = fit.predict({"site": np.arange(len(counts), dtype=float)}, expected=True)["reading"]
-print("Site posterior means:", np.round(means.mean(axis=(0, 1)), 4))
-print("95% credible intervals:")
-print(np.round(np.quantile(means, [0.025, 0.975], axis=(0, 1)), 4))
+posterior_mean = means.mean(axis=(0, 1))
+lower, upper = np.quantile(means, [0.025, 0.975], axis=(0, 1))
+print(f"{'site':>5} {'n':>5} {'mean':>8} {'2.5%':>8} {'97.5%':>8}")
+for index, count in enumerate(counts):
+    print(f"{index:>5} {count:>5} {posterior_mean[index]:+8.3f} {lower[index]:+8.3f} {upper[index]:+8.3f}")
+
+# %% How far each site moved toward the population
+print(f"Population mean estimate: {fit.mean()['population']:+.3f}")
+print(f"{'site':>5} {'n':>5} {'sample':>8} {'pooled':>8} {'moved':>8}")
+for index, count in enumerate(counts):
+    sample_mean = y[site == index].mean()
+    moved = posterior_mean[index] - sample_mean
+    print(f"{index:>5} {count:>5} {sample_mean:+8.3f} {posterior_mean[index]:+8.3f} {moved:+8.3f}")
 
 # %% [markdown]
 # ## Comparisons need paired draws

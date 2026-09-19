@@ -67,9 +67,9 @@ each dataset is bound to it. `errors="collect"` attempts every cell and returns 
 failures in `batch.errors` keyed by dataset ID, instead of losing the whole batch
 to one bad series.
 
-The intercept and the trend are correlated in this parameterization, because
-`t` starts at zero and the intercept is the level in week 0. Centering time --
-`t - t.mean()` -- decorrelates them and samples better, at the cost of an
+`t` starts at zero, so the intercept is the level in week 0 and is correlated
+with the trend. The cell after the fit measures that correlation rather than
+asserting it. Centering time -- `t - t.mean()` -- removes it, at the cost of an
 intercept that means "level at mid-year".
 
 ## Fit all 100 SKUs
@@ -102,24 +102,24 @@ fitted 100 datasets, 0 failed
 ## Compare the first five to the values that generated them
 
 ```python
-print(f"{'SKU':<9} {'intercept':>20} {'true':>8} {'trend':>18} {'true':>8}")
+print(f"{'SKU':<9} {'intercept':>19} {'true':>9} {'trend':>18} {'true':>9}")
 for i in range(5):
     fit = batch[i]
     mean, std = fit.mean(), fit.std()
     print(
         f"{batch.ids[i]:<9} "
-        f"{mean['intercept']:9.2f} +/- {std['intercept']:5.2f} {true_intercepts[i]:8.2f} "
-        f"{mean['trend']:8.3f} +/- {std['trend']:5.3f} {true_trends[i]:8.3f}"
+        f"{mean['intercept']:9.2f} +/- {std['intercept']:5.2f} {true_intercepts[i]:9.2f} "
+        f"{mean['trend']:9.3f} +/- {std['trend']:5.3f} {true_trends[i]:9.3f}"
     )
 ```
 
 ```text
-SKU                  intercept     true              trend     true
-sku-000      135.62 +/-  1.34   135.28    0.838 +/- 0.046    0.877
-sku-001      106.21 +/-  1.30   108.00    0.301 +/- 0.042    0.230
-sku-002      118.60 +/-  1.24   119.57    0.241 +/- 0.042    0.246
-sku-003      143.45 +/-  1.37   144.82    0.716 +/- 0.046    0.694
-sku-004      137.90 +/-  1.40   137.35    0.242 +/- 0.046    0.265
+SKU                 intercept      true              trend      true
+sku-000      135.62 +/-  1.34    135.28     0.838 +/- 0.046     0.877
+sku-001      106.21 +/-  1.30    108.00     0.301 +/- 0.042     0.230
+sku-002      118.60 +/-  1.24    119.57     0.241 +/- 0.042     0.246
+sku-003      143.45 +/-  1.37    144.82     0.716 +/- 0.046     0.694
+sku-004      137.90 +/-  1.40    137.35     0.242 +/- 0.046     0.265
 ```
 
 ## Batch-wide recovery and diagnostics
@@ -143,18 +143,34 @@ trend error:     mean -0.0021, rmse 0.0395
 divergences:     0 across 100 fits (0 fits affected)
 ```
 
-## What a `BatchResult` carries
+## What a BatchResult carries
 
 ```python
 r = batch[0]
-r.mean()                 # dict: param -> float
-r.std()                  # dict: param -> float
-r.get_samples()          # dict: param -> flattened draws
-r.get_samples_2d()       # dict: param -> np.ndarray, shape (chains, draws)
-r.accept_rate            # float
-r.accept_rates           # list[float]
-r.divergences            # int
-r.divergences_per_chain  # list[int]
+print("mean()                ", {k: round(v, 3) for k, v in r.mean().items()})
+print("std()                 ", {k: round(v, 3) for k, v in r.std().items()})
+print("get_samples()         ", {k: v.shape for k, v in r.get_samples().items()})
+print("get_samples_2d()      ", {k: v.shape for k, v in r.get_samples_2d().items()})
+print("accept_rate           ", round(r.accept_rate, 3))
+print("accept_rates          ", [round(a, 3) for a in r.accept_rates])
+print("divergences           ", r.divergences)
+print("divergences_per_chain ", r.divergences_per_chain)
+
+# The intercept/trend correlation this parameterization implies, measured.
+draws = r.get_samples()
+print("corr(intercept, trend)", round(float(np.corrcoef(draws["intercept"], draws["trend"])[0, 1]), 3))
+```
+
+```text
+mean()                 {'intercept': 135.62, 'trend': 0.838}
+std()                  {'intercept': 1.338, 'trend': 0.046}
+get_samples()          {'intercept': (500,), 'trend': (500,)}
+get_samples_2d()       {'intercept': (1, 500), 'trend': (1, 500)}
+accept_rate            0.92
+accept_rates           [0.92]
+divergences            0
+divergences_per_chain  [0]
+corr(intercept, trend) -0.856
 ```
 
 `chains=1` is the throughput-first setting, and it gives up R-hat, which needs
@@ -164,32 +180,39 @@ more than batch wall time.
 ## Different structures: rmc.batch_sample()
 
 ```python
-# Each entry owns its own graph, so the entries need not share a schema. Here the
-# second SKU gets a quadratic term the others do not have.
+# Each entry owns its own graph, so the entries need not share a schema. The third
+# series below ran promotions in two four-week blocks and gets a term for them that
+# the other two do not have. The blocks sit in the middle of the year rather than at
+# the end, so the promotion indicator is not confounded with the trend.
+promo = (((t >= 12) & (t < 16)) | ((t >= 34) & (t < 38))).astype(np.float64)
+true_lift = 12.0
+promo_y = true_intercepts[2] + true_trends[2] * t + true_lift * promo + np.random.normal(0, noise_std, T)
+
 models = []
-for i in range(3):
+for data in [datasets[0], datasets[1], {"t": t, "promo": promo, "y": promo_y}]:
     entry = rmc.ModelBuilder()
     a = entry.normal_prior("intercept", mu=0.0, sigma=200.0)
     b = entry.normal_prior("trend", mu=0.0, sigma=20.0)
     mu_expr = a + b * "t"
-    data = dict(datasets[i])
-    if i == 1:
-        c = entry.normal_prior("curve", mu=0.0, sigma=1.0)
-        mu_expr = mu_expr + c * "t2"
-        data["t2"] = t**2
+    if "promo" in data:
+        lift = entry.normal_prior("lift", mu=0.0, sigma=50.0)
+        mu_expr = mu_expr + lift * "promo"
     entry.normal_likelihood("obs", mu_expr=mu_expr, sigma=noise_std, observed_key="y")
     models.append((entry.build(), data))
 
 results = rmc.batch_sample(models, chains=1, draws=500, warmup=300, seed=42, show_progress=False)
-for i, r in enumerate(results):
-    params = ", ".join(f"{k}={v:.3f}" for k, v in sorted(r.mean().items()))
+for i, result in enumerate(results):
+    mean, std = result.mean(), result.std()
+    params = ", ".join(f"{k}={mean[k]:.3f} +/- {std[k]:.3f}" for k in sorted(mean))
     print(f"model {i}: {params}")
+print(f"true lift on model 2: {true_lift:.1f}")
 ```
 
 ```text
-model 0: intercept=135.488, trend=0.844
-model 1: curve=-0.003, intercept=105.106, trend=0.434
-model 2: intercept=118.213, trend=0.253
+model 0: intercept=135.488 +/- 1.397, trend=0.844 +/- 0.045
+model 1: intercept=106.227 +/- 1.347, trend=0.300 +/- 0.046
+model 2: intercept=123.298 +/- 1.228, lift=10.654 +/- 1.864, trend=0.131 +/- 0.041
+true lift on model 2: 12.0
 ```
 
 ## Notes

@@ -92,16 +92,39 @@ Mean accept rate: 0.95  │  Divergences: 0
 
 ```python
 means = fit.predict({"site": np.arange(len(counts), dtype=float)}, expected=True)["reading"]
-print("Site posterior means:", np.round(means.mean(axis=(0, 1)), 4))
-print("95% credible intervals:")
-print(np.round(np.quantile(means, [0.025, 0.975], axis=(0, 1)), 4))
+posterior_mean = means.mean(axis=(0, 1))
+lower, upper = np.quantile(means, [0.025, 0.975], axis=(0, 1))
+print(f"{'site':>5} {'n':>5} {'mean':>8} {'2.5%':>8} {'97.5%':>8}")
+for index, count in enumerate(counts):
+    print(f"{index:>5} {count:>5} {posterior_mean[index]:+8.3f} {lower[index]:+8.3f} {upper[index]:+8.3f}")
 ```
 
 ```text
-Site posterior means: [-0.366   0.2333  0.4041 -0.1572]
-95% credible intervals:
-[[-0.7089  0.0231  0.2684 -0.2563]
- [-0.0394  0.4433  0.5476 -0.0598]]
+ site     n     mean     2.5%    97.5%
+    0     8   -0.366   -0.709   -0.039
+    1    20   +0.233   +0.023   +0.443
+    2    50   +0.404   +0.268   +0.548
+    3   100   -0.157   -0.256   -0.060
+```
+
+## How far each site moved toward the population
+
+```python
+print(f"Population mean estimate: {fit.mean()['population']:+.3f}")
+print(f"{'site':>5} {'n':>5} {'sample':>8} {'pooled':>8} {'moved':>8}")
+for index, count in enumerate(counts):
+    sample_mean = y[site == index].mean()
+    moved = posterior_mean[index] - sample_mean
+    print(f"{index:>5} {count:>5} {sample_mean:+8.3f} {posterior_mean[index]:+8.3f} {moved:+8.3f}")
+```
+
+```text
+Population mean estimate: +0.029
+ site     n   sample   pooled    moved
+    0     8   -0.455   -0.366   +0.089
+    1    20   +0.254   +0.233   -0.020
+    2    50   +0.421   +0.404   -0.017
+    3   100   -0.161   -0.157   +0.003
 ```
 
 ## Comparisons need paired draws

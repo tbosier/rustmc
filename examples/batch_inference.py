@@ -56,9 +56,9 @@ print(f"true trend:     mean {true_trends.mean():.3f}, sd {true_trends.std():.3f
 # failures in `batch.errors` keyed by dataset ID, instead of losing the whole batch
 # to one bad series.
 #
-# The intercept and the trend are correlated in this parameterization, because
-# `t` starts at zero and the intercept is the level in week 0. Centering time --
-# `t - t.mean()` -- decorrelates them and samples better, at the cost of an
+# `t` starts at zero, so the intercept is the level in week 0 and is correlated
+# with the trend. The cell after the fit measures that correlation rather than
+# asserting it. Centering time -- `t - t.mean()` -- removes it, at the cost of an
 # intercept that means "level at mid-year".
 
 # %% Fit all 100 SKUs
@@ -82,14 +82,14 @@ batch = compiled.sample_batch(
 print(f"fitted {len(batch)} datasets, {len(batch.errors)} failed")
 
 # %% Compare the first five to the values that generated them
-print(f"{'SKU':<9} {'intercept':>20} {'true':>8} {'trend':>18} {'true':>8}")
+print(f"{'SKU':<9} {'intercept':>19} {'true':>9} {'trend':>18} {'true':>9}")
 for i in range(5):
     fit = batch[i]
     mean, std = fit.mean(), fit.std()
     print(
         f"{batch.ids[i]:<9} "
-        f"{mean['intercept']:9.2f} +/- {std['intercept']:5.2f} {true_intercepts[i]:8.2f} "
-        f"{mean['trend']:8.3f} +/- {std['trend']:5.3f} {true_trends[i]:8.3f}"
+        f"{mean['intercept']:9.2f} +/- {std['intercept']:5.2f} {true_intercepts[i]:9.2f} "
+        f"{mean['trend']:9.3f} +/- {std['trend']:5.3f} {true_trends[i]:9.3f}"
     )
 
 # %% Batch-wide recovery and diagnostics
@@ -104,46 +104,53 @@ print(f"trend error:     mean {np.mean(fitted_trends - true_trends):+.4f}, "
 print(f"divergences:     {divergences.sum()} across {N_MODELS} fits "
       f"({int((divergences > 0).sum())} fits affected)")
 
+# %% What a BatchResult carries
+r = batch[0]
+print("mean()                ", {k: round(v, 3) for k, v in r.mean().items()})
+print("std()                 ", {k: round(v, 3) for k, v in r.std().items()})
+print("get_samples()         ", {k: v.shape for k, v in r.get_samples().items()})
+print("get_samples_2d()      ", {k: v.shape for k, v in r.get_samples_2d().items()})
+print("accept_rate           ", round(r.accept_rate, 3))
+print("accept_rates          ", [round(a, 3) for a in r.accept_rates])
+print("divergences           ", r.divergences)
+print("divergences_per_chain ", r.divergences_per_chain)
+
+# The intercept/trend correlation this parameterization implies, measured.
+draws = r.get_samples()
+print("corr(intercept, trend)", round(float(np.corrcoef(draws["intercept"], draws["trend"])[0, 1]), 3))
+
 # %% [markdown]
-# ## What a `BatchResult` carries
-#
-# ```python
-# r = batch[0]
-# r.mean()                 # dict: param -> float
-# r.std()                  # dict: param -> float
-# r.get_samples()          # dict: param -> flattened draws
-# r.get_samples_2d()       # dict: param -> np.ndarray, shape (chains, draws)
-# r.accept_rate            # float
-# r.accept_rates           # list[float]
-# r.divergences            # int
-# r.divergences_per_chain  # list[int]
-# ```
-#
 # `chains=1` is the throughput-first setting, and it gives up R-hat, which needs
 # more than one chain. Raise `chains` when per-model convergence evidence matters
 # more than batch wall time.
 
 # %% Different structures: rmc.batch_sample()
-# Each entry owns its own graph, so the entries need not share a schema. Here the
-# second SKU gets a quadratic term the others do not have.
+# Each entry owns its own graph, so the entries need not share a schema. The third
+# series below ran promotions in two four-week blocks and gets a term for them that
+# the other two do not have. The blocks sit in the middle of the year rather than at
+# the end, so the promotion indicator is not confounded with the trend.
+promo = (((t >= 12) & (t < 16)) | ((t >= 34) & (t < 38))).astype(np.float64)
+true_lift = 12.0
+promo_y = true_intercepts[2] + true_trends[2] * t + true_lift * promo + np.random.normal(0, noise_std, T)
+
 models = []
-for i in range(3):
+for data in [datasets[0], datasets[1], {"t": t, "promo": promo, "y": promo_y}]:
     entry = rmc.ModelBuilder()
     a = entry.normal_prior("intercept", mu=0.0, sigma=200.0)
     b = entry.normal_prior("trend", mu=0.0, sigma=20.0)
     mu_expr = a + b * "t"
-    data = dict(datasets[i])
-    if i == 1:
-        c = entry.normal_prior("curve", mu=0.0, sigma=1.0)
-        mu_expr = mu_expr + c * "t2"
-        data["t2"] = t**2
+    if "promo" in data:
+        lift = entry.normal_prior("lift", mu=0.0, sigma=50.0)
+        mu_expr = mu_expr + lift * "promo"
     entry.normal_likelihood("obs", mu_expr=mu_expr, sigma=noise_std, observed_key="y")
     models.append((entry.build(), data))
 
 results = rmc.batch_sample(models, chains=1, draws=500, warmup=300, seed=42, show_progress=False)
-for i, r in enumerate(results):
-    params = ", ".join(f"{k}={v:.3f}" for k, v in sorted(r.mean().items()))
+for i, result in enumerate(results):
+    mean, std = result.mean(), result.std()
+    params = ", ".join(f"{k}={mean[k]:.3f} +/- {std[k]:.3f}" for k in sorted(mean))
     print(f"model {i}: {params}")
+print(f"true lift on model 2: {true_lift:.1f}")
 
 # %% [markdown]
 # ## Notes

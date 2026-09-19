@@ -67,6 +67,11 @@ for name in batch.ids:
 # The instrument with 40 readings has the widest intervals, as it should: fewer
 # readings, less information, and no borrowing from the other two.
 #
+# Interval width does not fall monotonically with sample size here. Instrument 2
+# has 120 readings against instrument 1's 75 and still reports slightly wider
+# intervals, because its estimated noise came out higher on this draw. Width
+# depends on the noise as well as the count, and both are estimated.
+#
 # Check `r_hat` and `ess_bulk` per instrument before comparing them. A batch
 # reports diagnostics per fit for exactly this reason -- one instrument can fail
 # to converge while the others are fine.
