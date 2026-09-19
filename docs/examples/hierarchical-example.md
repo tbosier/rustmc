@@ -89,16 +89,16 @@ for j in range(J):
 ```
 
 ```text
-  mu_global   prior: mean=-0.16, std=9.47
-  sigma_group prior: mean=3.91, std=2.95
-  Group 0 prior y range: [-32.8, 29.9]
-  Group 1 prior y range: [-32.2, 38.2]
-  Group 2 prior y range: [-35.9, 30.0]
-  Group 3 prior y range: [-32.6, 33.2]
-  Group 4 prior y range: [-35.2, 29.8]
-  Group 5 prior y range: [-37.7, 29.2]
-  Group 6 prior y range: [-36.6, 36.4]
-  Group 7 prior y range: [-40.8, 31.7]
+  mu_global   prior: mean=0.08, std=9.65
+  sigma_group prior: mean=3.75, std=2.71
+  Group 0 prior y range: [-32.9, 31.3]
+  Group 1 prior y range: [-25.0, 33.9]
+  Group 2 prior y range: [-30.8, 40.2]
+  Group 3 prior y range: [-32.4, 37.7]
+  Group 4 prior y range: [-29.8, 29.1]
+  Group 5 prior y range: [-25.0, 40.7]
+  Group 6 prior y range: [-30.0, 35.9]
+  Group 7 prior y range: [-33.8, 31.6]
 ```
 
 ## Sample
@@ -240,12 +240,12 @@ for j in range(J):
 
 ```text
   Likelihood keys in PPC: ['obs_0', 'obs_1', 'obs_2', 'obs_3', 'obs_4', 'obs_5', 'obs_6', 'obs_7']
-  Group 0: obs mean=3.69  ppc mean=3.72  within +/-2 sd=100.00%
-  Group 1: obs mean=-0.51  ppc mean=-0.46  within +/-2 sd=100.00%
-  Group 2: obs mean=4.23  ppc mean=4.18  within +/-2 sd=100.00%
-  Group 3: obs mean=5.29  ppc mean=5.29  within +/-2 sd=100.00%
-  Group 4: obs mean=-3.56  ppc mean=-3.49  within +/-2 sd=93.33%
-  Group 5: obs mean=-1.34  ppc mean=-1.27  within +/-2 sd=96.67%
-  Group 6: obs mean=2.87  ppc mean=2.86  within +/-2 sd=100.00%
-  Group 7: obs mean=1.11  ppc mean=1.10  within +/-2 sd=90.00%
+  Group 0: obs mean=3.69  ppc mean=3.66  within +/-2 sd=100.00%
+  Group 1: obs mean=-0.51  ppc mean=-0.49  within +/-2 sd=100.00%
+  Group 2: obs mean=4.23  ppc mean=4.22  within +/-2 sd=100.00%
+  Group 3: obs mean=5.29  ppc mean=5.25  within +/-2 sd=100.00%
+  Group 4: obs mean=-3.56  ppc mean=-3.49  within +/-2 sd=96.67%
+  Group 5: obs mean=-1.34  ppc mean=-1.32  within +/-2 sd=96.67%
+  Group 6: obs mean=2.87  ppc mean=2.85  within +/-2 sd=100.00%
+  Group 7: obs mean=1.11  ppc mean=1.10  within +/-2 sd=86.67%
 ```
