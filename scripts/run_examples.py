@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import importlib.util
 import os
 import re
 import subprocess
@@ -67,8 +68,27 @@ def check_manifest(listed: set[str], excluded: set[str]) -> list[str]:
     return problems
 
 
+def absent_optional(name: str) -> str:
+    """The documented optional dependency this example is missing, if any.
+
+    Decided before running, by asking whether the module can be imported, rather
+    than by reading the traceback afterwards. A well-behaved example catches its
+    own ImportError and exits with a readable message -- `arviz_example.py` prints
+    "Install ArviZ first" -- so there is no `ModuleNotFoundError` in stderr to
+    match, and sniffing for one reported a documented, expected absence as a
+    failure.
+    """
+    for module in sorted(OPTIONAL_BY_EXAMPLE.get(name, ())):
+        if importlib.util.find_spec(module) is None:
+            return module
+    return ""
+
+
 def run_one(name: str, timeout: int, env: dict[str, str]) -> tuple[str, str, float, str]:
     started = time.monotonic()
+    absent = absent_optional(name)
+    if absent:
+        return name, "skipped", 0.0, f"needs {absent}"
     try:
         done = subprocess.run(
             [sys.executable, str(EXAMPLES / name)],
@@ -83,12 +103,11 @@ def run_one(name: str, timeout: int, env: dict[str, str]) -> tuple[str, str, flo
     elapsed = time.monotonic() - started
     if done.returncode == 0:
         return name, "ok", elapsed, ""
+    # Every documented optional dependency is present by the time we get here, so
+    # anything still missing is one the README does not account for.
     missing = re.search(r"ModuleNotFoundError: No module named '([\w.]+)'", done.stderr)
     if missing:
         module = missing.group(1).split(".")[0]
-        allowed = OPTIONAL_BY_EXAMPLE.get(name, set())
-        if module in allowed:
-            return name, "skipped", elapsed, f"needs {missing.group(1)}"
         return name, "FAILED", elapsed, (
             f"imports {module}, which examples/README.md does not list as an optional\n"
             f"dependency of {name}. Either drop the import or document it and add it to\n"
