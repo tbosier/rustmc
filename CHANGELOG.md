@@ -6,6 +6,68 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+This entry closes a second repository-wide review. Two themes dominate: claims —
+in documentation, in test names, and in a release gate — that the code did not
+support, and predictive draws sharing an RNG stream with the fit that produced them.
+
+### Added
+
+- `rustmc_core::seeding`, the single definition of the RNG stream-separation
+  primitive that seven modules each carried a private copy of.
+- `scripts/build_example_docs.py`. Every page under `docs/examples/` is generated
+  from the example of the same name and shows that example's real captured output.
+  CI fails if a committed page stops matching the code that produces it.
+
+### Changed
+
+- **Seeded predictive draws change.** `posterior_predictive`, `predict`,
+  `to_arviz(include_ppc=True)`, `sample_prior_predictive` and
+  `rustmc_core::model::ModelFit::predict` now derive their stream from a domain
+  constant instead of using the caller's seed directly. Draws remain deterministic
+  and reproducible; a given seed produces different values than in 0.13.0. See Fixed.
+- The documentation nav is grouped into sections, and `mkdocs.yml` sets
+  `strict: true` so an orphan page or a nav entry pointing at a renamed file fails
+  the build rather than shipping.
+- `benchmarks/README.md` describes the screened quality gate, including the
+  `quality_gate.domains` the report now publishes and what a domain does not
+  establish.
+
+### Fixed
+
+- **The benchmark quality gate passed on diagnostics that were not numbers.** Each
+  metric was compared with a bare `>` or `<`, which reports false for a NaN, so
+  nothing was appended to the failure list and the gate that authorises publishing
+  a speed claim reported success. It now fails closed on non-finite, out-of-domain,
+  absent, negative and fractional values, and screens each parameter before the
+  R-hats are reduced with `max` and the ESS values with `min` — aggregating first
+  hid exactly the half of each domain the gate cares about.
+- **Predictive draws replayed a fitting chain's stream.** `sampler::run` seeds chain
+  `c` as `seed + c`, and every predictive entry point defaulted to the same seed
+  `sample()` defaults to, so a default four-chain fit held streams 42..=45 and
+  prediction under seed 42 reproduced chain 0 exactly. Measured at four chains,
+  1000 warmup and 1000 draws, the standardised predictive residuals under a
+  prediction seed equal to the fit seed were not distinguishable from unrelated
+  seeds; the exposure is short runs, where a chain's tail and the prediction noise
+  overlap over a much smaller sample.
+- `validate_shapes()` never counted the binding indices of `Op::BroadcastObservation`
+  or `Op::FusedLinearMu`, so a model using either could panic out of `sample()`.
+- `KalmanFilterResult.log_likelihood` and `KalmanSmootherResult.log_likelihood` were
+  annotated `dict[str, _FloatArray]` and return `float`. The stub check that should
+  have caught this was scoped to the classes one branch had reworked.
+- The local-level filter kept variances inside the representable range, and forecast
+  means are accumulated so that finite paths cannot sum to infinity.
+- Test assertions that a sampler drawing from the prior alone would have passed, in
+  the seasonal, trend and forecast recovery tests and in the Python smoke test.
+- Documentation claims the code did not support, including committed example output
+  that advertised 128 divergent transitions for a model that now has none.
+
+### Removed
+
+- Four `Op` variants no callable path could reach, three public items with no caller,
+  and the `Option` around a batch cell's fit, which could not be `None`.
+- Two committed executed notebooks and their rendered image directories, 1.4 MB in
+  all, replaced by the generated example pages.
+
 ## [0.13.0] - 2026-09-18
 
 This release closes a repository-wide correctness review. The headline item is a
