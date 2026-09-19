@@ -1503,22 +1503,6 @@ impl Graph {
             .collect()
     }
 
-    /// Backward-compatible helper for the current Normal-only API surface.
-    #[deprecated(note = "use observation_heads for all supported families")]
-    pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
-        self.observation_heads()
-            .into_iter()
-            .filter_map(|head| match head.family {
-                ObsFamily::Normal => Some((head.linpred, head.aux.unwrap(), head.n_obs)),
-                ObsFamily::BernoulliLogit
-                | ObsFamily::PoissonLog
-                | ObsFamily::ExponentialLog
-                | ObsFamily::LogNormal
-                | ObsFamily::NegativeBinomialLog => None,
-            })
-            .collect()
-    }
-
     /// Store a data vector without creating a graph node (used by FusedLinearMu).
     pub fn store_data_vec(&mut self, values: Vec<f64>) -> usize {
         let idx = self.data_vectors.len();

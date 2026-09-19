@@ -477,14 +477,6 @@ impl Evaluator {
         self.read_vec(node.0, i, graph)
     }
 
-    /// Copy a full vector node into a Vec after `compute()`.
-    #[deprecated(note = "prefer node_len and vec_elem to avoid allocation")]
-    pub fn vec_to_owned(&self, node: NodeId, graph: &Graph) -> Vec<f64> {
-        (0..self.node_lengths[node.0])
-            .map(|i| self.read_vec(node.0, i, graph))
-            .collect()
-    }
-
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
