@@ -165,8 +165,14 @@ def test_the_ess_ceiling_is_the_one_the_estimator_can_actually_reach():
     assert gate.ess_ceiling(4, 2000) == pytest.approx(31224.719895935552)
 
 
-def test_real_ess_values_stay_well_inside_the_ceiling():
-    """The gate's own recorded ESS must not be anywhere near the bound."""
+def test_a_recorded_ess_value_is_an_order_of_magnitude_below_the_ceiling():
+    """Pins one recorded number against the bound; it measures nothing itself.
+
+    Renamed from test_real_ess_values_stay_well_inside_the_ceiling, which read as a
+    claim about the ESS values the gate produces. Both sides of the comparison are
+    constants: the left is a single figure copied from a past run, not a fit performed
+    here, so this only shows that the ceiling is not set so low as to reject it.
+    """
     import benchmarks.validate_posteriors as gate
     # Observed for the correlated_regression case at chains=4, draws=2000.
     assert 2928.224634872191 < gate.ess_ceiling(4, 2000) / 10

@@ -686,6 +686,17 @@ mod tests {
         config.num_warmup = 400;
         config.num_draws = 500;
         config.thinning = 2;
+        // compact_config's own priors have means 0.3/1.5 = 0.2 and 0.6/1.5 = 0.4. The
+        // first is exactly `process_variance` and the second is 0.1 from
+        // `observation_variance`, so under the tolerances below this test used to pass
+        // on prior draws alone: it asserted nothing about the observations. Fit with a
+        // prior deliberately far below both truths instead, so the windows can only be
+        // reached by conditioning on the data. The negative control below keeps it so.
+        config.process_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
+        config.observation_variance_prior = config.process_variance_prior;
         let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
         let draw_count = posterior.chains.iter().map(Vec::len).sum::<usize>();
         let mean_process = posterior
@@ -702,13 +713,30 @@ mod tests {
             .map(|draw| draw.observation_variance)
             .sum::<f64>()
             / draw_count as f64;
+        let process_tolerance = 0.06;
+        let observation_tolerance = 0.10;
         assert!(
-            (mean_process - process_variance).abs() < 0.13,
+            (mean_process - process_variance).abs() < process_tolerance,
             "{mean_process}"
         );
         assert!(
-            (mean_observation - observation_variance).abs() < 0.18,
+            (mean_observation - observation_variance).abs() < observation_tolerance,
             "{mean_observation}"
+        );
+
+        // Negative control: a sampler that ignored the observations would report the
+        // prior means, scale / (shape - 1) = 0.025 for both. Those must sit outside the
+        // windows just asserted, or the two assertions above prove nothing.
+        let prior_mean = |prior: InverseGammaPrior| prior.scale / (prior.shape - 1.0);
+        assert!(
+            (prior_mean(config.process_variance_prior) - process_variance).abs()
+                > process_tolerance,
+            "the process-variance prior mean is inside the accepted window"
+        );
+        assert!(
+            (prior_mean(config.observation_variance_prior) - observation_variance).abs()
+                > observation_tolerance,
+            "the observation-variance prior mean is inside the accepted window"
         );
 
         let forecast = posterior.forecast(12, 702).unwrap();

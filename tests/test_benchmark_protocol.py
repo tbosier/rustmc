@@ -67,6 +67,40 @@ def test_problem_is_deterministic_and_has_analytic_posterior():
     assert first.posterior_mean.shape == (3,)
     assert np.all(first.posterior_sd > 0)
 
+    # The half of this test that names an "analytic posterior" used to assert only the
+    # shape of the mean and the positivity of the SD, which any array of the right size
+    # satisfies. The posterior is what every engine's error metric is measured against,
+    # so check the value: the mean minimises the ridge objective
+    # ||y - Xb||^2 / sigma^2 + ||b||^2 / tau^2, which is a least-squares problem on the
+    # augmented design and reaches it without forming or inverting a precision matrix.
+    scaled = np.vstack(
+        (first.x / config.observation_sigma, np.eye(config.parameters) / config.prior_sigma)
+    )
+    target = np.concatenate((first.y / config.observation_sigma, np.zeros(config.parameters)))
+    ridge = np.linalg.lstsq(scaled, target, rcond=None)[0]
+    np.testing.assert_allclose(first.posterior_mean, ridge, rtol=1e-10, atol=1e-12)
+
+
+def test_the_analytic_posterior_matches_the_scalar_closed_form():
+    """One parameter, so mean and SD are scalars written out by hand.
+
+    With a single column the conjugate Gaussian posterior is
+    ``mean = (x.y / sigma^2) / (x.x / sigma^2 + 1 / tau^2)`` and
+    ``sd = 1 / sqrt(x.x / sigma^2 + 1 / tau^2)``. Neither expression goes anywhere near
+    the matrix inverse make_linear_regression uses, so this pins the SD as well as the
+    mean, which no other assertion in this module does.
+    """
+    config = BenchmarkConfig(
+        observations=25, parameters=1, chains=2, warmup=5, draws=5,
+        observation_sigma=0.7, prior_sigma=1.5,
+    )
+    problem = make_linear_regression(config)
+    column = problem.x[:, 0]
+    precision = column @ column / config.observation_sigma**2 + 1 / config.prior_sigma**2
+    mean = (column @ problem.y / config.observation_sigma**2) / precision
+    assert problem.posterior_mean[0] == pytest.approx(mean, rel=1e-12)
+    assert problem.posterior_sd[0] == pytest.approx(1 / math.sqrt(precision), rel=1e-12)
+
 
 def test_problem_digest_changes_with_data_seed():
     first = make_linear_regression(BenchmarkConfig(data_seed=1))
