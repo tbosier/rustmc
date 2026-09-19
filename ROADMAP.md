@@ -6,8 +6,9 @@ We want a small library whose supported models are easy to fit, inspect, and dep
 There are two inference engines, not one. Regression, calibration, and group
 comparisons written with `ModelBuilder` run on the graph-based NUTS/HMC sampler. The
 forecasting models — structural, seasonal, AR, dynamic GLM, hurdle, runoff, and the
-Gaussian hierarchy — are hand-written conjugate Gibbs and FFBS samplers that do not
-use that graph, its autodiff, or its samplers at all. What the two share is
+Gaussian hierarchy — are hand-written samplers that do not use that graph, its
+autodiff, or its samplers at all. They are not one kernel either: Gibbs with FFBS,
+exact conjugate draws, latent-count Gibbs, and block elliptical slice sampling. What the two share is
 everything around inference: the state-space primitives, the diagnostics layer,
 forecast evaluation, the batch executor, and one result and prediction surface in
 Python. Work below that improves a shared foundation improves both; work on a

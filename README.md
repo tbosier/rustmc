@@ -88,9 +88,12 @@ Independent fits do not share information. For related groups, build one
 
 Models you write with `ModelBuilder` compile to a differentiable graph and are fitted
 by NUTS or HMC. The forecasting models are different: structural, seasonal, AR,
-dynamic GLM, hurdle, runoff, and the Gaussian hierarchy are hand-written conjugate
-Gibbs and FFBS samplers that do not use that graph, its autodiff, or its samplers.
-Each exploits structure the general sampler cannot.
+dynamic GLM, hurdle, runoff, and the Gaussian hierarchy are hand-written samplers that
+do not use that graph, its autodiff, or its samplers. Each exploits structure the
+general sampler cannot, and they are not all the same kind: Gibbs with FFBS for the
+Gaussian state-space models, exact independent conjugate draws for AR, latent-count
+Gibbs for runoff, and block elliptical slice sampling for dynamic GLMs. `sampler_stats`
+on a fit reports which one ran.
 
 What the two share is everything around inference — the state-space primitives, the
 diagnostics, forecast evaluation, the batch executor, and one result and prediction

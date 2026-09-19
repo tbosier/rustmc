@@ -9,7 +9,7 @@ These fits share no information between series. When series should inform each o
 use the pooled panel model in [dynamic GLMs](dynamic-glm.md) instead.
 
 `BayesianLocalLevel`, `BayesianSeasonalLocalLevel`, `BayesianLocalLinearTrend`,
-and `BayesianAR` expose native independent-cell fitting:
+`BayesianAR`, and `BayesianHurdleLogNormal` expose native independent-cell fitting:
 
 ```python
 import numpy as np
@@ -71,7 +71,7 @@ Batch forecasts preserve each model's paired posterior parameters and coherent f
 path. Aggregation across cells represents independent series and introduces no shared
 shocks or hierarchical dependence.
 
-All four fitted models and hierarchical Gibbs fits expose `summary()`, `diagnostics()`,
+All five fitted models and hierarchical Gibbs fits expose `summary()`, `diagnostics()`,
 and a `sampler_stats` dictionary. Parameter reports reuse rank-normalized folded split
 R-hat, bulk/tail ESS, mean MCSE, and 94% empirical HDIs. These HDIs summarize parameter
 draws; forecast intervals retain their existing equal-tailed semantics. Local and trend

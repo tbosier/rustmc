@@ -98,14 +98,17 @@ point of keeping the posterior.
 
 Models you write with `ModelBuilder` compile to a differentiable graph and are fitted
 by NUTS or HMC. The forecasting models — structural, seasonal, AR, dynamic GLM,
-hurdle, runoff, and the Gaussian hierarchy — are separate hand-written conjugate Gibbs
-and FFBS samplers that do not use that graph at all. Each exploits structure the
-general sampler cannot.
+hurdle, runoff, and the Gaussian hierarchy — are separate hand-written samplers that do
+not use that graph at all. Each exploits structure the general sampler cannot: Gibbs
+with FFBS, exact conjugate draws, latent-count Gibbs, or block elliptical slice
+sampling, depending on the model.
 
 They share everything around inference: the state-space primitives, the diagnostics,
 forecast evaluation, the batch executor, and one result and prediction API. So
-`fit.summary()` means the same thing either way, but a change to NUTS does not change
-a forecast.
+`fit.summary()` reads the same way either way, but a change to NUTS does not change a
+forecast. The one difference worth knowing: these samplers have no notion of a
+divergence or an accept rate, so those fields are `None` on a forecasting fit. R-hat,
+ESS and MCSE mean what they always did.
 
 ## Where to go next
 

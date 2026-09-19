@@ -8,10 +8,16 @@ particular model: [structural composition](structural-forecasting.md),
 [counts and intermittent amounts](dynamic-glm.md),
 [sparse amounts](sparse-amounts.md), and [payment runoff](runoff.md).
 
-These models do not use `ModelBuilder` or the NUTS sampler. They are conjugate Gibbs
-and FFBS samplers with their own constructors. They return the same result and
-diagnostic objects, so what you learn in [Get started](getting-started.md) about
-reading a fit still applies.
+These models do not use `ModelBuilder` or the NUTS sampler. Each has its own
+constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models,
+exact conjugate draws for AR, latent-count Gibbs for runoff, and block elliptical slice
+sampling for dynamic GLMs. A fit's `sampler_stats` names the one that ran.
+
+They return their own fit classes rather than the `FitResult` from
+[Get started](getting-started.md), but `summary()`, `diagnostics()` and
+`get_samples_2d()` read the same way. One difference: none of these samplers has a
+divergence or an accept rate, so `sampler_stats` reports both as `None`. R-hat, ESS and
+MCSE apply as before.
 
 The Python package combines native inference with reusable evaluation and result tools.
 Forecasts have leading `(chain, draw)` axes and a final horizon axis. Panel forecasts
