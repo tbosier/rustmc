@@ -1639,6 +1639,30 @@ impl GraphModel {
 
 /// Posterior predictions indexed by response, chain, draw, and observation.
 pub type Prediction = HashMap<String, Vec<Vec<Vec<f64>>>>;
+
+/// Domain separator for the posterior-predictive stream, `"PRED_GEN"`.
+pub const POSTERIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_4544_5F47_454E;
+
+/// Domain separator for a prior-predictive stream, `"PRIOR_GN"`.
+pub const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_474E;
+
+/// Re-key a caller's seed into a named RNG stream.
+///
+/// [`sampler::sample`](crate::sampler::sample) seeds fitting chain `i` with
+/// `config.seed.wrapping_add(i)`, so a simulation that seeds a generator with
+/// the raw integer replays chain zero's stream when the caller passes the fit
+/// seed, and chain `k`'s when they pass `fit_seed + k` — and passing the fit
+/// seed is exactly what a caller reaches for. Mixing a domain constant in
+/// through the SplitMix64 finalizer separates the streams, the way the
+/// structural, hierarchical, hurdle and dynamic-GLM fits already separate their
+/// fit, forecast and prior-predictive streams. The finalizer is a bijection, so
+/// distinct seeds still give distinct streams within a domain.
+pub fn stream_seed(seed: u64, domain: u64) -> u64 {
+    let mut value = seed.wrapping_add(domain);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
 #[derive(Clone, Debug)]
 pub struct ModelFit {
     model: GraphModel,
@@ -1660,7 +1684,10 @@ impl ModelFit {
         let prediction_graph = bind_prediction(&graph, inputs, sizes)?;
         let heads = prediction_graph.observation_heads();
         let mut evaluator = Evaluator::new(&prediction_graph);
-        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(stream_seed(
+            seed,
+            POSTERIOR_PREDICT_SEED_DOMAIN,
+        ));
         let mut output: Prediction = self
             .model
             .likelihood_names
