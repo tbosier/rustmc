@@ -84,6 +84,19 @@ Independent fits do not share information. For related groups, build one
 - Versioned model and fit artifacts. Compiled model artifacts omit training data;
   fitted artifacts include it. Neither resumes sampler adaptation or RNG state.
 
+## Two engines, one result surface
+
+Models you write with `ModelBuilder` compile to a differentiable graph and are fitted
+by NUTS or HMC. The forecasting models are different: structural, seasonal, AR,
+dynamic GLM, hurdle, runoff, and the Gaussian hierarchy are hand-written conjugate
+Gibbs and FFBS samplers that do not use that graph, its autodiff, or its samplers.
+Each exploits structure the general sampler cannot.
+
+What the two share is everything around inference — the state-space primitives, the
+diagnostics, forecast evaluation, the batch executor, and one result and prediction
+API in Python. So `fit.summary()` and `fit.diagnostics()` mean the same thing either
+way, but a change to the NUTS sampler does not change a forecast, and vice versa.
+
 The modeling language is deliberately small. PyMC and Stan offer broader model
 support. rustmc aims to earn its place through repeated fitting and a few well-tested
 specialized algorithms. Performance depends on the workload; see the
@@ -99,7 +112,8 @@ specialized algorithms. Performance depends on the workload; see the
 
 The [roadmap](ROADMAP.md) tracks five priorities: statistical release gates,
 representative benchmarks, native model artifacts, bounded batches, and consistent
-results and diagnostics. Forecasting remains an application of that shared core.
+results and diagnostics. Most of that work sits in the shared layer, so it reaches the
+forecasting models and the graph models alike.
 
 For source builds and checks, see [Contributing](CONTRIBUTING.md).
 MIT licensed.

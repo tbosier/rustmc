@@ -1,8 +1,17 @@
 # Direction
 
 rustmc focuses on repeated Bayesian inference and structured partial pooling.
-Regression, calibration, group comparisons, and forecasting share the same core.
 We want a small library whose supported models are easy to fit, inspect, and deploy.
+
+There are two inference engines, not one. Regression, calibration, and group
+comparisons written with `ModelBuilder` run on the graph-based NUTS/HMC sampler. The
+forecasting models — structural, seasonal, AR, dynamic GLM, hurdle, runoff, and the
+Gaussian hierarchy — are hand-written conjugate Gibbs and FFBS samplers that do not
+use that graph, its autodiff, or its samplers at all. What the two share is
+everything around inference: the state-space primitives, the diagnostics layer,
+forecast evaluation, the batch executor, and one result and prediction surface in
+Python. Work below that improves a shared foundation improves both; work on a
+sampler usually does not.
 
 These are the next five features, in dependency order. Each needs tests, documentation,
 and a working example before it is complete.

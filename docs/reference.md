@@ -2,14 +2,18 @@
 
 ## Linear Gaussian state-space models
 
-`LinearGaussianStateSpace` implements a time-homogeneous Kalman filter and
-Rauch--Tung--Striebel smoother for an arbitrary-dimensional latent state and a
-single scalar observation per time point. Arrays use the conventional model
+`LinearGaussianStateSpace` implements a Kalman filter and Rauch--Tung--Striebel
+smoother for an arbitrary-dimensional latent state and a single scalar observation per
+time point. Arrays use the conventional model
 
 ```text
 x[t] = transition @ x[t-1] + process noise
-y[t] = observation @ x[t] + observation noise
+y[t] = observation[t] @ x[t] + observation noise
 ```
+
+The transition is the same at every time step. The observation row is the same at every
+time step unless you set per-time rows; see [what may vary with
+time](#what-may-vary-with-time) below.
 
 `initial_mean` and `initial_covariance` describe `x[-1]`, immediately before the
 first observation. The filter applies one transition/process-noise prediction before
@@ -38,12 +42,25 @@ Its supplied seasonal and level variances remain fixed; it does not estimate the
 The optional `initial_seasonal_effects` is one complete cycle in forecast order and
 must sum to zero.
 
-This state-space API assumes fixed, time-invariant system matrices, Gaussian noise,
-and univariate observations. Process covariance may be positive semidefinite so
-deterministic state shifts are representable; initial covariance must be positive
-definite, and observation variance must be positive. It does not yet
-estimate system parameters, support multivariate observations, accept
-time-varying matrices, or integrate a Kalman likelihood into `ModelBuilder`.
+### What may vary with time
+
+Some of the system may vary with time and some may not. The observation row may vary:
+`with_observation_rows(rows)` supplies one row per training time, and `forecast()`
+takes `future_observation_rows=` for the horizon. See
+[time-varying observation rows](regression-forecasting.md#fixed-parameter-time-varying-observation-rows).
+The transition matrix, the process covariance, and the initial mean and covariance are
+constant for the whole series and horizon; there is no API to vary them. In the Rust
+core the per-time observation variance can also vary, through
+`with_observation_variances`; that is used internally by the structural models and is
+not exposed in Python, where the observation variance is a single constant.
+
+Whether or not the rows vary, the parameters are supplied, not estimated. Noise is
+Gaussian and the observation is univariate. Process covariance may be positive
+semidefinite so deterministic state shifts are representable; initial covariance must
+be positive definite, and observation variance must be positive. This API does not
+estimate system parameters, support multivariate observations, or integrate a Kalman
+likelihood into `ModelBuilder`.
+
 Filtering, smoothing, and forecasting release the Python GIL after converting the
 input NumPy array.
 

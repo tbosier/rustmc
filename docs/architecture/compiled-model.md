@@ -53,9 +53,23 @@ The declarative model definition, expression compiler, prediction binder, and ar
 loader live in `rustmc_core::model`. Python provides construction and input adapters.
 See [standalone Rust execution](../native-models.md). The core evaluator owns per-node lengths so that
 named dimensions affect computation. One native observation simulator supplies prior
-and posterior generation. A second, independently written reference autodiff
-implementation cross-checks the production evaluator's gradients. It is compiled only
-under `#[cfg(test)]`, so it is test scaffolding rather than public API.
+and posterior generation.
+
+A second, allocating reference evaluator in `autodiff_reference.rs` cross-checks the
+production evaluator. It is compiled only under `#[cfg(test)]`, so it is test
+scaffolding rather than public API. It is no longer an independent implementation:
+for elementwise operators, Student-t, Bernoulli, and Poisson it deliberately calls the
+same `ElementwiseOp::adjoints`, `student_t_derivatives`, `bernoulli_logp_dp`, and
+`poisson_logp_dlam` that production uses. The two had drifted apart and the oracle was
+the one that was wrong in the tails, so sharing them was the fix. The consequence is
+that this comparison checks graph traversal, broadcasting, and adjoint accumulation in
+the optimized evaluator — not the derivative formulas themselves, which the two now
+agree on by construction.
+
+The formulas are covered separately, in `rust_core/tests/numerical_stability.rs`. Every
+expectation there is a closed form, a central finite difference, or a constant produced
+outside the crate by a 400-significant-digit evaluation. Nothing in that file compares
+one in-repo evaluator against another, for the reason above.
 
 Structural components compile into validated state blocks handled by Gaussian
 FFBS/Gibbs (with Student-t latent precision updates when requested). Dynamic GLMs
