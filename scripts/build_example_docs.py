@@ -344,6 +344,53 @@ HAND_WRITTEN: set[str] = set()
 # person to reconcile, block and prose together.
 VERIFIED_SNIPPETS: dict[str, str] = {"index.md": "A complete example"}
 
+
+# Guide pages whose python blocks are signature fragments rather than a script a
+# reader could run. `reference.md` documents call signatures one at a time and is
+# not meant to execute.
+NON_RUNNABLE_PAGES = {"reference.md"}
+
+
+def unrunnable_pages() -> list[str]:
+    """Guide pages whose code blocks do not run when read in order.
+
+    A reader works down a page, so a page's python blocks concatenated in order
+    are the script that reader ends up with. Two blocks on
+    `regression-forecasting.md` used `promotion`, `y` and `fixed_model` without
+    ever defining them: the FIRST block on the page raised NameError for anyone
+    who copied it. Nothing caught that, because these pages are hand-written and
+    only the generated pages under docs/examples/ ever ran.
+
+    This checks that the concatenation runs, and deliberately does not check what
+    it prints -- a guide block shows API shape, and pinning its output would make
+    every page a drift surface for no gain. `VERIFIED_SNIPPETS` is where a page
+    that does show its output gets compared.
+    """
+    broken = []
+    checked = []
+    for page in sorted((ROOT / "docs").glob("*.md")):
+        if page.name in NON_RUNNABLE_PAGES or page.name.endswith(".local.md"):
+            continue
+        blocks = re.findall(r"```python\n(.*?)```", page.read_text(encoding="utf-8"), re.S)
+        if not blocks:
+            continue
+        with tempfile.TemporaryDirectory() as scratch:
+            script = Path(scratch) / "page.py"
+            script.write_text("\n".join(blocks), encoding="utf-8")
+            done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+                [sys.executable, str(script)], cwd=ROOT, capture_output=True, text=True
+            )
+        checked.append((page.name, done.returncode == 0, len(blocks)))
+        if done.returncode != 0:
+            tail = done.stderr.strip().splitlines()
+            broken.append(
+                f"docs/{page.name}: its {len(blocks)} python block(s) do not run in order\n"
+                + "\n".join("    " + line for line in tail[-6:])
+            )
+    for name, good, count in checked:
+        print(f"{'     ok' if good else ' BROKEN'}  docs/{name} ({count} block(s) run in order)")
+    return broken
+
 SNIPPET_BLOCK = re.compile(r"```python\n(?P<code>.*?)```\s*\n+```text\n(?P<output>.*?)```", re.S)
 
 
@@ -481,6 +528,11 @@ def main() -> int:
             + "\n  ".join(left_over),
             file=sys.stderr,
         )
+        return 1
+
+    unrunnable = unrunnable_pages()
+    if unrunnable:
+        print("\n" + "\n\n".join(unrunnable), file=sys.stderr)
         return 1
 
     # Run before the NORMALISERS audit below, because a normaliser may be used by
