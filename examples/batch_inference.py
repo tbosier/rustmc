@@ -1,0 +1,158 @@
+"""Batch inference
+
+Fit many independent models in one call. rustmc runs their chains through a shared
+Rayon thread pool, and offers two batch shapes:
+
+- `CompiledModel.sample_batch()` reuses one immutable graph structure across
+  validated datasets that share a schema. Use this when the model is the same and
+  only the data changes -- one demand model per SKU, one calibration per instrument.
+- `rustmc.batch_sample()` accepts a different model structure per entry, so each
+  entry owns its own graph and dataset. Use it only when the structures really do
+  differ.
+
+This example uses 100 SKUs so it stays practical to run locally. It is an API
+example, not a throughput claim. Whether rustmc, ARIMA or Prophet is faster depends
+on the model, configuration, data and hardware, and their default uncertainty
+outputs are not directly comparable. `examples/batch_many_series.py` has a matched
+rustmc/PyMC+nutpie comparison that reports divergences, R-hat and ESS/s next to wall
+time; `benchmarks/README.md` says what may be claimed from a measurement.
+"""
+
+# %%
+import numpy as np
+
+import rustmc as rmc
+
+# %% Simulate 100 weekly SKU series
+np.random.seed(0)
+N_MODELS = 100  # benchmark larger runs on your own model and hardware
+T = 52  # weeks per SKU
+
+true_intercepts = np.random.normal(100, 20, N_MODELS)
+true_trends = np.random.normal(0.5, 0.2, N_MODELS)
+noise_std = 5.0
+
+# One time axis, in weeks, shared by every series. The data is generated against
+# this same axis, so a fitted `trend` is directly comparable to `true_trends`.
+t = np.arange(T, dtype=np.float64)
+
+datasets = [
+    {
+        "t": t,
+        "y": true_intercepts[i] + true_trends[i] * t + np.random.normal(0, noise_std, T),
+    }
+    for i in range(N_MODELS)
+]
+
+print(f"{N_MODELS} series, {T} weeks each")
+print(f"true intercept: mean {true_intercepts.mean():.2f}, sd {true_intercepts.std():.2f}")
+print(f"true trend:     mean {true_trends.mean():.3f}, sd {true_trends.std():.3f}  (units per week)")
+
+# %% [markdown]
+# ## Shared structure: `CompiledModel.sample_batch()`
+#
+# Every SKU here has the same model, so the graph is built and compiled once and
+# each dataset is bound to it. `errors="collect"` attempts every cell and returns the
+# failures in `batch.errors` keyed by dataset ID, instead of losing the whole batch
+# to one bad series.
+#
+# The intercept and the trend are correlated in this parameterization, because
+# `t` starts at zero and the intercept is the level in week 0. Centering time --
+# `t - t.mean()` -- decorrelates them and samples better, at the cost of an
+# intercept that means "level at mid-year".
+
+# %% Fit all 100 SKUs
+builder = rmc.ModelBuilder()
+intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
+trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
+builder.normal_likelihood("obs", mu_expr=intercept + trend * "t", sigma=noise_std, observed_key="y")
+compiled = builder.compile()
+
+batch = compiled.sample_batch(
+    datasets,
+    ids=[f"sku-{i:03d}" for i in range(N_MODELS)],
+    chains=1,
+    draws=500,
+    warmup=300,
+    seed=42,
+    errors="collect",
+    show_progress=False,
+)
+
+print(f"fitted {len(batch)} datasets, {len(batch.errors)} failed")
+
+# %% Compare the first five to the values that generated them
+print(f"{'SKU':<9} {'intercept':>20} {'true':>8} {'trend':>18} {'true':>8}")
+for i in range(5):
+    fit = batch[i]
+    mean, std = fit.mean(), fit.std()
+    print(
+        f"{batch.ids[i]:<9} "
+        f"{mean['intercept']:9.2f} +/- {std['intercept']:5.2f} {true_intercepts[i]:8.2f} "
+        f"{mean['trend']:8.3f} +/- {std['trend']:5.3f} {true_trends[i]:8.3f}"
+    )
+
+# %% Batch-wide recovery and diagnostics
+fitted_intercepts = np.array([batch[i].mean()["intercept"] for i in range(N_MODELS)])
+fitted_trends = np.array([batch[i].mean()["trend"] for i in range(N_MODELS)])
+divergences = np.array([batch[i].divergences for i in range(N_MODELS)])
+
+print(f"intercept error: mean {np.mean(fitted_intercepts - true_intercepts):+.3f}, "
+      f"rmse {np.sqrt(np.mean((fitted_intercepts - true_intercepts) ** 2)):.3f}")
+print(f"trend error:     mean {np.mean(fitted_trends - true_trends):+.4f}, "
+      f"rmse {np.sqrt(np.mean((fitted_trends - true_trends) ** 2)):.4f}")
+print(f"divergences:     {divergences.sum()} across {N_MODELS} fits "
+      f"({int((divergences > 0).sum())} fits affected)")
+
+# %% [markdown]
+# ## What a `BatchResult` carries
+#
+# ```python
+# r = batch[0]
+# r.mean()                 # dict: param -> float
+# r.std()                  # dict: param -> float
+# r.get_samples()          # dict: param -> flattened draws
+# r.get_samples_2d()       # dict: param -> np.ndarray, shape (chains, draws)
+# r.accept_rate            # float
+# r.accept_rates           # list[float]
+# r.divergences            # int
+# r.divergences_per_chain  # list[int]
+# ```
+#
+# `chains=1` is the throughput-first setting, and it gives up R-hat, which needs
+# more than one chain. Raise `chains` when per-model convergence evidence matters
+# more than batch wall time.
+
+# %% Different structures: rmc.batch_sample()
+# Each entry owns its own graph, so the entries need not share a schema. Here the
+# second SKU gets a quadratic term the others do not have.
+models = []
+for i in range(3):
+    entry = rmc.ModelBuilder()
+    a = entry.normal_prior("intercept", mu=0.0, sigma=200.0)
+    b = entry.normal_prior("trend", mu=0.0, sigma=20.0)
+    mu_expr = a + b * "t"
+    data = dict(datasets[i])
+    if i == 1:
+        c = entry.normal_prior("curve", mu=0.0, sigma=1.0)
+        mu_expr = mu_expr + c * "t2"
+        data["t2"] = t**2
+    entry.normal_likelihood("obs", mu_expr=mu_expr, sigma=noise_std, observed_key="y")
+    models.append((entry.build(), data))
+
+results = rmc.batch_sample(models, chains=1, draws=500, warmup=300, seed=42, show_progress=False)
+for i, r in enumerate(results):
+    params = ", ".join(f"{k}={v:.3f}" for k, v in sorted(r.mean().items()))
+    print(f"model {i}: {params}")
+
+# %% [markdown]
+# ## Notes
+#
+# - Every model in a batch shares one `draws` and `warmup` count.
+# - The thread pool is shared across chains and models. More cores may cut wall
+#   time, but scaling depends on model size, batch size, memory bandwidth and
+#   scheduling. Measure it on the workload you care about rather than assuming it
+#   is proportional.
+# - `sampler="hmc"` is available in batch mode as a fixed-step fallback.
+# - Chunked batch dispatch currently retains inputs and fits, so peak memory grows
+#   with the batch. See the roadmap for bounded streaming.
