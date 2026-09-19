@@ -15,7 +15,7 @@ use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, 
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
 };
-use rustmc_core::sampler::{sample, SampleResult, SamplerConfig};
+use rustmc_core::sampler::{sample, BatchModelResult, SampleResult, SamplerConfig};
 use std::collections::HashMap;
 
 fn evaluate(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
@@ -469,9 +469,18 @@ fn bounded_sigmoid_tail_survives_a_sigmoid_that_underflows() {
         lower: 0.0,
         upper: 1e308,
     };
+    // Each constant is the correctly rounded f64, so the 2 ulp the source
+    // claims can be asserted directly rather than through `assert_close`'s
+    // 1e-12, which could not tell 2 ulp from 4500 of them.
+    let within_two_ulp = |actual: f64, expected: f64, label: &str| {
+        assert!(
+            (actual / expected - 1.0).abs() <= 2.0 * f64::EPSILON,
+            "{label}: {actual} vs {expected} is more than 2 ulp"
+        );
+    };
     for (raw, expected) in WIDE_SPAN_TAIL {
-        assert_close(wide.apply(raw), expected, &format!("apply({raw})"));
-        assert_close(
+        within_two_ulp(wide.apply(raw), expected, &format!("apply({raw})"));
+        within_two_ulp(
             wide.derivative(raw),
             expected,
             &format!("derivative({raw})"),
@@ -481,12 +490,28 @@ fn bounded_sigmoid_tail_survives_a_sigmoid_that_underflows() {
             lower: -1e308,
             upper: 0.0,
         };
-        assert_close(
+        within_two_ulp(
             -mirrored.apply(-raw),
             expected,
             &format!("mirrored apply({})", -raw),
         );
     }
+    // The widest representable span, not just 1e308: `f64::MAX` as an upper
+    // bound is the largest interval the transform is ever asked for.
+    let widest = ParamTransform::BoundedSigmoid {
+        lower: 0.0,
+        upper: f64::MAX,
+    };
+    assert!((f64::MAX - 0.0).is_finite(), "premise: the span is finite");
+    assert!(
+        widest.apply(-746.0) > 1.8e-16,
+        "widest span at -746 gave {}",
+        widest.apply(-746.0)
+    );
+    assert!(
+        widest.apply(-1454.0) > 0.0,
+        "the widest span should still reach -1454"
+    );
 }
 
 /// Where the rescue itself stops, pinned so it is a known edge and not a
@@ -516,6 +541,16 @@ fn bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows() {
         beyond > 0.0 && (beyond / 4.129964e-318 - 1.0).abs() < 1e-3,
         "apply(-1440) = {beyond}"
     );
+    // Nonzero all the way to the last raw whose exact value is representable,
+    // so that clamping to zero early would fail here rather than slip through
+    // the assertions above.
+    for raw in [-1441.0, -1445.0, -1450.0, -1454.0] {
+        assert!(
+            wide.apply(raw) > 0.0,
+            "apply({raw}) reached zero early: {}",
+            wide.apply(raw)
+        );
+    }
     // And zero once the exact value is no longer representable.
     assert_eq!(wide.apply(-1460.0), 0.0, "apply(-1460)");
     assert_eq!(wide.apply(-2000.0), 0.0, "apply(-2000)");
@@ -733,6 +768,15 @@ fn bounded_sigmoid_adjoint_matches_high_precision_reference() {
         (3.0, 1.5, -2.0, 3.0, 2.2371967810549926),
         (-2.5, 710.0, -1e308, 1.0, -1.1190715564187825),
         (7.0, -3.25, 0.0, 1.0, 0.2515351357772969),
+        // A slope that underflowed on its own, where the span is ordinary and
+        // cannot rescue it: `s'(-750)` is zero because `exp(-750)` is below the
+        // smallest subnormal, so both the span-first and adjoint-first orders
+        // give zero while the exact composition is an ordinary number. The
+        // adjoint has to go inside the exponential.
+        (1e308, -750.0, 0.0, 1.0, 1.9016849634750064e-18),
+        (1e308, 750.0, 0.0, 1.0, 1.9016849634750064e-18),
+        (1e308, -800.0, 0.0, 1.0, 3.667874584177687e-40),
+        (1e250, -760.0, 0.0, 2.5, 2.1584090943034714e-80),
     ] {
         let actual = bounded_sigmoid_adjoint(adjoint, raw, lower, upper);
         assert!(
@@ -1323,6 +1367,32 @@ fn composed_power_gradient_survives_an_overflowing_local_derivative() {
     assert_close(grad[0], 1e200, "d/dx of (x^-1) * 1e-200 at x = 1e-200");
 }
 
+/// The rescue must round exactly once. Rescaling an exponent in fixed steps
+/// rounds at every step that lands in the subnormals, and two roundings erase
+/// the very results the rescue exists to keep: `(1 + 2^-52) * 2^125` over
+/// `(2^600)^2` is just above half the smallest subnormal and must round up to
+/// it, but stepping down through `2^-512` twice drops the trailing bit first
+/// and leaves an exact midpoint, which rounds to even — to zero.
+///
+/// The companion row is the discipline on the fix: an upstream of `2^125`
+/// exactly is strictly *below* the midpoint and must still round to zero, so a
+/// rescue that simply rounds everything up would not pass either.
+///
+/// Both expectations are exact rationals over the f64 operands, out of crate.
+#[test]
+fn the_rescued_division_adjoint_rounds_once_into_the_subnormals() {
+    let above_midpoint = (1.0 + f64::EPSILON) * 2f64.powi(125);
+    let at_midpoint = 2f64.powi(125);
+    let b = 2f64.powi(600);
+    assert_eq!(above_midpoint, 4.253529586511732e37);
+
+    let (_, db) = ElementwiseOp::Div.adjoints(above_midpoint, 1.0, b);
+    assert_eq!(db, -5e-324, "just above half the smallest subnormal");
+    let (_, db) = ElementwiseOp::Div.adjoints(at_midpoint, 1.0, b);
+    assert_eq!(db, 0.0, "exactly at the midpoint, ties to even");
+    assert!(db.is_sign_negative(), "the zero keeps its sign");
+}
+
 /// A local derivative that is finite but quantized is the same loss with a
 /// plausible face on it. `-(a/b)/b` at `a = 1, b = 3.7e161` is `-5e-324`, one
 /// bit of a true -7.3e-324; an upstream adjoint of `1e200` then restores the
@@ -1439,12 +1509,29 @@ fn tanh_derivative_does_not_cancel_once_tanh_saturates() {
         (40.0, 7.219405551381661e-35),
         (100.0, 5.53558610694695e-87),
         (300.0, 1.0601586212017243e-260),
+        // Into the subnormal band, where the factor of four has to go in before
+        // the exponential rounds and not after. `4 * s'(2a)` reaches zero at
+        // 372.5666, a full unit before the true derivative does.
+        (354.0, 1.3230212014553631e-307),
+        (360.0, 8.12892320967e-313),
+        (370.0, 1.675e-321),
+        (372.0, 3e-323),
+        (372.5, 1e-323),
+        (372.6, 1e-323),
+        (373.0, 5e-324),
+        (373.2, 5e-324),
+        // And zero only once the exact value rounds to zero, near 373.2598.
+        (373.3, 0.0),
+        (380.0, 0.0),
     ] {
         for signed in [a, -a] {
             let (slope, _) = ElementwiseOp::Tanh.derivatives(signed, 0.0);
             assert_close(slope, expected, &format!("d/da tanh({signed})"));
         }
     }
+    // The saturation boundary itself: `tanh(19)` is not 1, `tanh(19.0616)` is.
+    assert_eq!(19.0_f64.tanh(), 0.9999999999999999);
+    assert_eq!(19.061547465398498_f64.tanh(), 1.0);
 }
 
 /// The same cancellation as a user meets it: `0 ~ Normal(tanh(eta), 1)` with
@@ -1564,8 +1651,10 @@ fn bernoulli_density_matches_closed_form_across_the_unit_interval() {
     ] {
         assert_close(bernoulli_density(1.0, p), ln_p, &format!("ln({p})"));
     }
-    // `ln_1p(-p)`, not `(1 - p).ln()`: the subtraction rounds to exactly 1
-    // below p = 1e-16 and discards the whole of -p.
+    // `ln_1p(-p)`, not `(1 - p).ln()`: `1 - p` rounds to exactly 1, discarding
+    // the whole of -p, for every p at or below 2^-54 = 5.551115123125783e-17
+    // (ties-to-even at the boundary itself). The premise asserted per row below
+    // is the exact test, not the round figure.
     for (p, ln_1m_p) in [
         (0.5, -std::f64::consts::LN_2),
         (0.25, -0.2876820724517809),
@@ -1574,7 +1663,11 @@ fn bernoulli_density_matches_closed_form_across_the_unit_interval() {
         (1e-300, -1e-300),
     ] {
         assert_close(bernoulli_density(0.0, p), ln_1m_p, &format!("ln(1 - {p})"));
-        assert_eq!(1.0 - p == 1.0, p < 1e-16, "premise about (1 - p) for {p}");
+        assert_eq!(
+            1.0 - p == 1.0,
+            p <= 2f64.powi(-54),
+            "premise about (1 - p) for {p}"
+        );
     }
 }
 
@@ -1587,6 +1680,11 @@ fn bernoulli_score_matches_the_closed_form_on_its_support() {
     // Inside the old clamp band the score was pinned at 1e12.
     assert_eq!(bernoulli_score(1.0, 1e-300), 1.0 / 1e-300);
     assert_eq!(bernoulli_score(1.0, 0.0), f64::INFINITY);
+    // A negative zero is a probability of zero, not a probability approached
+    // from below: the limit is the same infinity, with the same sign.
+    assert_eq!(bernoulli_score(1.0, -0.0), f64::INFINITY);
+    assert_eq!(bernoulli_density(1.0, -0.0), f64::NEG_INFINITY);
+    assert_eq!(bernoulli_density(0.0, -0.0), 0.0);
 
     let mut graph = Graph::new();
     let p_node = graph.add_param("p");
@@ -1636,6 +1734,12 @@ fn poisson_density_and_score_agree_about_the_support() {
     assert_eq!(density(1.0, 0.0), f64::NEG_INFINITY);
     assert_eq!(score(0.0, 0.0), -1.0);
     assert_eq!(score(0.0, 4.0), -1.0);
+    // A negative zero rate is the same point mass, with the same limits: the
+    // density already treats the two zeros identically and the score must too.
+    assert_eq!(density(0.0, -0.0), 0.0);
+    assert_eq!(density(3.0, -0.0), f64::NEG_INFINITY);
+    assert_eq!(score(3.0, -0.0), f64::INFINITY);
+    assert_eq!(score(3.0, 0.0), f64::INFINITY);
 
     // k ln(lam) - lam - ln(k!) at 80 digits, out of crate.
     assert_close(density(3.0, 2.0), -1.712317927548219, "Poisson(2) at 3");
@@ -1710,8 +1814,9 @@ fn result_with_draws(chains: &[&[f64]]) -> SampleResult {
 
 /// Draws near the top of the representable range: both naive accumulators
 /// overflow (`9e307 + ... + 2e307` is `inf`, and every `diff * diff` is `inf`),
-/// so `mean()` used to report an infinite mean and `std()` a NaN while
-/// `diagnostics()` reported the right numbers for the very same draws.
+/// so `mean()` and `std()` both used to report an infinity — every squared
+/// deviation from an infinite mean is itself infinite — while `diagnostics()`
+/// reported the right numbers for the very same draws.
 ///
 /// Expectations are the exact rational mean and variance of these eight f64
 /// values, evaluated out of crate with Python `fractions.Fraction` and the
@@ -1748,9 +1853,50 @@ fn posterior_moments_survive_draws_near_the_representable_maximum() {
     assert_close(mean, EXPECTED_MEAN, "mean of draws near f64::MAX");
     assert_close(std, EXPECTED_STD, "std of draws near f64::MAX");
 
+    // The one kind of expectation in this file that is not an independent
+    // reference. It cannot be: after the fix both sides call
+    // `diagnostics::scaled_moments`, so a wrong shared helper would satisfy it.
+    // It is a tripwire for the two paths diverging again, and it earns its
+    // place only because the constants above pin the value itself. Same
+    // reasoning as `uniform_prior_density_point_is_the_reported_draw`.
     let report = result.diagnostics();
     assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
     assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
+}
+
+/// `BatchModelResult` carries its draws flattened rather than per chain, so it
+/// is a second implementation of the same traversal and needs its own check.
+/// Reverting only its moments would leave every other test here passing.
+#[test]
+fn batch_posterior_moments_survive_draws_near_the_representable_maximum() {
+    let result = BatchModelResult {
+        samples: [9e307, 8e307, 7e307, 6e307, 5e307, 4e307, 3e307, 2e307]
+            .iter()
+            .map(|&v| vec![v])
+            .collect(),
+        unconstrained_samples: None,
+        param_names: vec!["theta".to_string()],
+        num_chains: 2,
+        num_draws: 4,
+        accept_rates: vec![1.0, 1.0],
+        step_sizes: vec![0.1, 0.1],
+        divergences: vec![0, 0],
+        transitions: vec![Vec::new(), Vec::new()],
+    };
+
+    // Same eight f64 draws, so the same exact rational moments as above.
+    assert_close(result.mean()[0], 5.5e307, "batch mean near f64::MAX");
+    assert_close(
+        result.std()[0],
+        2.4494897427831783e307,
+        "batch std near f64::MAX",
+    );
+
+    // And the same NaN for a draw too short to carry the parameter.
+    let mut ragged = result;
+    ragged.samples[2] = Vec::new();
+    assert!(ragged.mean()[0].is_nan(), "batch mean for a ragged draw");
+    assert!(ragged.std()[0].is_nan(), "batch std for a ragged draw");
 }
 
 /// The two paths agree on malformed input too, rather than one panicking and
