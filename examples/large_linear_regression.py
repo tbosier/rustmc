@@ -92,9 +92,9 @@ for k in range(5):
 #
 # One chain of 200 draws is enough to show the API and to recover coefficients whose
 # generating scale is known. It is not enough for convergence diagnostics: R-hat
-# needs several chains, and 200 draws leaves a small effective sample size per
-# coordinate. Raise `chains` and `draws` before reading anything into an individual
-# coefficient.
+# compares chains and there is only one, and 200 draws is a small sample for any
+# single coordinate. Raise `chains` and `draws`, and read the per-parameter ESS in
+# `result.summary()`, before reading anything into an individual coefficient.
 #
 # The elapsed time and rate printed above are replaced with placeholders on this
 # page, because they depend on the machine and would otherwise change on every

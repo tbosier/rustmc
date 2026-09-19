@@ -87,5 +87,7 @@ print(f"  PPC p-value (std): {ppc_p:.3f}")
 # %% [markdown]
 # ## Plots
 #
-# `examples/arviz_example.py` fits the same shape of model and writes trace,
-# posterior and pair plots with ArviZ. It needs `pip install "rustmc[viz]"`.
+# These pages carry no plots, because a committed image cannot be checked for
+# drift the way captured text can. `examples/arviz_example.py` fits a linear
+# regression with an intercept and writes trace, posterior and pair plots with
+# ArviZ. It needs `pip install "rustmc[viz]"`.
