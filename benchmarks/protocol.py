@@ -168,64 +168,6 @@ def timing_summary(phases: dict[str, float]) -> dict[str, float | None]:
     }
 
 
-def posterior_quality(
-    samples: np.ndarray,
-    problem: LinearRegressionProblem,
-    config: BenchmarkConfig,
-    divergences: int,
-    arviz_module: Any,
-) -> dict[str, float | int]:
-    """Compute the same ArviZ diagnostics and analytic checks for every engine."""
-
-    draws = np.asarray(samples, dtype=np.float64)
-    expected_shape = (config.chains, config.draws, problem.posterior_mean.size)
-    if draws.ndim != 3 or draws.shape != expected_shape:
-        raise ValueError(
-            "samples must have shape (chain, draw, parameter); "
-            f"received {draws.shape}"
-        )
-    if not np.all(np.isfinite(draws)):
-        raise ValueError("samples contain non-finite values")
-
-    ess = np.asarray(
-        [
-            float(arviz_module.ess(draws[:, :, i], method="bulk"))
-            for i in range(draws.shape[2])
-        ]
-    )
-    rhat = np.asarray(
-        [
-            float(arviz_module.rhat(draws[:, :, i], method="rank"))
-            for i in range(draws.shape[2])
-        ]
-    )
-    posterior_mean = draws.mean(axis=(0, 1))
-    posterior_sd = draws.reshape(-1, draws.shape[2]).std(axis=0, ddof=1)
-    return {
-        "ess_bulk_mean": float(ess.mean()),
-        "ess_bulk_min": float(ess.min()),
-        "rhat_rank_max": float(rhat.max()),
-        "divergences": int(divergences),
-        "mean_rmse_vs_exact_posterior": float(
-            np.sqrt(np.mean((posterior_mean - problem.posterior_mean) ** 2))
-        ),
-        "mean_rmse_exact_posterior_sd_units": float(
-            np.sqrt(
-                np.mean(
-                    ((posterior_mean - problem.posterior_mean) / problem.posterior_sd)
-                    ** 2
-                )
-            )
-        ),
-        "mean_rmse_vs_generating_beta": float(
-            np.sqrt(np.mean((posterior_mean - problem.generating_beta) ** 2))
-        ),
-        "sd_relative_rmse_vs_exact_posterior": float(
-            np.sqrt(np.mean(((posterior_sd / problem.posterior_sd) - 1.0) ** 2))
-        ),
-    }
-
-
 # --------------------------------------------------------------------------------
 # Diagnostic screening, shared with benchmarks.validate_posteriors.
 #
@@ -234,8 +176,13 @@ def posterior_quality(
 # appends nothing to its failure list and reports success on a fit whose diagnostics
 # are not numbers. validate_posteriors was hardened against that; this module was a
 # second copy of the same gate and was missed. The predicates below are the single
-# implementation of the rule, so the two cannot drift apart again. They live here
-# rather than in validate_posteriors because this module has no rustmc dependency.
+# implementation of the rule. They live here rather than in validate_posteriors
+# because this module has no rustmc dependency.
+#
+# Sharing the predicate is necessary but not sufficient: each gate must also apply it
+# at the same point in its pipeline. `posterior_quality` screens per parameter before
+# aggregating for exactly that reason -- calling the same function on an already
+# aggregated value screens nothing the aggregation has thrown away.
 # --------------------------------------------------------------------------------
 
 #: Slack on the derived R-hat floor, far above the estimator's rounding error and far
@@ -291,6 +238,12 @@ def ess_ceiling(chains: int, draws: int) -> float:
     The reported minimum hides an impossibly large ESS behind a healthy neighbour
     exactly as the reported maximum hides an impossibly small R-hat, so this bound is
     needed for the same reason.
+
+    One exception, in both estimators: a chain whose draws are all equal short-circuits
+    to the split draw count itself, which exceeds ``total * log10(total)`` whenever
+    ``total`` is below ten. Such a fit is degenerate and its R-hat is NaN, so the gate
+    fails it either way, but the reported reason will be the ESS bound rather than the
+    constant chain. The bound is exact for every chain length a benchmark actually runs.
     """
     total = 2 * max(int(chains), 1) * max(int(draws) // 2, 1)
     return total * math.log10(total) if total > 1 else math.inf
@@ -305,8 +258,12 @@ def metric_failure(value: Any, low: float, high: float) -> str | None:
     for. Returns ``None`` when the value is usable.
     """
     number = as_float(value)
-    # NaN fails every comparison, so finiteness has to be tested first. as_float maps a
-    # non-numeric value to NaN, so this arm covers None, complex, strings and objects.
+    # NaN fails every comparison, so finiteness has to be tested first. as_float maps
+    # None, complex values, objects and unparseable strings to NaN, so this arm covers
+    # them too. It does NOT reject a value that is merely the wrong *type* for a number
+    # it can parse: float("1.0") and bool are accepted as 1.0. That is deliberate --
+    # benchmarks.validate_posteriors has always done the same, and diverging here is
+    # what let the two gates drift apart in the first place.
     if not math.isfinite(number):
         return "non-finite"
     if number < low or number > high:
@@ -333,6 +290,12 @@ def quality_metric_domains(config: BenchmarkConfig) -> dict[str, tuple[float, fl
     ``ess_bulk_mean`` carries no published threshold but is the numerator of the
     ``ess_per_fit_second`` figure the comparison is written around, so an unscreened
     NaN or fabrication there corrupts the headline number just as directly.
+
+    These are the values the estimators can produce *for a fit that was actually run at
+    this config*. They are derived from ``config.chains`` and ``config.draws``, so a
+    hand-written quality payload paired with a config it did not come from is screened
+    against the wrong interval. Screening cannot authenticate a payload, only reject one
+    that contradicts itself.
     """
     config.validate()
     ceiling = ess_ceiling(config.chains, config.draws) * (1 + ESS_CEILING_SLACK)
@@ -343,6 +306,89 @@ def quality_metric_domains(config: BenchmarkConfig) -> dict[str, tuple[float, fl
         # Both are a square root of a mean of squares and cannot be negative.
         "mean_rmse_exact_posterior_sd_units": (0.0, math.inf),
         "sd_relative_rmse_vs_exact_posterior": (0.0, math.inf),
+    }
+
+
+def posterior_quality(
+    samples: np.ndarray,
+    problem: LinearRegressionProblem,
+    config: BenchmarkConfig,
+    divergences: int,
+    arviz_module: Any,
+) -> dict[str, float | int]:
+    """Compute the same ArviZ diagnostics and analytic checks for every engine.
+
+    The per-parameter diagnostics are screened here, before they are aggregated.
+    ``max`` over the R-hats keeps the largest and ``min`` over the ESS keeps the
+    smallest, so aggregating first hides exactly the half of each domain the gate
+    cares about: R-hats of [-100, 1] reported a healthy maximum of 1, and ESS values
+    of [20000, 500] reported a healthy minimum of 500, and the gate never saw either
+    impossible value. ``convergence_metrics`` in benchmarks.validate_posteriors screens
+    its rows one at a time for this reason; doing the same here is what actually makes
+    the two gates enforce one rule, rather than merely calling one predicate.
+
+    An invalid entry is carried into the reported metric rather than dropped, again as
+    validate_posteriors does, so the failure survives into the JSON report instead of
+    being replaced by a plausible value from a neighbouring parameter.
+    """
+
+    draws = np.asarray(samples, dtype=np.float64)
+    expected_shape = (config.chains, config.draws, problem.posterior_mean.size)
+    if draws.ndim != 3 or draws.shape != expected_shape:
+        raise ValueError(
+            "samples must have shape (chain, draw, parameter); "
+            f"received {draws.shape}"
+        )
+    if not np.all(np.isfinite(draws)):
+        raise ValueError("samples contain non-finite values")
+    # int() truncates, so a count of -0.5 used to reach the gate as a clean zero.
+    divergence_reason = count_failure(divergences)
+    if divergence_reason is not None:
+        raise ValueError(f"divergence count is {divergence_reason}: {divergences!r}")
+
+    ess = np.asarray(
+        [
+            float(arviz_module.ess(draws[:, :, i], method="bulk"))
+            for i in range(draws.shape[2])
+        ]
+    )
+    rhat = np.asarray(
+        [
+            float(arviz_module.rhat(draws[:, :, i], method="rank"))
+            for i in range(draws.shape[2])
+        ]
+    )
+    domains = quality_metric_domains(config)
+
+    def aggregate(values: np.ndarray, metric: str, reduce: Any) -> float:
+        low, high = domains[metric]
+        invalid = [v for v in values if metric_failure(v, low, high) is not None]
+        return float(invalid[0] if invalid else reduce(values))
+
+    posterior_mean = draws.mean(axis=(0, 1))
+    posterior_sd = draws.reshape(-1, draws.shape[2]).std(axis=0, ddof=1)
+    return {
+        "ess_bulk_mean": aggregate(ess, "ess_bulk_mean", np.mean),
+        "ess_bulk_min": aggregate(ess, "ess_bulk_min", np.min),
+        "rhat_rank_max": aggregate(rhat, "rhat_rank_max", np.max),
+        "divergences": int(divergences),
+        "mean_rmse_vs_exact_posterior": float(
+            np.sqrt(np.mean((posterior_mean - problem.posterior_mean) ** 2))
+        ),
+        "mean_rmse_exact_posterior_sd_units": float(
+            np.sqrt(
+                np.mean(
+                    ((posterior_mean - problem.posterior_mean) / problem.posterior_sd)
+                    ** 2
+                )
+            )
+        ),
+        "mean_rmse_vs_generating_beta": float(
+            np.sqrt(np.mean((posterior_mean - problem.generating_beta) ** 2))
+        ),
+        "sd_relative_rmse_vs_exact_posterior": float(
+            np.sqrt(np.mean(((posterior_sd / problem.posterior_sd) - 1.0) ** 2))
+        ),
     }
 
 
@@ -378,7 +424,13 @@ def evaluate_quality_gate(
         if reason is not None:
             failures.extend((name, f"{name}[{reason}]"))
         else:
-            screened[name] = as_float(quality[name])
+            value = quality[name]
+            # A count is kept as an exact integer. as_float rounds 2**53 + 1 down to
+            # 2**53, which made a count one above a threshold of 2**53 compare as
+            # equal to it and pass, where the old int() comparison rejected it.
+            screened[name] = (
+                value if isinstance(value, numbers.Integral) else as_float(value)
+            )
 
     for name, (low, high) in domains.items():
         if name not in quality:

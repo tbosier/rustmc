@@ -82,10 +82,15 @@ def test_numpy_interop_and_end_to_end_sampling(rustmc_module, linreg_data):
     rmc = rustmc_module
     data = linreg_data
 
+    # Declared once so the negative control below reads the priors the model is
+    # actually built from. Hard-coded control constants would go on passing if someone
+    # moved a prior onto the truth, which is the failure the control exists to catch.
+    location_prior = {"mu": 0.0, "sigma": 10.0}
+    scale_prior = {"sigma": 2.0}
     builder = rmc.ModelBuilder(data={"x": data["x"], "y": data["y"]})
-    alpha = builder.normal_prior("alpha", mu=0.0, sigma=10.0)
-    beta = builder.normal_prior("beta", mu=0.0, sigma=10.0)
-    sigma = builder.half_normal_prior("sigma", sigma=2.0)
+    alpha = builder.normal_prior("alpha", **location_prior)
+    beta = builder.normal_prior("beta", **location_prior)
+    sigma = builder.half_normal_prior("sigma", **scale_prior)
     builder.normal_likelihood("obs", mu_expr=alpha + beta * "x", sigma=sigma, observed_key="y")
     model = builder.build()
 
@@ -95,17 +100,25 @@ def test_numpy_interop_and_end_to_end_sampling(rustmc_module, linreg_data):
     assert set(means) == {"alpha", "beta", "sigma"}
     # These windows used to be +/-1.5 on alpha and beta, and `sigma > 0`. The posterior
     # SD of alpha here is about 0.072, so +/-1.5 was twenty-one posterior SDs wide and
-    # reached the Normal(0, 10) prior mean of zero; `sigma > 0` is a support check, not
-    # an accuracy one, and every prior draw satisfies it. All three windows now exclude
-    # the prior: zero for alpha and beta, and 2.0 * sqrt(2/pi) = 1.596 for sigma.
-    assert means["alpha"] == pytest.approx(data["alpha_true"], abs=0.3)
-    assert means["beta"] == pytest.approx(data["beta_true"], abs=0.3)
-    assert means["sigma"] == pytest.approx(data["sigma_true"], abs=0.2)
-    assert abs(0.0 - data["alpha_true"]) > 0.3, "the alpha prior mean must be excluded"
-    assert abs(0.0 - data["beta_true"]) > 0.3, "the beta prior mean must be excluded"
-    assert abs(2.0 * math.sqrt(2 / math.pi) - data["sigma_true"]) > 0.2, (
-        "the sigma prior mean must be excluded"
-    )
+    # its lower edge sat exactly on the Normal(0, 10) prior mean of zero: a prior-only
+    # answer, whose mean over 400 draws is 0 +/- 0.5, landed inside it about half the
+    # time. `sigma > 0` is a support check, not an accuracy one, and every prior draw
+    # satisfies it.
+    tolerances = {"alpha": 0.3, "beta": 0.3, "sigma": 0.2}
+    prior_means = {
+        "alpha": location_prior["mu"],
+        "beta": location_prior["mu"],
+        # A half-normal's mean is sigma * sqrt(2/pi).
+        "sigma": scale_prior["sigma"] * math.sqrt(2 / math.pi),
+    }
+    for name, tolerance in tolerances.items():
+        truth = data[f"{name}_true"]
+        assert means[name] == pytest.approx(truth, abs=tolerance), name
+        # Negative control: an answer that ignored the data would report the prior
+        # mean, which must therefore be outside the window just asserted.
+        assert abs(prior_means[name] - truth) > tolerance, (
+            f"the {name} prior mean {prior_means[name]} is inside its accepted window"
+        )
 
     samples = fit.get_samples()
     alpha_samples = samples["alpha"]

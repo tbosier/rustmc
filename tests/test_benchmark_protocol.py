@@ -315,6 +315,99 @@ def test_both_release_gates_share_one_validation_rule():
         assert getattr(validate_posteriors, name) is getattr(protocol, name), name
 
 
+class _FixedDiagnostics:
+    """An ArviZ stand-in returning one prepared value per parameter, in order."""
+
+    def __init__(self, rhats, esses):
+        self.rhats, self.esses = list(rhats), list(esses)
+
+    def ess(self, draws, method="bulk"):
+        return self.esses.pop(0)
+
+    def rhat(self, draws, method="rank"):
+        return self.rhats.pop(0)
+
+
+def _two_parameter_problem():
+    config = BenchmarkConfig(observations=60, parameters=2, chains=4, warmup=5, draws=1000)
+    problem = make_linear_regression(config)
+    rng = np.random.default_rng(3)
+    samples = rng.normal(
+        loc=problem.posterior_mean,
+        scale=problem.posterior_sd,
+        size=(config.chains, config.draws, config.parameters),
+    )
+    return config, problem, samples
+
+
+@pytest.mark.parametrize(
+    "rhats, esses, metric",
+    [
+        # max() keeps the largest R-hat, so an impossible -100 in any position used to
+        # be reported as a healthy 1.0 and the gate never saw it.
+        ([-100.0, 1.0], [3000.0, 3000.0], "rhat_rank_max"),
+        ([1.0, -100.0], [3000.0, 3000.0], "rhat_rank_max"),
+        ([float("nan"), 1.0], [3000.0, 3000.0], "rhat_rank_max"),
+        # min() keeps the smallest ESS, so an impossible 20000 hid behind 3000.
+        ([1.0, 1.0], [20000.0, 3000.0], "ess_bulk_min"),
+        ([1.0, 1.0], [3000.0, 20000.0], "ess_bulk_min"),
+        ([1.0, 1.0], [float("nan"), 3000.0], "ess_bulk_min"),
+    ],
+)
+def test_an_invalid_per_parameter_diagnostic_cannot_hide_behind_the_aggregate(
+    rhats, esses, metric
+):
+    """Screening after aggregation screens nothing the aggregation threw away.
+
+    Sharing one predicate with benchmarks.validate_posteriors is not enough on its own:
+    that gate screens its per-parameter rows one at a time, so this one has to screen
+    before it reduces, or the two do not enforce the same rule end to end.
+    """
+    config, problem, samples = _two_parameter_problem()
+    quality = posterior_quality(
+        samples, problem, config, divergences=0,
+        arviz_module=_FixedDiagnostics(rhats, esses),
+    )
+    gate = evaluate_quality_gate(quality, config)
+    assert gate["passed"] is False, quality
+    assert metric in gate["failures"], gate["failures"]
+
+
+def test_a_healthy_per_parameter_set_still_aggregates_normally():
+    config, problem, samples = _two_parameter_problem()
+    quality = posterior_quality(
+        samples, problem, config, divergences=0,
+        arviz_module=_FixedDiagnostics([1.0005, 1.001], [3000.0, 3500.0]),
+    )
+    assert quality["rhat_rank_max"] == pytest.approx(1.001)
+    assert quality["ess_bulk_min"] == pytest.approx(3000.0)
+    assert quality["ess_bulk_mean"] == pytest.approx(3250.0)
+    assert evaluate_quality_gate(quality, config)["passed"] is True
+
+
+@pytest.mark.parametrize("bad", [-0.5, -3, 2.5, float("nan")])
+def test_posterior_quality_rejects_a_malformed_divergence_count(bad):
+    """int() truncated -0.5 to a clean zero before the gate ever saw the count."""
+    config, problem, samples = _two_parameter_problem()
+    with pytest.raises(ValueError, match="divergence count"):
+        posterior_quality(
+            samples, problem, config, divergences=bad,
+            arviz_module=_FixedDiagnostics([1.0, 1.0], [3000.0, 3000.0]),
+        )
+
+
+def test_a_divergence_count_above_a_huge_threshold_is_not_rounded_onto_it():
+    """as_float rounds 2**53 + 1 down to 2**53, which used to compare as equal."""
+    config = BenchmarkConfig(
+        observations=60, parameters=2, chains=4, warmup=5, draws=1000,
+        quality_max_divergences=2**53,
+    )
+    gate = evaluate_quality_gate(HEALTHY_QUALITY | {"divergences": 2**53 + 1}, config)
+    assert gate["passed"] is False
+    assert gate["failures"] == ["divergences"]
+    assert evaluate_quality_gate(HEALTHY_QUALITY | {"divergences": 2**53}, config)["passed"]
+
+
 def test_the_rhat_floor_is_the_one_arviz_can_actually_reach():
     """_rhat returns sqrt((B/W + n - 1)/n) with n the split length, and B >= 0.
 
