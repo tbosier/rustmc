@@ -455,6 +455,71 @@ fn numerical(message: impl Into<String>) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// `P(G >= t)` for `G ~ Gamma(k, 1)` at integer `k`, where the upper
+    /// incomplete gamma closes in elementary terms. It gives `P(V <= v)` for
+    /// `V ~ InverseGamma(k, scale)` exactly, at `t = scale / v`, because
+    /// `V <= v` is `scale / V >= scale / v`.
+    fn gamma_upper(k: u32, t: f64) -> f64 {
+        let mut term = 1.0;
+        let mut sum = 1.0;
+        for i in 1..k {
+            term *= t / i as f64;
+            sum += term;
+        }
+        (-t).exp() * sum
+    }
+
+    /// `P(V <= v)` for `V ~ InverseGamma(shape, scale)` truncated to `(0, cap]`,
+    /// which is the prior this module actually uses.
+    fn truncated_inverse_gamma_cdf(prior: InverseGammaPrior, cap: f64, v: f64) -> f64 {
+        let k = prior.shape as u32;
+        gamma_upper(k, prior.scale / v.min(cap)) / gamma_upper(k, prior.scale / cap)
+    }
+
+    /// Mean of that truncated prior - the value a sampler that read no data
+    /// would report. `E[V | V <= cap] = scale / (shape - 1) * Q(shape - 1, t) /
+    /// Q(shape, t)` with `t = scale / cap`, from `E[V 1{V <= cap}] = scale /
+    /// (shape - 1) * Q(shape - 1, t)`.
+    fn truncated_inverse_gamma_mean(prior: InverseGammaPrior, cap: f64) -> f64 {
+        let k = prior.shape as u32;
+        let t = prior.scale / cap;
+        prior.scale / (prior.shape - 1.0) * gamma_upper(k - 1, t) / gamma_upper(k, t)
+    }
+
+    /// `P(P <= p)` for `P ~ Beta(2, 3)`, whose density is `12 p (1 - p)^2`.
+    fn beta23_cdf(p: f64) -> f64 {
+        6.0 * p * p - 8.0 * p.powi(3) + 3.0 * p.powi(4)
+    }
+
+    /// A recovery window has to be one the prior cannot satisfy on its own: the
+    /// prior mean has to sit at least a full tolerance-width outside it, and the
+    /// prior has to place little mass inside it. Both bounds are permanent, so
+    /// widening a window back onto the prior turns the test red.
+    fn assert_window_beats_prior(
+        name: &str,
+        prior_mean: f64,
+        prior_mass: f64,
+        truth: f64,
+        tolerance: f64,
+        max_prior_mass: f64,
+    ) {
+        let widths = ((prior_mean - truth).abs() - tolerance) / tolerance;
+        assert!(
+            widths >= 1.0,
+            "vacuous window for {name}: [{}, {}] lies only {widths:.2} tolerance-widths \
+             from the prior mean {prior_mean}",
+            truth - tolerance,
+            truth + tolerance
+        );
+        assert!(
+            prior_mass < max_prior_mass,
+            "vacuous window for {name}: the prior places {prior_mass:.4} of its mass inside \
+             [{}, {}], above the {max_prior_mass} this test is allowed",
+            truth - tolerance,
+            truth + tolerance
+        );
+    }
+
     fn config() -> HurdleLogNormalConfig {
         HurdleLogNormalConfig {
             occurrence_alpha: 2.,
@@ -700,7 +765,7 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(604);
         let mut level = 1.;
         let mut observations = Vec::new();
-        for _ in 0..320 {
+        for _ in 0..1200 {
             level += normal(&mut rng) * 0.01_f64.sqrt();
             let amount = (level + normal(&mut rng) * 0.1_f64.sqrt()).exp();
             observations.push(if rng.gen::<f64>() < 0.6 { amount } else { 0. });
@@ -710,6 +775,19 @@ mod tests {
         cfg.num_warmup = 750;
         cfg.process_variance_upper = 0.1;
         cfg.observation_variance_upper = 0.5;
+        // The shared `config()` priors have means of exactly 0.01 and 0.1, the
+        // two variances simulated above, so two of this test's three assertions
+        // were satisfied by the prior alone whatever the sampler did with the
+        // data. `occurrence_posterior_matches_beta_and_severity_prior_for_zero_history`
+        // needs those priors and keeps them; here they are replaced by priors
+        // whose truncated means are 0.05 and 0.333, five and three times the
+        // truth, and which are flatter than the ones they replace (shape 2
+        // rather than 4) so that the offset costs accuracy rather than buying
+        // it. The series is also longer - 1200 steps rather than 320 - because a
+        // process variance a tenth of the observation variance needs the length
+        // to separate from it.
+        cfg.process_variance_prior = InverseGammaPrior::new(2., 0.1).unwrap();
+        cfg.observation_variance_prior = InverseGammaPrior::new(2., 1.0).unwrap();
         let fit = fit_hurdle_lognormal(&observations, &cfg).unwrap();
         let n = (cfg.num_chains * cfg.num_draws) as f64;
         let p = fit
@@ -733,9 +811,58 @@ mod tests {
             .map(|d| d.observation_variance)
             .sum::<f64>()
             / n;
-        assert!((p - 0.6).abs() < 0.06, "occurrence {p}");
-        assert!((q - 0.01).abs() < 0.008, "process variance {q}");
-        assert!((r - 0.1).abs() < 0.035, "observation variance {r}");
+        const OCCURRENCE_TOLERANCE: f64 = 0.05;
+        const PROCESS_TOLERANCE: f64 = 0.006;
+        const OBSERVATION_TOLERANCE: f64 = 0.03;
+        assert_window_beats_prior(
+            "occurrence probability",
+            cfg.occurrence_alpha / (cfg.occurrence_alpha + cfg.occurrence_beta),
+            beta23_cdf(0.6 + OCCURRENCE_TOLERANCE) - beta23_cdf(0.6 - OCCURRENCE_TOLERANCE),
+            0.6,
+            OCCURRENCE_TOLERANCE,
+            0.2,
+        );
+        assert_window_beats_prior(
+            "process variance",
+            truncated_inverse_gamma_mean(cfg.process_variance_prior, cfg.process_variance_upper),
+            truncated_inverse_gamma_cdf(
+                cfg.process_variance_prior,
+                cfg.process_variance_upper,
+                0.01 + PROCESS_TOLERANCE,
+            ) - truncated_inverse_gamma_cdf(
+                cfg.process_variance_prior,
+                cfg.process_variance_upper,
+                0.01 - PROCESS_TOLERANCE,
+            ),
+            0.01,
+            PROCESS_TOLERANCE,
+            0.02,
+        );
+        assert_window_beats_prior(
+            "observation variance",
+            truncated_inverse_gamma_mean(
+                cfg.observation_variance_prior,
+                cfg.observation_variance_upper,
+            ),
+            truncated_inverse_gamma_cdf(
+                cfg.observation_variance_prior,
+                cfg.observation_variance_upper,
+                0.1 + OBSERVATION_TOLERANCE,
+            ) - truncated_inverse_gamma_cdf(
+                cfg.observation_variance_prior,
+                cfg.observation_variance_upper,
+                0.1 - OBSERVATION_TOLERANCE,
+            ),
+            0.1,
+            OBSERVATION_TOLERANCE,
+            0.02,
+        );
+        assert!((p - 0.6).abs() < OCCURRENCE_TOLERANCE, "occurrence {p}");
+        assert!((q - 0.01).abs() < PROCESS_TOLERANCE, "process variance {q}");
+        assert!(
+            (r - 0.1).abs() < OBSERVATION_TOLERANCE,
+            "observation variance {r}"
+        );
         let forecast = fit.forecast(3, 903).unwrap();
         assert!(forecast
             .paths

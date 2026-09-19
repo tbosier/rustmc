@@ -1019,25 +1019,27 @@ mod tests {
         assert!(report.params[0].mcse_mean.is_nan());
     }
 
+    /// The converged direction, which the diverged cases below cannot establish:
+    /// four chains of genuinely independent draws from one distribution must
+    /// score R-hat at the healthy end of the scale.
+    ///
+    /// The draws are independent normals rather than the deterministic sine
+    /// recurrence this test used to feed in. That recurrence is not a sample
+    /// from anything, and `< 1.1` is loose enough that the check said little:
+    /// R-hat for four independent chains is 1.000 to three decimals, so the
+    /// bound is now the 1.01 the samplers are held to.
     #[test]
-    fn test_r_hat_converged() {
-        // Four chains sampling from the same distribution should have R-hat ≈ 1.0
+    fn r_hat_is_near_one_for_independent_chains_of_one_distribution() {
         let chains: Vec<Vec<f64>> = (0..4)
             .map(|seed| {
-                let mut rng = seed as f64;
-                (0..1000)
-                    .map(|i| {
-                        rng = (rng * 1.1 + 0.3).sin() * 10.0;
-                        rng + (i as f64 * 0.001)
-                    })
-                    .collect()
+                let mut rng = ChaCha8Rng::seed_from_u64(7000 + seed);
+                (0..1000).map(|_| StandardNormal.sample(&mut rng)).collect()
             })
             .collect();
         let rh = r_hat_chains(&chains);
         assert!(
-            rh < 1.1,
-            "R-hat should be near 1.0 for converged chains, got {}",
-            rh
+            rh < 1.01,
+            "R-hat should be near 1.0 for independent chains, got {rh}"
         );
     }
 
@@ -1069,17 +1071,32 @@ mod tests {
         );
     }
 
+    /// The independent-draw limit, which the AR(1) and offset cases below do not
+    /// pin down: with no autocorrelation the bulk ESS has to come back at the
+    /// draw count, not merely above zero.
+    ///
+    /// `ess > 0` on a deterministic sine wave, which is what this test used to
+    /// assert, is satisfied by almost any implementation, including one whose
+    /// autocorrelation estimate is off by a constant factor. The measured value
+    /// here is 2028.7 against 2000 draws.
     #[test]
-    fn test_ess_positive() {
-        let chains: Vec<Vec<f64>> = (0..4)
+    fn ess_matches_the_draw_count_for_independent_draws() {
+        const CHAINS: u64 = 4;
+        const DRAWS: usize = 500;
+        let chains: Vec<Vec<f64>> = (0..CHAINS)
             .map(|seed| {
-                (0..500)
-                    .map(|i| ((seed * 1000 + i) as f64 * 0.1).sin() * 2.0)
+                let mut rng = ChaCha8Rng::seed_from_u64(8000 + seed);
+                (0..DRAWS)
+                    .map(|_| StandardNormal.sample(&mut rng))
                     .collect()
             })
             .collect();
+        let total = (CHAINS as usize * DRAWS) as f64;
         let ess = ess_bulk_chains(&chains);
-        assert!(ess > 0.0, "ESS should be positive, got {}", ess);
+        assert!(
+            (ess - total).abs() / total < 0.05,
+            "bulk ESS {ess} of independent draws differs too much from the draw count {total}"
+        );
     }
 
     #[test]

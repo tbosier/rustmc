@@ -1097,9 +1097,26 @@ mod tests {
             observation_variance: fixed(0.02),
             student_df: None,
         };
-        let x = vec![vec![1.0]; 60];
-        let simulated = c.prior_predict(60, Some(&x), 1, 908).unwrap();
-        let y = &simulated.observations[0][0];
+        // The series and the truth it is scored against used to come from
+        // `StructuralConfig::prior_predict`, so the module was being compared
+        // against its own forward simulator: a config misread shared by both
+        // would have cancelled out. The generative model is three lines, so it
+        // is written out here instead. `Component::regression` above declares a
+        // coefficient starting at N(0, 0.2) and random-walking with innovation
+        // variance 0.015, observed through a design column of ones with
+        // observation variance 0.02.
+        const STEPS: usize = 120;
+        let mut rng = ChaCha8Rng::seed_from_u64(908);
+        let mut coefficient = normal(&mut rng) * 0.2_f64.sqrt();
+        let mut truth = Vec::with_capacity(STEPS);
+        let mut series = Vec::with_capacity(STEPS);
+        for _ in 0..STEPS {
+            coefficient += normal(&mut rng) * 0.015_f64.sqrt();
+            truth.push(coefficient);
+            series.push(coefficient + normal(&mut rng) * 0.02_f64.sqrt());
+        }
+        let x = vec![vec![1.0]; STEPS];
+        let y = &series;
         let mut sampling = settings(200);
         sampling.chains = 2;
         let one = rayon::ThreadPoolBuilder::new()
@@ -1115,20 +1132,35 @@ mod tests {
             .install(|| fit(y, Some(&x), &c, &sampling))
             .unwrap();
         assert!(one.to_json().unwrap() == two.to_json().unwrap());
-        let error = (0..60)
+        let smoothed = (0..STEPS)
             .map(|t| {
-                let estimate = one
-                    .chains
+                one.chains
                     .iter()
                     .flatten()
                     .map(|d| d.states.as_ref().unwrap()[t + 1][0])
                     .sum::<f64>()
-                    / 400.0;
-                (estimate - simulated.states[0][0][t][0]).powi(2)
+                    / 400.0
             })
-            .sum::<f64>()
-            / 60.0;
-        assert!(error.sqrt() < 0.15);
+            .collect::<Vec<_>>();
+        let rmse = |estimates: &[f64]| {
+            (estimates
+                .iter()
+                .zip(&truth)
+                .map(|(e, t)| (e - t).powi(2))
+                .sum::<f64>()
+                / STEPS as f64)
+                .sqrt()
+        };
+        let error = rmse(&smoothed);
+        // Negative control: a fit that ignored the series would report the
+        // coefficient's prior mean of zero at every step. The smoother has to
+        // keep well under a quarter of that error, so the bound below cannot be
+        // met without reading the data.
+        let uninformed = rmse(&vec![0.0; STEPS]);
+        assert!(
+            error < 0.15 && error < 0.25 * uninformed,
+            "state RMSE {error} against an uninformed RMSE of {uninformed}"
+        );
     }
     #[test]
     fn validation_rejects_aliases_invalid_variances_and_corrupt_persistence() {
