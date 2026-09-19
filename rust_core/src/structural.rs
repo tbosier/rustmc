@@ -888,34 +888,55 @@ mod tests {
     }
     #[test]
     fn gaussian_posterior_and_joint_forecast_match_independent_kalman_moments() {
+        // The reference used to be `model.smooth` and `model.forecast`, which is
+        // the same `build` and the same filter the sampler runs: a shared error
+        // in either would have moved the draws and the expected answer together,
+        // so the test showed internal consistency and not the independence its
+        // name claims. The fixture is small enough to write the Kalman recursion
+        // out in closed form instead.
+        //
+        // `x0 ~ N(0, 2)`, `x_t = x_{t-1} + N(0, 3/10)`, `y_t = x_t + N(0, 7/10)`,
+        // with `y = [1, missing, 2]`. Predicting to the first observation gives
+        // variance 2 + 3/10 = 23/10 and innovation variance 23/10 + 7/10 = 3, so
+        // the filtered mean is (23/30) * 1 and the filtered variance is
+        // (23/10)(7/10)/3 = 161/300. Two further transitions with no update in
+        // between carry that to mean 23/30 and variance 161/300 + 6/10 = 341/300;
+        // the second update has innovation variance 341/300 + 7/10 = 551/300, so
+        //
+        //   terminal mean     = 23/30 + (341/551)(2 - 23/30) = 843/551
+        //   terminal variance = (341/300)(7/10)/(551/300)    = 2387/5510
+        //
+        // and, the state being a driftless random walk, every predictive mean is
+        // the terminal mean while
+        //
+        //   Cov(y_{T+i}, y_{T+j}) = P_T + (3/10) min(i, j) + (7/10) [i = j].
+        const TERMINAL_MEAN: f64 = 843.0 / 551.0;
+        const TERMINAL_VARIANCE: f64 = 2387.0 / 5510.0;
         let c = level(0.3, 0.7);
         let y = [1.0, f64::NAN, 2.0];
-        let model = c.build(&[0.3], 0.7).unwrap();
-        let smooth = model.smooth(&y).unwrap();
-        let f = model.forecast(&y, 3).unwrap();
         let post = fit(&y, None, &c, &settings(12000)).unwrap();
         let final_states = post.chains[0]
             .iter()
             .map(|d| d.terminal_state[0])
             .collect::<Vec<_>>();
-        assert!((mean(&final_states) - smooth.smoothed_means[2][0]).abs() < 0.025);
-        assert!(
-            (covariance(&final_states, &final_states) - smooth.smoothed_covariances[2][0]).abs()
-                < 0.025
-        );
+        assert!((mean(&final_states) - TERMINAL_MEAN).abs() < 0.025);
+        assert!((covariance(&final_states, &final_states) - TERMINAL_VARIANCE).abs() < 0.025);
         let paths = post.forecast(3, None, 827).unwrap();
         for i in 0..3 {
             let a = paths.observations[0]
                 .iter()
                 .map(|p| p[i])
                 .collect::<Vec<_>>();
-            assert!((mean(&a) - f.observation_means[i]).abs() < 0.055);
+            assert!((mean(&a) - TERMINAL_MEAN).abs() < 0.055);
             for j in 0..3 {
                 let b = paths.observations[0]
                     .iter()
                     .map(|p| p[j])
                     .collect::<Vec<_>>();
-                assert!((covariance(&a, &b) - f.observation_covariance[i * 3 + j]).abs() < 0.065);
+                let expected = TERMINAL_VARIANCE
+                    + 0.3 * (i.min(j) + 1) as f64
+                    + if i == j { 0.7 } else { 0.0 };
+                assert!((covariance(&a, &b) - expected).abs() < 0.065);
             }
         }
         let saved = post.to_json().unwrap();
@@ -970,17 +991,28 @@ mod tests {
     }
     #[test]
     fn student_mixture_resists_an_outlier_and_has_heavy_predictive_tails() {
+        // The bulk of the series sits at 2.0, not at 0.0. With a bulk of zero
+        // the robust check below was `|mean| < 0.15` around a location prior of
+        // Normal(0, 2), whose mean is 0: a Student branch that ignored its
+        // observations outright passed it, since the average of 1200 prior
+        // draws lands inside that window with probability 0.9998.
         let mut c = level(0.0, 1.0);
-        let mut y = vec![0.0; 20];
-        y[9] = 35.0;
+        let mut y = vec![2.0; 20];
+        y[9] = 37.0;
         let gaussian = fit(&y, None, &c, &settings(1200)).unwrap();
         c.student_df = Some(4.0);
         let robust = fit(&y, None, &c, &settings(1200)).unwrap();
         let average = |p: &StructuralPosterior| {
             p.chains[0].iter().map(|d| d.terminal_state[0]).sum::<f64>() / 1200.0
         };
-        assert!(average(&gaussian) > 1.5);
-        assert!(average(&robust).abs() < 0.15);
+        // The Gaussian fit is dragged well above the bulk by the outlier; the
+        // Student fit stays on it. Both bounds exclude the prior mean of 0.
+        assert!(average(&gaussian) > 3.0, "{}", average(&gaussian));
+        assert!(
+            (average(&robust) - 2.0).abs() < 0.15,
+            "{}",
+            average(&robust)
+        );
         let p = c.prior_predict(1, None, 18000, 942).unwrap();
         let residuals = p.observations[0]
             .iter()
@@ -1001,7 +1033,7 @@ mod tests {
             shape: 4.0,
             scale: 3.0,
         };
-        let paths = c.prior_predict(2, None, 18000, 48).unwrap();
+        let paths = c.prior_predict(2, None, 120000, 48).unwrap();
         let a = paths.observations[0]
             .iter()
             .map(|p| p[0])
@@ -1010,9 +1042,34 @@ mod tests {
             .iter()
             .map(|p| p[1])
             .collect::<Vec<_>>();
+        // These three are linear in q and r, so they equal 2 + E[q] + E[r],
+        // 2 + E[q] and 2 + 2 E[q] + E[r] whether the variances are drawn from
+        // their priors or pinned at their means (1/2 and 1). On their own they
+        // do not test what the name claims.
         assert!((covariance(&a, &a) - 3.5).abs() < 0.14);
         assert!((covariance(&a, &b) - 2.5).abs() < 0.14);
         assert!((covariance(&b, &b) - 4.0).abs() < 0.14);
+        // The statistic that separates the two is any nonlinear one. The latent
+        // increment between the two steps is exactly Normal(0, q), so
+        //
+        //   E|dx| = sqrt(2/pi) E[sqrt q] = sqrt(2/pi) sqrt(b) G(a - 1/2)/G(a)
+        //         = (2/sqrt pi)(105/16) sqrt(pi) / 24 = 35/64 = 0.546875,
+        //
+        // against sqrt(E[q] 2/pi) = 1/sqrt(pi) = 0.564190 if q were pinned at
+        // its prior mean of 1/2. The window below excludes the pinned value by
+        // 1.9 tolerance-widths, and is 4.6 Monte Carlo standard errors wide at
+        // this draw count. The fourth moment separates them further but its own
+        // eighth moment is 70, so it cannot be calibrated this tightly.
+        let increments = paths.means[0]
+            .iter()
+            .map(|m| m[1] - m[0])
+            .collect::<Vec<_>>();
+        let absolute = increments.iter().map(|d| d.abs()).sum::<f64>() / increments.len() as f64;
+        assert!(
+            (absolute - 35.0 / 64.0).abs() < 0.006,
+            "mean absolute increment {absolute} does not separate an integrated q from one \
+             pinned at its prior mean, which would give 0.564190"
+        );
     }
     #[test]
     fn static_regression_posterior_matches_analytic_normal_update() {
@@ -1040,6 +1097,13 @@ mod tests {
         // One observation lets us integrate out the latent initial/terminal state:
         // y ~ Normal(0, initial_variance + q + r). Integrate the remaining
         // inverse-gamma variance in log coordinates without using the sampler.
+        //
+        // The observation is 4.0 rather than 2.0 because at 2.0 the quadrature
+        // answers were 0.760 and 0.751 against an InverseGamma(3, 1.5) prior
+        // whose mean is 0.75: both sat inside the +/- 0.045 window below, so a
+        // Gibbs step that ignored the observation entirely would have passed.
+        // At 4.0 they are 1.082 and 0.985. The negative control below keeps it
+        // that way.
         for infer_process in [false, true] {
             let mut c = level(0.0, 0.4);
             let prior = VarianceParameter::InverseGamma {
@@ -1059,14 +1123,14 @@ mod tests {
                 let logv = -12.0 + 20.0 * k as f64 / 19999.0;
                 let v = logv.exp();
                 let logw =
-                    -3.0 * logv - 1.5 / v - 0.5 * (known + v).ln() - 4.0 / (2.0 * (known + v));
+                    -3.0 * logv - 1.5 / v - 0.5 * (known + v).ln() - 16.0 / (2.0 * (known + v));
                 let w = logw.exp();
                 weights += w;
                 moment += w * v;
             }
             let mut sampling = settings(18000);
             sampling.warmup = 500;
-            let p = fit(&[2.0], None, &c, &sampling).unwrap();
+            let p = fit(&[4.0], None, &c, &sampling).unwrap();
             let values = p.chains[0]
                 .iter()
                 .map(|d| {
@@ -1077,11 +1141,18 @@ mod tests {
                     }
                 })
                 .collect::<Vec<_>>();
+            let reference = moment / weights;
+            let prior_mean = 1.5 / (3.0 - 1.0);
             assert!(
-                (mean(&values) - moment / weights).abs() < 0.045,
-                "infer_process={infer_process}, mean={}, expected={}",
+                (reference - prior_mean).abs() > 2.0 * 0.045,
+                "infer_process={infer_process}: the quadrature reference {reference} is within \
+                 two tolerances of the prior mean {prior_mean}, so the check below would pass \
+                 on a sampler that ignored the observation"
+            );
+            assert!(
+                (mean(&values) - reference).abs() < 0.045,
+                "infer_process={infer_process}, mean={}, expected={reference}",
                 mean(&values),
-                moment / weights
             );
         }
     }
@@ -1097,9 +1168,26 @@ mod tests {
             observation_variance: fixed(0.02),
             student_df: None,
         };
-        let x = vec![vec![1.0]; 60];
-        let simulated = c.prior_predict(60, Some(&x), 1, 908).unwrap();
-        let y = &simulated.observations[0][0];
+        // The series and the truth it is scored against used to come from
+        // `StructuralConfig::prior_predict`, so the module was being compared
+        // against its own forward simulator: a config misread shared by both
+        // would have cancelled out. The generative model is three lines, so it
+        // is written out here instead. `Component::regression` above declares a
+        // coefficient starting at N(0, 0.2) and random-walking with innovation
+        // variance 0.015, observed through a design column of ones with
+        // observation variance 0.02.
+        const STEPS: usize = 120;
+        let mut rng = ChaCha8Rng::seed_from_u64(908);
+        let mut coefficient = normal(&mut rng) * 0.2_f64.sqrt();
+        let mut truth = Vec::with_capacity(STEPS);
+        let mut series = Vec::with_capacity(STEPS);
+        for _ in 0..STEPS {
+            coefficient += normal(&mut rng) * 0.015_f64.sqrt();
+            truth.push(coefficient);
+            series.push(coefficient + normal(&mut rng) * 0.02_f64.sqrt());
+        }
+        let x = vec![vec![1.0]; STEPS];
+        let y = &series;
         let mut sampling = settings(200);
         sampling.chains = 2;
         let one = rayon::ThreadPoolBuilder::new()
@@ -1115,20 +1203,35 @@ mod tests {
             .install(|| fit(y, Some(&x), &c, &sampling))
             .unwrap();
         assert!(one.to_json().unwrap() == two.to_json().unwrap());
-        let error = (0..60)
+        let smoothed = (0..STEPS)
             .map(|t| {
-                let estimate = one
-                    .chains
+                one.chains
                     .iter()
                     .flatten()
                     .map(|d| d.states.as_ref().unwrap()[t + 1][0])
                     .sum::<f64>()
-                    / 400.0;
-                (estimate - simulated.states[0][0][t][0]).powi(2)
+                    / 400.0
             })
-            .sum::<f64>()
-            / 60.0;
-        assert!(error.sqrt() < 0.15);
+            .collect::<Vec<_>>();
+        let rmse = |estimates: &[f64]| {
+            (estimates
+                .iter()
+                .zip(&truth)
+                .map(|(e, t)| (e - t).powi(2))
+                .sum::<f64>()
+                / STEPS as f64)
+                .sqrt()
+        };
+        let error = rmse(&smoothed);
+        // Negative control: a fit that ignored the series would report the
+        // coefficient's prior mean of zero at every step. The smoother has to
+        // keep well under a quarter of that error, so the bound below cannot be
+        // met without reading the data.
+        let uninformed = rmse(&vec![0.0; STEPS]);
+        assert!(
+            error < 0.15 && error < 0.25 * uninformed,
+            "state RMSE {error} against an uninformed RMSE of {uninformed}"
+        );
     }
     #[test]
     fn validation_rejects_aliases_invalid_variances_and_corrupt_persistence() {
