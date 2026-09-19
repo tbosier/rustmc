@@ -959,8 +959,13 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(810);
         let mut level = 0.0;
         let mut slope = 0.08;
-        let mut observations = Vec::with_capacity(280);
-        for _ in 0..280 {
+        // 280 points used to be enough only because config()'s priors already carried
+        // the answer. With a prior that does not, the level/observation split at that
+        // length is not identified: the posterior mean of the level variance comes out
+        // near 0.03 against a truth of 0.12. It is identified at 2000.
+        let count = 2000;
+        let mut observations = Vec::with_capacity(count);
+        for _ in 0..count {
             level += slope + standard_normal(&mut rng) * true_level_variance.sqrt();
             slope += standard_normal(&mut rng) * true_slope_variance.sqrt();
             observations.push(level + standard_normal(&mut rng) * true_observation_variance.sqrt());
@@ -972,6 +977,24 @@ mod tests {
         fit_config.num_warmup = 500;
         fit_config.num_draws = 500;
         fit_config.thinning = 2;
+        // config()'s own priors have means 0.25/2 = 0.125, 0.05/2 = 0.025 and
+        // 0.5/2 = 0.25, against truths of 0.12, 0.025 and 0.35. The first is 0.005 from
+        // its truth and the second is exactly equal to it, so under the tolerances this
+        // test used to carry, prior draws satisfied all three assertions: it asserted
+        // nothing about the observations. Fit with priors deliberately an order of
+        // magnitude below every truth instead. The negative control below keeps it so.
+        fit_config.level_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
+        fit_config.slope_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.005,
+        };
+        fit_config.observation_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
         let posterior = fit_bayesian_local_linear_trend(&observations, &fit_config).unwrap();
         let count = posterior.chains.iter().map(Vec::len).sum::<usize>() as f64;
         let means = posterior
@@ -984,9 +1007,36 @@ mod tests {
                 sums[2] += draw.observation_variance;
                 sums
             });
-        assert!((means[0] / count - true_level_variance).abs() < 0.12);
-        assert!((means[1] / count - true_slope_variance).abs() < 0.025);
-        assert!((means[2] / count - true_observation_variance).abs() < 0.18);
+        let tolerances = [0.045, 0.008, 0.06];
+        let truths = [
+            true_level_variance,
+            true_slope_variance,
+            true_observation_variance,
+        ];
+        for index in 0..3 {
+            assert!(
+                (means[index] / count - truths[index]).abs() < tolerances[index],
+                "parameter {index}: {} vs {}",
+                means[index] / count,
+                truths[index]
+            );
+        }
+
+        // Negative control: a sampler that ignored the observations would report the
+        // prior means, scale / (shape - 1) = 0.025, 0.0025 and 0.025. Every one must
+        // sit outside the window just asserted, or those assertions prove nothing.
+        let priors = [
+            fit_config.level_variance_prior,
+            fit_config.slope_variance_prior,
+            fit_config.observation_variance_prior,
+        ];
+        for index in 0..3 {
+            let prior_mean = priors[index].scale / (priors[index].shape - 1.0);
+            assert!(
+                (prior_mean - truths[index]).abs() > tolerances[index],
+                "parameter {index}: prior mean {prior_mean} is inside the accepted window"
+            );
+        }
 
         let forecast = posterior.forecast(15, 812).unwrap();
         let intervals = forecast.observation_quantiles(&[0.1, 0.9]).unwrap();

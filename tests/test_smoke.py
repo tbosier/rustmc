@@ -9,6 +9,7 @@ installed wheel in CI's wheel-install job (see
 assert the module was loaded from site-packages rather than the repo --
 CI's wheel job sets this; local dev runs do not need to.
 """
+import math
 import os
 from pathlib import Path
 from importlib.metadata import version
@@ -92,9 +93,19 @@ def test_numpy_interop_and_end_to_end_sampling(rustmc_module, linreg_data):
 
     means = fit.mean()
     assert set(means) == {"alpha", "beta", "sigma"}
-    assert abs(means["alpha"] - data["alpha_true"]) < 1.5
-    assert abs(means["beta"] - data["beta_true"]) < 1.5
-    assert means["sigma"] > 0
+    # These windows used to be +/-1.5 on alpha and beta, and `sigma > 0`. The posterior
+    # SD of alpha here is about 0.072, so +/-1.5 was twenty-one posterior SDs wide and
+    # reached the Normal(0, 10) prior mean of zero; `sigma > 0` is a support check, not
+    # an accuracy one, and every prior draw satisfies it. All three windows now exclude
+    # the prior: zero for alpha and beta, and 2.0 * sqrt(2/pi) = 1.596 for sigma.
+    assert means["alpha"] == pytest.approx(data["alpha_true"], abs=0.3)
+    assert means["beta"] == pytest.approx(data["beta_true"], abs=0.3)
+    assert means["sigma"] == pytest.approx(data["sigma_true"], abs=0.2)
+    assert abs(0.0 - data["alpha_true"]) > 0.3, "the alpha prior mean must be excluded"
+    assert abs(0.0 - data["beta_true"]) > 0.3, "the beta prior mean must be excluded"
+    assert abs(2.0 * math.sqrt(2 / math.pi) - data["sigma_true"]) > 0.2, (
+        "the sigma prior mean must be excluded"
+    )
 
     samples = fit.get_samples()
     alpha_samples = samples["alpha"]

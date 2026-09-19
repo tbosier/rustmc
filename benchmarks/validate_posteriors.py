@@ -18,6 +18,23 @@ import time
 
 import numpy as np
 
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+# The performance benchmark applies the same screening rule to the same diagnostics,
+# and the duplicate of it there is what let a NaN-tolerant gate survive the last
+# review cycle. Both gates now call one implementation, which lives in protocol.py
+# because that module has no rustmc dependency of its own.
+from benchmarks.protocol import (  # noqa: E402
+    ESS_CEILING_SLACK,
+    RHAT_FLOOR_SLACK,
+    as_float,
+    count_failure,
+    ess_ceiling,
+    metric_failure,
+    rhat_floor,
+)
+
 
 #: The fixed-reference cases the gate must run, and how many seeds each runs under.
 #: This manifest is the gate's contract, not a description of it: ``run`` fails when a
@@ -64,38 +81,6 @@ def reference_cases():
 #: Per-parameter convergence diagnostic -> reported metric and its aggregation.
 CONVERGENCE_METRICS = (("r_hat", "max_rhat", max), ("ess_bulk", "min_ess_bulk", min),
                        ("ess_tail", "min_ess_tail", min))
-#: Slack on the derived R-hat floor, far above the estimator's rounding error and far
-#: below the gap to any value a broken payload would carry.
-RHAT_FLOOR_SLACK = 1e-6
-#: Relative slack on the derived ESS ceiling, which is exact up to rounding.
-ESS_CEILING_SLACK = 1e-9
-
-
-def rhat_floor(draws):
-    """Smallest R-hat the estimator can return for chains of ``draws`` draws.
-
-    ``r_hat_chains`` in rust_core/src/diagnostics.rs splits every chain in half, so its
-    split length is ``draws // 2``, and ``basic_r_hat`` returns ``sqrt(var_hat / W)``
-    with ``var_hat = (n-1)/n * W + B/n``. B is a sum of squares and cannot be negative,
-    so the ratio bottoms out at ``(n-1)/n``. Anything below that is not a slightly
-    unlucky R-hat, it is a payload that does not come from the estimator - and only a
-    lower bound catches it, because ``max`` keeps the largest value and hides the rest.
-    """
-    split = max(int(draws) // 2, 2)
-    return math.sqrt((split - 1) / split)
-
-
-def ess_ceiling(chains, draws):
-    """Largest ESS the estimator can return for ``chains`` chains of ``draws`` draws.
-
-    ``ess_raw`` in rust_core/src/diagnostics.rs splits every chain in half and returns
-    ``total / tau`` with ``tau = (...).max(1.0 / total.log10())``, so the quotient
-    cannot exceed ``total * log10(total)``, where ``total`` is the split draw count.
-    ``min`` hides an impossibly large ESS behind a healthy neighbour exactly as ``max``
-    hides an impossibly small R-hat, so this bound is needed for the same reason.
-    """
-    total = 2 * max(int(chains), 1) * max(int(draws) // 2, 1)
-    return total * math.log10(total) if total > 1 else math.inf
 
 
 def divergence_total(counts, chains):
@@ -109,23 +94,9 @@ def divergence_total(counts, chains):
     if len(counts) != chains:
         failures.append(f"divergences[{len(counts)} counts for {chains} chains]")
     for index, count in enumerate(counts):
-        value = _as_float(count)
-        if not math.isfinite(value) or value < 0 or value != int(value):
+        if count_failure(count) is not None:
             failures.append(f"divergences[chain {index}]")
     return failures, math.nan if failures else sum(counts)
-
-
-def _as_float(value):
-    # float() silently drops the imaginary part of a complex value, which would turn a
-    # non-finite diagnostic into a plausible one, and raises OverflowError on a huge int.
-    # numbers.Complex rather than complex: np.complex64 and np.clongdouble are not
-    # subclasses of the builtin, so `isinstance(value, complex)` let them straight past.
-    if isinstance(value, numbers.Complex) and not isinstance(value, numbers.Real):
-        return math.nan
-    try:
-        return float(value)
-    except (TypeError, ValueError, OverflowError):
-        return math.nan
 
 
 def convergence_metrics(diagnostics, names, floor, ceiling):
@@ -157,9 +128,8 @@ def convergence_metrics(diagnostics, names, floor, ceiling):
         low, high = domains[key]
         values, invalid = [], []
         for label, diagnostic in zip(labels, diagnostics):
-            value = _as_float(diagnostic.get(key))
-            # NaN fails every comparison, so finiteness has to be tested first.
-            if not math.isfinite(value) or value < low or value > high:
+            value = as_float(diagnostic.get(key))
+            if metric_failure(diagnostic.get(key), low, high) is not None:
                 failures += [metric, f"{metric}[{label}]"]
                 invalid.append(value)
             values.append(value)
