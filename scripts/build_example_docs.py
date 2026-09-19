@@ -392,8 +392,15 @@ def unrunnable_pages() -> list[str]:
         with tempfile.TemporaryDirectory() as scratch:
             script = Path(scratch) / "page.py"
             script.write_text("\n".join(blocks), encoding="utf-8")
+            # Run in the scratch directory, not the repository. Two guides
+            # demonstrate save-and-load with a bare relative path, so running
+            # them here left `fit.json` and `forecast.npz` in the working tree
+            # on every check -- untracked files that an over-broad `git add`
+            # would commit, which has happened to this repository before. The
+            # pages generate their own data and import an installed package, so
+            # nothing needs the repository as the working directory.
             done = subprocess.run(  # noqa: S603 - fixed argv, no shell
-                [sys.executable, str(script)], cwd=ROOT, capture_output=True, text=True
+                [sys.executable, str(script)], cwd=scratch, capture_output=True, text=True
             )
         checked.append((page.name, done.returncode == 0, len(blocks)))
         if done.returncode != 0:
