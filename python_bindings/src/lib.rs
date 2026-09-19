@@ -74,6 +74,7 @@ use rustmc_core::hierarchical::{
 };
 use rustmc_core::param_ref::{validate_param_references, ParamRefError, ParamReference};
 use rustmc_core::sampler::{self, SampleResult, SamplerConfig, SamplerType};
+use rustmc_core::seeding::{chain_seed, PREDICTIVE_SEED_DOMAIN, PRIOR_PREDICTIVE_SEED_DOMAIN};
 use rustmc_core::state_space::{
     ForecastResult as CoreForecastResult, KalmanFilterResult as CoreKalmanFilterResult,
     KalmanSmootherResult as CoreKalmanSmootherResult,
@@ -1323,7 +1324,7 @@ impl FitResult {
         graph
             .validate_shapes()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, 0, PREDICTIVE_SEED_DOMAIN));
         let heads = graph.observation_heads();
 
         let n_chains = self.raw_result.samples.len();
@@ -1588,7 +1589,7 @@ impl FitResult {
         sizes: Option<HashMap<String, usize>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let graph = prediction_graph(&self.graph, data, sizes)?;
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, 0, PREDICTIVE_SEED_DOMAIN));
         graph
             .validate_shapes()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
@@ -2761,7 +2762,7 @@ fn sample_prior_predictive<'py>(
     // ── Sample from priors and run forward passes ─────────────────────────────
     // The generator itself lives in the core so a `GraphModel` loaded outside
     // Python simulates from exactly the same code.
-    let mut rng = ChaCha8Rng::seed_from_u64(seed);
+    let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, 0, PRIOR_PREDICTIVE_SEED_DOMAIN));
     let draws = rustmc_core::prior_sampling::prior_predictive(
         &graph,
         &model_spec.priors,

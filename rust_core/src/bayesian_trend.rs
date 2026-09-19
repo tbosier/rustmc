@@ -18,6 +18,7 @@
 //! while indexed collection preserves deterministic chain ordering.
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::seeding::chain_seed;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -609,15 +610,6 @@ fn validate_positive(name: &str, variance: f64) -> Result<(), BayesianForecastEr
 
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
-
-fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-    value ^ (value >> 31)
-}
 
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;

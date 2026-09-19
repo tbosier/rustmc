@@ -12,6 +12,7 @@
 use crate::bayesian_forecast::{
     BayesianForecastError, InverseGammaPrior, PosteriorPredictiveForecast,
 };
+use crate::seeding::chain_seed;
 use crate::state_space::LinearGaussianStateSpace;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -443,12 +444,6 @@ fn probability_draw(beta: &Beta<f64>, rng: &mut ChaCha8Rng) -> Result<f64, Bayes
 }
 fn normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
-}
-fn chain_seed(seed: u64, chain: usize, domain: u64) -> u64 {
-    let mut z = seed ^ domain ^ (chain as u64).wrapping_mul(0x9e3779b97f4a7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-    z ^ (z >> 31)
 }
 fn invalid(message: impl Into<String>) -> BayesianForecastError {
     BayesianForecastError::InvalidConfiguration(message.into())

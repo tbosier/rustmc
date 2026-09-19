@@ -247,8 +247,15 @@ def _value_matches(value, annotation):
     return isinstance(value, getattr(importlib.import_module("rustmc"), annotation))
 
 
-def _reworked_objects():
-    """One live instance of each class this branch reworked."""
+def _live_objects():
+    """One live instance of each class whose accessors this check can reach.
+
+    Scoping this to "the classes one branch reworked" is what let
+    `KalmanFilterResult.log_likelihood` and `KalmanSmootherResult.log_likelihood`
+    sit annotated as `dict[str, _FloatArray]` while returning a float: neither
+    class was in the set, so nothing compared them. Add a class here whenever
+    one instance of it can be built cheaply, rather than when it changes.
+    """
     import numpy as np
 
     rustmc = importlib.import_module("rustmc")
@@ -268,19 +275,27 @@ def _reworked_objects():
     options = dict(chains=2, draws=25, warmup=25, seed=1, show_progress=False)
     fit = rustmc.sample(builder.build(), **options)
     batch = compiled.sample_batch([data], ids=["cell"], **options)
-    return {"FitResult": fit, "BatchFit": batch, "BatchResult": batch[0]}
+    series = np.cumsum(rng.normal(size=n)) + rng.normal(scale=0.2, size=n)
+    system = rustmc.LinearGaussianStateSpace.local_level(0.1, 0.3)
+
+    return {
+        "FitResult": fit,
+        "BatchFit": batch,
+        "BatchResult": batch[0],
+        "KalmanFilterResult": system.filter(series),
+        "KalmanSmootherResult": system.smooth(series),
+    }
 
 
-def test_native_stub_return_types_match_the_reworked_classes():
-    """The accessors on this branch's reworked classes return what is promised.
+def test_native_stub_return_types_match_the_live_classes():
+    """Every accessor reachable with no arguments returns what the stub promises.
 
-    Scoped to the classes whose internals changed -- the fit, the batch handle
-    and one batch cell -- and to members callable with no arguments, which is
-    every accessor the rework touched. `to_arviz` is excluded on purpose: it
-    returns `Any`, so there is nothing to compare.
+    Covers the classes `_live_objects` can instantiate, and members callable
+    with no arguments. `to_arviz` is excluded on purpose: it returns `Any`, so
+    there is nothing to compare.
     """
     tree = _stub()
-    objects = _reworked_objects()
+    objects = _live_objects()
     wrong, unchecked = [], []
     for node in tree.body:
         if not isinstance(node, ast.ClassDef) or node.name not in objects:

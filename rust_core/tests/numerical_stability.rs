@@ -4,8 +4,7 @@
 //! difference, or a constant produced by an out-of-crate high-precision
 //! evaluation (Python `decimal` at 400 significant digits). Nothing in this
 //! file compares one in-repo evaluator against another, because the two
-//! evaluators share `ElementwiseOp::derivatives` and would agree on a wrong
-//! formula.
+//! evaluators share `adjoints` and would agree on a wrong formula.
 
 use rustmc_core::autodiff::Evaluator;
 use rustmc_core::distributions::{

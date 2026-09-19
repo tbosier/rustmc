@@ -62,9 +62,9 @@ print(f"  Prior y_hat range:      [{prior_pred['obs'].min():.1f}, {prior_pred['o
 ```
 
 ```text
-  Prior beta  ~ N(0, 5):  mean=-0.16, std=4.91
-  Prior sigma ~ HN(2):    mean=1.59, std=1.17
-  Prior y_hat range:      [-55.5, 54.3]
+  Prior beta  ~ N(0, 5):  mean=0.57, std=5.06
+  Prior sigma ~ HN(2):    mean=1.65, std=1.20
+  Prior y_hat range:      [-63.6, 56.1]
 ```
 
 ## Sample the posterior
@@ -134,9 +134,9 @@ print(f"  PPC p-value (std): {ppc_p:.3f}")
 
 ```text
   y_rep shape:  (500, 500)
-  y_rep mean:   0.0179  (data mean: 0.0648)
-  y_rep std:    2.7583   (data std:  2.7586)
-  PPC p-value (std): 0.486
+  y_rep mean:   0.0182  (data mean: 0.0648)
+  y_rep std:    2.7615   (data std:  2.7586)
+  PPC p-value (std): 0.500
 ```
 
 ## Plots

@@ -2,6 +2,7 @@
 //! updates. Student-t observations use Gamma precision mixtures with fixed df.
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
+use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -447,19 +448,6 @@ const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
 const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
 
-fn chain_seed(seed: u64, chain: usize, domain: u64) -> u64 {
-    // SplitMix64 finalizer gives each chain a stable, well-separated stream.
-    // The domain keeps fitting, forecasting and prior prediction on disjoint
-    // streams when a caller reuses one seed across those stages. As in the
-    // other forecasting modules the domain is additive, so seeds deliberately
-    // offset by a domain difference still meet; ordinary seeds do not.
-    let mut x = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
-    x ^ (x >> 31)
-}
 pub fn fit(
     y: &[f64],
     design: Option<&[Vec<f64>]>,
