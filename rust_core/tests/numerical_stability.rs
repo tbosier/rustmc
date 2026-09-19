@@ -9,7 +9,8 @@
 
 use rustmc_core::autodiff::Evaluator;
 use rustmc_core::distributions::{
-    BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Uniform,
+    Bernoulli, BetaDist, Exponential, Gamma, HalfNormal, LogNormal, Normal, Poisson, StudentT,
+    Uniform,
 };
 use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, ParamTransform};
 use rustmc_core::model::{
@@ -1162,6 +1163,201 @@ fn every_prior_family_agrees_with_finite_differences() {
             let params: Vec<f64> = (0..count).map(|i| base[i % 2]).collect();
             assert_finite_difference_agrees(&graph, &params, &format!("{label} at {params:?}"));
         }
+    }
+}
+
+/// Every public prior constructor in `rustmc_core::distributions` still builds
+/// a graph the `Evaluator` can run, and still scores the parameter it declares.
+///
+/// (Only the `Evaluator`: the allocating reference evaluator is `#[cfg(test)]`
+/// inside the crate and an integration test cannot reach it. The two are
+/// cross-checked by the crate's own unit tests.)
+///
+/// `Op::HalfNormalLogP`, `Op::UniformLogP`, `Op::GammaLogP` and
+/// `Op::BetaLogP` — the direct, *constrained*-space scalar densities — were
+/// deleted because no production path constructed them: every one of these
+/// constructors reaches its family through a transform instead
+/// (`LogHalfNormalLogP`, `LogGammaLogP`, `Op::BoundedSigmoid` plus the
+/// vectorised raw-space kernels). This test is the standing proof of that: it
+/// walks the whole public prior surface, including the hierarchical
+/// `*_with_node*` forms, and fails if any of them stopped contributing a
+/// density. It asserts reachability, not accuracy — the numbers are audited by
+/// `every_prior_family_agrees_with_finite_differences` above.
+#[test]
+fn every_public_prior_constructor_still_evaluates() {
+    // A `Graph` builder, the raw (unconstrained) parameter vector to evaluate it
+    // at, and whether the prior is expected to put a non-zero gradient on the
+    // parameter it declares. Hyperparameter constructors declare their
+    // hyperparameter first, so the prior's own parameter is always the last
+    // slot. The flag is false only for the two discrete latents, whose density
+    // depends on a constant hyperparameter and so scores nothing back onto the
+    // latent itself -- the documented behaviour that makes them
+    // prior-predictive only.
+    type Build = fn(&mut Graph) -> Vec<f64>;
+    let constructors: Vec<(&str, Build, bool)> = vec![
+        (
+            "Normal::prior",
+            |graph| {
+                Normal::prior(graph, "p", 0.5, 1.3);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "Normal::prior_with_nodes",
+            |graph| {
+                let mu = graph.add_param("mu");
+                let sigma = graph.add_constant(1.3);
+                Normal::prior_with_nodes(graph, "p", mu, sigma);
+                vec![0.2, 0.4]
+            },
+            true,
+        ),
+        (
+            "HalfNormal::prior",
+            |graph| {
+                HalfNormal::prior(graph, "p", 1.3);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "HalfNormal::prior_with_node_sigma",
+            |graph| {
+                let sigma = HalfNormal::prior(graph, "s", 1.0);
+                HalfNormal::prior_with_node_sigma(graph, "p", sigma);
+                vec![0.1, 0.4]
+            },
+            true,
+        ),
+        (
+            "StudentT::prior",
+            |graph| {
+                StudentT::prior(graph, "p", 4.0, 0.2, 1.1);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "Uniform::prior",
+            |graph| {
+                Uniform::prior(graph, "p", -2.0, 3.0);
+                vec![0.4]
+            },
+            true,
+        ),
+        // Discrete latents: the density is defined only on the support, so the
+        // raw value has to sit on it for the term to be finite at all.
+        (
+            "Bernoulli::prior",
+            |graph| {
+                Bernoulli::prior(graph, "p", 0.3);
+                vec![1.0]
+            },
+            false,
+        ),
+        (
+            "Poisson::prior",
+            |graph| {
+                Poisson::prior(graph, "p", 2.5);
+                vec![3.0]
+            },
+            false,
+        ),
+        (
+            "Exponential::prior",
+            |graph| {
+                Exponential::prior(graph, "p", 0.7);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "Exponential::prior_with_node_rate",
+            |graph| {
+                let rate = HalfNormal::prior(graph, "r", 1.0);
+                Exponential::prior_with_node_rate(graph, "p", rate);
+                vec![0.1, 0.4]
+            },
+            true,
+        ),
+        (
+            "LogNormal::prior",
+            |graph| {
+                LogNormal::prior(graph, "p", 0.1, 0.8);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "LogNormal::prior_with_nodes",
+            |graph| {
+                let mu = graph.add_param("mu");
+                let sigma = graph.add_constant(0.8);
+                LogNormal::prior_with_nodes(graph, "p", mu, sigma);
+                vec![0.2, 0.4]
+            },
+            true,
+        ),
+        (
+            "Gamma::prior",
+            |graph| {
+                Gamma::prior(graph, "p", 2.5, 1.7);
+                vec![0.4]
+            },
+            true,
+        ),
+        (
+            "BetaDist::prior",
+            |graph| {
+                BetaDist::prior(graph, "p", 2.0, 5.0);
+                vec![0.4]
+            },
+            true,
+        ),
+    ];
+
+    assert_eq!(
+        constructors.len(),
+        14,
+        "a prior constructor was added or removed without updating this sweep"
+    );
+
+    for (label, build, scores_own_param) in constructors {
+        let mut graph = Graph::new();
+        let params = build(&mut graph);
+        assert_eq!(
+            graph.param_count,
+            params.len(),
+            "{label}: parameter count changed"
+        );
+        let (logp, grad) = evaluate(&graph, &params);
+        assert!(logp.is_finite(), "{label}: logp is {logp}");
+        assert!(
+            grad.iter().all(|value| value.is_finite()),
+            "{label}: gradient is {grad:?}"
+        );
+        // The part that stops this being a tautology. A `Graph` with no log
+        // density term at all evaluates perfectly happily -- `total_logp` is an
+        // empty sum, zero, and the gradient is all zeros -- so "it evaluated"
+        // proves nothing on its own. Pinning the prior's own score says the
+        // density term is still there and still reaches the parameter through
+        // reverse mode.
+        let own = *grad.last().expect("every case declares a parameter");
+        if scores_own_param {
+            assert!(
+                own.abs() > 1e-9,
+                "{label}: the prior contributes no gradient to its own parameter ({own})"
+            );
+        } else {
+            assert_eq!(
+                own, 0.0,
+                "{label}: a discrete latent must not score its own parameter"
+            );
+        }
+        // A prior whose density were dropped would leave `logp` at exactly the
+        // zero of the empty sum.
+        assert_ne!(logp, 0.0, "{label}: log density is the empty sum");
     }
 }
 
