@@ -152,7 +152,9 @@ pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
 /// raw = -746 returned 0 for a value of 1.0382848095158282e-16.
 ///
 /// The way out is that the sigmoid *is* `exp(raw)` in that tail: once
-/// `exp(raw)` is below 2^-52, `1 + exp(raw)` rounds to exactly 1. And
+/// `exp(raw)` is at or below 2^-53, `1 + exp(raw)` rounds to exactly 1 (at
+/// exactly 2^-53 by ties-to-even; `1 + 3*2^-54` does not, which is why the
+/// threshold is 2^-53 and not 2^-52). And
 /// `exp(raw) == exp(raw / 2)^2` with `raw / 2` exact, so the span goes between
 /// the two halves: for `span = 1e308, raw = -746` that is
 /// `1e308 * 1.0e-162 * 1.0e-162`. No logarithm of the span is taken, so no
@@ -166,11 +168,22 @@ pub fn bounded_sigmoid(raw: f64, lower: f64, upper: f64) -> f64 {
 /// bottom of the range — `span = 1e-300, raw = -710` returns zero, which is
 /// also the exact answer.
 ///
-/// Accurate to 2.2e-16 relative from the gate down to `raw = -1416`, where
-/// `exp(raw / 2)` becomes subnormal itself and the halves start shedding bits;
-/// the value reaches zero around `raw = -1454` for the widest representable
-/// span. Both boundaries are pinned by
-/// `bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows`.
+/// Within **2 ulp** — a measured worst case of 4.44e-16 relative, at
+/// `raw = -715.23` for `span = 1e308` — from the gate down to `raw = -1416`,
+/// where `exp(raw / 2)` becomes subnormal itself and the halves start shedding
+/// bits; the value reaches zero around `raw = -1454` for the widest
+/// representable span. Both boundaries are pinned by
+/// `bounded_sigmoid_tail_is_exact_until_the_halved_exponential_underflows`, and
+/// the 2 ulp by `bounded_sigmoid_tail_survives_a_sigmoid_that_underflows`.
+///
+/// Two ulp, not zero: `exp(raw / 2)` rounds and then the square rounds again.
+/// Against a direct product that loses the value outright below -745.13 and
+/// three quarters of it at -745 that is a clear win, but it is not free, and
+/// for a span of 1 it can cost an ulp the direct form would have kept —
+/// `raw = -708.4` gives 2.2171190816642647e-308 for a correctly rounded
+/// 2.217119081664265e-308. It also *gains* one elsewhere at narrow spans
+/// (`span = 0.5, raw = -720`), so no gate on the span sorts the two cleanly and
+/// none is attempted.
 ///
 /// The direct product is kept wherever the sigmoid is a normal number, so
 /// ordinary intervals and ordinary raw values are bit for bit unchanged, and an
@@ -246,17 +259,38 @@ pub fn bounded_sigmoid_derivative(raw: f64, lower: f64, upper: f64) -> f64 {
 ///
 /// The wide-span tail is no longer one of these cases:
 /// [`span_times_sigmoid_slope`] keeps `span * s'` alive past `|raw| = 745`, so
-/// the fallback now fires only for a genuinely tiny span.
+/// that fallback now fires only for a genuinely tiny span.
+///
+/// There is a third case, which neither order reaches: a slope that has
+/// underflowed to zero *on its own*, where the span cannot rescue it because
+/// the span is ordinary. `(0, 1)` at raw -750 has `s'(-750) == 0` — `exp(-750)`
+/// is below the smallest subnormal — so both `span * s'` and `(adjoint * span)
+/// * s'` are zero, while an adjoint of `1e308` makes the exact composition
+/// 1.9016849634750064e-18. The adjoint has to go inside the exponential for
+/// that one, through the same halving [`span_times_sigmoid`] uses.
+///
+/// Between the three, this returns a representable composition wherever the
+/// exact one is, for every finite span and finite raw.
 #[inline]
 pub fn bounded_sigmoid_adjoint(adjoint: f64, raw: f64, lower: f64, upper: f64) -> f64 {
     let slope = stable_sigmoid_derivative(raw);
     let span = upper - lower;
     let scaled = span_times_sigmoid_slope(span, raw);
-    if scaled == 0.0 && span != 0.0 && slope != 0.0 {
-        (adjoint * span) * slope
-    } else {
-        adjoint * scaled
+    if scaled != 0.0 || span == 0.0 {
+        return adjoint * scaled;
     }
+    if slope != 0.0 {
+        // A tiny span against a slope that is still representable.
+        return (adjoint * span) * slope;
+    }
+    if !raw.is_finite() || !span.is_finite() || adjoint == 0.0 || !adjoint.is_finite() {
+        return adjoint * scaled;
+    }
+    // The slope itself underflowed: `s'(raw)` is `exp(-|raw|)` here, and
+    // `exp(-|raw|) == exp(-|raw| / 2)^2`, so the adjoint goes between the
+    // halves and the span is applied last.
+    let half = (-0.5 * raw.abs()).exp();
+    ((adjoint * half) * half) * span
 }
 
 /// d/db of `a / b`, i.e. `-a / b^2`, over the whole representable range.
@@ -312,8 +346,11 @@ fn two_pow(exponent: i32) -> f64 {
     f64::from_bits(((exponent + 1023) as u64) << 52)
 }
 
-/// Split a finite, nonzero `x` into `(mantissa, exponent)` with the mantissa in
-/// `[0.5, 1)`. Exact: `mantissa * 2^exponent == x`.
+/// Split a finite, nonzero `x` into `(mantissa, exponent)` with the mantissa's
+/// *magnitude* in `[0.5, 1)`. Exact: `mantissa * 2^exponent == x`.
+///
+/// The sign travels with the mantissa — `split_exponent(-8)` is `(-0.5, 4)` —
+/// so a product of mantissas carries the sign of the product.
 fn split_exponent(x: f64) -> (f64, i32) {
     debug_assert!(x.is_finite() && x != 0.0);
     let bits = x.to_bits();
@@ -328,39 +365,61 @@ fn split_exponent(x: f64) -> (f64, i32) {
     (mantissa, raw - 1022)
 }
 
-/// `mantissa * 2^exponent`, applied in steps so that an exponent far outside
-/// the representable range cannot overflow or underflow an intermediate.
+/// `mantissa * 2^exponent`, rounded exactly once.
+///
+/// Rescaling in fixed steps is the obvious way to reach an exponent outside
+/// what `two_pow` spans, and it is wrong: each step that lands in the
+/// subnormals rounds, and two roundings can erase a representable result. A
+/// mantissa of `1 + 2^-52` at exponent -1075 is just above half the smallest
+/// subnormal and must round up to it, but stepping down through 2^-512 twice
+/// drops the trailing bit first and leaves an exact midpoint, which rounds to
+/// even — to zero. That is the failure the whole scaled path exists to prevent.
+///
+/// So normalise the mantissa, decide the outcome from the total exponent alone,
+/// and let exactly one multiplication round. Every multiplication before the
+/// last is by a power of two onto a normal number, which is exact.
 fn apply_exponent(mantissa: f64, exponent: i32) -> f64 {
-    const STEP: i32 = 512;
-    let mut value = mantissa;
-    let mut remaining = exponent;
-    while remaining > STEP {
-        value *= two_pow(STEP);
-        if !value.is_finite() {
-            return value;
-        }
-        remaining -= STEP;
+    if mantissa == 0.0 || !mantissa.is_finite() {
+        return mantissa;
     }
-    while remaining < -STEP {
-        value *= two_pow(-STEP);
-        if value == 0.0 {
-            return value;
-        }
-        remaining += STEP;
+    let (normalized, offset) = split_exponent(mantissa);
+    let total = exponent.saturating_add(offset);
+    let sign = if normalized < 0.0 { -1.0 } else { 1.0 };
+
+    // `normalized` has magnitude in [0.5, 1), so the result lies in
+    // [2^(total-1), 2^total).
+    if total > 1024 {
+        return sign * f64::INFINITY;
     }
-    value * two_pow(remaining)
+    if total < -1074 {
+        // Strictly below 2^-1075, half the smallest subnormal.
+        return sign * 0.0;
+    }
+    if total >= -1021 {
+        // Normal, or the very top of the range; `two_pow` spans at most
+        // [-1022, 1023], so this may need two exact steps.
+        let first = total.clamp(-1022, 1023);
+        return (normalized * two_pow(first)) * two_pow(total - first);
+    }
+    // Subnormal result. Reach 2^-1021 exactly, then round once on the way down.
+    (normalized * two_pow(-1021)) * two_pow(total + 1021)
 }
 
 /// The product of `numerators` divided by the product of `denominators`, with
 /// the exponents accumulated separately so that no intermediate leaves the
 /// exponent range while the result is representable.
 ///
-/// Every operand contributes a mantissa in `[0.5, 1)`; with at most three
-/// numerators and two denominators the running mantissa stays inside
-/// `(0.125, 4)`, which is normal, and the exponent is reapplied once at the
-/// end. The cost is one rounding per operand rather than one per product, which
-/// is why this is a fallback: the direct form is more accurate wherever it
-/// works at all.
+/// Every operand contributes a mantissa whose *magnitude* is in `[0.5, 1)`,
+/// carrying its own sign; with at most three numerators and two denominators
+/// the running magnitude stays inside `[0.125, 4]`, which is normal, and the
+/// exponent is reapplied once at the end. Both bounds are attained — three
+/// mantissas of exactly 0.5 give exactly 0.125 — so the interval is closed.
+///
+/// The cost is one rounding per operand rather than one per product, which is
+/// why this is a fallback rather than the only path. It is not, however, true
+/// that the direct form is more accurate wherever it works at all: see
+/// [`div_denominator_adjoint`], where a direct form that merely went subnormal
+/// is 32% out and this one is exact.
 ///
 /// Returns `None` when any operand is zero or not finite. The scaled form has
 /// nothing to say there that the direct product has not already said, and it
@@ -404,11 +463,11 @@ fn needs_rescue(direct: f64, factors: &[f64]) -> bool {
 /// `upstream * (-a / b^2)` over the whole representable range.
 ///
 /// [`div_denominator_derivative`] already keeps the *local* derivative finite
-/// wherever it can be, but that is not enough one node upstream: `1e200 / b` at
-/// `b = 1e-200` has local derivative `-1e400`, which no ordering of a
-/// two-argument function can represent, while an upstream adjoint of `1e-200`
-/// makes the composed gradient exactly `1e200`. Multiplying afterwards has
-/// already lost it.
+/// wherever it can be, but that is not enough one node upstream: `1 / b` at
+/// `b = 1e-200` has local derivative `-1 / b^2 == -1e400`, which no ordering of
+/// a two-argument function can represent, while an upstream adjoint of
+/// `-1e-200` makes the composed gradient exactly `1e200`. Multiplying
+/// afterwards has already lost it.
 ///
 /// A local derivative that has merely gone *subnormal* is the same loss one
 /// step earlier and is rescued as well. `1e200 / b` at `b = 3.7e161` has
@@ -438,17 +497,22 @@ fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
 /// quantity written through [`stable_sigmoid_derivative`], which was made
 /// cancellation-free for exactly this reason, and `2.0 * a` is exact.
 ///
-/// The value and the slope saturate at different points here — `tanh` is
-/// exactly 1 from `|a| = 19` while the slope runs to `|a| = 372` — so unlike
-/// `exp` or `sigmoid` this one loses a derivative the forward pass had every
-/// right to. That is what makes it a bug rather than a rounding boundary.
+/// The value and the slope saturate at different points here — `tanh` rounds to
+/// exactly 1 at `|a| = 19.061547465398498` while the slope stays representable
+/// to `|a| = 373.25975673153056` — so unlike `exp` or `sigmoid` this one loses
+/// a derivative the forward pass had every right to. That is what makes it a
+/// bug rather than a rounding boundary. (`tanh(19)` is 0.9999999999999999, not
+/// 1: the boundary is 19.0615, not 19.)
 ///
-/// The last few units before 372 are subnormal and carry a bit or two: at
-/// `a = 372.5` this returns 2e-323 for a true 1e-323, because `exp(-745)`
-/// itself rounds from 2.6e-324 to the smallest subnormal. Below that the slope
-/// is zero, as the exact value is.
+/// The last twenty units are subnormal, and there the factor of four has to go
+/// in *before* the exponential rounds rather than after. `4 * s'(2a)` at
+/// `a = 372.5` gives 2e-323 for a true 1e-323 and reaches zero at 372.5666,
+/// a full unit early, because it scales a subnormal that has already lost its
+/// bits. `(2 e^-|a|)^2` is the same quantity with the four folded in, and is
+/// within 3e-15 across the whole band. It is used only where the slope has gone
+/// subnormal, because it is only there that `(1 + e^-2|a|)^2` rounds to 1.
 ///
-/// One consequence is deliberate and worth naming: from `|a| = 19` the
+/// One consequence is deliberate and worth naming: from `|a| = 19.06` the
 /// computed `tanh` is flat while this slope is not, so a target that amplifies
 /// the difference enough will see the gradient disagree with its own density.
 /// `1e22 * (tanh(x) - 1)` at `x = 25` has a computed density of exactly 0 and a
@@ -458,7 +522,12 @@ fn div_denominator_adjoint(upstream: f64, a: f64, b: f64) -> f64 {
 /// so. [`stable_sigmoid_derivative`] made the same choice for the same reason.
 #[inline]
 fn tanh_slope(a: f64) -> f64 {
-    4.0 * stable_sigmoid_derivative(2.0 * a)
+    let slope = stable_sigmoid_derivative(2.0 * a);
+    if slope.is_normal() {
+        return 4.0 * slope;
+    }
+    let half = (-a.abs()).exp();
+    (2.0 * half) * (2.0 * half)
 }
 
 /// `upstream * (b a^(b-1), a^b ln a)`.
@@ -617,6 +686,11 @@ impl ElementwiseOp {
     /// has no representation to hand back however the caller intends to scale
     /// it. See the helpers above for what each operator does about that.
     ///
+    /// "Inside the exponent range wherever the exact product is representable"
+    /// is the aim, not a proof: `Pow` gives it up for a base that is not
+    /// strictly positive, and `Sqrt`, `Exp`, `Sigmoid`, `Softplus` and `Tanh`
+    /// are argued below rather than rescued.
+    ///
     /// The other eleven operators defer to `derivatives`, and the reason is the
     /// same in each case: their local derivative can only leave the exponent
     /// range where the node's own value already has, so there is no
@@ -639,9 +713,10 @@ impl ElementwiseOp {
     pub fn adjoints(self, upstream: f64, a: f64, b: f64) -> (f64, f64) {
         match self {
             // `upstream / b` is `upstream * (1 / b)` with one rounding instead
-            // of two, and it overflows only when the composition does: `1 / b`
-            // alone becomes infinite for every subnormal `b`, whatever `a / b`
-            // and the adjoint are.
+            // of two, and it overflows only when the composition does. `1 / b`
+            // alone becomes infinite below b = 5.562684646268003e-309 --
+            // partway into the subnormals, not at the normal boundary --
+            // whatever `a / b` and the adjoint are.
             Self::Div => (upstream / b, div_denominator_adjoint(upstream, a, b)),
             Self::Log => (upstream / a, 0.0),
             Self::Pow => pow_adjoints(upstream, a, b),

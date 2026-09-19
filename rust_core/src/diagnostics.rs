@@ -558,9 +558,11 @@ pub fn compute_transition_diagnostics(
 /// `draws` is a factory rather than a slice because the two callers hold the
 /// draws in different shapes — chain-major `Vec<Vec<f64>>` per parameter, and a
 /// strided read across a `Vec<Vec<Vec<f64>>>` — and neither should have to
-/// materialise a copy. It is called three times and must yield the same
-/// sequence, in the same order, each time: the summation order is part of the
-/// reported value.
+/// materialise a copy. It is called five times for ordinary input — once for
+/// the first draw, once for the finiteness scan, once for the scale, once for
+/// the mean and once for the variance — and six when the centring falls back to
+/// zero. It must yield the same sequence, in the same order, every time: the
+/// summation order is part of the reported value.
 ///
 /// Draws are centred on the first of them and divided by the largest absolute
 /// deviation from it before being summed, so neither the running sum nor

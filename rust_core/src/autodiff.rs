@@ -1529,6 +1529,11 @@ fn bernoulli_logp_dp(x: f64, p: f64) -> f64 {
     if !(0.0..=1.0).contains(&p) {
         return 0.0;
     }
+    // `p == -0.0` is accepted by that range check, and `1.0 / -0.0` is negative
+    // infinity — the wrong sign for a limit taken from inside `[0, 1]`, where
+    // the density only approaches its endpoint from above. The density itself
+    // does not distinguish the two zeros, so the score must not either.
+    let p = p + 0.0;
     if x == 1.0 {
         1.0 / p
     } else if x == 0.0 {
@@ -1569,7 +1574,10 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     if x == 0.0 {
         return -1.0;
     }
-    (x - lam) / lam
+    // As in `bernoulli_logp_dp`: `lam == -0.0` passes `lam < 0.0` and would give
+    // a negative infinity for a limit that is positive. `count_sampling::log_mass`
+    // treats both zeros identically through its `rate == 0.0` branch.
+    (x - lam) / (lam + 0.0)
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
