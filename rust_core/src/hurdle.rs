@@ -692,7 +692,14 @@ mod tests {
         cfg.observation_variance_upper = 0.3;
         cfg.num_draws = 20000;
         cfg.num_warmup = 1000;
-        let fit = fit_hurdle_lognormal(&[1.7_f64.exp()], &cfg).unwrap();
+        // The single observation is exp(3), not exp(1.7). At exp(1.7) the log
+        // residual against the initial level is 0.7 and the importance integral
+        // returns 0.079097 and 0.158390 - within a thousandth of the truncated
+        // prior means 0.078947 and 0.157895, and so inside the tolerances below.
+        // The reference and the fit agreed because neither had moved. A residual
+        // of 2.0 pulls them to 0.086437 and 0.188862; the negative control after
+        // the loop keeps any future weakening honest.
+        let fit = fit_hurdle_lognormal(&[3.0_f64.exp()], &cfg).unwrap();
         let mut actual = [0.; 3];
         for d in fit.chains.iter().flatten() {
             actual[0] += d.process_variance;
@@ -716,14 +723,30 @@ mod tests {
                 continue;
             }
             let variance: f64 = 0.2 + q + r;
-            let weight = (-0.7_f64.powi(2) / (2. * variance)).exp() / variance.sqrt();
+            let weight = (-2.0_f64.powi(2) / (2. * variance)).exp() / variance.sqrt();
             weighted[0] += weight;
             weighted[1] += weight * q;
             weighted[2] += weight * r;
-            weighted[3] += weight * (1. + (0.2 + q) / variance * 0.7);
+            weighted[3] += weight * (1. + (0.2 + q) / variance * 2.0);
         }
+        // What a fit that drew q and r from their priors and updated only the
+        // conditional level would report, which the tolerances have to exclude.
+        let uninformed = [
+            truncated_inverse_gamma_mean(cfg.process_variance_prior, cfg.process_variance_upper),
+            truncated_inverse_gamma_mean(
+                cfg.observation_variance_prior,
+                cfg.observation_variance_upper,
+            ),
+            cfg.initial_log_level,
+        ];
         for (i, tolerance) in [0.002, 0.003, 0.015].iter().enumerate() {
             let expected = weighted[i + 1] / weighted[0];
+            assert!(
+                (expected - uninformed[i]).abs() > 2.0 * *tolerance,
+                "parameter {i}: the reference {expected} is within two tolerances of \
+                 {}, what a fit that never updated it would report",
+                uninformed[i]
+            );
             assert!(
                 (actual[i] - expected).abs() < *tolerance,
                 "parameter {i}: {} vs {expected}",

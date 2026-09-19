@@ -497,9 +497,10 @@ fn noncentered_partial_pooling_panel_recovers_group_effects() {
     }
     let group_cols = one_hot_columns(&group_idx, groups);
 
-    // HalfNormal(3) has mean 2.394, four times the true group scale: the data
-    // has to pull the posterior down by a factor of four for the window below
-    // to be met.
+    // HalfNormal(3) has mean 2.394, four times the true group scale. The window
+    // below reaches 0.85, so what the data must actually deliver is a 2.8-fold
+    // reduction; the prior's median of 2.023 and 87% of its mass are outside
+    // that window.
     let group_scale_prior = 3.0;
     let noise_scale_prior = 2.5;
     let mut graph = Graph::new();
@@ -784,7 +785,14 @@ fn eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean() {
     let result = sample_graph(graph, 110, 800, 800, 10);
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
-    assert_scalar(&report, "mu", mu_true, 0.5, 0.0);
+    // The window is 2.0, not the 0.5 this seed happens to land inside. Even with
+    // tau known, the weighted location estimator for these eight scales has
+    // sampling standard deviation `[sum_i 1 / (tau^2 + sigma_i^2)]^(-1/2)` =
+    // 1.135, so a 0.5 window would hold only about a third of datasets drawn the
+    // same way - it would have been reporting this realization, not the sampler.
+    // 2.0 is 1.8 estimator standard deviations, and still leaves the prior mean
+    // of 0 outside by 1.5 tolerance-widths.
+    assert_scalar(&report, "mu", mu_true, 2.0, 0.0);
 
     // `tau` is not recoverable to a useful window from eight schools, so rather
     // than a window that would have to reach back onto the prior mean, assert

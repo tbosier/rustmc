@@ -570,8 +570,11 @@ mod tests {
             // Mean 0.6, six times the observation variance the recovery test
             // simulates, and 1.4% of its mass inside that test's acceptance
             // window: the fit cannot meet the window by echoing this prior back.
-            // It is still flat enough over the posterior's support not to bias
-            // the answer. See `seeded_recovery_and_pool_independence`.
+            // The cost of moving it there is small and one-directional - the
+            // conjugate update adds `scale / (shape + n / 2 - 1)`, so raising
+            // the scale from 0.4 to 1.2 pushes the posterior mean up by about
+            // 0.006 at that test's 250 rows, an eighth of its window. See
+            // `seeded_recovery_and_pool_independence`.
             observation_variance_prior: InverseGammaPrior {
                 shape: 3.0,
                 scale: 1.2,
@@ -626,11 +629,14 @@ mod tests {
             .sum::<f64>()
             / coefficients.len() as f64;
         // The window this replaced, `0.05..0.2`, held 66.3% of the
-        // InverseGamma(3, 0.4) prior it was checked against - its median of
-        // 0.1496 sits inside - so a sampler that never looked at the series
-        // would have passed it two times in three. Both the prior mean and the
-        // prior mass inside the window are now asserted to stay clear of it,
-        // which keeps a future widening honest.
+        // InverseGamma(3, 0.4) prior it was checked against, and that prior's
+        // median of 0.1496 sat inside it. The assertion is on an average of
+        // hundreds of draws rather than on one, so the relevant figure is where
+        // the prior mean falls: at 0.2, exactly the window's excluded upper
+        // edge, which makes a prior-only fit a coin flip rather than a certain
+        // failure. Both the prior mean and the prior mass inside the window are
+        // now asserted to stay clear of it, which keeps a future widening
+        // honest.
         const OBSERVATION_VARIANCE: f64 = 0.1;
         const WINDOW: f64 = 0.05;
         let prior = config().observation_variance_prior;
