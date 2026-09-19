@@ -17,6 +17,7 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
+use crate::seeding::chain_seed;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -365,20 +366,83 @@ fn validate_observations(observations: &[f64]) -> Result<(), BayesianForecastErr
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sample_levels_ffbs(
+/// One forward-filtering pass of the local-level Kalman recursion.
+///
+/// Index zero holds the pre-transition state `x[-1]`; index `time + 1` holds
+/// the state filtered on observations up to and including `time`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalLevelFilter {
+    pub filtered_means: Vec<f64>,
+    pub filtered_variances: Vec<f64>,
+}
+
+/// `a b / (a + b)` for two positive variances, evaluated so that no
+/// intermediate leaves the range when the answer does not.
+///
+/// The three orderings are not interchangeable in floating point. `a * b`
+/// first overflows once `a b > f64::MAX` and underflows once `a b` reaches the
+/// subnormals, neither of which is a limit on the result: at `a = 6e-162,
+/// b = 3e-162` the product is subnormal and the answer comes back 9.8% high,
+/// and below about `1e-170` it underflows to zero, so the positivity guard
+/// rejects a perfectly well scaled filtering problem. Dividing first is no
+/// better in the other direction, because `a / (a + b)` itself underflows
+/// once `a / b` falls below about `1e-308`: at `a = 1e-200, b = 1e120` that
+/// costs eleven significant digits, and at `b = 1e200` it returns zero.
+///
+/// Dividing by the sum whichever factor is the larger keeps that quotient in
+/// `[0.5, 1]`, so the surviving product lies in `[min(a, b) / 2, min(a, b)]`
+/// and cannot leave the range in either direction. Both upper endpoints are
+/// attained rather than approached: at `a = 1, b = 2^54` the sum rounds to `b`,
+/// the quotient is exactly `1`, and the result is exactly `min(a, b)` — which
+/// is also the correctly rounded answer, so the bound is what is inclusive, not
+/// the accuracy that is lost. Over 400k log-uniform pairs
+/// spanning `1e-300` to `1e300` this form is within two ulp of the correctly
+/// rounded result everywhere and never returns zero or an infinity, where the
+/// two single-ordering forms are wrong by up to 8e15 ulp and fail outright on
+/// about 22% of the pairs for `a * b` first, which loses both ends of the
+/// range, and about 11% for dividing first, which loses only the lower one. The scalar collapse of the Joseph
+/// form that `state_space.rs` uses, `(1 - k)^2 a + k^2 b`, scores the same two
+/// ulp for more arithmetic and without the interval argument.
+///
+/// `sum` is passed in because both callers have already formed `a + b` for the
+/// gain. A non-finite sum is not rescued here: it yields a zero or non-finite
+/// result, which the caller's own positivity check rejects.
+fn harmonic_half(a: f64, b: f64, sum: f64) -> f64 {
+    if a <= b {
+        a * (b / sum)
+    } else {
+        b * (a / sum)
+    }
+}
+
+/// Run the forward-filtering pass that the Gibbs sampler's FFBS step uses.
+///
+/// Exposed because the variance recursion is the numerically delicate half of
+/// FFBS and the half a caller can pin exactly against a closed form: it is a
+/// deterministic function of the three variances and of which observations are
+/// present, with no dependence on the RNG.
+///
+/// This validates the variances and the initial mean, but takes `observations`
+/// as given: an infinite observation is reported as a `NumericalFailure` on the
+/// filtered level rather than as `InvalidObservations`, which is the check
+/// [`fit_bayesian_local_level`] applies at its own boundary.
+pub fn filter_local_level(
     observations: &[f64],
     initial_mean: f64,
     initial_variance: f64,
     process_variance: f64,
     observation_variance: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<Vec<f64>, BayesianForecastError> {
+) -> Result<LocalLevelFilter, BayesianForecastError> {
     validate_positive_variance("process", process_variance)?;
     validate_positive_variance("observation", observation_variance)?;
+    validate_positive_variance("initial state", initial_variance)?;
+    if !initial_mean.is_finite() {
+        return Err(BayesianForecastError::NumericalFailure(
+            "initial level must be finite".into(),
+        ));
+    }
 
     let len = observations.len();
-    // Index zero is x[-1]; index time + 1 is x[time].
     let mut filtered_means = Vec::with_capacity(len + 1);
     let mut filtered_variances = Vec::with_capacity(len + 1);
     filtered_means.push(initial_mean);
@@ -396,7 +460,11 @@ fn sample_levels_ffbs(
             validate_positive_variance("innovation", innovation_variance)?;
             let gain = predicted_variance / innovation_variance;
             let mean = predicted_mean + gain * (observation - predicted_mean);
-            let variance = predicted_variance * observation_variance / innovation_variance;
+            let variance = harmonic_half(
+                predicted_variance,
+                observation_variance,
+                innovation_variance,
+            );
             (mean, variance)
         };
         if !filtered_mean.is_finite() {
@@ -409,6 +477,32 @@ fn sample_levels_ffbs(
         filtered_variances.push(filtered_variance);
     }
 
+    Ok(LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    })
+}
+
+fn sample_levels_ffbs(
+    observations: &[f64],
+    initial_mean: f64,
+    initial_variance: f64,
+    process_variance: f64,
+    observation_variance: f64,
+    rng: &mut ChaCha8Rng,
+) -> Result<Vec<f64>, BayesianForecastError> {
+    let LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    } = filter_local_level(
+        observations,
+        initial_mean,
+        initial_variance,
+        process_variance,
+        observation_variance,
+    )?;
+
+    let len = observations.len();
     let mut levels = vec![0.0; len + 1];
     levels[len] = sample_normal(filtered_means[len], filtered_variances[len], rng)?;
     for time in (0..len).rev() {
@@ -417,7 +511,13 @@ fn sample_levels_ffbs(
         let smoothing_gain = filtered_variance / next_prediction_variance;
         let mean =
             filtered_means[time] + smoothing_gain * (levels[time + 1] - filtered_means[time]);
-        let variance = filtered_variance * process_variance / next_prediction_variance;
+        // The backward conditional variance is the same `a b / (a + b)` the
+        // filtering update computes, and needs the same care.
+        let variance = harmonic_half(
+            filtered_variance,
+            process_variance,
+            next_prediction_variance,
+        );
         levels[time] = sample_normal(mean, variance, rng)?;
     }
     Ok(levels)
@@ -475,29 +575,26 @@ fn validate_positive_variance(name: &str, variance: f64) -> Result<(), BayesianF
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
 
-fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    // SplitMix64 finalizer gives each chain a stable, well-separated stream.
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-    value ^ (value >> 31)
-}
-
+/// Posterior-predictive mean at each horizon, from the scale-aware
+/// implementation the sampler's `mean()` accessors already use.
+///
+/// Accumulating the paths and dividing by their count at the end overflows on
+/// input that is entirely finite: two paths holding `1e308` sum to infinity,
+/// and the infinity survives the division. See
+/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
+/// horizon on the first of them and divides by the largest deviation from it
+/// before summing, so no partial sum can leave the representable range.
+///
+/// `validate_paths` has already rejected an empty, ragged or non-finite
+/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
+/// reach a caller from here.
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
-    let mut means = vec![0.0; horizon];
-    let mut count = 0usize;
-    for path in paths.iter().flatten() {
-        for (mean, value) in means.iter_mut().zip(path) {
-            *mean += value;
-        }
-        count += 1;
-    }
-    for mean in &mut means {
-        *mean /= count as f64;
-    }
+    let means: Vec<f64> = (0..horizon)
+        .map(|step| {
+            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
+        })
+        .collect();
     Ok(means)
 }
 
@@ -686,6 +783,17 @@ mod tests {
         config.num_warmup = 400;
         config.num_draws = 500;
         config.thinning = 2;
+        // compact_config's own priors have means 0.3/1.5 = 0.2 and 0.6/1.5 = 0.4. The
+        // first is exactly `process_variance` and the second is 0.1 from
+        // `observation_variance`, so under the tolerances below this test used to pass
+        // on prior draws alone: it asserted nothing about the observations. Fit with a
+        // prior deliberately far below both truths instead, so the windows can only be
+        // reached by conditioning on the data. The negative control below keeps it so.
+        config.process_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
+        config.observation_variance_prior = config.process_variance_prior;
         let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
         let draw_count = posterior.chains.iter().map(Vec::len).sum::<usize>();
         let mean_process = posterior
@@ -702,13 +810,30 @@ mod tests {
             .map(|draw| draw.observation_variance)
             .sum::<f64>()
             / draw_count as f64;
+        let process_tolerance = 0.06;
+        let observation_tolerance = 0.10;
         assert!(
-            (mean_process - process_variance).abs() < 0.13,
+            (mean_process - process_variance).abs() < process_tolerance,
             "{mean_process}"
         );
         assert!(
-            (mean_observation - observation_variance).abs() < 0.18,
+            (mean_observation - observation_variance).abs() < observation_tolerance,
             "{mean_observation}"
+        );
+
+        // Negative control: a sampler that ignored the observations would report the
+        // prior means, scale / (shape - 1) = 0.025 for both. Those must sit outside the
+        // windows just asserted, or the two assertions above prove nothing.
+        let prior_mean = |prior: InverseGammaPrior| prior.scale / (prior.shape - 1.0);
+        assert!(
+            (prior_mean(config.process_variance_prior) - process_variance).abs()
+                > process_tolerance,
+            "the process-variance prior mean is inside the accepted window"
+        );
+        assert!(
+            (prior_mean(config.observation_variance_prior) - observation_variance).abs()
+                > observation_tolerance,
+            "the observation-variance prior mean is inside the accepted window"
         );
 
         let forecast = posterior.forecast(12, 702).unwrap();

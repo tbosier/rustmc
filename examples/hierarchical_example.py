@@ -1,43 +1,35 @@
-"""
-rustmc — Hierarchical / Multilevel Model Example
-=================================================
+"""Hierarchical models
 
-Partial pooling across J groups (8-schools style).
+Partial pooling across J groups, in the shape of the "eight schools" model.
 
-Model
------
-    mu_global  ~ Normal(0, 10)           # global mean hyperprior
-    sigma_group ~ HalfNormal(5)          # between-group SD hyperprior
+    mu_global   ~ Normal(0, 10)              global mean hyperprior
+    sigma_group ~ HalfNormal(5)              between-group scale hyperprior
+    mu_j        ~ Normal(mu_global, sigma_group)     group mean, j = 0 .. J-1
+    y_ij        ~ Normal(mu_j, sigma_obs)            observations within a group
 
-    mu_j ~ Normal(mu_global, sigma_group)  # group-level mean  (j = 0 … J-1)
+`mu_global` and `sigma_group` are hyperparameters: the prior on each group mean is
+itself estimated. That is what ties the groups together. A group with few
+observations is pulled toward the global mean; a group with many stays near its own
+sample mean.
 
-    y_ij ~ Normal(mu_j, sigma_obs)         # within-group observations
-
-This is the prototypical hierarchical model:
-- mu_global and sigma_group are *hyperparameters* — parameters whose prior
-  is set by the user.
-- mu_j are *group-level parameters* — each gets its own estimate, but they
-  are tied together through the shared hyperprior Normal(mu_global, sigma_group).
-- Partial pooling: groups with few observations are pulled toward the global
-  mean; groups with many observations stay close to their sample mean.
-
-Demonstrates the full Bayesian workflow:
-  1. Prior predictive check  — verify priors are reasonable before fitting
-  2. Posterior sampling       — NUTS with partial pooling
-  3. Posterior predictive     — validate model fit on observed groups
+The model is written in the conditional, "centered" form above, which is the form
+that reads like the mathematics. rustmc compiles eligible scalar hierarchies to
+noncentered sampling coordinates internally, so the awkward geometry of the centered
+form does not reach the sampler. `mu_j` is still what you see in summaries,
+diagnostics and posterior draws.
 """
 
+# %%
 import numpy as np
 import rustmc as rmc
 from hierarchical_templates import build_centered_normal_partial_pooling
 
-# ── 1. Simulate data ─────────────────────────────────────────────────────────
-
+# %% Simulate data
 rng = np.random.default_rng(42)
 
-J = 8                                       # number of groups
-sigma_obs = 2.0                             # known within-group noise
-N_per_group = 30                            # observations per group
+J = 8  # number of groups
+sigma_obs = 2.0  # known within-group noise
+N_per_group = 30  # observations per group
 
 mu_global_true = 2.5
 sigma_group_true = 3.0
@@ -48,11 +40,13 @@ data = {f"y_{j}": ys[j] for j in range(J)}
 print("Simulated data")
 print(f"  True mu_global   = {mu_global_true:.2f}")
 print(f"  True sigma_group = {sigma_group_true:.2f}")
-print(f"  True mu_j        = {mu_true.tolist()}")
-print()
+print(f"  True mu_j        = {np.round(mu_true, 3).tolist()}")
 
-# ── 2. Build the hierarchical model ──────────────────────────────────────────
-
+# %% Build the hierarchy
+# `build_centered_normal_partial_pooling` lives in examples/hierarchical_templates.py
+# and does nothing you could not write inline: one `normal_prior` for the global
+# mean, one `half_normal_prior` for the between-group scale, then one
+# `normal_prior(mu=mu_global, sigma=sigma_group)` and one likelihood per group.
 builder = rmc.ModelBuilder(data=data)
 template = build_centered_normal_partial_pooling(
     builder,
@@ -65,22 +59,17 @@ mu_j = template.group_params
 
 model = builder.build()
 
-# ── 3. Prior predictive check ─────────────────────────────────────────────────
-
-print("Prior predictive check …")
+# %% Prior predictive check
 prior_pred = rmc.sample_prior_predictive(model, n_samples=200, seed=0)
-print(f"  mu_global  prior: mean={prior_pred['mu_global'].mean():.2f}, std={prior_pred['mu_global'].std():.2f}")
+print(f"  mu_global   prior: mean={prior_pred['mu_global'].mean():.2f}, std={prior_pred['mu_global'].std():.2f}")
 print(f"  sigma_group prior: mean={prior_pred['sigma_group'].mean():.2f}, std={prior_pred['sigma_group'].std():.2f}")
 for j in range(J):
     key = f"obs_{j}"
     if key in prior_pred:
         prior_y = prior_pred[key]
         print(f"  Group {j} prior y range: [{prior_y.min():.1f}, {prior_y.max():.1f}]")
-print()
 
-# ── 4. Sample ────────────────────────────────────────────────────────────────
-
-print("Sampling …")
+# %% Sample
 fit = rmc.sample(
     model_spec=model,
     chains=4,
@@ -88,18 +77,14 @@ fit = rmc.sample(
     warmup=1000,
     seed=42,
 )
-
-# ── 4. Results ───────────────────────────────────────────────────────────────
-
-print()
 print(fit.summary())
-print()
 
+# %% Recover the parameters
 means = fit.mean()
-stds  = fit.std()
+stds = fit.std()
 
 print(f"{'Parameter':<15} {'True':>8} {'Estimate':>10} {'Std':>8}")
-print("─" * 45)
+print("-" * 45)
 print(f"{'mu_global':<15} {mu_global_true:>8.2f} {means['mu_global']:>10.4f} {stds['mu_global']:>8.4f}")
 print(f"{'sigma_group':<15} {sigma_group_true:>8.2f} {means['sigma_group']:>10.4f} {stds['sigma_group']:>8.4f}")
 for j in range(J):
@@ -110,37 +95,48 @@ print()
 print("Step sizes:", [round(s, 5) for s in fit.step_sizes()])
 print("Divergences:", fit.divergences())
 
-# ── 5. Show partial pooling ───────────────────────────────────────────────────
+# %% [markdown]
+# ## What the hyperparameters can and cannot say
+#
+# `mu_global` has a wide posterior and it should. Eight group means drawn from a
+# distribution carry about as much information about that distribution's mean as
+# eight observations do, so the interval stays broad however many draws you take.
+# `sigma_group` is estimated from the same eight numbers and on this dataset comes
+# out above the value that generated it, by about half a posterior standard
+# deviation. That is one draw of eight groups, not evidence about the estimator;
+# it is what a weakly determined scale looks like.
+#
+# The centered form of this model is the textbook case of Neal's funnel, where the
+# sampler stalls in the neck and reports divergent transitions. rustmc compiles
+# this hierarchy to noncentered coordinates, which is the standard remedy, and
+# this run reports none. `examples/partial_pooling_template.py` shows the rewrite
+# in `CompiledModel.param_names`. If you write a hierarchy rustmc cannot recognise
+# and see divergences, reparameterise it by hand before trusting the
+# hyperparameter estimates.
 
-print()
-print("Partial pooling effect (shrinkage toward global mean):")
+# %% Partial pooling
+print("Partial pooling effect (shrinkage toward the global mean):")
 print(f"  Global mean estimate: {means['mu_global']:.2f}")
 sample_means = [ys[j].mean() for j in range(J)]
 for j in range(J):
-    est  = means[f"mu_{j}"]
-    raw  = sample_means[j]
-    shrinkage = (raw - est) / (raw - means["mu_global"] + 1e-9)
+    est = means[f"mu_{j}"]
+    raw = sample_means[j]
     print(f"  Group {j}: raw={raw:+.2f}  pooled={est:+.2f}  true={mu_true[j]:+.2f}")
 
 print()
-print("Note: mu_global may have elevated R-hat / low ESS due to the classic")
-print("'Neal's funnel' geometry in centered hierarchical parameterizations.")
-print("The group-level parameters (mu_j) converge cleanly because the data")
-print("strongly constrains them.  A non-centered reparameterization would")
-print("improve sampling of the hyperparameters at the cost of a more complex")
-print("model specification.")
+print("Each group has 30 observations and known noise, so the data pins mu_j down")
+print("and the pull toward the global mean is small. Shrinkage grows as a group's")
+print("sample size falls; examples/site_effects.py shows it with unequal counts.")
 
-# ── 7. Posterior predictive check ────────────────────────────────────────────
-
-print()
-print("Posterior predictive check …")
+# %% Posterior predictive check
 ppc = fit.posterior_predictive(n_samples=500, seed=42)
 print(f"  Likelihood keys in PPC: {sorted(ppc.keys())}")
 for j in range(J):
     key = f"obs_{j}"
     if key in ppc:
-        y_rep = ppc[key]          # (n_samples, N_per_group)
+        y_rep = ppc[key]  # (n_samples, N_per_group)
         y_obs = ys[j]
-        coverage = ((y_rep.mean(axis=0) - 2 * y_rep.std(axis=0)) < y_obs).mean() * \
-                   (y_obs < (y_rep.mean(axis=0) + 2 * y_rep.std(axis=0))).mean()
-        print(f"  Group {j}: obs mean={y_obs.mean():.2f}  ppc mean={y_rep.mean():.2f}  ~95% coverage={coverage:.2%}")
+        lower = y_rep.mean(axis=0) - 2 * y_rep.std(axis=0)
+        upper = y_rep.mean(axis=0) + 2 * y_rep.std(axis=0)
+        inside = ((lower < y_obs) & (y_obs < upper)).mean()
+        print(f"  Group {j}: obs mean={y_obs.mean():.2f}  ppc mean={y_rep.mean():.2f}  within +/-2 sd={inside:.2%}")

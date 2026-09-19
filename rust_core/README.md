@@ -1,6 +1,15 @@
 # rustmc_core
 
-Version 0.12 adds `structural` for composable Gaussian/Student-t state-space models,
+Version 0.13 closes a correctness review and carries breaking changes to the alpha Rust
+API. `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain` and
+`hmc::run_chain_bound` now return `Result<ChainResult, String>` and reject discrete
+latent parameters, which they previously accepted without a guard. A new
+`graph::Op::BoundedSigmoid` variant breaks any exhaustive match on `Op`, and reverse
+mode now calls `ElementwiseOp::adjoints` rather than `derivatives`. `GraphModel` gained
+`sample_prior` and `prior_predictive`. See the
+[changelog](https://github.com/tbosier/rustmc/blob/main/CHANGELOG.md).
+
+Version 0.12 added `structural` for composable Gaussian/Student-t state-space models,
 `dynamic_glm` for joint count/hurdle/pooled dynamic inference, and
 `target::{LogDensity, sample_target}` for native custom unconstrained densities and
 gradients. Generic batch options share the stable-ID forecast executor. Graph observation
@@ -10,7 +19,12 @@ The Rust API remains pre-1.0; see the repository model guides for kernel assumpt
 `rustmc_core` is the Rust engine behind the [`rustmc`](https://pypi.org/project/rustmc/)
 Python package. It combines graph-based Bayesian sampling with specialized algorithms
 for model structures that admit more direct inference, including conjugate and linear
-Gaussian state-space methods.
+Gaussian state-space methods. The two are genuinely separate: the forecasting modules
+(`structural`, `bayesian_*`, `dynamic_glm`, `hurdle`, `runoff`, `hierarchical`) do not
+use `graph`, `autodiff`, `nuts` or `hmc` at all. `state_space` and
+`forecast_diagnostics` are shared among those modules but are not used by the graph
+sampler either. The two paths genuinely share `diagnostics`, and `forecast_batch`,
+which `sampler` imports directly rather than through the binding layer.
 
 The Rust API is alpha and currently favors explicit model configuration over a broad
 probabilistic-programming language. It is useful when inference must run inside a Rust

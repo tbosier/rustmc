@@ -475,29 +475,6 @@ impl DataBinding {
         }
     }
 
-    /// Row counts keyed by declared dimension. Use this for multi-population models.
-    pub fn dimension_sizes(&self) -> HashMap<String, usize> {
-        self.schema
-            .observations
-            .iter()
-            .zip(&self.observations)
-            .map(|(s, v)| (s.dim.clone(), v.len()))
-            .chain(
-                self.schema
-                    .vectors
-                    .iter()
-                    .zip(&self.vectors)
-                    .map(|(s, v)| (s.dim.clone(), v.len())),
-            )
-            .chain(
-                self.schema
-                    .matrices
-                    .iter()
-                    .zip(&self.matrices)
-                    .map(|(s, m)| (s.dim.clone(), m.n_rows)),
-            )
-            .collect()
-    }
     /// Compatibility row count for the first observation population.
     pub fn n_obs(&self) -> usize {
         self.n_obs

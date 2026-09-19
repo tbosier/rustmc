@@ -4,6 +4,7 @@
 //! Coefficients are static latent states with exactly zero innovation variance;
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::bayesian_forecast::InverseGammaPrior;
+use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -145,14 +146,6 @@ pub struct RegressionForecast {
 fn invalid(message: &str) -> StateSpaceError {
     StateSpaceError::InvalidParameter(message.into())
 }
-fn seed_for(seed: u64, chain: usize, domain: u64) -> u64 {
-    let mut x = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
-    x ^ (x >> 31)
-}
 fn draw_variance(
     prior: InverseGammaPrior,
     count: usize,
@@ -244,7 +237,8 @@ pub fn fit_regression(
     let chains = (0..config.num_chains)
         .into_par_iter()
         .map(|chain| {
-            let mut rng = ChaCha8Rng::seed_from_u64(seed_for(config.seed, chain, 0x5245475f464954));
+            let mut rng =
+                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, 0x0052_4547_5F46_4954));
             let mut model = template.clone();
             let mut variances: Vec<f64> = config
                 .variance_priors
@@ -366,7 +360,8 @@ impl RegressionPosterior {
             .par_iter()
             .enumerate()
             .map(|(chain, draws)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(seed_for(seed, chain, 0x5245475f50524544));
+                let mut rng =
+                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain, 0x5245_475F_5052_4544));
                 let mut result = RegressionForecast::default();
                 let (
                     mut levels,
@@ -550,6 +545,14 @@ mod tests {
             }
         }
     }
+    /// Exact `P(V <= v)` for `V ~ InverseGamma(3, scale)`. At integer shape the
+    /// upper incomplete gamma closes in elementary terms, so the prior mass
+    /// inside an acceptance window can be stated rather than guessed at.
+    fn inverse_gamma3_cdf(scale: f64, v: f64) -> f64 {
+        let t = scale / v;
+        (-t).exp() * (1.0 + t + t * t / 2.0)
+    }
+
     fn config() -> RegressionConfig {
         RegressionConfig {
             structural_model: LinearGaussianStateSpace::local_level(1.0, 1.0, 0.0, 2.0).unwrap(),
@@ -559,17 +562,25 @@ mod tests {
                 scale: 0.08,
             }],
             variance_names: vec!["process_variance".into()],
+            // Mean 0.6, six times the observation variance the recovery test
+            // simulates, and 1.4% of its mass inside that test's acceptance
+            // window: the fit cannot meet the window by echoing this prior back.
+            // The cost of moving it there is small and one-directional - the
+            // conjugate update adds `scale / (shape + n / 2 - 1)`, so raising
+            // the scale from 0.4 to 1.2 pushes the posterior mean up by about
+            // 0.006 at that test's 250 rows, an eighth of its window. See
+            // `seeded_recovery_and_pool_independence`.
             observation_variance_prior: InverseGammaPrior {
                 shape: 3.0,
-                scale: 0.4,
+                scale: 1.2,
             },
             coefficient_prior: GaussianCoefficientPrior {
                 mean: vec![0.0],
                 covariance: vec![9.0],
             },
             num_chains: 2,
-            num_draws: 180,
-            num_warmup: 120,
+            num_draws: 500,
+            num_warmup: 250,
             thinning: 1,
             seed: 32,
             seasonal: false,
@@ -579,7 +590,7 @@ mod tests {
     fn seeded_recovery_and_pool_independence() {
         let mut rng = ChaCha8Rng::seed_from_u64(188);
         let mut level = 0.0;
-        let x: Vec<Vec<f64>> = (0..100).map(|_| vec![normal(&mut rng)]).collect();
+        let x: Vec<Vec<f64>> = (0..250).map(|_| vec![normal(&mut rng)]).collect();
         let y: Vec<f64> = x
             .iter()
             .map(|x| {
@@ -602,6 +613,13 @@ mod tests {
             .map(|d| d.coefficients[0])
             .collect();
         let mean = coefficients.iter().sum::<f64>() / coefficients.len() as f64;
+        // The coefficient prior is N(0, 9), so a fit that ignored the series
+        // would report 0. Asserted at run time rather than stated in a comment,
+        // so widening the window back onto the prior turns this red.
+        assert!(
+            (0.0f64 - 1.8).abs() > 2.0 * 0.12,
+            "the coefficient prior mean is within one tolerance-width of the window"
+        );
         assert!((mean - 1.8).abs() < 0.12, "{mean}");
         let obs = fit
             .chains
@@ -610,7 +628,35 @@ mod tests {
             .map(|d| d.observation_variance)
             .sum::<f64>()
             / coefficients.len() as f64;
-        assert!((0.05..0.2).contains(&obs), "{obs}");
+        // The window this replaced, `0.05..0.2`, held 66.3% of the
+        // InverseGamma(3, 0.4) prior it was checked against, and that prior's
+        // median of 0.1496 sat inside it. The assertion is on an average of
+        // hundreds of draws rather than on one, so the relevant figure is where
+        // the prior mean falls: at 0.2, exactly the window's excluded upper
+        // edge, which makes a prior-only fit a coin flip rather than a certain
+        // failure. Both the prior mean and the prior mass inside the window are
+        // now asserted to stay clear of it, which keeps a future widening
+        // honest.
+        const OBSERVATION_VARIANCE: f64 = 0.1;
+        const WINDOW: f64 = 0.05;
+        let prior = config().observation_variance_prior;
+        assert_eq!(
+            prior.shape, 3.0,
+            "the closed-form prior CDF below assumes shape 3"
+        );
+        let prior_mean = prior.scale / (prior.shape - 1.0);
+        assert!(
+            (prior_mean - OBSERVATION_VARIANCE).abs() > 2.0 * WINDOW,
+            "prior mean {prior_mean} is not clear of the acceptance window"
+        );
+        let prior_mass = inverse_gamma3_cdf(prior.scale, OBSERVATION_VARIANCE + WINDOW)
+            - inverse_gamma3_cdf(prior.scale, OBSERVATION_VARIANCE - WINDOW);
+        assert!(
+            prior_mass < 0.02,
+            "the observation-variance prior puts {prior_mass} of its mass inside the \
+             acceptance window, so the window does not demonstrate recovery"
+        );
+        assert!((obs - OBSERVATION_VARIANCE).abs() < WINDOW, "{obs}");
         let future = vec![vec![1.0]; 4];
         let paths = fit.forecast(&future, 7).unwrap();
         assert_eq!(paths, fit.forecast(&future, 7).unwrap());

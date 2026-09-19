@@ -1,5 +1,31 @@
 # Forecasting workflows
 
+Start here for time series. This page covers the shape of a forecasting job — fit,
+predict, evaluate against a baseline, and read the diagnostics — and the axis
+conventions every forecasting model shares. The pages that follow it choose a
+particular model: [structural composition](structural-forecasting.md),
+[calendar seasonality](regression-forecasting.md),
+[counts and intermittent amounts](dynamic-glm.md),
+[sparse amounts](sparse-amounts.md), and [payment runoff](runoff.md).
+
+These models do not use `ModelBuilder` or the NUTS sampler. Each has its own
+constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models,
+exact conjugate draws for AR, block elliptical slice sampling for dynamic GLMs, and for
+runoff either exact conjugate draws or latent-count Gibbs, depending on whether every
+ultimate total is known. A fit's `sampler_stats` names the one that ran. Where the
+draws are exact and independent there is no warmup and no convergence period, so read
+`sampler_stats` before interpreting a diagnostic.
+
+They return their own fit classes rather than the `FitResult` from
+[Get started](getting-started.md). `summary()`, `diagnostics()` and `sampler_stats`
+are common to all of them. Beyond that they diverge: most expose `get_samples_2d()` and
+`forecast(steps)`, but `RunoffFit` does neither — it exposes `allocation_samples()`,
+`ultimate_samples()`, `calendar_samples(steps)` and the other arrays described in
+[payment runoff](runoff.md). Check the page for the model you are using.
+
+One difference from a graph fit: none of these samplers has a divergence or an accept
+rate, so `sampler_stats` reports both as `None`. R-hat, ESS and MCSE apply as before.
+
 The Python package combines native inference with reusable evaluation and result tools.
 Forecasts have leading `(chain, draw)` axes and a final horizon axis. Panel forecasts
 insert a series axis before the horizon. Keep these axes together when aggregating:

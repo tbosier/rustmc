@@ -1,5 +1,13 @@
 # Integer-event payment runoff
 
+This page covers `DirichletMultinomialRunoff`, for development triangles: events that
+arrive in one period and are paid out over several later ones, so recent cohorts are
+still incomplete. Read it if you project ultimate counts from a partially developed
+triangle — insurance claims, warranty repairs, refunds.
+
+It models counts of events. Currency amounts are not events and must not be passed as
+observations, not even in cents.
+
 `rustmc.DirichletMultinomialRunoff` fits incremental payment-event counts by origin
 and development lag. It pools lag probabilities across cohorts, infers unknown
 ultimate counts, and returns complete posterior payment paths. Currency amounts,

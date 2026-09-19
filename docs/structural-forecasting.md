@@ -1,5 +1,13 @@
 # Composable structural forecasts
 
+This page covers `StructuralModel`, which builds a forecasting model out of named
+components — level, trend, one or more seasonalities, regressors, AR residuals — that
+you add and combine yourself. Use it for a continuous series whose structure you can
+describe but no single named constructor matches. For a series that one of
+`BayesianLocalLevel`, `BayesianLocalLinearTrend`, `BayesianSeasonalLocalLevel` or
+`BayesianAR` already fits, those are simpler; see
+[forecasting workflows](forecasting-workflows.md).
+
 `StructuralModel` adds named independent Gaussian state blocks to one observation
 mean. It supports a local level, linear or damped trend, multiple harmonic
 seasonalities (including fractional periods), static and random-walk regression,
@@ -51,8 +59,9 @@ allowed and remain exactly zero. Initial covariances are independent of innovati
 variances and must be positive definite. The trend transition is
 `level[t] = level[t-1] + damping * slope[t-1] + noise` and
 `slope[t] = damping * slope[t-1] + noise`; damping is fixed in `(0, 1]`.
-Seasonal pairs rotate by `2*pi*k/period`; `2*harmonics < period` avoids aliasing
-and the redundant Nyquist pair. Each pair coordinate gets its own independent
+Seasonal pairs rotate by `2*pi*k/period`. `2 * harmonics` must be strictly less than
+`period`; a larger value is rejected rather than accepted and aliased, which also rules
+out the redundant Nyquist pair. Each pair coordinate gets its own independent
 innovation variance parameter, even when constructed with the same inverse-gamma
 specification. AR coefficients and Student-t degrees of freedom are fixed,
 validated inputs. AR initial states use the supplied covariance, which need not
@@ -117,7 +126,7 @@ check scales before fitting.
 
 Fitting, forecasting, and prior prediction draw from separate random number streams,
 so the same seed may be passed to `fit()`, `forecast()`, and `prior_predict()` without
-any of them replaying another's draws. This changed in the release after 0.12.0:
+any of them replaying another's draws. This changed in 0.13.0:
 seeded forecast output differs from 0.12.0 for every seed, not only for seeds shared
 with a fit, and 0.12.0's seeded forecasts overstated predictive spread.
 
