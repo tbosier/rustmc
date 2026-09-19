@@ -63,7 +63,8 @@ and posterior generation.
 
 A second, allocating reference evaluator in `autodiff_reference.rs` cross-checks the
 production evaluator. It is compiled only under `#[cfg(test)]`, so it is test
-scaffolding rather than public API. It is no longer an independent implementation:
+scaffolding rather than public API. It still walks the graph independently, but it is
+no longer an independent implementation of the derivatives:
 for elementwise operators, Student-t, Bernoulli, and Poisson it deliberately calls the
 same `ElementwiseOp::adjoints`, `student_t_derivatives`, `bernoulli_logp_dp`, and
 `poisson_logp_dlam` that production uses. The two had drifted apart and the oracle was
