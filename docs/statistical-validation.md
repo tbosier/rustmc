@@ -1,5 +1,10 @@
 # Statistical release checks
 
+This page describes the gate that has to pass before a release: a fixed set of models
+whose exact posteriors are known analytically, refitted and compared against them. It
+is for contributors and for anyone judging how much the samplers are checked. You do
+not need it to use the library.
+
 Run `python -m benchmarks.validate_posteriors --output /tmp/posteriors.json` after
 building rustmc. The command returns a nonzero status if a fit or gate fails.
 

@@ -1,5 +1,14 @@
 # Regression and calendar seasonality
 
+This page covers two things you add to an existing forecasting model: external
+predictors, through the `exog` argument, and calendar seasonality, through Fourier
+terms. Read it if your series responds to something you can measure — price,
+promotions, weather — or repeats on a known period. It also documents time-varying
+observation rows on `LinearGaussianStateSpace`.
+
+For the basics of fitting and evaluating a forecast, start with
+[forecasting workflows](forecasting-workflows.md).
+
 `BayesianLocalLevel`, `BayesianLocalLinearTrend`, and
 `BayesianSeasonalLocalLevel` accept keyword-only `exog` and `coefficient_prior`
 arguments in `fit`. An exogenous fit returns `BayesianRegressionFit`. Fits without

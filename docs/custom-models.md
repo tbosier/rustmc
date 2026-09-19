@@ -1,5 +1,13 @@
 # Custom graph models
 
+This page is the full `ModelBuilder` construction API: the expression language,
+population dimensions, group indexing, custom log-density terms, prediction, and
+saving a model to disk. Read it once you have fitted the model in
+[Get started](getting-started.md) and want to write your own.
+
+These models are fitted by NUTS or HMC. The forecasting models are built and fitted
+differently; see [forecasting workflows](forecasting-workflows.md) instead.
+
 `ModelBuilder` expressions compile to the native differentiable graph. Parameters,
 constants, and data expressions support `+`, `-`, `*`, `/`, power, negation,
 `exp()`, `log()`, `sqrt()`, `sigmoid()`, `tanh()`, `softplus()`, `sin()`, and

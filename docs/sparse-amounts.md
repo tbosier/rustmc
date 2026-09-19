@@ -1,5 +1,10 @@
 # Sparse nonnegative amounts
 
+This page covers `BayesianHurdleLogNormal`, for a series that is zero much of the time
+and positive the rest. Read it if you forecast intermittent spend, claims, or usage,
+where the question "will there be anything this period?" is separate from "how much?".
+Amounts that can go negative need a different model.
+
 `BayesianHurdleLogNormal` fits a point mass at zero and a changing positive-payment
 level. It is suitable when each period either has no payment or a positive amount.
 It accepts exact zeros, one-positive histories, and all-zero histories; `NaN` marks
