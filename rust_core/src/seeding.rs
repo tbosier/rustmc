@@ -24,20 +24,28 @@ pub fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
     value ^ (value >> 31)
 }
 
-/// Posterior-predictive draws taken from an already-fitted model.
-///
-/// `sampler::run` seeds chain `c` as `seed + c`, and posterior prediction
-/// defaults to the same seed the fit defaulted to. Without a domain, a default
-/// four-chain fit consumes streams 42..=45 and the predictive draws replay
-/// chain 0's stream exactly.
-pub const PREDICTIVE_SEED_DOMAIN: u64 = 0x5052_4544_5F4F_4253;
+/// Domain separator for the posterior-predictive stream, `"PRED_GEN"`.
+pub const POSTERIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_4544_5F47_454E;
 
-/// Prior-predictive draws, which use no fit at all.
+/// Domain separator for a prior-predictive stream, `"PRIOR_GN"`.
+pub const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_474E;
+
+/// Re-key a caller's seed into a named RNG stream.
 ///
-/// Kept distinct from both fitting and posterior prediction so that checking a
-/// prior and then fitting under the same seed does not replay one stream as
-/// the other.
-pub const PRIOR_PREDICTIVE_SEED_DOMAIN: u64 = 0x5052_494F_525F_5042;
+/// [`sampler::sample`](crate::sampler::sample) seeds fitting chain `i` with
+/// `config.seed.wrapping_add(i)`, so a simulation that seeds a generator with
+/// the raw integer replays chain zero's stream when the caller passes the fit
+/// seed, and chain `k`'s when they pass `fit_seed + k` — and passing the fit
+/// seed is exactly what a caller reaches for. Mixing a domain constant in
+/// through the SplitMix64 finalizer separates the streams, the way the
+/// structural, hierarchical, hurdle and dynamic-GLM fits already separate their
+/// fit, forecast and prior-predictive streams. The finalizer is a bijection, so
+/// distinct seeds still give distinct streams within a domain.
+///
+/// This is [`chain_seed`] for a stage that has only one stream.
+pub fn stream_seed(seed: u64, domain: u64) -> u64 {
+    chain_seed(seed, 0, domain)
+}
 
 #[cfg(test)]
 mod tests {
@@ -47,7 +55,7 @@ mod tests {
     fn domains_separate_streams_for_one_seed() {
         assert_ne!(
             chain_seed(42, 0, 0),
-            chain_seed(42, 0, PREDICTIVE_SEED_DOMAIN)
+            chain_seed(42, 0, POSTERIOR_PREDICT_SEED_DOMAIN)
         );
     }
 
@@ -64,7 +72,7 @@ mod tests {
     fn predictive_stream_avoids_every_default_fit_chain() {
         // The collision this domain exists to prevent: `sampler::run` seeds
         // chain `c` as `seed + c`, so a default fit holds 42..=45.
-        let predictive = chain_seed(42, 0, PREDICTIVE_SEED_DOMAIN);
+        let predictive = chain_seed(42, 0, POSTERIOR_PREDICT_SEED_DOMAIN);
         for chain in 0..64u64 {
             assert_ne!(predictive, 42u64.wrapping_add(chain));
         }

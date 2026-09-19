@@ -366,20 +366,34 @@ fn validate_observations(observations: &[f64]) -> Result<(), BayesianForecastErr
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sample_levels_ffbs(
+/// One forward-filtering pass of the local-level Kalman recursion.
+///
+/// Index zero holds the pre-transition state `x[-1]`; index `time + 1` holds
+/// the state filtered on observations up to and including `time`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalLevelFilter {
+    pub filtered_means: Vec<f64>,
+    pub filtered_variances: Vec<f64>,
+}
+
+/// Run the forward-filtering pass that the Gibbs sampler's FFBS step uses.
+///
+/// Exposed because the variance recursion is the numerically delicate half of
+/// FFBS and the only half a caller can pin exactly: it is a deterministic
+/// function of the three variances and of which observations are present, with
+/// no dependence on the RNG.
+pub fn filter_local_level(
     observations: &[f64],
     initial_mean: f64,
     initial_variance: f64,
     process_variance: f64,
     observation_variance: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<Vec<f64>, BayesianForecastError> {
+) -> Result<LocalLevelFilter, BayesianForecastError> {
     validate_positive_variance("process", process_variance)?;
     validate_positive_variance("observation", observation_variance)?;
+    validate_positive_variance("initial state", initial_variance)?;
 
     let len = observations.len();
-    // Index zero is x[-1]; index time + 1 is x[time].
     let mut filtered_means = Vec::with_capacity(len + 1);
     let mut filtered_variances = Vec::with_capacity(len + 1);
     filtered_means.push(initial_mean);
@@ -397,7 +411,17 @@ fn sample_levels_ffbs(
             validate_positive_variance("innovation", innovation_variance)?;
             let gain = predicted_variance / innovation_variance;
             let mean = predicted_mean + gain * (observation - predicted_mean);
-            let variance = predicted_variance * observation_variance / innovation_variance;
+            // `gain * observation_variance`, not
+            // `predicted_variance * observation_variance / innovation_variance`:
+            // the two are the same quantity `P R / (P + R)`, but the product
+            // form forms `P R` first, which leaves the representable range for
+            // variances the quotient handles comfortably. At `P = 6e-162` and
+            // `R = 3e-162` the product is subnormal and the update comes back
+            // 9.8% high; below about `1e-170` it underflows to zero and the
+            // positivity guard rejects a filtering problem that is perfectly
+            // well scaled. Written this way every intermediate stays between
+            // `min(P, R)` and `max(P, R)`.
+            let variance = gain * observation_variance;
             (mean, variance)
         };
         if !filtered_mean.is_finite() {
@@ -410,6 +434,32 @@ fn sample_levels_ffbs(
         filtered_variances.push(filtered_variance);
     }
 
+    Ok(LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    })
+}
+
+fn sample_levels_ffbs(
+    observations: &[f64],
+    initial_mean: f64,
+    initial_variance: f64,
+    process_variance: f64,
+    observation_variance: f64,
+    rng: &mut ChaCha8Rng,
+) -> Result<Vec<f64>, BayesianForecastError> {
+    let LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    } = filter_local_level(
+        observations,
+        initial_mean,
+        initial_variance,
+        process_variance,
+        observation_variance,
+    )?;
+
+    let len = observations.len();
     let mut levels = vec![0.0; len + 1];
     levels[len] = sample_normal(filtered_means[len], filtered_variances[len], rng)?;
     for time in (0..len).rev() {
@@ -418,7 +468,9 @@ fn sample_levels_ffbs(
         let smoothing_gain = filtered_variance / next_prediction_variance;
         let mean =
             filtered_means[time] + smoothing_gain * (levels[time + 1] - filtered_means[time]);
-        let variance = filtered_variance * process_variance / next_prediction_variance;
+        // `smoothing_gain * process_variance` for the same reason the filtering
+        // update above avoids `filtered_variance * process_variance`.
+        let variance = smoothing_gain * process_variance;
         levels[time] = sample_normal(mean, variance, rng)?;
     }
     Ok(levels)
@@ -476,19 +528,26 @@ fn validate_positive_variance(name: &str, variance: f64) -> Result<(), BayesianF
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
 
+/// Posterior-predictive mean at each horizon, from the scale-aware
+/// implementation the sampler's `mean()` accessors already use.
+///
+/// Accumulating the paths and dividing by their count at the end overflows on
+/// input that is entirely finite: two paths holding `1e308` sum to infinity,
+/// and the infinity survives the division. See
+/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
+/// horizon on the first of them and divides by the largest deviation from it
+/// before summing, so no partial sum can leave the representable range.
+///
+/// `validate_paths` has already rejected an empty, ragged or non-finite
+/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
+/// reach a caller from here.
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
-    let mut means = vec![0.0; horizon];
-    let mut count = 0usize;
-    for path in paths.iter().flatten() {
-        for (mean, value) in means.iter_mut().zip(path) {
-            *mean += value;
-        }
-        count += 1;
-    }
-    for mean in &mut means {
-        *mean /= count as f64;
-    }
+    let means: Vec<f64> = (0..horizon)
+        .map(|step| {
+            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
+        })
+        .collect();
     Ok(means)
 }
 

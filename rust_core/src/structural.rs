@@ -408,7 +408,7 @@ impl StructuralConfig {
         }
         allocation(&[draws, self.dimension(), 3])?;
         allocation(&[draws, steps, self.dimension() + self.components.len() + 3])?;
-        let prior_seed = chain_seed(seed, 0, PRIOR_PREDICT_SEED_DOMAIN);
+        let prior_seed = chain_seed(seed, 0, STRUCTURAL_PRIOR_SEED_DOMAIN);
         let mut rng = ChaCha8Rng::seed_from_u64(prior_seed);
         let mut chain = vec![];
         for _ in 0..draws {
@@ -446,7 +446,7 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
 }
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
-const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
+const STRUCTURAL_PRIOR_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
 
 pub fn fit(
     y: &[f64],
@@ -840,7 +840,7 @@ mod tests {
         // `fit` and `forecast` key per chain, while `prior_predict` keys its
         // prior draws once and then hands that key to `forecast`.
         for seed in [0, 1, 42, 491, u64::MAX] {
-            let prior = chain_seed(seed, 0, PRIOR_PREDICT_SEED_DOMAIN);
+            let prior = chain_seed(seed, 0, STRUCTURAL_PRIOR_SEED_DOMAIN);
             for chain in 0..4 {
                 let keys = [
                     chain_seed(seed, chain, FIT_SEED_DOMAIN),

@@ -574,18 +574,26 @@ fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
 
+/// Posterior-predictive mean at each horizon, from the scale-aware
+/// implementation the sampler's `mean()` accessors already use.
+///
+/// Accumulating the paths and dividing by their count at the end overflows on
+/// input that is entirely finite: two paths holding `1e308` sum to infinity,
+/// and the infinity survives the division. See
+/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
+/// horizon on the first of them and divides by the largest deviation from it
+/// before summing, so no partial sum can leave the representable range.
+///
+/// `validate_paths` has already rejected an empty, ragged or non-finite
+/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
+/// reach a caller from here.
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
-    let path_count = paths.iter().map(Vec::len).sum::<usize>();
-    let mut means = vec![0.0; horizon];
-    for path in paths.iter().flatten() {
-        for (mean, value) in means.iter_mut().zip(path) {
-            *mean += value;
-        }
-    }
-    for mean in &mut means {
-        *mean /= path_count as f64;
-    }
+    let means: Vec<f64> = (0..horizon)
+        .map(|step| {
+            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
+        })
+        .collect();
     ensure_finite_vector("forecast means", &means)?;
     Ok(means)
 }
@@ -844,7 +852,15 @@ mod tests {
             .map(|path| path[0])
             .sum::<f64>()
             / 1000.0;
-        assert_eq!(means[0], manual_first);
+        // `observation_means` centres and scales the draws before it sums them,
+        // so that a forecast near the top of the representable range still has a
+        // representable mean. It therefore no longer reproduces a naive running
+        // sum bit for bit; the two agree to a few ulp of the draws' spread.
+        assert!(
+            (means[0] - manual_first).abs() <= 8.0 * f64::EPSILON * manual_first.abs(),
+            "{} vs {manual_first}",
+            means[0]
+        );
         let quantiles = forecast
             .observation_quantiles(&[0.025, 0.5, 0.975])
             .unwrap();
