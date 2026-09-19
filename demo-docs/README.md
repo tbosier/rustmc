@@ -4,7 +4,44 @@ This directory contains a deterministic comparison of rustmc, LightGBM, a Gaussi
 process, and Prophet on six synthetic univariate series. It is a diagnostic exercise,
 not a claim that one method is universally more accurate.
 
+## Status: internal, not published
+
+**This study is not linked from the documentation site or the README, and the numbers
+below must not be quoted as a rustmc performance or accuracy claim.** It does not meet
+the evidence bar that [`benchmarks/README.md`](../benchmarks/README.md) sets for
+publishing a comparison. Four requirements are unmet:
+
+- **No convergence diagnostics were retained.** The protocol requires a maximum
+  rank-normalized R-hat below a declared threshold and divergence counts that are zero
+  or explained. `results/rustmc_results.json` records no R-hat, no effective sample
+  size, and no divergence count for any of the six fits, and `run_rustmc_forecast.py`
+  never computes them. `results/rustmc_diagnostics.json` holds only the one candidate
+  that was excluded for being slow. Nothing here shows the reported posteriors
+  converged, so none of the accuracy or interval rows can be interpreted.
+- **No exact revision.** Package versions are recorded but no commit is. The protocol
+  requires the exact revision.
+- **Measured against rustmc 0.9.0**, four minor versions behind the current 0.13.0. The
+  weekly timings in particular describe an implementation the study itself recommends
+  replacing, so they would not survive that work.
+- **One timing run per cell.** `measurement_repetitions` is 1. The protocol asks for at
+  least three repetitions with randomized engine order before a timing difference is
+  treated as stable.
+
+A fifth point is a difference in kind rather than a failure: work is deliberately not
+matched across engines, and reported runtime excludes model selection, which costs
+each engine something different. That is defensible for a comparison of medium-effort
+workflows, but it is not the matched-work comparison the protocol describes, and the
+two should not be confused.
+
+To publish any of this, rerun it at a named revision on current rustmc, record
+per-fit R-hat, ESS and divergences, and take at least three repetitions. Otherwise the
+directory should be removed; the honest sentence about short-series forecasting is the
+one already in the README, which promises nothing this cannot support.
+
 ## Bottom line
+
+Read this section as a record of what one unrepeated run suggested, not as a finding.
+No fit in it was checked for convergence, so nothing below is established.
 
 rustmc is already useful for short seasonal series, particularly at monthly frequency.
 It produced the lowest MAE on the monthly medium and hard cases and was effectively tied
@@ -107,10 +144,12 @@ cycle-correlation diagnostic decides whether monthly data use the fitted seasona
 level. A median paired-cycle drift is removed and restored over the future horizon.
 
 All three monthly datasets selected the drift-adjusted Bayesian seasonal local-level
-model. All three weekly datasets selected a regularized Bayesian AR(52). Full priors,
-selection origins, diagnostics, and candidate scores are recorded in
+model. All three weekly datasets selected a regularized Bayesian AR(52). Priors,
+selection origins, and candidate scores are recorded in
 [`results/rustmc_results.json`](results/rustmc_results.json) and explained in
-[`results/rustmc_method.md`](results/rustmc_method.md).
+[`results/rustmc_method.md`](results/rustmc_method.md). Convergence diagnostics are
+not: no R-hat, effective sample size, or divergence count was recorded for any fit.
+That is the main reason this study is not publishable as it stands.
 
 ### LightGBM
 
