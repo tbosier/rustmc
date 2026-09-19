@@ -68,18 +68,18 @@ print(batch.errors)
 ```
 
 Independent fits do not share information. For related groups, build one
-[partial-pooling model](docs/examples/site-effects.md).
+[partial-pooling model](https://tbosier.github.io/rustmc/examples/site-effects/).
 
 ## What's included
 
 - NUTS and HMC with autodiff, constrained parameters, and parallel chains.
 - Scalar and vector regressions, group indexing, nonlinear expressions, and custom
-  log-density terms. See [custom models](docs/custom-models.md).
+  log-density terms. See [custom models](https://tbosier.github.io/rustmc/custom-models/).
 - Prior and posterior prediction, pointwise log likelihood, R-hat, effective sample
   size, Monte Carlo error, and ArviZ export.
 - Exact Gaussian AR regression, Gaussian hierarchical models, and Kalman/FFBS
   algorithms for state-space models.
-- [Forecasting workflows](docs/forecasting-workflows.md) for structural, count,
+- [Forecasting workflows](https://tbosier.github.io/rustmc/forecasting-workflows/) for structural, count,
   hurdle, and runoff models, with joint predictive paths and backtests.
 - Versioned model and fit artifacts. Compiled model artifacts omit training data;
   fitted artifacts include it. Neither resumes sampler adaptation or RNG state.
@@ -107,20 +107,20 @@ sampler does not change a forecast, and vice versa.
 The modeling language is deliberately small. PyMC and Stan offer broader model
 support. rustmc aims to earn its place through repeated fitting and a few well-tested
 specialized algorithms. Performance depends on the workload; see the
-[benchmark protocol](benchmarks/README.md).
+[benchmark protocol](https://github.com/tbosier/rustmc/blob/main/benchmarks/README.md).
 
 ## Start here
 
-- [Instrument calibration](examples/instrument_calibration.py): regression and new-data prediction.
-- [Repeated calibration](examples/repeated_calibration.py): one model, several datasets.
-- [Site effects](examples/site_effects.py): partial pooling with unequal group sizes.
-- [Forecasting](examples/custom_forecast_workflow.py): fit, predict, and evaluate.
-- [Examples guide](examples/README.md) and [API reference](docs/reference.md).
+- [Instrument calibration](https://github.com/tbosier/rustmc/blob/main/examples/instrument_calibration.py): regression and new-data prediction.
+- [Repeated calibration](https://github.com/tbosier/rustmc/blob/main/examples/repeated_calibration.py): one model, several datasets.
+- [Site effects](https://github.com/tbosier/rustmc/blob/main/examples/site_effects.py): partial pooling with unequal group sizes.
+- [Forecasting](https://github.com/tbosier/rustmc/blob/main/examples/custom_forecast_workflow.py): fit, predict, and evaluate.
+- [Examples guide](https://github.com/tbosier/rustmc/blob/main/examples/README.md) and [API reference](https://tbosier.github.io/rustmc/reference/).
 
-The [roadmap](ROADMAP.md) tracks five priorities: statistical release gates,
+The [roadmap](https://github.com/tbosier/rustmc/blob/main/ROADMAP.md) tracks five priorities: statistical release gates,
 representative benchmarks, native model artifacts, bounded batches, and consistent
 results and diagnostics. Most of that work sits in the shared layer, so it reaches the
 forecasting models and the graph models alike.
 
-For source builds and checks, see [Contributing](CONTRIBUTING.md).
+For source builds and checks, see [Contributing](https://github.com/tbosier/rustmc/blob/main/CONTRIBUTING.md).
 MIT licensed.
