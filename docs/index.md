@@ -67,23 +67,26 @@ print(second.summary())
 4 chains × 1000 draws per chain
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
-────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────
 offset         0.2899   0.0156     0.2581     0.3166       3805       2649   1.0007   0.000253
 gain           1.1793   0.0136     1.1526     1.2038       4695       2901   1.0009   0.000198
 noise          0.1560   0.0112     0.1347     0.1759       3037       3029   1.0012   0.000202
-────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────
 Mean accept rate: 0.91  │  Divergences: 0
-
 4 chains × 1000 draws per chain
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
-────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────
 offset         0.3474   0.0749     0.2056     0.4854       1605       1589   1.0039   0.001878
 gain           1.2329   0.0573     1.1189     1.3350       1553       1595   1.0047   0.001457
 noise          0.1714   0.0201     0.1349     0.2080       1729       1723   1.0035   0.000484
-────────────────────────────────────────────────────────────────────────────────────────────────
+──────────────────────────────────────────────────────────────────────────────────────────────
 Mean accept rate: 0.93  │  Divergences: 0
 ```
+
+That output is from running exactly that script against rustmc 0.13.0 on Linux
+x86-64. Sampling is deterministic for a given seed, build, and platform; digits in
+the last places can differ elsewhere.
 
 The `hdi_3%` and `hdi_97%` columns are the shortest intervals containing 94% of the
 draws, not equal-tailed quantiles. R-hat near one, ample effective sample size, and
