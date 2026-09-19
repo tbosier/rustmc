@@ -10,7 +10,10 @@
 //! wrong formula.
 
 use rustmc_core::bayesian_ar::BayesianArForecast;
-use rustmc_core::bayesian_forecast::PosteriorPredictiveForecast;
+use rustmc_core::bayesian_forecast::{
+    fit_bayesian_local_level, BayesianLocalLevelConfig, InverseGammaPrior,
+    PosteriorPredictiveForecast,
+};
 use rustmc_core::bayesian_seasonal::SeasonalPosteriorPredictiveForecast;
 use rustmc_core::bayesian_trend::TrendPosteriorPredictiveForecast;
 
@@ -119,4 +122,118 @@ fn forecast_means_do_not_accumulate_rounding_at_an_ordinary_scale() {
     for (name, means) in all_means(&columns) {
         assert_eq!(means, vec![0.2, 2.0], "{name}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Defect 2 — the local-level filtering and smoothing variance updates
+// ---------------------------------------------------------------------------
+
+/// Filtered variances for three observed steps with the initial, process and
+/// observation variances all equal to the first entry, replayed out of crate
+/// over the exact rational values of the stored doubles and rounded once to
+/// `f64`.
+///
+/// The recursion is `P = V + Q`, `V' = P R / (P + R)`; with `Q == R == V[-1]`
+/// the three filtered variances are `2/3`, `5/8` and `13/21` of that common
+/// scale, which is why the entries at one scale sit so close together.
+const FILTERED_VARIANCES: [(f64, [f64; 3]); 4] = [
+    (3e-162, [2e-162, 1.875e-162, 1.857142857142857e-162]),
+    (
+        1e-200,
+        [6.666666666666667e-201, 6.25e-201, 6.19047619047619e-201],
+    ),
+    (
+        1e200,
+        [
+            6.666666666666667e199,
+            6.249999999999999e199,
+            6.190476190476191e199,
+        ],
+    ),
+    (0.4, [0.26666666666666666, 0.25, 0.24761904761904763]),
+];
+
+/// `P * R / (P + R)` forms `P * R` first, which leaves the representable range
+/// long before the quotient does.
+///
+/// At `3e-162` the product is subnormal: the first update returned
+/// `2.1958473148499844e-162` against a correctly rounded `2e-162`, 9.79% high,
+/// and the second `1.8084730969037942e-162` against `1.875e-162`, 3.55% low.
+/// At `1e-200` the product underflows to zero and at `1e200` it overflows, in
+/// both cases for a filtering problem whose answer is an ordinary number. The
+/// positivity guard does not catch the first case, because the wrong answers
+/// are positive.
+#[test]
+fn local_level_filtered_variances_match_a_high_precision_recursion() {
+    let observations = [0.5, -0.25, 0.75];
+    for (scale, expected_steps) in FILTERED_VARIANCES {
+        let filter = rustmc_core::bayesian_forecast::filter_local_level(
+            &observations,
+            0.0,
+            scale,
+            scale,
+            scale,
+        )
+        .unwrap_or_else(|error| panic!("filter failed at {scale}: {error}"));
+        assert_eq!(
+            filter.filtered_variances[0], scale,
+            "prior state at {scale}"
+        );
+        for (step, expected) in expected_steps.into_iter().enumerate() {
+            let actual = filter.filtered_variances[step + 1];
+            assert!(
+                (actual - expected).abs() <= f64::EPSILON * expected.abs(),
+                "step {step} at {scale}: {actual} vs {expected}"
+            );
+        }
+    }
+    // The two entries the reported symptom names are reproduced exactly, not
+    // just to within a rounding of the reference.
+    let filter = rustmc_core::bayesian_forecast::filter_local_level(
+        &observations,
+        0.0,
+        3e-162,
+        3e-162,
+        3e-162,
+    )
+    .unwrap();
+    assert_eq!(filter.filtered_variances[1], 2e-162);
+    assert_eq!(filter.filtered_variances[2], 1.875e-162);
+}
+
+/// The same defect in the backward-sampling variance, `V Q / (V + Q)`, reached
+/// through the public Gibbs sampler.
+///
+/// Every variance here is `1e-200`, so both products underflow to zero and
+/// `validate_positive_variance` turns a perfectly well scaled model into a
+/// `NumericalFailure`. Fixing only the filtering update leaves the smoother
+/// failing, so this covers both sites.
+#[test]
+fn local_level_gibbs_runs_where_the_variance_products_underflow() {
+    let observations = [1e-100, 2e-100, 1.5e-100, 0.5e-100, 1.2e-100];
+    let config = BayesianLocalLevelConfig {
+        initial_mean: 0.0,
+        initial_variance: 1e-200,
+        // mode = scale / (shape + 1) = 1e-200
+        process_variance_prior: InverseGammaPrior::new(1.0, 2e-200).unwrap(),
+        observation_variance_prior: InverseGammaPrior::new(1.0, 2e-200).unwrap(),
+        num_chains: 2,
+        num_warmup: 20,
+        num_draws: 40,
+        thinning: 1,
+        seed: 2026,
+    };
+    let posterior = fit_bayesian_local_level(&observations, &config)
+        .unwrap_or_else(|error| panic!("subnormal-scale fit failed: {error}"));
+    for draw in posterior.chains.iter().flatten() {
+        assert!(draw.process_variance > 0.0 && draw.process_variance.is_finite());
+        assert!(draw.observation_variance > 0.0 && draw.observation_variance.is_finite());
+        assert!(draw.terminal_level.is_finite());
+    }
+    let forecast = posterior.forecast(3, 2027).unwrap();
+    assert!(forecast
+        .observation_means()
+        .unwrap()
+        .iter()
+        .all(|value| value.is_finite()));
 }

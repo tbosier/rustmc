@@ -365,20 +365,34 @@ fn validate_observations(observations: &[f64]) -> Result<(), BayesianForecastErr
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sample_levels_ffbs(
+/// One forward-filtering pass of the local-level Kalman recursion.
+///
+/// Index zero holds the pre-transition state `x[-1]`; index `time + 1` holds
+/// the state filtered on observations up to and including `time`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LocalLevelFilter {
+    pub filtered_means: Vec<f64>,
+    pub filtered_variances: Vec<f64>,
+}
+
+/// Run the forward-filtering pass that the Gibbs sampler's FFBS step uses.
+///
+/// Exposed because the variance recursion is the numerically delicate half of
+/// FFBS and the only half a caller can pin exactly: it is a deterministic
+/// function of the three variances and of which observations are present, with
+/// no dependence on the RNG.
+pub fn filter_local_level(
     observations: &[f64],
     initial_mean: f64,
     initial_variance: f64,
     process_variance: f64,
     observation_variance: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<Vec<f64>, BayesianForecastError> {
+) -> Result<LocalLevelFilter, BayesianForecastError> {
     validate_positive_variance("process", process_variance)?;
     validate_positive_variance("observation", observation_variance)?;
+    validate_positive_variance("initial state", initial_variance)?;
 
     let len = observations.len();
-    // Index zero is x[-1]; index time + 1 is x[time].
     let mut filtered_means = Vec::with_capacity(len + 1);
     let mut filtered_variances = Vec::with_capacity(len + 1);
     filtered_means.push(initial_mean);
@@ -396,7 +410,17 @@ fn sample_levels_ffbs(
             validate_positive_variance("innovation", innovation_variance)?;
             let gain = predicted_variance / innovation_variance;
             let mean = predicted_mean + gain * (observation - predicted_mean);
-            let variance = predicted_variance * observation_variance / innovation_variance;
+            // `gain * observation_variance`, not
+            // `predicted_variance * observation_variance / innovation_variance`:
+            // the two are the same quantity `P R / (P + R)`, but the product
+            // form forms `P R` first, which leaves the representable range for
+            // variances the quotient handles comfortably. At `P = 6e-162` and
+            // `R = 3e-162` the product is subnormal and the update comes back
+            // 9.8% high; below about `1e-170` it underflows to zero and the
+            // positivity guard rejects a filtering problem that is perfectly
+            // well scaled. Written this way every intermediate stays between
+            // `min(P, R)` and `max(P, R)`.
+            let variance = gain * observation_variance;
             (mean, variance)
         };
         if !filtered_mean.is_finite() {
@@ -409,6 +433,32 @@ fn sample_levels_ffbs(
         filtered_variances.push(filtered_variance);
     }
 
+    Ok(LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    })
+}
+
+fn sample_levels_ffbs(
+    observations: &[f64],
+    initial_mean: f64,
+    initial_variance: f64,
+    process_variance: f64,
+    observation_variance: f64,
+    rng: &mut ChaCha8Rng,
+) -> Result<Vec<f64>, BayesianForecastError> {
+    let LocalLevelFilter {
+        filtered_means,
+        filtered_variances,
+    } = filter_local_level(
+        observations,
+        initial_mean,
+        initial_variance,
+        process_variance,
+        observation_variance,
+    )?;
+
+    let len = observations.len();
     let mut levels = vec![0.0; len + 1];
     levels[len] = sample_normal(filtered_means[len], filtered_variances[len], rng)?;
     for time in (0..len).rev() {
@@ -417,7 +467,9 @@ fn sample_levels_ffbs(
         let smoothing_gain = filtered_variance / next_prediction_variance;
         let mean =
             filtered_means[time] + smoothing_gain * (levels[time + 1] - filtered_means[time]);
-        let variance = filtered_variance * process_variance / next_prediction_variance;
+        // `smoothing_gain * process_variance` for the same reason the filtering
+        // update above avoids `filtered_variance * process_variance`.
+        let variance = smoothing_gain * process_variance;
         levels[time] = sample_normal(mean, variance, rng)?;
     }
     Ok(levels)
