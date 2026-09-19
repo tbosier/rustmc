@@ -1,5 +1,13 @@
 # Composable structural forecasts
 
+This page covers `StructuralModel`, which builds a forecasting model out of named
+components — level, trend, one or more seasonalities, regressors, AR residuals — that
+you add and combine yourself. Use it for a continuous series whose structure you can
+describe but no single named constructor matches. For a series that one of
+`BayesianLocalLevel`, `BayesianLocalLinearTrend`, `BayesianSeasonalLocalLevel` or
+`BayesianAR` already fits, those are simpler; see
+[forecasting workflows](forecasting-workflows.md).
+
 `StructuralModel` adds named independent Gaussian state blocks to one observation
 mean. It supports a local level, linear or damped trend, multiple harmonic
 seasonalities (including fractional periods), static and random-walk regression,

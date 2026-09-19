@@ -1,5 +1,8 @@
 # Releasing rustmc
 
+The checklist for cutting a release: which versions must agree, what to verify before
+tagging, and how the two packages are published. It is for maintainers only.
+
 `rustmc_core` on crates.io and `rustmc` on PyPI share one version. The internal
 `python_bindings` crate is also named `rustmc`, but it has `publish = false`:
 that name on crates.io belongs to an unrelated project.

@@ -1,5 +1,9 @@
 # Use a model from Rust
 
+This page covers saving a model built in Python and loading it in a Rust program, so
+inference runs without a Python interpreter. You need it if you build models in Python
+but deploy into a Rust service; if you work only in Python, skip it.
+
 Python and Rust share the `rustmc.graph-model` version 1 format. The definition,
 expression compiler, schema validation, and loader live in `rustmc_core::model`.
 Python models saved by 0.12 remain readable.

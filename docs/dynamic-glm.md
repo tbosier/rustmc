@@ -1,5 +1,13 @@
 # Dynamic count, intermittent amount, and pooled regression forecasts
 
+This page covers `BayesianDynamicGLM`, for forecasting a panel of related series
+together rather than one at a time. Use it when you have many groups — stores, SKUs,
+regions — that share a regression relationship but each drift on their own, and when
+the observations are counts, intermittent amounts, or Gaussian. For a single series,
+see [forecasting workflows](forecasting-workflows.md); for independent fits of the
+same model to many series with no pooling, see
+[independent batches](forecast-batches.md).
+
 `BayesianDynamicGLM` fits a panel with a shared uncertain regression population,
 group deviations, and group random walks. Optional common random-walk innovations
 represent shocks affecting all groups. Named constructors select the observation

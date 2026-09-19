@@ -1,5 +1,9 @@
 # Get started
 
+This page takes you from installation to a fitted model you can read: a small
+regression, its diagnostics, and a prediction with uncertainty. It assumes you know
+what a prior and a posterior are, and nothing about rustmc. Ten minutes.
+
 Install the Python package with `pip install rustmc`. NumPy is required; ArviZ and
 Matplotlib are optional through `pip install "rustmc[viz]"`.
 

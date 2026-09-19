@@ -1,5 +1,13 @@
 # Independent forecasting batches and diagnostics
 
+This page covers fitting one forecasting model to many series in a single call, with
+each series fitted independently and identified by a stable ID. Read it if you forecast
+hundreds or thousands of series on a schedule and need per-series failures collected
+rather than fatal.
+
+These fits share no information between series. When series should inform each other,
+use the pooled panel model in [dynamic GLMs](dynamic-glm.md) instead.
+
 `BayesianLocalLevel`, `BayesianSeasonalLocalLevel`, `BayesianLocalLinearTrend`,
 and `BayesianAR` expose native independent-cell fitting:
 

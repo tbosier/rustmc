@@ -1,5 +1,13 @@
 # API Reference
 
+Every public class in the Python package, its arguments, its output shapes, and the
+limits it is honest about. This is a lookup page, not a tutorial: it assumes you have
+already fitted something in [Get started](getting-started.md) and now need the exact
+behaviour of one call.
+
+Each section states what a model does not do as well as what it does. Those limits are
+deliberate and current; where a thing is not supported, it says so next to the thing.
+
 ## Linear Gaussian state-space models
 
 `LinearGaussianStateSpace` implements a Kalman filter and Rauch--Tung--Striebel

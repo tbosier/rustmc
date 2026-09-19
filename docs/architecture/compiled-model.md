@@ -1,6 +1,12 @@
 # Compile once, bind many datasets
 
-Status: updated for 0.12.
+This page explains how a `ModelBuilder` model becomes something you can fit repeatedly:
+what `compile()` fixes, what `bind()` checks, what each artifact format keeps, and where
+the boundary between the Rust core and the Python adapter falls. It is for contributors
+and for anyone deciding whether the compile-once model fits their deployment. To *use*
+the API, read [custom models](../custom-models.md) instead.
+
+Status: current as of 0.13.
 
 `ModelBuilder.compile()` constructs the parameter and operation graph once and
 returns a Python `CompiledModel`. The compiled object owns one `Arc<Graph>` whose

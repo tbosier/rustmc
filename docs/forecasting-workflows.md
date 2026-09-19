@@ -1,5 +1,18 @@
 # Forecasting workflows
 
+Start here for time series. This page covers the shape of a forecasting job — fit,
+predict, evaluate against a baseline, and read the diagnostics — and the axis
+conventions every forecasting model shares. The pages that follow it choose a
+particular model: [structural composition](structural-forecasting.md),
+[calendar seasonality](regression-forecasting.md),
+[counts and intermittent amounts](dynamic-glm.md),
+[sparse amounts](sparse-amounts.md), and [payment runoff](runoff.md).
+
+These models do not use `ModelBuilder` or the NUTS sampler. They are conjugate Gibbs
+and FFBS samplers with their own constructors. They return the same result and
+diagnostic objects, so what you learn in [Get started](getting-started.md) about
+reading a fit still applies.
+
 The Python package combines native inference with reusable evaluation and result tools.
 Forecasts have leading `(chain, draw)` axes and a final horizon axis. Panel forecasts
 insert a series axis before the horizon. Keep these axes together when aggregating:
