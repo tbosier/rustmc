@@ -107,6 +107,18 @@ NORMALISERS: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r"(?m)^(Iters/s\s*:\s*)[\d.]+$"),
         r"\g<1><rate>",
     ),
+    (
+        # Only `large_linear_regression.py` prints one, and it is the one example
+        # on the faer GEMV path. faer selects a SIMD kernel from the CPU's
+        # features, so the summation order in the gradient differs between
+        # machines; the last bits of the gradient move the NUTS trajectory, and
+        # the acceptance rate over 200 draws moves with it. It is reproducible on
+        # one machine and not across two, which is not drift the check should
+        # report.
+        "acceptance rate, which follows a machine-dependent sampler trajectory",
+        re.compile(r"(?m)^(Accept\s*:\s*)[\d.]+$"),
+        r"\g<1><rate>",
+    ),
 ]
 
 BANNER = (

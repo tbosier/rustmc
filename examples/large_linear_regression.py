@@ -86,9 +86,15 @@ print(f"Diverge : {sum(result.divergences())}")
 samples = result.get_samples()
 beta_means = np.array([samples[f"beta[{k}]"].mean() for k in range(N_PARAMS)])
 rmse = np.sqrt(np.mean((beta_means - true_beta) ** 2))
-print(f"beta recovery RMSE : {rmse:.4f}  (generating coefficient sd {true_beta.std():.4f})")
-for k in range(5):
-    print(f"  beta[{k}]: true={true_beta[k]:+.4f}  estimated={beta_means[k]:+.4f}")
+# Reported against the scale the coefficients were drawn from, and at a precision
+# this run can defend. One chain of 200 draws carries Monte Carlo error of order
+# the fourth decimal on a single coordinate, and the faer GEMV path picks its SIMD
+# kernel from the CPU, so the individual posterior means printed here to four
+# places agreed on one machine and not on another. The ratio is the claim the
+# example is making; a per-coordinate table would invite exactly the reading the
+# Limitations section below warns against.
+print(f"beta recovery RMSE : {rmse:.3f}  (generating coefficient sd {true_beta.std():.3f})")
+print(f"  that is {rmse / true_beta.std():.0%} of the scale the coefficients were drawn from")
 
 # %% [markdown]
 # ## Limitations of this run
