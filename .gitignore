@@ -22,3 +22,25 @@ __pycache__/
 /.target/
 /.pybuild/
 /.wheel/
+
+# Shell, editor and tool configuration that belongs to a developer's machine,
+# not to this repository. These appear at the repository root in some sandboxed
+# development environments and were committed once by an over-broad `git add -A`.
+# `.gitmodules` is deliberately NOT listed: it is real git metadata, and ignoring
+# it would silently break a future submodule.
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.ripgreprc
+.idea
+.vscode
+.mcp.json
+
+# Internal review notes. CONTRIBUTING.md: "Generated files, local worktrees,
+# editor logs, and internal review notes do not belong in the repository."
+/rustmc-review.md
+/*-review.md
+/docs/*.local.md
