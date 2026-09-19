@@ -729,8 +729,19 @@ mod tests {
             weighted[2] += weight * r;
             weighted[3] += weight * (1. + (0.2 + q) / variance * 2.0);
         }
-        // What a fit that drew q and r from their priors and updated only the
-        // conditional level would report, which the tolerances have to exclude.
+        // What a fit that never updated each parameter would report, which the
+        // tolerances have to exclude: the truncated prior mean for the two
+        // variances, and the starting value for the level.
+        //
+        // This is the weakest of the data-blind counterfactuals, not the
+        // strongest. A fit that drew q and r from their priors and then did
+        // update the level would report about 2.2969 against the reference
+        // 2.2218 below, so the level's 0.015 tolerance separates them but a
+        // tolerance above roughly 0.075 would not, while the guard here would
+        // still pass. Ruling that one out needs the level integrated over the
+        // variance priors by quadrature, which is more machinery than this
+        // assertion earns; the bound it does enforce is stated rather than
+        // implied.
         let uninformed = [
             truncated_inverse_gamma_mean(cfg.process_variance_prior, cfg.process_variance_upper),
             truncated_inverse_gamma_mean(

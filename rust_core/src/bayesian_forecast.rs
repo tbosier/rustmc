@@ -390,8 +390,12 @@ pub struct LocalLevelFilter {
 /// costs eleven significant digits, and at `b = 1e200` it returns zero.
 ///
 /// Dividing by the sum whichever factor is the larger keeps that quotient in
-/// `[0.5, 1)`, so the surviving product lies in `[min(a, b) / 2, min(a, b))`
-/// and cannot leave the range in either direction. Over 400k log-uniform pairs
+/// `[0.5, 1]`, so the surviving product lies in `[min(a, b) / 2, min(a, b)]`
+/// and cannot leave the range in either direction. Both upper endpoints are
+/// attained rather than approached: at `a = 1, b = 2^54` the sum rounds to `b`,
+/// the quotient is exactly `1`, and the result is exactly `min(a, b)` — which
+/// is also the correctly rounded answer, so the bound is what is inclusive, not
+/// the accuracy that is lost. Over 400k log-uniform pairs
 /// spanning `1e-300` to `1e300` this form is within two ulp of the correctly
 /// rounded result everywhere and never returns zero or an infinity, where the
 /// two single-ordering forms are wrong by up to 8e15 ulp and fail outright on

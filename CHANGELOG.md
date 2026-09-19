@@ -13,7 +13,9 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
 ### Added
 
 - `rustmc_core::seeding`, the single definition of the RNG stream-separation
-  primitive that seven modules each carried a private copy of.
+  primitive that eight modules each carried a private copy of — seven named
+  `chain_seed` and one `seed_for`, six of them byte-identical and two combining their
+  arguments differently.
 - `scripts/build_example_docs.py`. Every page under `docs/examples/` is generated
   from the example of the same name and shows that example's real captured output.
   CI fails if a committed page stops matching the code that produces it. It also
@@ -27,6 +29,11 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   `rustmc_core::model::ModelFit::predict` now derive their stream from a domain
   constant instead of using the caller's seed directly. Draws remain deterministic
   and reproducible; a given seed produces different values than in 0.13.0. See Fixed.
+- **Seeded hurdle fits change.** Consolidating the seven private copies of the
+  stream-separation primitive settled on the additive form six of them used; `hurdle`
+  combined its arguments with XOR. Its fitting chains therefore draw different streams
+  for the same seed from chain one onward, so a seeded hurdle posterior differs from
+  0.13.0. Nothing about the model changed.
 - The documentation nav is grouped into sections, and `mkdocs.yml` sets
   `strict: true` so an orphan page or a nav entry pointing at a renamed file fails
   the build rather than shipping.
@@ -71,9 +78,12 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   range by an interval argument rather than an empirical bound.
 - Forecast mean accessors on all four specialised results no longer report an infinity
   for a forecast whose draws are finite and whose mean is representable. Their values
-  shift in the last bits: the error is now of order one ulp of the draws' spread rather
-  than of the mean, which is better for draws sharing a large offset and worse for
-  draws that cancel to near zero.
+  shift in the last bits. This is a trade rather than a strict accuracy win: centring
+  the draws before summing is better for draws sharing a large offset and worse for
+  draws that cancel to near zero, and the sum is still uncompensated, so its error
+  grows with the number of draws — 100,000 draws of mostly `0.1` land about 849 ulp of
+  the draws' range from the correctly rounded mean. The reason to take the trade is
+  that an overflow is a failure and this is a rounding.
 - A benchmark config with a non-finite quality threshold was accepted, and every metric
   then compared false against it, so the gate passed with no failures. Screening the
   metrics had closed only one side of that.
@@ -87,9 +97,12 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   and diagnostics modules, and the Python smoke test, acceptance windows contained
   the prior mean they claimed to beat — in two cases the prior mean was the truth
   exactly, and two funnel tests carried no data at all while asserting recovery.
-  Windows now have to clear the prior by at least their own width, checked at run
-  time on every scalar assertion, and vector claims are stated as a fraction of the
-  error a named data-blind estimator would score. With the likelihood terms stripped
+  Windows now have to clear the prior by at least their own width, and vector claims
+  are stated as a fraction of the error a named data-blind estimator would score. The
+  margin is asserted at run time — in the recovery suite on every scalar assertion
+  through a shared helper, and in the trend, regression and hurdle modules by their
+  own guards — so widening a window back onto a prior turns the test red rather than
+  passing quietly. With the likelihood terms stripped
   so the sampler draws from the prior alone, all 28 assertions across the 9 positive
   cases now fail; the 3 tests that still pass are the ones documented as geometry
   checks and negative controls rather than recovery claims.

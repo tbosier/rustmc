@@ -1,9 +1,9 @@
 //! Deterministic stream separation for seeded RNGs.
 //!
-//! Seven modules each carried a private copy of this function. Six were
-//! identical; `hurdle`'s combined its arguments with XOR rather than addition,
-//! so one primitive had two behaviours and no test compared them. This is the
-//! single definition.
+//! Eight modules each carried a private copy of this function, seven named
+//! `chain_seed` and one `seed_for`. Six were byte-identical; `hurdle`'s combined
+//! its arguments with XOR rather than addition, so one primitive had two
+//! behaviours and no test compared them. This is the single definition.
 
 /// Derive a stable, well-separated RNG seed for one chain of one stage.
 ///

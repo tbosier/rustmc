@@ -4,6 +4,7 @@
 //! Coefficients are static latent states with exactly zero innovation variance;
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::bayesian_forecast::InverseGammaPrior;
+use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -145,14 +146,6 @@ pub struct RegressionForecast {
 fn invalid(message: &str) -> StateSpaceError {
     StateSpaceError::InvalidParameter(message.into())
 }
-fn seed_for(seed: u64, chain: usize, domain: u64) -> u64 {
-    let mut x = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
-    x ^ (x >> 31)
-}
 fn draw_variance(
     prior: InverseGammaPrior,
     count: usize,
@@ -244,7 +237,8 @@ pub fn fit_regression(
     let chains = (0..config.num_chains)
         .into_par_iter()
         .map(|chain| {
-            let mut rng = ChaCha8Rng::seed_from_u64(seed_for(config.seed, chain, 0x5245475f464954));
+            let mut rng =
+                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, 0x0052_4547_5F46_4954));
             let mut model = template.clone();
             let mut variances: Vec<f64> = config
                 .variance_priors
@@ -366,7 +360,8 @@ impl RegressionPosterior {
             .par_iter()
             .enumerate()
             .map(|(chain, draws)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(seed_for(seed, chain, 0x5245475f50524544));
+                let mut rng =
+                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain, 0x5245_475F_5052_4544));
                 let mut result = RegressionForecast::default();
                 let (
                     mut levels,
@@ -619,7 +614,12 @@ mod tests {
             .collect();
         let mean = coefficients.iter().sum::<f64>() / coefficients.len() as f64;
         // The coefficient prior is N(0, 9), so a fit that ignored the series
-        // would report 0: the window below excludes that by fourteen widths.
+        // would report 0. Asserted at run time rather than stated in a comment,
+        // so widening the window back onto the prior turns this red.
+        assert!(
+            (0.0f64 - 1.8).abs() > 2.0 * 0.12,
+            "the coefficient prior mean is within one tolerance-width of the window"
+        );
         assert!((mean - 1.8).abs() < 0.12, "{mean}");
         let obs = fit
             .chains

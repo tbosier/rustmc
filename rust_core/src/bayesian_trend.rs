@@ -1033,9 +1033,14 @@ mod tests {
         ];
         for index in 0..3 {
             let prior_mean = priors[index].scale / (priors[index].shape - 1.0);
+            // One tolerance-width of clearance, not merely exclusion: a window
+            // whose edge sits just short of the prior mean demonstrates nothing,
+            // and `> tolerances[index]` alone permits exactly that.
             assert!(
-                (prior_mean - truths[index]).abs() > tolerances[index],
-                "parameter {index}: prior mean {prior_mean} is inside the accepted window"
+                (prior_mean - truths[index]).abs() > 2.0 * tolerances[index],
+                "parameter {index}: prior mean {prior_mean} is within one tolerance-width \
+                 of the window around {}",
+                truths[index]
             );
         }
 
