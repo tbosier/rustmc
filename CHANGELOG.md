@@ -82,8 +82,17 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   evaluator layout; what is shared is the graph structure.
 - An unsupported "63x the cost per gradient" figure in the 0.13.0 entry, which no
   retained measurement in the repository supports.
-- Test assertions that a sampler drawing from the prior alone would have passed, in
-  the seasonal, trend and forecast recovery tests and in the Python smoke test.
+- **Recovery tests a prior-only sampler would have passed.** Across the recovery
+  suite, the seasonal, trend and forecast tests, the hurdle, regression, structural
+  and diagnostics modules, and the Python smoke test, acceptance windows contained
+  the prior mean they claimed to beat — in two cases the prior mean was the truth
+  exactly, and two funnel tests carried no data at all while asserting recovery.
+  Windows now have to clear the prior by at least their own width, checked at run
+  time on every scalar assertion, and vector claims are stated as a fraction of the
+  error a named data-blind estimator would score. With the likelihood terms stripped
+  so the sampler draws from the prior alone, all 28 assertions across the 9 positive
+  cases now fail; the 3 tests that still pass are the ones documented as geometry
+  checks and negative controls rather than recovery claims.
 - Documentation claims the code did not support, including committed example output
   that advertised 128 divergent transitions for a model that now has none.
 - The opening code block on the regression-and-seasonality guide used four names it
