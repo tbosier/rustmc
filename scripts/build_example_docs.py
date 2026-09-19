@@ -328,6 +328,69 @@ def participating() -> list[Path]:
 HAND_WRITTEN: set[str] = set()
 
 
+# Narrative pages outside docs/examples/ that show a code block together with the
+# output it produces, mapped to the heading the block sits under.
+#
+# A generated page is rebuilt from its example, so it cannot drift. A narrative
+# page's snippet has no example behind it, and docs/index.md is the most-read page
+# in the project -- the stale committed output this tool exists to prevent would
+# land there first. So it is checked too.
+#
+# Checked, and deliberately never rewritten. These pages quote their own numbers in
+# the prose around the block: docs/index.md discusses the posterior standard
+# deviation on `offset` going from 0.0156 to 0.0749, and names the rustmc version
+# the output came from. Regenerating the block on its own would leave those
+# sentences describing numbers that are no longer above them. A drift here is for a
+# person to reconcile, block and prose together.
+VERIFIED_SNIPPETS: dict[str, str] = {"index.md": "A complete example"}
+
+SNIPPET_BLOCK = re.compile(r"```python\n(?P<code>.*?)```\s*\n+```text\n(?P<output>.*?)```", re.S)
+
+
+def snippet_drift(page_name: str, heading: str, fired: set[str]) -> str:
+    """Return a description of how a narrative page's snippet drifted, or "".
+
+    The snippet runs in its own process for the same reason each example does:
+    so that what it prints depends on the snippet alone.
+    """
+    page = ROOT / "docs" / page_name
+    if not page.exists():
+        return f"{page_name}: page does not exist"
+    text = page.read_text(encoding="utf-8")
+    section = re.search(rf"^##+ {re.escape(heading)}\s*$(.*?)(?=^##+ |\Z)", text, re.S | re.M)
+    if not section:
+        return f"{page_name}: no section titled {heading!r}"
+    found = SNIPPET_BLOCK.search(section.group(1))
+    if not found:
+        return f"{page_name}: {heading!r} has no python block followed by a text block"
+
+    with tempfile.TemporaryDirectory() as scratch:
+        snippet = Path(scratch) / "snippet.py"
+        snippet.write_text(found.group("code"), encoding="utf-8")
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, str(snippet)], cwd=ROOT, capture_output=True, text=True
+        )
+    if done.returncode != 0:
+        return f"{page_name}: the snippet under {heading!r} exited {done.returncode}\n{done.stderr.rstrip()}"
+
+    actual = normalise(done.stdout, fired).strip("\n")
+    committed = found.group("output").strip("\n")
+    if actual == committed:
+        return ""
+    diff = "".join(
+        difflib.unified_diff(
+            committed.splitlines(keepends=True),
+            actual.splitlines(keepends=True),
+            fromfile=f"docs/{page_name} (committed)",
+            tofile=f"docs/{page_name} (just now)",
+        )
+    )
+    return (
+        f"{page_name}: the output under {heading!r} is not what the code above it "
+        f"prints.\nUpdate the block AND the prose that cites its numbers.\n{diff}"
+    )
+
+
 def orphans(expected: set[Path]) -> list[str]:
     """Pages in docs/examples/ that no example produces.
 
@@ -418,6 +481,20 @@ def main() -> int:
             + "\n  ".join(left_over),
             file=sys.stderr,
         )
+        return 1
+
+    # Run before the NORMALISERS audit below, because a normaliser may be used by
+    # a narrative snippet and by no generated page.
+    drifted = [
+        report
+        for name, heading in sorted(VERIFIED_SNIPPETS.items())
+        if (report := snippet_drift(name, heading, fired))
+    ]
+    for name in sorted(VERIFIED_SNIPPETS):
+        matching = [d for d in drifted if d.startswith(f"{name}:")]
+        print(f"{'DRIFTED' if matching else '     ok'}  docs/{name}")
+    if drifted:
+        print("\n" + "\n\n".join(drifted), file=sys.stderr)
         return 1
 
     unused = [name for name, _, _ in NORMALISERS if name not in fired]
