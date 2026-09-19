@@ -806,11 +806,6 @@ pub enum Op {
         x: NodeId,
         sigma: NodeId,
     },
-    /// logp(x | sigma) for x >= 0; HalfNormal
-    HalfNormalLogP {
-        x: NodeId,
-        sigma: NodeId,
-    },
     /// logp(x | nu, mu, sigma); StudentT
     StudentTLogP {
         x: NodeId,
@@ -821,12 +816,6 @@ pub enum Op {
     /// Domain constraint with zero log density for finite x > 0, -infinity otherwise.
     PositiveSupport {
         x: NodeId,
-    },
-    /// logp(x | lower, upper); Uniform
-    UniformLogP {
-        x: NodeId,
-        lower: NodeId,
-        upper: NodeId,
     },
     /// logp(x | p); Bernoulli (x in {0, 1})
     BernoulliLogP {
@@ -840,18 +829,6 @@ pub enum Op {
     },
     /// Combined density and exp-transform Jacobian; x is the raw log value.
     LogGammaLogP {
-        x: NodeId,
-        alpha: NodeId,
-        beta: NodeId,
-    },
-    /// logp(x | alpha, beta); Gamma
-    GammaLogP {
-        x: NodeId,
-        alpha: NodeId,
-        beta: NodeId,
-    },
-    /// logp(x | alpha, beta); Beta
-    BetaLogP {
         x: NodeId,
         alpha: NodeId,
         beta: NodeId,
@@ -978,7 +955,7 @@ impl Op {
                     visit_node(*aux);
                 }
             }
-            Op::LogHalfNormalLogP { x, sigma } | Op::HalfNormalLogP { x, sigma } => {
+            Op::LogHalfNormalLogP { x, sigma } => {
                 visit_node(*x);
                 visit_node(*sigma);
             }
@@ -989,11 +966,6 @@ impl Op {
                 visit_node(*sigma);
             }
             Op::PositiveSupport { x } => visit_node(*x),
-            Op::UniformLogP { x, lower, upper } => {
-                visit_node(*x);
-                visit_node(*lower);
-                visit_node(*upper);
-            }
             Op::BernoulliLogP { x, p } => {
                 visit_node(*x);
                 visit_node(*p);
@@ -1002,9 +974,7 @@ impl Op {
                 visit_node(*x);
                 visit_node(*lam);
             }
-            Op::LogGammaLogP { x, alpha, beta }
-            | Op::GammaLogP { x, alpha, beta }
-            | Op::BetaLogP { x, alpha, beta } => {
+            Op::LogGammaLogP { x, alpha, beta } => {
                 visit_node(*x);
                 visit_node(*alpha);
                 visit_node(*beta);
@@ -1443,12 +1413,6 @@ impl Graph {
         node
     }
 
-    pub fn half_normal_logp(&mut self, x: NodeId, sigma: NodeId) -> NodeId {
-        let node = self.add_node(Op::HalfNormalLogP { x, sigma }, None);
-        self.logp_terms.push(node);
-        node
-    }
-
     pub fn student_t_logp(&mut self, x: NodeId, nu: NodeId, mu: NodeId, sigma: NodeId) -> NodeId {
         let node = self.add_node(Op::StudentTLogP { x, nu, mu, sigma }, None);
         self.logp_terms.push(node);
@@ -1458,12 +1422,6 @@ impl Graph {
     /// Retain the positive finite domain of a scale after reparameterization.
     pub fn positive_support(&mut self, x: NodeId) -> NodeId {
         let node = self.add_node(Op::PositiveSupport { x }, None);
-        self.logp_terms.push(node);
-        node
-    }
-
-    pub fn uniform_logp(&mut self, x: NodeId, lower: NodeId, upper: NodeId) -> NodeId {
-        let node = self.add_node(Op::UniformLogP { x, lower, upper }, None);
         self.logp_terms.push(node);
         node
     }
@@ -1483,18 +1441,6 @@ impl Graph {
     /// Density in log-parameter space, including the exp Jacobian.
     pub fn log_gamma_logp(&mut self, x: NodeId, alpha: NodeId, beta: NodeId) -> NodeId {
         let node = self.add_node(Op::LogGammaLogP { x, alpha, beta }, None);
-        self.logp_terms.push(node);
-        node
-    }
-
-    pub fn gamma_logp(&mut self, x: NodeId, alpha: NodeId, beta: NodeId) -> NodeId {
-        let node = self.add_node(Op::GammaLogP { x, alpha, beta }, None);
-        self.logp_terms.push(node);
-        node
-    }
-
-    pub fn beta_logp(&mut self, x: NodeId, alpha: NodeId, beta: NodeId) -> NodeId {
-        let node = self.add_node(Op::BetaLogP { x, alpha, beta }, None);
         self.logp_terms.push(node);
         node
     }
@@ -1553,22 +1499,6 @@ impl Graph {
                 } else {
                     None
                 }
-            })
-            .collect()
-    }
-
-    /// Backward-compatible helper for the current Normal-only API surface.
-    #[deprecated(note = "use observation_heads for all supported families")]
-    pub fn normal_obs_predictors(&self) -> Vec<(NodeId, NodeId, usize)> {
-        self.observation_heads()
-            .into_iter()
-            .filter_map(|head| match head.family {
-                ObsFamily::Normal => Some((head.linpred, head.aux.unwrap(), head.n_obs)),
-                ObsFamily::BernoulliLogit
-                | ObsFamily::PoissonLog
-                | ObsFamily::ExponentialLog
-                | ObsFamily::LogNormal
-                | ObsFamily::NegativeBinomialLog => None,
             })
             .collect()
     }
@@ -1843,6 +1773,14 @@ impl Graph {
     pub fn validate_shapes(&self) -> Result<usize, GraphShapeError> {
         let binding =
             DataBinding::from_graph(self).map_err(|e| GraphShapeError::new(e.to_string()))?;
+        // The same coverage check the evaluator makes, for the same reason:
+        // `validate_node_lengths` indexes the binding at the raw slot indices
+        // the graph carries. Without it, `broadcast_observation(p, 0)` on a
+        // graph with no observation payload -- both public builders -- indexes
+        // an empty vector and panics, and because `sampler::sample` validates
+        // shapes before it does anything else, that panic came out of `sample`
+        // in place of the `Result` it promises.
+        crate::autodiff::validate_slot_coverage(self, &binding)?;
         crate::autodiff::validate_node_lengths(self, &binding)?;
         Ok(binding.n_obs())
     }

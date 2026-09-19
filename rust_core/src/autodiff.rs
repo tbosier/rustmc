@@ -53,19 +53,77 @@ fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), Gr
     binding
         .validate_for(graph)
         .map_err(|error| GraphShapeError::new(error.to_string()))?;
+    validate_slot_coverage(graph, binding)
+}
+
+/// Check that `binding` provides every slot the graph indexes by raw index.
+///
+/// Separate from [`validate_binding_slots`] because it has to run before
+/// [`validate_node_lengths`], which reads those slots directly, and
+/// `validate_node_lengths` has a second caller in [`Graph::validate_shapes`]
+/// that has no evaluator and no reason to re-run the payload validation.
+pub(crate) fn validate_slot_coverage(
+    graph: &Graph,
+    binding: &DataBinding,
+) -> Result<(), GraphShapeError> {
     let mut required_vectors = 0usize;
     let mut required_observations = 0usize;
     let mut required_matrices = 0usize;
     for node in &graph.nodes {
+        // Exhaustive and deliberately without a catch-all, for the reason
+        // [`Op::visit_dependencies`] gives. An op that reads a binding slot by
+        // raw index -- not through a node id and not through the parameter
+        // vector -- has to be counted here or the slot it reads is never
+        // checked against the binding, and `validate_node_lengths` then indexes
+        // past the end of a binding this function has just called complete.
+        // `_ => {}` silently gave every new variant the wrong answer;
+        // `Op::BroadcastObservation` and `Op::FusedLinearMu` were already
+        // sitting in it.
         match &node.op {
             Op::Data(index) => required_vectors = required_vectors.max(*index + 1),
-            Op::ObsLogP { obs_data_idx, .. } => {
+            // Predictor columns stored with `store_data_vec`, which creates no
+            // `Op::Data` node to be counted above.
+            Op::FusedLinearMu { data_indices, .. } => {
+                for index in data_indices {
+                    required_vectors = required_vectors.max(*index + 1);
+                }
+            }
+            Op::ObsLogP { obs_data_idx, .. } | Op::BroadcastObservation { obs_data_idx, .. } => {
                 required_observations = required_observations.max(*obs_data_idx + 1)
             }
             Op::MatVecMul { matrix_idx, .. } => {
                 required_matrices = required_matrices.max(*matrix_idx + 1)
             }
-            _ => {}
+            // Everything else reaches its inputs through a node id or the
+            // parameter vector, so the slots it depends on are counted by
+            // whichever op above owns them.
+            Op::Elementwise { .. }
+            | Op::Gather { .. }
+            | Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::ScalarMulData(_, _)
+            | Op::VectorAdd(_, _)
+            | Op::ScalarBroadcastAdd(_, _)
+            | Op::ScalarBroadcast(_)
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => {}
         }
     }
     if binding.vectors.len() < required_vectors
@@ -187,7 +245,33 @@ pub(crate) fn validate_node_lengths(
                 }
                 0
             }
-            _ => 0,
+            // Scalar-valued ops: length zero. Exhaustive and deliberately
+            // without a catch-all, for the reason [`Op::visit_dependencies`]
+            // gives -- under `_ => 0` a new vector-producing variant would be
+            // given length zero, its elements would never be allocated in
+            // `vec_buf`, and the shape would be silently wrong rather than a
+            // build failure.
+            Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => 0,
         };
         let vector_dim = |i: usize| {
             graph
@@ -251,7 +335,31 @@ pub(crate) fn validate_node_lengths(
                 }
                 None
             }
-            _ => None,
+            // Scalar-valued ops carry no named dimension. Same exhaustiveness
+            // rule as the length match above: `_ => None` would let a new
+            // vector-producing variant opt out of the dimension agreement
+            // check without anyone noticing it had.
+            Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => None,
         };
         dimensions.push(dimension);
         lengths.push(len);
@@ -269,8 +377,14 @@ impl Evaluator {
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
+        // Coverage first: the length pass reads `binding.vectors[i]`,
+        // `binding.observations[i]` and `binding.matrices[i]` at the raw indices
+        // the graph carries, so a missing slot is an out-of-bounds index there
+        // rather than an error. Nothing else moves -- a binding that covers its
+        // slots reaches the length pass and the payload validation in the order
+        // it always did.
+        validate_slot_coverage(graph, &binding)?;
         let node_lengths = validate_node_lengths(graph, &binding)?;
-
         validate_binding_slots(graph, &binding)?;
 
         let mut node_kind = Vec::with_capacity(n);
@@ -321,6 +435,7 @@ impl Evaluator {
 
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
+        validate_slot_coverage(graph, &binding)?;
         validate_binding_slots(graph, &binding)?;
         if validate_node_lengths(graph, &binding)? == self.node_lengths {
             self.binding = binding;
@@ -362,20 +477,19 @@ impl Evaluator {
         self.read_vec(node.0, i, graph)
     }
 
-    /// Copy a full vector node into a Vec after `compute()`.
-    #[deprecated(note = "prefer node_len and vec_elem to avoid allocation")]
-    pub fn vec_to_owned(&self, node: NodeId, graph: &Graph) -> Vec<f64> {
-        (0..self.node_lengths[node.0])
-            .map(|i| self.read_vec(node.0, i, graph))
-            .collect()
-    }
-
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         // === Forward pass ===
         for node in &graph.nodes {
             let idx = node.id.0;
+            // The one match over `Op` here that keeps its catch-all. Unlike the
+            // shape passes above, the default is not a guess that a new variant
+            // could silently fall into: a node's own length *is* its length, so
+            // `node_lengths[idx]` is right for every variant that exists and
+            // every variant that could be added. `Op::ObsLogP` is the single
+            // exception because it is a scalar node -- length zero -- that still
+            // has to walk its observation vector.
             let vl = match &node.op {
                 Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
                 _ => self.node_lengths[idx],
@@ -479,10 +593,6 @@ impl Evaluator {
                     self.scalars[idx] =
                         log_half_normal_logp(self.scalars[x.0], self.scalars[sigma.0]);
                 }
-                Op::HalfNormalLogP { x, sigma } => {
-                    self.scalars[idx] =
-                        half_normal_logp_scalar(self.scalars[x.0], self.scalars[sigma.0]);
-                }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
                     self.scalars[idx] = student_t_logp_scalar(
                         self.scalars[x.0],
@@ -499,13 +609,6 @@ impl Evaluator {
                         f64::NEG_INFINITY
                     };
                 }
-                Op::UniformLogP { x, lower, upper } => {
-                    self.scalars[idx] = uniform_logp_scalar(
-                        self.scalars[x.0],
-                        self.scalars[lower.0],
-                        self.scalars[upper.0],
-                    );
-                }
                 Op::BernoulliLogP { x, p } => {
                     self.scalars[idx] = bernoulli_logp_scalar(self.scalars[x.0], self.scalars[p.0]);
                 }
@@ -514,20 +617,6 @@ impl Evaluator {
                 }
                 Op::LogGammaLogP { x, alpha, beta } => {
                     self.scalars[idx] = log_gamma_logp(
-                        self.scalars[x.0],
-                        self.scalars[alpha.0],
-                        self.scalars[beta.0],
-                    );
-                }
-                Op::GammaLogP { x, alpha, beta } => {
-                    self.scalars[idx] = gamma_logp_scalar(
-                        self.scalars[x.0],
-                        self.scalars[alpha.0],
-                        self.scalars[beta.0],
-                    );
-                }
-                Op::BetaLogP { x, alpha, beta } => {
-                    self.scalars[idx] = beta_logp_scalar(
                         self.scalars[x.0],
                         self.scalars[alpha.0],
                         self.scalars[beta.0],
@@ -793,6 +882,13 @@ impl Evaluator {
 
         for node in graph.nodes.iter().rev() {
             let idx = node.id.0;
+            // The one match over `Op` here that keeps its catch-all. Unlike the
+            // shape passes above, the default is not a guess that a new variant
+            // could silently fall into: a node's own length *is* its length, so
+            // `node_lengths[idx]` is right for every variant that exists and
+            // every variant that could be added. `Op::ObsLogP` is the single
+            // exception because it is a scalar node -- length zero -- that still
+            // has to walk its observation vector.
             let vl = match &node.op {
                 Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
                 _ => self.node_lengths[idx],
@@ -961,14 +1057,6 @@ impl Evaluator {
                         self.adj_scalars[sigma.0] += a_s * ((z2 - 1.0) / scale);
                     }
                 }
-                Op::HalfNormalLogP { x, sigma } => {
-                    let xv = self.scalars[x.0];
-                    let sv = self.scalars[sigma.0];
-                    if xv >= 0.0 {
-                        self.adj_scalars[x.0] += a_s * (-(xv / sv) / sv);
-                        self.adj_scalars[sigma.0] += a_s * (((xv / sv).powi(2) - 1.0) / sv);
-                    }
-                }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
                     let (dx, dsigma, dnu) = student_t_derivatives(
                         self.scalars[x.0],
@@ -982,15 +1070,6 @@ impl Evaluator {
                     self.adj_scalars[nu.0] += a_s * dnu;
                 }
                 Op::PositiveSupport { .. } => {}
-                Op::UniformLogP { x: _, lower, upper } => {
-                    let lv = self.scalars[lower.0];
-                    let uv = self.scalars[upper.0];
-                    let range = uv - lv;
-                    if range > 0.0 {
-                        self.adj_scalars[lower.0] += a_s / range;
-                        self.adj_scalars[upper.0] -= a_s / range;
-                    }
-                }
                 Op::BernoulliLogP { x, p } => {
                     self.adj_scalars[p.0] +=
                         a_s * bernoulli_logp_dp(self.scalars[x.0], self.scalars[p.0]);
@@ -1009,28 +1088,6 @@ impl Evaluator {
                         self.adj_scalars[x.0] += a_s * (a - scaled);
                         self.adj_scalars[alpha.0] += a_s * (log_scaled - digamma(a));
                         self.adj_scalars[beta.0] += a_s * ((a - scaled) / rate);
-                    }
-                }
-                Op::GammaLogP { x, alpha, beta } => {
-                    let xv = self.scalars[x.0];
-                    let av = self.scalars[alpha.0];
-                    let bv = self.scalars[beta.0];
-                    if xv > 0.0 {
-                        self.adj_scalars[x.0] += a_s * ((av - 1.0) / xv - bv);
-                        self.adj_scalars[alpha.0] += a_s * (bv.ln() - digamma(av) + xv.ln());
-                        self.adj_scalars[beta.0] += a_s * (av / bv - xv);
-                    }
-                }
-                Op::BetaLogP { x, alpha, beta } => {
-                    let xv = self.scalars[x.0];
-                    let av = self.scalars[alpha.0];
-                    let bv = self.scalars[beta.0];
-                    if xv > 0.0 && xv < 1.0 {
-                        self.adj_scalars[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
-                        self.adj_scalars[alpha.0] +=
-                            a_s * (digamma(av + bv) - digamma(av) + xv.ln());
-                        self.adj_scalars[beta.0] +=
-                            a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                     }
                 }
                 Op::ObsLogP {
@@ -1425,14 +1482,6 @@ fn log_gamma_logp(raw: f64, alpha: f64, beta: f64) -> f64 {
     alpha * z - ln_gamma(alpha) - z.exp()
 }
 
-fn half_normal_logp_scalar(x: f64, sigma: f64) -> f64 {
-    if x < 0.0 || !sigma.is_finite() || sigma <= 0.0 {
-        return f64::NEG_INFINITY;
-    }
-    let z = x / sigma;
-    0.5 * (2.0 / std::f64::consts::PI).ln() - sigma.ln() - 0.5 * z * z
-}
-
 fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
     if !nu.is_finite() || nu <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
         return f64::NEG_INFINITY;
@@ -1468,14 +1517,6 @@ fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64
 
 fn uniform_bounds_valid(lower: f64, upper: f64) -> bool {
     lower.is_finite() && upper.is_finite() && lower < upper && (upper - lower).is_finite()
-}
-
-fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
-    if !uniform_bounds_valid(lower, upper) || !x.is_finite() || x < lower || x > upper {
-        f64::NEG_INFINITY
-    } else {
-        -(upper - lower).ln()
-    }
 }
 
 /// Bernoulli log mass. `-inf` off the support, which is `{0, 1}`.
@@ -1578,22 +1619,6 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     // a negative infinity for a limit that is positive. `count_sampling::log_mass`
     // treats both zeros identically through its `rate == 0.0` branch.
     (x - lam) / (lam + 0.0)
-}
-
-fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
-    if x <= 0.0 {
-        return f64::NEG_INFINITY;
-    }
-    alpha * beta.ln() - ln_gamma(alpha) + (alpha - 1.0) * x.ln() - beta * x
-}
-
-fn beta_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
-    if x <= 0.0 || x >= 1.0 {
-        return f64::NEG_INFINITY;
-    }
-    ln_gamma(alpha + beta) - ln_gamma(alpha) - ln_gamma(beta)
-        + (alpha - 1.0) * x.ln()
-        + (beta - 1.0) * (1.0 - x).ln()
 }
 
 pub(crate) fn softplus(x: f64) -> f64 {
@@ -1843,15 +1868,6 @@ mod tests {
     }
 
     #[test]
-    fn test_half_normal_gradient() {
-        let mut g = Graph::new();
-        let x = g.add_param("x");
-        let sigma = g.add_constant(2.0);
-        g.half_normal_logp(x, sigma);
-        finite_diff_check(&g, &[1.5], 1e-4);
-    }
-
-    #[test]
     fn test_student_t_gradient() {
         let mut g = Graph::new();
         let x = g.add_param("x");
@@ -1860,26 +1876,6 @@ mod tests {
         let sigma = g.add_constant(2.0);
         g.student_t_logp(x, nu, mu, sigma);
         finite_diff_check(&g, &[1.8], 1e-4);
-    }
-
-    #[test]
-    fn test_gamma_gradient() {
-        let mut g = Graph::new();
-        let x = g.add_param("x");
-        let alpha = g.add_constant(2.0);
-        let beta = g.add_constant(1.5);
-        g.gamma_logp(x, alpha, beta);
-        finite_diff_check(&g, &[1.2], 1e-4);
-    }
-
-    #[test]
-    fn test_beta_gradient() {
-        let mut g = Graph::new();
-        let x = g.add_param("x");
-        let alpha = g.add_constant(2.0);
-        let beta = g.add_constant(5.0);
-        g.beta_logp(x, alpha, beta);
-        finite_diff_check(&g, &[0.3], 1e-4);
     }
 
     #[test]

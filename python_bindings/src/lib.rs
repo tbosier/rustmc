@@ -2251,16 +2251,14 @@ impl PyCompiledModel {
                     let display_result = display_sample_result(&raw_result, &self.display_params)?;
                     let binding = binding.map_err(PyValueError::new_err)?;
                     Ok(BatchResult {
-                        full_fit: Some(StoredBatchFit::Bound(Arc::new(
-                            generic_results::BoundBatchFit {
-                                structure: Arc::clone(&self.structure),
-                                binding,
-                                raw_result,
-                                display_result,
-                                likelihood_names: self.likelihood_names.clone(),
-                                definition: self.definition.clone(),
-                            },
-                        ))),
+                        full_fit: StoredBatchFit::Bound(Arc::new(generic_results::BoundBatchFit {
+                            structure: Arc::clone(&self.structure),
+                            binding,
+                            raw_result,
+                            display_result,
+                            likelihood_names: self.likelihood_names.clone(),
+                            definition: self.definition.clone(),
+                        })),
                     })
                 }
             });
@@ -2303,33 +2301,30 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 
 /// One cell of a batch run.
 ///
-/// Everything this exposes is read off the retained fit's display draws. It
-/// used to also hold a flattened `BatchModelResult` copy of those same draws,
-/// which made a third posterior per cell alongside the raw and display trees.
+/// Everything this exposes is read off the retained fit, which every cell
+/// has: both construction sites supply one, so the accessors are infallible.
+/// The fit used to be optional, and the `None` arm manufactured an error for
+/// a "legacy" cell that no code path could produce. It used to also hold a
+/// flattened `BatchModelResult` copy of the display draws, which made a third
+/// posterior per cell alongside the raw and display trees.
 #[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct BatchResult {
-    full_fit: Option<StoredBatchFit>,
+    full_fit: StoredBatchFit,
 }
 
 impl BatchResult {
-    /// Display draws for this cell, or the legacy-construction error.
-    fn display(&self) -> PyResult<&SampleResult> {
-        Ok(self.stored_fit()?.display())
-    }
-
-    fn stored_fit(&self) -> PyResult<&StoredBatchFit> {
-        self.full_fit
-            .as_ref()
-            .ok_or_else(|| PyValueError::new_err("legacy batch result has no retained fit"))
+    /// Display draws for this cell.
+    fn display(&self) -> &SampleResult {
+        self.full_fit.display()
     }
 }
 #[pymethods]
 impl BatchResult {
     /// Internal regression-test hook: compare immutable payload ownership without exposing addresses.
     fn _shares_data(&self, other: &BatchResult, key: &str) -> bool {
-        match (self.full_fit.as_ref(), other.full_fit.as_ref()) {
-            (Some(StoredBatchFit::Bound(a)), Some(StoredBatchFit::Bound(b))) => {
+        match (&self.full_fit, &other.full_fit) {
+            (StoredBatchFit::Bound(a), StoredBatchFit::Bound(b)) => {
                 a.binding.shares_payload_with(&b.binding, key)
             }
             _ => false,
@@ -2338,50 +2333,37 @@ impl BatchResult {
     /// Internal regression-test hook: how many distinct posterior sample trees
     /// this cell retains. One when the display layer passes the raw draws
     /// through unchanged, two when a parameter is genuinely derived.
-    fn _posterior_allocations(&self) -> PyResult<usize> {
-        let stored = self.stored_fit()?;
-        Ok(if std::ptr::eq(stored.raw(), stored.display()) {
+    fn _posterior_allocations(&self) -> usize {
+        if std::ptr::eq(self.full_fit.raw(), self.full_fit.display()) {
             1
         } else {
             2
-        })
+        }
     }
 
     /// Internal regression-test hook: whether `fit` reuses this cell's retained
     /// posterior rather than holding a copy of it. Compares ownership without
     /// exposing addresses.
     fn _shares_posterior_with(&self, fit: &FitResult) -> bool {
-        match self.stored_fit() {
-            Ok(stored) => {
-                std::ptr::eq(stored.raw(), &*fit.raw_result)
-                    && std::ptr::eq(stored.display(), &*fit.display_result)
-            }
-            Err(_) => false,
-        }
+        std::ptr::eq(self.full_fit.raw(), &*fit.raw_result)
+            && std::ptr::eq(self.full_fit.display(), &*fit.display_result)
     }
 
     #[getter]
-    fn fit(&self) -> PyResult<FitResult> {
-        self.full_fit
-            .as_ref()
-            .map(StoredBatchFit::materialize)
-            .ok_or_else(|| {
-                PyValueError::new_err(
-                    "legacy batch result has no prediction graph; use CompiledModel.sample_batch",
-                )
-            })
+    fn fit(&self) -> FitResult {
+        self.full_fit.materialize()
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        generic_results::diagnostics(self.stored_fit()?.display(), py)
+        generic_results::diagnostics(self.full_fit.display(), py)
     }
 
-    fn summary(&self) -> PyResult<String> {
-        Ok(self.stored_fit()?.display().diagnostics().to_table())
+    fn summary(&self) -> String {
+        self.full_fit.display().diagnostics().to_table()
     }
 
     fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        generic_results::transition_diagnostics(self.stored_fit()?.raw(), py)
+        generic_results::transition_diagnostics(self.full_fit.raw(), py)
     }
 
     #[pyo3(signature = (data=None, seed=42, expected=false, sizes=None))]
@@ -2393,11 +2375,11 @@ impl BatchResult {
         expected: bool,
         sizes: Option<HashMap<String, usize>>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        self.fit()?.predict(py, data, seed, expected, sizes)
+        self.fit().predict(py, data, seed, expected, sizes)
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display()?;
+        let display = self.display();
         let dict = PyDict::new(py);
         let n_chains = display.samples.len();
         let n_draws = display.samples.first().map_or(0, Vec::len);
@@ -2414,7 +2396,7 @@ impl BatchResult {
     }
 
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display()?;
+        let display = self.display();
         let means = display.mean();
         let dict = PyDict::new(py);
         for (name, val) in display.param_names.iter().zip(means.iter()) {
@@ -2424,7 +2406,7 @@ impl BatchResult {
     }
 
     fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display()?;
+        let display = self.display();
         let stds = display.std();
         let dict = PyDict::new(py);
         for (name, val) in display.param_names.iter().zip(stds.iter()) {
@@ -2434,7 +2416,7 @@ impl BatchResult {
     }
 
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display()?;
+        let display = self.display();
         let dict = PyDict::new(py);
         for (pidx, name) in display.param_names.iter().enumerate() {
             let vals: Vec<f64> = display
@@ -2450,42 +2432,42 @@ impl BatchResult {
     }
 
     #[getter]
-    fn chains(&self) -> PyResult<usize> {
-        Ok(self.display()?.samples.len())
+    fn chains(&self) -> usize {
+        self.display().samples.len()
     }
 
     #[getter]
-    fn draws(&self) -> PyResult<usize> {
-        Ok(self.display()?.samples.first().map_or(0, Vec::len))
+    fn draws(&self) -> usize {
+        self.display().samples.first().map_or(0, Vec::len)
     }
 
     #[getter]
-    fn accept_rate(&self) -> PyResult<f64> {
-        let rates = &self.display()?.accept_rates;
-        Ok(if rates.is_empty() {
+    fn accept_rate(&self) -> f64 {
+        let rates = &self.display().accept_rates;
+        if rates.is_empty() {
             0.0
         } else {
             rates.iter().sum::<f64>() / rates.len() as f64
-        })
+        }
     }
 
     #[getter]
-    fn accept_rates(&self) -> PyResult<Vec<f64>> {
-        Ok(self.display()?.accept_rates.clone())
+    fn accept_rates(&self) -> Vec<f64> {
+        self.display().accept_rates.clone()
     }
 
     #[getter]
-    fn divergences(&self) -> PyResult<usize> {
-        Ok(self.display()?.total_divergences())
+    fn divergences(&self) -> usize {
+        self.display().total_divergences()
     }
 
     #[getter]
-    fn divergences_per_chain(&self) -> PyResult<Vec<usize>> {
-        Ok(self.display()?.divergences.clone())
+    fn divergences_per_chain(&self) -> Vec<usize> {
+        self.display().divergences.clone()
     }
 
-    fn __repr__(&self) -> PyResult<String> {
-        let display = self.display()?;
+    fn __repr__(&self) -> String {
+        let display = self.display();
         let means = display.mean();
         let parts: Vec<String> = display
             .param_names
@@ -2493,12 +2475,12 @@ impl BatchResult {
             .zip(means.iter())
             .map(|(n, m)| format!("{}={:.4}", n, m))
             .collect();
-        Ok(format!(
+        format!(
             "BatchResult({} chains × {} draws, {})",
             display.samples.len(),
             display.samples.first().map_or(0, Vec::len),
             parts.join(", ")
-        ))
+        )
     }
 }
 
@@ -2684,13 +2666,13 @@ fn batch_sample(
             });
             let display_result = display_sample_result(&raw, &compiled.display_params)?;
             Ok(BatchResult {
-                full_fit: Some(StoredBatchFit::Ready(Arc::new(FitResult {
+                full_fit: StoredBatchFit::Ready(Arc::new(FitResult {
                     raw_result: raw,
                     display_result,
                     graph: compiled.graph.clone(),
                     likelihood_names: compiled.likelihood_names.clone(),
                     definition: spec.borrow().structure_definition(),
-                }))),
+                })),
             })
         })
         .collect()
