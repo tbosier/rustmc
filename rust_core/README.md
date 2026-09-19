@@ -21,9 +21,10 @@ Python package. It combines graph-based Bayesian sampling with specialized algor
 for model structures that admit more direct inference, including conjugate and linear
 Gaussian state-space methods. The two are genuinely separate: the forecasting modules
 (`structural`, `bayesian_*`, `dynamic_glm`, `hurdle`, `runoff`, `hierarchical`) do not
-use `graph`, `autodiff`, `nuts` or `hmc` at all. What they share with the graph path is
-`state_space`, `diagnostics` and `forecast_diagnostics`, and — through the binding
-layer — the `forecast_batch` executor.
+use `graph`, `autodiff`, `nuts` or `hmc` at all. `state_space` and
+`forecast_diagnostics` are shared among those modules but are not used by the graph
+sampler either. The two paths genuinely share `diagnostics`, and `forecast_batch`,
+which `sampler` imports directly rather than through the binding layer.
 
 The Rust API is alpha and currently favors explicit model configuration over a broad
 probabilistic-programming language. It is useful when inference must run inside a Rust

@@ -11,13 +11,18 @@ below must not be quoted as a rustmc performance or accuracy claim.** It does no
 the evidence bar that [`benchmarks/README.md`](../benchmarks/README.md) sets for
 publishing a comparison. Four requirements are unmet:
 
-- **No convergence diagnostics were retained.** The protocol requires a maximum
-  rank-normalized R-hat below a declared threshold and divergence counts that are zero
-  or explained. `results/rustmc_results.json` records no R-hat, no effective sample
-  size, and no divergence count for any of the six fits, and `run_rustmc_forecast.py`
-  never computes them. `results/rustmc_diagnostics.json` holds only the one candidate
-  that was excluded for being slow. Nothing here shows the reported posteriors
-  converged, so none of the accuracy or interval rows can be interpreted.
+- **No convergence diagnostics were retained for the monthly arm.** The protocol
+  requires a maximum rank-normalized R-hat below a declared threshold and divergence
+  counts that are zero or explained. `results/rustmc_results.json` records no R-hat, no
+  effective sample size, and no divergence count for any of the six fits, and
+  `run_rustmc_forecast.py` never computes them. `results/rustmc_diagnostics.json` holds
+  only the one candidate that was excluded for being slow. This bites hardest on the
+  three monthly cases, which all selected the drift-adjusted seasonal local level — a
+  Gibbs/FFBS sampler whose draws are a Markov chain, so their accuracy and coverage
+  rows cannot be interpreted without it. The three weekly cases selected a Bayesian
+  AR(52), whose draws are exact and independent from the conjugate posterior with no
+  warmup, so R-hat and ESS are not the relevant check there; what is still missing for
+  them is provenance and repetition, below.
 - **No exact revision.** Package versions are recorded but no commit is. The protocol
   requires the exact revision.
 - **Measured against rustmc 0.9.0**, four minor versions behind the current 0.13.0. The
@@ -33,15 +38,18 @@ each engine something different. That is defensible for a comparison of medium-e
 workflows, but it is not the matched-work comparison the protocol describes, and the
 two should not be confused.
 
-To publish any of this, rerun it at a named revision on current rustmc, record
-per-fit R-hat, ESS and divergences, and take at least three repetitions. Otherwise the
+To publish any of this, rerun it at a named revision on current rustmc, record per-fit
+R-hat, ESS and divergences wherever the kernel is a Markov chain, and take at least
+three repetitions. Otherwise the
 directory should be removed; the honest sentence about short-series forecasting is the
 one already in the README, which promises nothing this cannot support.
 
 ## Bottom line
 
 Read this section as a record of what one unrepeated run suggested, not as a finding.
-No fit in it was checked for convergence, so nothing below is established.
+The monthly numbers rest on Gibbs/FFBS fits that were never checked for convergence.
+The weekly numbers come from exact independent draws, so they do not need that check,
+but they are still one run at an unrecorded revision.
 
 rustmc is already useful for short seasonal series, particularly at monthly frequency.
 It produced the lowest MAE on the monthly medium and hard cases and was effectively tied
@@ -149,7 +157,10 @@ selection origins, and candidate scores are recorded in
 [`results/rustmc_results.json`](results/rustmc_results.json) and explained in
 [`results/rustmc_method.md`](results/rustmc_method.md). Convergence diagnostics are
 not: no R-hat, effective sample size, or divergence count was recorded for any fit.
-That is the main reason this study is not publishable as it stands.
+For the three monthly Gibbs/FFBS fits that is the main reason this study is not
+publishable as it stands. The weekly AR(52) fits draw exactly and independently from
+the conjugate posterior with no warmup, so they need provenance and repeated timings
+rather than convergence evidence.
 
 ### LightGBM
 

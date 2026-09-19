@@ -8,13 +8,16 @@ comparisons written with `ModelBuilder` run on the graph-based NUTS/HMC sampler.
 forecasting models — structural, seasonal, AR, dynamic GLM, hurdle, runoff, and the
 Gaussian hierarchy — are hand-written samplers that do not use that graph, its
 autodiff, or its samplers at all. Nor are they one kernel: Gibbs with FFBS for the
-Gaussian state-space models, exact conjugate draws for AR, latent-count Gibbs for
-runoff, and block elliptical slice sampling for dynamic GLMs.
+Gaussian state-space models, exact conjugate draws for AR, block elliptical slice
+sampling for dynamic GLMs, and for runoff either exact conjugate draws or latent-count
+Gibbs, depending on whether every ultimate total is known.
 
-What they all share is everything around inference: the state-space primitives, the
-diagnostics layer, forecast evaluation, the batch executor, and one result and
-prediction surface in Python. Work on that shared layer reaches every model. Work on a
-sampler reaches one.
+What they share is worth stating precisely, because it decides which work pays off
+twice. `diagnostics` is common to every model. The batch executor is shared inside
+Rust. The Python result and prediction surface is common. `state_space` and
+`forecast_diagnostics` are shared among the forecasting models only; the graph sampler
+does not use them. So work on diagnostics, batching or the result surface reaches
+every model, and work on a kernel reaches one.
 
 These are the next five features, in dependency order. Each needs tests, documentation,
 and a working example before it is complete.

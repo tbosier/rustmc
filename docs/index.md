@@ -31,8 +31,8 @@ The project is alpha. The Python package is supported; the Rust API is still cha
 
 ## A complete example
 
-This estimates an instrument's offset, gain, and measurement noise, then reuses the
-same compiled model on a shorter dataset from a second instrument.
+This estimates an instrument's offset, gain, and measurement noise, then refits the
+same compiled model to a shorter dataset without rebuilding it.
 
 ```python
 import numpy as np
@@ -55,7 +55,8 @@ fit = compiled.sample(
 )
 print(fit.summary())
 
-# Same compiled model, a different instrument with fewer readings.
+# Same compiled model, fewer readings. A real second instrument would supply
+# its own x and y here; this reuses the first 40 rows to keep the example short.
 second = compiled.sample(
     {"x": x[:40], "y": y[:40]}, chains=4, warmup=1000, draws=1000, seed=7,
     show_progress=False,
@@ -89,29 +90,40 @@ x86-64. Sampling is deterministic for a given seed, build, and platform; digits 
 the last places can differ elsewhere.
 
 The `hdi_3%` and `hdi_97%` columns are the shortest intervals containing 94% of the
-draws, not equal-tailed quantiles. R-hat near one, ample effective sample size, and
-zero divergences say the sampler explored this posterior; they do not say the model
-describes your data. Compare predictive draws against observations as well.
+draws, not equal-tailed quantiles.
 
-The data were generated with offset 0.3 and gain 1.2. The second fit, with 40 readings
-instead of 100, recovers the same values with visibly wider intervals — that is the
-point of keeping the posterior.
+R-hat near one, ample effective sample size and zero divergences mean the chains that
+ran agree with each other and show no obvious pathology. They cannot show that a region
+of the posterior was never visited — four chains that all miss the same mode agree
+perfectly — and they say nothing about whether the model describes your data. Treat
+them as necessary, not sufficient, and compare predictive draws against observations
+as well.
 
-## Two engines, one result surface
+The data were generated with offset 0.3 and gain 1.2, and both fits cover those values.
+The second is much less certain: the posterior standard deviation on `offset` goes from
+0.0156 to 0.0749. Some of that is the smaller sample and some is the narrower predictor
+range, since `x[:40]` spans only part of the original sweep — the two are not separable
+here. The point is that the width is reported rather than assumed.
+
+## Two inference paths
 
 Models you write with `ModelBuilder` compile to a differentiable graph and are fitted
 by NUTS or HMC. The forecasting models — structural, seasonal, AR, dynamic GLM,
 hurdle, runoff, and the Gaussian hierarchy — are separate hand-written samplers that do
 not use that graph at all. Each exploits structure the general sampler cannot: Gibbs
-with FFBS, exact conjugate draws, latent-count Gibbs, or block elliptical slice
-sampling, depending on the model.
+with FFBS, exact conjugate draws, block elliptical slice sampling, or a choice between
+two kernels, depending on the model.
 
-They share everything around inference: the state-space primitives, the diagnostics,
-forecast evaluation, the batch executor, and one result and prediction API. So
-`fit.summary()` reads the same way either way, but a change to NUTS does not change a
-forecast. The one difference worth knowing: these samplers have no notion of a
-divergence or an accept rate, so those fields are `None` on a forecasting fit. R-hat,
-ESS and MCSE mean what they always did.
+`diagnostics` is shared, so R-hat, ESS and MCSE are computed by the same code for every
+fit, and `summary()` and `diagnostics()` read the same way wherever you find them. The
+objects around them are not uniform: a graph fit's `predict()` returns a dict of arrays,
+while a forecasting fit's `forecast(steps)` returns a forecast object, and `RunoffFit`
+has neither. The guide for each model says what it returns.
+
+Two things to know about a forecasting fit: it has no notion of a divergence or an
+accept rate, so those fields are `None`; and where its draws are exact and independent
+there is no warmup and no convergence period at all. `sampler_stats` says which kernel
+ran.
 
 ## Where to go next
 
@@ -121,4 +133,6 @@ ESS and MCSE mean what they always did.
   dimensions, prediction, and saving a model.
 - **[Forecasting workflows](forecasting-workflows.md)** — fitting, predicting, and
   backtesting time series.
-- **[API reference](reference.md)** — every public class and its stated limits.
+- **[API reference](reference.md)** — per-class arguments, output shapes, and stated
+  limits. It does not yet cover every public class; `StructuralModel` and
+  `BayesianDynamicGLM` are documented in their guides instead.

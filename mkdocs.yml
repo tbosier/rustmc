@@ -75,11 +75,12 @@ nav:
 # The site has shipped orphan pages before: a file under docs/ that no nav entry
 # reached, and a nav entry pointing at a file that had been renamed.
 #
-# `strict` lives here rather than on the command line on purpose. The deploy
-# workflow runs `mkdocs gh-deploy --force`, which takes no --strict flag, so a
-# CLI-only setting would catch these locally and miss them in the job that
-# actually publishes the site. With this set, every warning below fails the
-# build wherever it runs.
+# `strict` lives here rather than on the command line on purpose. `gh-deploy`
+# does accept --strict, but the deploy workflow runs `mkdocs gh-deploy --force`
+# without it, and that workflow is not editable from this branch. Setting it
+# here makes every warning below fail the build wherever it runs, including in
+# the job that actually publishes the site, and it cannot be dropped by
+# someone editing a command line later.
 strict: true
 
 # `error` is not an accepted value for the nav sub-options; `warn` plus the

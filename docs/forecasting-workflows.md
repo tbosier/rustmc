@@ -10,14 +10,21 @@ particular model: [structural composition](structural-forecasting.md),
 
 These models do not use `ModelBuilder` or the NUTS sampler. Each has its own
 constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models,
-exact conjugate draws for AR, latent-count Gibbs for runoff, and block elliptical slice
-sampling for dynamic GLMs. A fit's `sampler_stats` names the one that ran.
+exact conjugate draws for AR, block elliptical slice sampling for dynamic GLMs, and for
+runoff either exact conjugate draws or latent-count Gibbs, depending on whether every
+ultimate total is known. A fit's `sampler_stats` names the one that ran. Where the
+draws are exact and independent there is no warmup and no convergence period, so read
+`sampler_stats` before interpreting a diagnostic.
 
 They return their own fit classes rather than the `FitResult` from
-[Get started](getting-started.md), but `summary()`, `diagnostics()` and
-`get_samples_2d()` read the same way. One difference: none of these samplers has a
-divergence or an accept rate, so `sampler_stats` reports both as `None`. R-hat, ESS and
-MCSE apply as before.
+[Get started](getting-started.md). `summary()`, `diagnostics()` and `sampler_stats`
+are common to all of them. Beyond that they diverge: most expose `get_samples_2d()` and
+`forecast(steps)`, but `RunoffFit` does neither — it exposes `allocation_samples()`,
+`ultimate_samples()`, `calendar_samples(steps)` and the other arrays described in
+[payment runoff](runoff.md). Check the page for the model you are using.
+
+One difference from a graph fit: none of these samplers has a divergence or an accept
+rate, so `sampler_stats` reports both as `None`. R-hat, ESS and MCSE apply as before.
 
 The Python package combines native inference with reusable evaluation and result tools.
 Forecasts have leading `(chain, draw)` axes and a final horizon axis. Panel forecasts

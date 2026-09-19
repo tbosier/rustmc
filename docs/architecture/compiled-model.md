@@ -73,10 +73,14 @@ that this comparison checks graph traversal, broadcasting, and adjoint accumulat
 the optimized evaluator — not the derivative formulas themselves, which the two now
 agree on by construction.
 
-The formulas are covered separately, in `rust_core/tests/numerical_stability.rs`. Every
-expectation there is a closed form, a central finite difference, or a constant produced
-outside the crate by a 400-significant-digit evaluation. Nothing in that file compares
-one in-repo evaluator against another, for the reason above.
+The formulas are covered separately, in `rust_core/tests/numerical_stability.rs`.
+Almost every expectation there is a closed form, a central finite difference, or a
+constant computed outside the crate with Python's `decimal` at 400 or 1500 significant
+digits. Two are deliberate exceptions, and the file marks both: one compares the
+evaluator against `transform.apply` and one compares `mean()` against `diagnostics()`,
+and in each case both sides call the same helper. Those two are tripwires against a
+second formula being reintroduced, not checks on the formula — which is the same
+caveat that applies to the reference evaluator above.
 
 Structural components compile into validated state blocks handled by Gaussian
 FFBS/Gibbs (with Student-t latent precision updates when requested). Dynamic GLMs

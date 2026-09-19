@@ -1,9 +1,13 @@
 # API Reference
 
-Every public class in the Python package, its arguments, its output shapes, and the
-limits it is honest about. This is a lookup page, not a tutorial: it assumes you have
-already fitted something in [Get started](getting-started.md) and now need the exact
-behaviour of one call.
+Per-class arguments, output shapes, and stated limits. This is a lookup page, not a
+tutorial: it assumes you have already fitted something in
+[Get started](getting-started.md) and now need the exact behaviour of one call.
+
+Coverage is not complete. `StructuralModel`, `BayesianDynamicGLM`, `VarianceParameter`
+and `ForecastSession` are public but documented only in their guides —
+[structural composition](structural-forecasting.md) and
+[dynamic GLMs](dynamic-glm.md).
 
 Each section states what a model does not do as well as what it does. Those limits are
 deliberate and current; where a thing is not supported, it says so next to the thing.
@@ -659,9 +663,14 @@ explicitly as `sigma * z[key]`.
 `rustmc.StateSpaceError` reports invalid model structure or a numerical failure inside
 a native kernel. `rustmc.ParameterError` reports an invalid parameter or expression,
 including mixing references from two builders. `rustmc.InferenceError` reports invalid
-inputs or a numerical failure in a fitted Bayesian model, and is what the hierarchical
-and forecasting entry points raise. All three subclass `ValueError`, so
-`except ValueError` catches them, and so does `pytest.raises(ValueError)`.
+inputs or a numerical failure in a fitted Bayesian model; the hierarchical entry points
+raise it. All three subclass `ValueError`.
+
+The forecasting models do not agree on one exception class. The local-level, trend,
+seasonal and AR models raise `StateSpaceError`, as does structural fitting; runoff
+raises plain `ValueError`. Because every one of these subclasses `ValueError`,
+`except ValueError` catches them all, and that — not `except InferenceError` — is the
+form to write if you want to catch a forecasting failure.
 
 ## Result types
 
@@ -675,8 +684,11 @@ forecast type is not reliably named after the fit type:
 `BayesianLocalLevelFit.forecast()` returns `BayesianForecastResult`,
 `BayesianLocalLinearTrendFit.forecast()` returns `BayesianTrendForecast`,
 `BayesianSeasonalLocalLevelFit.forecast()` returns `BayesianSeasonalForecast`, and
-`BayesianHierarchicalMeanFit.forecast()` returns `BayesianHierarchicalForecast`. Only
-`BayesianARFit` → `BayesianARForecast` matches the naming. `ForecastDraws`, `NamedDesign`, `ScenarioForecast`,
+`BayesianHierarchicalMeanFit.forecast()` returns `BayesianHierarchicalForecast`. Others
+do follow the pattern — `BayesianARFit` → `BayesianARForecast`,
+`BayesianHurdleLogNormalFit` → `BayesianHurdleLogNormalForecast`, and
+`BayesianRegressionFit` → `BayesianRegressionForecast` — so the name cannot be guessed
+either way. Check the fit's own page. `ForecastDraws`, `NamedDesign`, `ScenarioForecast`,
 `BacktestResult` and `BacktestFold` are ordinary dataclasses you may also construct
 yourself, which is how you score draws that rustmc did not produce.
 
