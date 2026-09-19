@@ -16,7 +16,9 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   primitive that seven modules each carried a private copy of.
 - `scripts/build_example_docs.py`. Every page under `docs/examples/` is generated
   from the example of the same name and shows that example's real captured output.
-  CI fails if a committed page stops matching the code that produces it.
+  CI fails if a committed page stops matching the code that produces it. It also
+  checks that each guide page's code blocks run when read in order, and that the
+  output shown on the landing page is what the code above it prints.
 
 ### Changed
 
@@ -60,6 +62,12 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   the seasonal, trend and forecast recovery tests and in the Python smoke test.
 - Documentation claims the code did not support, including committed example output
   that advertised 128 divergent transitions for a model that now has none.
+- The opening code block on the regression-and-seasonality guide used four names it
+  never defined, so a reader copying the page's first example got a `NameError`; a
+  later block on that page did the same. Both now build their own data.
+- Every link in `README.md` was relative. README.md is the package's long description,
+  so on the PyPI project page all twelve resolved against `pypi.org` and 404'd,
+  including every "Start here" entry.
 
 ### Removed
 
@@ -67,6 +75,9 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   and the `Option` around a batch cell's fit, which could not be `None`.
 - Two committed executed notebooks and their rendered image directories, 1.4 MB in
   all, replaced by the generated example pages.
+- `docs/repo-review-2026-09-09.local.md` is no longer tracked. Both `.gitignore` and
+  the site build already treated it as local scratch, and it reviewed a revision two
+  releases back. The copy on disk is untouched.
 
 ## [0.13.0] - 2026-09-18
 
