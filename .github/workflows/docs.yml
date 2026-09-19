@@ -24,11 +24,12 @@ jobs:
         # example pages are rebuilt against the API being documented.
         run: python -m pip install . mkdocs-material
 
-      # docs/examples/*.md is generated from examples/*.py and committed, and CI
-      # fails on drift, so this rebuild should be a no-op. Deploying a rebuild
-      # rather than the committed copy means a page can never be published with
-      # output the current code does not produce.
-      - name: Rebuild the example pages from the examples
-        run: python scripts/build_example_docs.py
+      # docs/examples/*.md is generated from examples/*.py and committed. Verify
+      # rather than regenerate: a regenerating deploy would quietly publish
+      # numbers nobody reviewed, and would hide from this workflow exactly the
+      # drift that CI is meant to stop. What ships is the reviewed committed page,
+      # and the deploy fails if it no longer matches the code that produced it.
+      - name: Verify the example pages match the examples
+        run: python scripts/build_example_docs.py --check
 
       - run: mkdocs gh-deploy --force

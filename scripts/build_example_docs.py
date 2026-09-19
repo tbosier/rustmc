@@ -25,10 +25,16 @@ are stripped of the comment marker and emitted as markdown, and nothing in it
 runs. Code before the first marker (the imports) is emitted without a heading.
 The module docstring becomes the page title and introduction.
 
-Cells execute in order in one shared namespace, exactly as the script does when
-run normally, and each cell's standard output is captured and shown beneath it.
-Progress bars go to standard error, which is not captured, so the timing line
-the sampler prints while working never reaches a page.
+Cells execute in order in one shared namespace, as the script does when run
+normally, and each cell's standard output is captured and shown beneath it. Each
+example gets its own subprocess, so one example cannot leave NumPy's global RNG
+or `sys.modules` in a state that changes another example's numbers.
+
+A page shows captured standard output only. The sampler's progress bar goes to
+standard error and carries an elapsed time, so putting stderr on a page would
+put an unreproducible line on it. That leaves a blind spot -- a warning a cell
+starts emitting would change no page -- so whatever a cell writes to stderr
+other than the progress bar is echoed to the console instead.
 
 Why the pages are committed
 ---------------------------
@@ -58,9 +64,13 @@ import ast
 import contextlib
 import difflib
 import io
+import json
 import re
+import subprocess
 import sys
+import tempfile
 import textwrap
+import tokenize
 import traceback
 from pathlib import Path
 
@@ -73,6 +83,10 @@ PAGES = ROOT / "docs" / "examples"
 
 CELL_MARKER = re.compile(r"^# %%(?:\s+(.*))?$")
 MARKDOWN_CELL = "[markdown]"
+
+# The sampler's progress bar, which carries an elapsed time and so is the one
+# thing on stderr that `report_stderr` must not treat as news.
+PROGRESS = re.compile(r"^[\r\x1b\[\dA-Za-z; ]*Sampling[ :]")
 
 # Lines that are correct but differ between runs, with the reason each one is
 # unreproducible. Everything else must be identical run to run; if a new example
@@ -110,6 +124,27 @@ def page_path(script: Path) -> Path:
     return PAGES / (script.stem.replace("_", "-") + ".md")
 
 
+def marker_lines(source: str, script: Path) -> dict[int, re.Match[str]]:
+    """Map 0-based line number -> cell marker, for real comments only.
+
+    Matching `# %%` textually would cut a triple-quoted string that happens to
+    contain such a line into separate cells, turning a valid script into a
+    SyntaxError. Tokenizing means only an actual comment token can start a cell.
+    """
+    found: dict[int, re.Match[str]] = {}
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(source).readline)
+        for token in tokens:
+            if token.type != tokenize.COMMENT or token.start[1] != 0:
+                continue
+            match = CELL_MARKER.match(token.string)
+            if match:
+                found[token.start[0] - 1] = match
+    except tokenize.TokenError as error:
+        raise ExampleError(f"{script.name}: cannot tokenize: {error}") from error
+    return found
+
+
 def split_cells(source: str, script: Path) -> tuple[str, list[tuple[str, str, str]]]:
     """Return (module docstring, cells), each cell (kind, heading, body).
 
@@ -124,6 +159,7 @@ def split_cells(source: str, script: Path) -> tuple[str, list[tuple[str, str, st
         raise ExampleError(f"{script.name}: needs a module docstring for the page intro")
     start = module.body[0].end_lineno  # first statement is the docstring
 
+    markers = marker_lines(source, script)
     cells: list[tuple[str, str, str]] = []
     current_kind, current_heading, current_start = "code", "", start
     body: list[str] = []
@@ -135,8 +171,8 @@ def split_cells(source: str, script: Path) -> tuple[str, list[tuple[str, str, st
             cells.append((current_kind, current_heading, padded))
 
     for index in range(start, len(lines)):
-        match = CELL_MARKER.match(lines[index])
-        if not match:
+        match = markers.get(index)
+        if match is None:
             body.append(lines[index])
             continue
         flush()
@@ -153,19 +189,40 @@ def split_cells(source: str, script: Path) -> tuple[str, list[tuple[str, str, st
 
 
 def render_markdown_cell(body: str) -> str:
-    """Strip the leading comment marker from a prose cell."""
+    """Strip the leading comment marker from a prose cell.
+
+    Only leading whitespace is removed. Trailing whitespace is prose: two spaces
+    at the end of a line are a Markdown hard break.
+    """
     out = []
     for line in body.splitlines():
-        stripped = line.strip()
-        if not stripped:
+        stripped = line.lstrip()
+        if not stripped.strip():
             out.append("")
         elif stripped.startswith("# "):
             out.append(stripped[2:])
-        elif stripped == "#":
+        elif stripped.rstrip() == "#":
             out.append("")
         else:
             raise ExampleError(f"markdown cell has a non-comment line: {line!r}")
     return "\n".join(out).strip("\n")
+
+
+def report_stderr(script: Path, heading: str, text: str) -> None:
+    """Echo anything a cell wrote to stderr that is not the sampler's progress bar.
+
+    Pages show captured stdout only, because the progress bar carries an elapsed
+    time that would differ on every run. That leaves a blind spot: a warning a
+    cell starts emitting would reach nobody and change no page. Echoing what is
+    left after the progress lines are removed puts it in front of whoever runs
+    the generator, without putting an unreproducible line on a page.
+    """
+    leftover = [line for line in text.splitlines() if line.strip() and not PROGRESS.match(line)]
+    if leftover:
+        where = heading or "(imports)"
+        print(f"stderr from {script.name} in cell {where!r}:", file=sys.stderr)
+        for line in leftover:
+            print(f"  {line}", file=sys.stderr)
 
 
 def normalise(text: str, fired: set[str]) -> str:
@@ -187,37 +244,64 @@ def build_page(script: Path, fired: set[str]) -> str:
     if intro.strip():
         parts.append(textwrap.dedent(intro).strip("\n") + "\n")
 
-    # Run exactly as `python examples/<name>.py` does: the script's directory on
-    # sys.path so sibling-module imports resolve, __name__ == "__main__" so a
-    # main guard fires, and the repository root as the working directory.
-    namespace = {"__name__": "__main__", "__file__": str(script)}
+    # Run as `python examples/<name>.py` does: the script's directory first on
+    # sys.path so sibling-module imports resolve, __name__ == "__main__" so a main
+    # guard fires, its own __doc__ and argv, and the repository root as the working
+    # directory, which `render_one` sets for this whole process. `render_one` also
+    # gives the process to one example, so NumPy's global RNG and sys.modules start
+    # clean rather than carrying another example's state.
+    namespace = {"__name__": "__main__", "__file__": str(script), "__doc__": docstring}
     sys.path.insert(0, str(EXAMPLES))
-    try:
-        for kind, heading, body in cells:
-            if heading:
-                parts.append(f"## {heading}\n")
-            if kind == "markdown":
-                parts.append(render_markdown_cell(body) + "\n")
-                continue
-            buffer = io.StringIO()
-            try:
-                with contextlib.redirect_stdout(buffer):
-                    exec(compile(body, str(script), "exec"), namespace)  # noqa: S102
-            except BaseException as error:  # noqa: BLE001 - reported, not swallowed
-                # Cell bodies are padded to their real line offsets, so the frames
-                # below point at examples/<name>.py, not at an anonymous cell.
-                raise ExampleError(
-                    f"{script.name} failed in cell {heading or '(imports)'!r}\n"
-                    + "".join(traceback.format_exception(error)).rstrip()
-                ) from error
-            parts.append("```python\n" + body.strip("\n") + "\n```\n")
-            output = normalise(buffer.getvalue(), fired).rstrip("\n")
-            if output:
-                parts.append("```text\n" + output + "\n```\n")
-    finally:
-        sys.path.remove(str(EXAMPLES))
+    sys.argv = [str(script)]
+    for kind, heading, body in cells:
+        if heading:
+            parts.append(f"## {heading}\n")
+        if kind == "markdown":
+            parts.append(render_markdown_cell(body) + "\n")
+            continue
+        out, err = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                # dont_inherit, or the cell would run under this file's
+                # `from __future__ import annotations` and behave unlike the script.
+                exec(compile(body, str(script), "exec", dont_inherit=True), namespace)  # noqa: S102
+        except BaseException as error:  # noqa: BLE001 - reported, not swallowed
+            sys.stderr.write(err.getvalue())
+            # Cell bodies are padded to their real line offsets, so the frames
+            # below point at examples/<name>.py, not at an anonymous cell.
+            raise ExampleError(
+                f"{script.name} failed in cell {heading or '(imports)'!r}\n"
+                + "".join(traceback.format_exception(error)).rstrip()
+            ) from error
+        report_stderr(script, heading, err.getvalue())
+        parts.append("```python\n" + body.strip("\n") + "\n```\n")
+        output = normalise(out.getvalue(), fired).rstrip("\n")
+        if output:
+            parts.append("```text\n" + output + "\n```\n")
 
     return "\n".join(parts).rstrip("\n") + "\n"
+
+
+def render_one(script: Path) -> tuple[str, set[str]]:
+    """Build one page in a subprocess, and return it with the normalisers it used.
+
+    One process per example, rather than all of them in this one. Examples share
+    NumPy's global RNG and `sys.modules`, so running them together would make a
+    page's numbers depend on which pages ran before it. The drift check would
+    still be reproducible -- the order is fixed -- but adding an example could
+    silently change an unrelated page, and the failure would be baffling.
+    """
+    with tempfile.TemporaryDirectory() as scratch:
+        result = Path(scratch) / "page.json"
+        done = subprocess.run(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, str(Path(__file__).resolve()), "--render", str(script), str(result)],
+            cwd=ROOT,
+        )
+        if done.returncode != 0:
+            # The child already wrote the traceback to the shared stderr.
+            raise ExampleError(f"{script.name}: rendering exited {done.returncode}")
+        payload = json.loads(result.read_text(encoding="utf-8"))
+    return payload["page"], set(payload["fired"])
 
 
 def participating() -> list[Path]:
@@ -238,21 +322,26 @@ def participating() -> list[Path]:
     return scripts
 
 
+# Pages in docs/examples/ that are written by hand rather than generated. Empty
+# on purpose: every page there comes from an example. A hand-written page must be
+# named here, which is also the record of why it is an exception.
+HAND_WRITTEN: set[str] = set()
+
+
 def orphans(expected: set[Path]) -> list[str]:
-    """Generated pages no example produces any more.
+    """Pages in docs/examples/ that no example produces.
 
     Deleting an example, renaming it, or dropping its cell markers would
-    otherwise leave its page behind, committed and unchecked -- stale output by
-    another route. A page is identified as generated by its banner comment, so a
-    hand-written page in the same directory is left alone.
+    otherwise leave its page behind, committed and checked by nothing -- stale
+    output by another route. Every file in the directory has to be accounted for,
+    rather than only those still carrying a generated banner, because a banner is
+    one line an editor can remove.
     """
-    left_over = []
-    for page in sorted(PAGES.glob("*.md")):
-        if page in expected:
-            continue
-        if page.read_text(encoding="utf-8").lstrip().startswith("<!-- Generated by"):
-            left_over.append(page.relative_to(ROOT).as_posix())
-    return left_over
+    return [
+        page.relative_to(ROOT).as_posix()
+        for page in sorted(PAGES.glob("*.md"))
+        if page not in expected and page.name not in HAND_WRITTEN
+    ]
 
 
 def main() -> int:
@@ -268,22 +357,40 @@ def main() -> int:
         action="store_true",
         help="regenerate in memory and fail if a committed page differs",
     )
+    parser.add_argument(
+        "--render",
+        nargs=2,
+        metavar=("EXAMPLE", "RESULT"),
+        help=argparse.SUPPRESS,  # internal: how render_one runs one example
+    )
     args = parser.parse_args()
+
+    if args.render:
+        script, result = Path(args.render[0]), Path(args.render[1])
+        fired: set[str] = set()
+        try:
+            page = build_page(script, fired)
+        except ExampleError as error:
+            print(f"FAILED  {script.name}\n  {error}", file=sys.stderr)
+            return 1
+        result.write_text(json.dumps({"page": page, "fired": sorted(fired)}), encoding="utf-8")
+        return 0
 
     scripts = participating()
     if not scripts:
         print("no example carries '# %%' cell markers", file=sys.stderr)
         return 1
 
-    fired: set[str] = set()
+    fired = set()
     stale: list[str] = []
     for script in scripts:
         target = page_path(script)
         try:
-            page = build_page(script, fired)
+            page, used = render_one(script)
         except ExampleError as error:
-            print(f"FAILED  {script.name}\n  {error}", file=sys.stderr)
+            print(f"FAILED  {script.name}: {error}", file=sys.stderr)
             return 1
+        fired |= used
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
         if args.check:
             if page != existing:
@@ -305,8 +412,9 @@ def main() -> int:
     left_over = orphans({page_path(script) for script in scripts})
     if left_over:
         print(
-            "\nThese pages were generated once but no example produces them now.\n"
-            "Delete them, or restore the example that made them:\n  "
+            "\nNo example produces these pages. Delete them, restore the example\n"
+            "that made them, or, if one really is hand-written, name it in\n"
+            "HAND_WRITTEN in this script:\n  "
             + "\n  ".join(left_over),
             file=sys.stderr,
         )
