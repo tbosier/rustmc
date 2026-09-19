@@ -101,14 +101,18 @@ print("Divergences:", fit.divergences())
 # `mu_global` has a wide posterior and it should. Eight group means drawn from a
 # distribution carry about as much information about that distribution's mean as
 # eight observations do, so the interval stays broad however many draws you take.
-# `sigma_group` is estimated from the same eight numbers and is biased upward when
-# the groups happen to spread further than the truth.
+# `sigma_group` is estimated from the same eight numbers and on this dataset comes
+# out above the value that generated it, by about half a posterior standard
+# deviation. That is one draw of eight groups, not evidence about the estimator;
+# it is what a weakly determined scale looks like.
 #
 # The centered form of this model is the textbook case of Neal's funnel, where the
-# sampler stalls in the neck and reports divergent transitions. Those do not appear
-# here because rustmc compiles this hierarchy to noncentered coordinates. If you
-# write a hierarchy rustmc cannot recognise and see divergences, reparameterise it
-# by hand before trusting the hyperparameter estimates.
+# sampler stalls in the neck and reports divergent transitions. rustmc compiles
+# this hierarchy to noncentered coordinates, which is the standard remedy, and
+# this run reports none. `examples/partial_pooling_template.py` shows the rewrite
+# in `CompiledModel.param_names`. If you write a hierarchy rustmc cannot recognise
+# and see divergences, reparameterise it by hand before trusting the
+# hyperparameter estimates.
 
 # %% Partial pooling
 print("Partial pooling effect (shrinkage toward the global mean):")

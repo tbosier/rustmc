@@ -93,6 +93,12 @@ batch = compiled.sample_batch(
 )
 
 print(f"fitted {len(batch)} datasets, {len(batch.errors)} failed")
+for failed_id, message in batch.errors.items():
+    print(f"  {failed_id}: {message}")
+
+# `batch.errors` is empty here, but reading a failed cell raises, so everything
+# below works from the IDs that succeeded rather than from range(N_MODELS).
+ok = [i for i, name in enumerate(batch.ids) if name not in batch.errors]
 ```
 
 ```text
@@ -103,7 +109,7 @@ fitted 100 datasets, 0 failed
 
 ```python
 print(f"{'SKU':<9} {'intercept':>19} {'true':>9} {'trend':>18} {'true':>9}")
-for i in range(5):
+for i in ok[:5]:
     fit = batch[i]
     mean, std = fit.mean(), fit.std()
     print(
@@ -125,15 +131,17 @@ sku-004      137.90 +/-  1.40    137.35     0.242 +/- 0.046     0.265
 ## Batch-wide recovery and diagnostics
 
 ```python
-fitted_intercepts = np.array([batch[i].mean()["intercept"] for i in range(N_MODELS)])
-fitted_trends = np.array([batch[i].mean()["trend"] for i in range(N_MODELS)])
-divergences = np.array([batch[i].divergences for i in range(N_MODELS)])
+fitted_intercepts = np.array([batch[i].mean()["intercept"] for i in ok])
+fitted_trends = np.array([batch[i].mean()["trend"] for i in ok])
+divergences = np.array([batch[i].divergences for i in ok])
+intercept_error = fitted_intercepts - true_intercepts[ok]
+trend_error = fitted_trends - true_trends[ok]
 
-print(f"intercept error: mean {np.mean(fitted_intercepts - true_intercepts):+.3f}, "
-      f"rmse {np.sqrt(np.mean((fitted_intercepts - true_intercepts) ** 2)):.3f}")
-print(f"trend error:     mean {np.mean(fitted_trends - true_trends):+.4f}, "
-      f"rmse {np.sqrt(np.mean((fitted_trends - true_trends) ** 2)):.4f}")
-print(f"divergences:     {divergences.sum()} across {N_MODELS} fits "
+print(f"intercept error: mean {intercept_error.mean():+.3f}, "
+      f"rmse {np.sqrt(np.mean(intercept_error**2)):.3f}")
+print(f"trend error:     mean {trend_error.mean():+.4f}, "
+      f"rmse {np.sqrt(np.mean(trend_error**2)):.4f}")
+print(f"divergences:     {divergences.sum()} across {len(ok)} fits "
       f"({int((divergences > 0).sum())} fits affected)")
 ```
 
@@ -146,7 +154,7 @@ divergences:     0 across 100 fits (0 fits affected)
 ## What a BatchResult carries
 
 ```python
-r = batch[0]
+r = batch[ok[0]]
 print("mean()                ", {k: round(v, 3) for k, v in r.mean().items()})
 print("std()                 ", {k: round(v, 3) for k, v in r.std().items()})
 print("get_samples()         ", {k: v.shape for k, v in r.get_samples().items()})

@@ -5,13 +5,15 @@ path. The 500 coefficients become one contiguous vector parameter and one graph
 node, so a gradient evaluation costs two faer GEMV calls -- `X @ beta` forward and
 `X.T @ adjoint` backward -- instead of 500 scalar loops in each direction.
 
-Runtime note: every leapfrog step streams the whole design matrix twice, so cost
-grows with `N_OBS * N_PARAMS`. At 4,000 x 500 the matrix is 16 MB per GEMV, and one
-chain of 200 warmup + 200 draws finished in under 10 seconds when this was written,
-on a 24-core machine. That is a rough expectation, not retained benchmark evidence.
-`benchmarks/` is where a measurement with provenance belongs. Raise the dimensions
-to reach a larger regime: 6,000 x 5,000 moves 240 MB per GEMV, 15 times this
-script's traffic, and takes far longer.
+Cost note, which is arithmetic rather than a measurement: every leapfrog step
+streams the whole design matrix twice, so work grows with `N_OBS * N_PARAMS`. At
+4,000 x 500 the matrix is 16 MB per GEMV. Raising the dimensions to 6,000 x 5,000
+moves 240 MB per GEMV, fifteen times this script's traffic.
+
+This script prints its own elapsed time when you run it. That number is not on
+this page, and no figure here is a performance claim: `benchmarks/` and
+`benchmarks/README.md` hold the matched protocol, the retained raw output and the
+environment that a claim about speed needs.
 """
 
 # %%
@@ -41,8 +43,8 @@ print(f"Dataset: {N_OBS:,} obs x {N_PARAMS:,} params")
 # 3. promote `beta` to a contiguous vector parameter block;
 # 4. replace N scalar multiply-add nodes with a single `MatVecMul` op;
 # 5. compute the forward pass and the gradient through
-#    [faer](https://github.com/sarah-ek/faer-rs)'s GEMV, which uses Rayon for
-#    matrices above roughly 100,000 elements.
+#    [faer](https://github.com/sarah-ek/faer-rs)'s GEMV, which uses Rayon once the
+#    matrix reaches 100,000 elements.
 #
 # A 2D NumPy array in the data dict is detected and stored as a row-major matrix;
 # passing `"X": X` where `X.ndim == 2` is all that is needed. `normal_prior`
@@ -50,9 +52,10 @@ print(f"Dataset: {N_OBS:,} obs x {N_PARAMS:,} params")
 # only needed when you want to set the coefficient count yourself rather than infer
 # it from the matrix.
 #
-# The `@` form pays off when `P` is large -- above roughly 50 coefficients. For a
-# small regression, scalar `beta * "x"` is fine; the crossover is where walking the
-# individual graph nodes costs more than one GEMV dispatch.
+# Whether `@` or scalar `beta * "x"` is faster for a given `P` is a question for
+# `benchmarks/`, not for this page: it depends on the model, the data shape and the
+# machine, and nothing here measures it. What the `@` form does change is the graph
+# -- one op instead of one per coefficient -- which is why it exists.
 
 # %% Build the model
 t0 = time.time()

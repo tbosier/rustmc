@@ -31,9 +31,17 @@ for index, count in enumerate(counts):
 #
 # The model is written as `population + between_sites * z[site]`, with `z` standard
 # normal, rather than drawing each site mean directly from
-# `Normal(population, between_sites)`. The two are the same model; this form gives
-# the sampler a posterior whose shape does not change with `between_sites`, which
-# is what keeps a hierarchy with few groups out of Neal's funnel.
+# `Normal(population, between_sites)`. The two describe the same joint
+# distribution; they give the sampler different coordinates to move in.
+#
+# In the centered coordinates the prior width of each site's parameter is
+# `between_sites`, so the region the sampler must cover narrows as
+# `between_sites` shrinks -- the neck of Neal's funnel. In these coordinates `z`
+# has a standard normal prior whatever `between_sites` does, so the funnel is not
+# in the prior. The likelihood still couples them, and the posterior of `z` does
+# get tighter as `between_sites` grows; the point is that the geometry no longer
+# collapses where the data are weakest, which is where a hierarchy with few
+# groups gets into trouble.
 #
 # `deterministic` records `site_mean` so the per-site means are stored alongside the
 # parameters instead of being reconstructed afterwards.

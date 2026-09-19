@@ -69,8 +69,10 @@ for name in batch.ids:
 #
 # Interval width does not fall monotonically with sample size here. Instrument 2
 # has 120 readings against instrument 1's 75 and still reports slightly wider
-# intervals, because its estimated noise came out higher on this draw. Width
-# depends on the noise as well as the count, and both are estimated.
+# intervals. The counts are fixed at 40, 75 and 120; the noise scale is not, and
+# instrument 2's came out higher on this simulated draw. Width falls with the
+# count and rises with the noise, so a larger instrument can still be the less
+# precisely measured one.
 #
 # Check `r_hat` and `ess_bulk` per instrument before comparing them. A batch
 # reports diagnostics per fit for exactly this reason -- one instrument can fail

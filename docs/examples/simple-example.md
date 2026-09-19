@@ -93,11 +93,17 @@ Mean accept rate: 0.91  │  Divergences: 0
 
 ## Read the diagnostics before the estimates
 
-`r_hat` near 1.0 and `ess_bulk` in the thousands mean the chains agree and the
-draws are close to independent. Divergences would mean the sampler could not
-follow the posterior geometry, and any estimate below them would be suspect.
-Passing diagnostics say the sampler did its job; they do not say the model is
-the right model for the data.
+`r_hat` near 1.0 says the four chains agree with each other. `ess_bulk` in the
+thousands estimates how many independent draws these 8,000 are worth for a
+posterior mean. Divergences would say the sampler could not follow the posterior
+geometry, and any estimate below them would be suspect.
+
+All three are estimates computed from the draws that were taken, so they can
+only describe where the chains went. Four chains that all miss the same region
+of the posterior agree with each other and report clean diagnostics. Read them
+as the absence of evidence of a sampling problem, not as proof of successful
+sampling, and certainly not as evidence that this is the right model for the
+data.
 
 ```python
 print(f"True beta  = {beta_true},  estimated = {fit.mean()['beta']:.4f} +/- {fit.std()['beta']:.4f}")

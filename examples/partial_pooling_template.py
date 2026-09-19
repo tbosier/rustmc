@@ -50,15 +50,22 @@ print("Divergences per chain:", fit.divergences())
 # ## What you wrote is not what the sampler sees
 #
 # The code above is the centered form, the textbook case of Neal's funnel, where a
-# sampler stalls in the neck and reports divergent transitions. There are none here
-# because eligible scalar hierarchical normals are compiled through a noncentered
-# latent internally. You do not write that latent, and it does not appear in
-# summaries, diagnostics, posterior samples, prior predictive draws or ArviZ export.
-# All of those report `mu_j`, the parameter you declared.
+# sampler stalls in the neck and reports divergent transitions. Eligible scalar
+# hierarchical normals are compiled through a noncentered latent instead, which is
+# the standard remedy for that geometry; the next cell shows the rewrite in the
+# compiled model's coordinate names, and this run reports no divergences. You do
+# not write that latent, and it does not appear in summaries, diagnostics,
+# posterior samples, prior predictive draws or ArviZ export. All of those report
+# `mu_j`, the parameter you declared.
 #
-# The hyperparameters still have wide intervals and lower ESS than the group means,
-# and that is the model, not the sampler. Eight group means carry about as much
-# information about their common distribution as eight observations do.
+# Two separate things are worth reading off the table above, and they have
+# different causes. The hyperparameters have wide intervals because eight group
+# means carry about as much information about their common distribution as eight
+# observations do; more draws will not narrow them. Their ESS is also an order of
+# magnitude below the group means', which is a property of this chain, not of the
+# model: the hyperparameter directions are slower to traverse, so each draw buys
+# less. More draws do help there, and cut the Monte Carlo error on the
+# hyperparameter summaries.
 
 # %% The same model from a helper
 # `examples/hierarchical_templates.py` packages the pattern as a plain function.
