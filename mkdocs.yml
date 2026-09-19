@@ -23,39 +23,89 @@ theme:
     text: Inter
     code: JetBrains Mono
   features:
+    # Top-level nav entries become tabs; their children are grouped headings in
+    # the sidebar rather than a single long expandable tree.
     - navigation.tabs
-    - navigation.expand
+    - navigation.sections
     - navigation.top
+    # Update the address bar as the reader scrolls, so a link copied from a long
+    # page such as the API reference lands on the right section.
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    # Selecting a tab in one tabbed block selects the same label everywhere.
+    - content.tabs.link
     - content.code.copy
     - content.code.annotate
 
 nav:
   - Home: index.md
-  - Getting Started: getting-started.md
-  - Custom Models: custom-models.md
-  - Native Rust Models: native-models.md
+  - Get started:
+    - Install and fit a model: getting-started.md
+  - Guides:
+    - Building models:
+      - Custom graph models: custom-models.md
+      - Use a model from Rust: native-models.md
+    - Forecasting:
+      - Evaluation and workflows: forecasting-workflows.md
+      - Structural composition: structural-forecasting.md
+      - Regression and calendar seasonality: regression-forecasting.md
+      - Dynamic counts, amounts, and pooling: dynamic-glm.md
+      - Independent batches and diagnostics: forecast-batches.md
+      - Sparse amounts: sparse-amounts.md
+      - Payment-count runoff: runoff.md
   - Examples:
-    - Repeated Calibration: examples/repeated-calibration.md
-    - Site Effects: examples/site-effects.md
-    - Linear Regression: examples/linear-regression.md
-    - Hierarchical Models: examples/hierarchical.md
-    - Hierarchical Templates: examples/hierarchical-templates.md
-    - Batch Inference: examples/batch-inference.md
-    - High-Dimensional Regression: examples/high-dimensional.md
-  - API Reference: reference.md
-  - Forecasting:
-    - Evaluation and workflows: forecasting-workflows.md
-    - Structural composition: structural-forecasting.md
-    - Dynamic counts, amounts, and pooling: dynamic-glm.md
-    - Regression and Fourier terms: regression-forecasting.md
-    - Independent batches and diagnostics: forecast-batches.md
-    - Sparse amounts: sparse-amounts.md
-    - Payment-count runoff: runoff.md
-  - Architecture:
-    - Compiled models: architecture/compiled-model.md
+    - Repeated calibration: examples/repeated-calibration.md
+    - Site effects: examples/site-effects.md
+    - Linear regression: examples/linear-regression.md
+    - Hierarchical models: examples/hierarchical.md
+    - Hierarchical templates: examples/hierarchical-templates.md
+    - Batch inference: examples/batch-inference.md
+    - High-dimensional regression: examples/high-dimensional.md
+  - API reference: reference.md
   - Project:
+    - Architecture:
+      - Compiled models: architecture/compiled-model.md
     - Statistical release checks: statistical-validation.md
     - Releasing: releasing.md
+    - Contributing: https://github.com/tbosier/rustmc/blob/main/CONTRIBUTING.md
+    - Benchmark protocol: https://github.com/tbosier/rustmc/blob/main/benchmarks/README.md
+
+# The site has shipped orphan pages before: a file under docs/ that no nav entry
+# reached, and a nav entry pointing at a file that had been renamed.
+#
+# `strict` lives here rather than on the command line on purpose. The deploy
+# workflow runs `mkdocs gh-deploy --force`, which takes no --strict flag, so a
+# CLI-only setting would catch these locally and miss them in the job that
+# actually publishes the site. With this set, every warning below fails the
+# build wherever it runs.
+strict: true
+
+# `error` is not an accepted value for the nav sub-options; `warn` plus the
+# `strict` above is how they fail the build. A page that genuinely belongs
+# outside the nav goes in `exclude_docs`, rather than relaxing these.
+validation:
+  nav:
+    omitted_files: warn      # a page exists under docs/ but no nav entry reaches it
+    not_found: warn          # a nav entry points at a file that is not there
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+
+# Internal review notes that live in some working trees but are not in git and
+# never reach CI. CONTRIBUTING.md keeps them out of the repository; excluding
+# them here keeps a local `mkdocs build --strict` honest without anyone having
+# to move them aside first. Nothing published is excluded.
+exclude_docs: |
+  *.local.md
+  forecasting-extension-review.md
 
 plugins:
   - search
