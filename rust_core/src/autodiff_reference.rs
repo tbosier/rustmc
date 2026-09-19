@@ -555,7 +555,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let deta: Vec<f64> = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| a_s * (y - sigmoid_stable(*e)))
+                            .map(|(e, y)| a_s * crate::autodiff::bernoulli_logit_grad(*y, *e))
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
                     }

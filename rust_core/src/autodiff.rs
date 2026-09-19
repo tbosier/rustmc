@@ -648,7 +648,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                sum += y * eta - softplus(eta);
+                                sum += bernoulli_logit_logp(y, eta);
                             }
                             self.scalars[idx] = sum;
                         }
@@ -1126,7 +1126,7 @@ impl Evaluator {
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i, graph);
-                                let grad = y - sigmoid_stable(eta);
+                                let grad = bernoulli_logit_grad(y, eta);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -1405,7 +1405,6 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
 // the Evaluator fuses the same arithmetic into its own single pass.
 #[cfg(test)]
 mod obs_logp_sums {
-    use super::softplus;
 
     pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
         let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
@@ -1424,7 +1423,7 @@ mod obs_logp_sums {
     pub(super) fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
         eta.iter()
             .zip(obs.iter())
-            .map(|(e, y)| y * e - softplus(*e))
+            .map(|(e, y)| super::bernoulli_logit_logp(*y, *e))
             .sum()
     }
 
@@ -1626,6 +1625,47 @@ pub(crate) fn softplus(x: f64) -> f64 {
         x + (-x).exp().ln_1p()
     } else {
         x.exp().ln_1p()
+    }
+}
+
+/// log P(y | eta) for a Bernoulli observation with logit `eta`.
+///
+/// `y * eta - softplus(eta)` is the same quantity and cancels catastrophically
+/// once `eta` saturates: at `y = 1, eta = 40` softplus returns `40` to the last
+/// bit, the subtraction gives exactly `0.0`, and the true value is
+/// `-4.2483542552915888e-18`. Writing each branch as a single softplus of the
+/// sign that does not cancel keeps the tail. `observation.rs` already did this;
+/// the graph evaluator and its reference did not, so one family had two
+/// numerically different implementations and nothing compared them.
+///
+/// `y` outside `{0, 1}` keeps the general expression rather than silently
+/// snapping to a branch; the family rejects such an observation on validation.
+pub(crate) fn bernoulli_logit_logp(y: f64, eta: f64) -> f64 {
+    if y == 1.0 {
+        -softplus(-eta)
+    } else if y == 0.0 {
+        -softplus(eta)
+    } else {
+        y * eta - softplus(eta)
+    }
+}
+
+/// d/d(eta) of [`bernoulli_logit_logp`], which is `y - sigmoid(eta)`.
+///
+/// That difference cancels for the same reason: `sigmoid(40)` rounds to exactly
+/// one, so `1 - sigmoid(40)` is `0.0` where the true derivative is
+/// `4.2483542552915888e-18`. A saturated observation then contributes no
+/// gradient at all, and a predictor with a large scale multiplies that zero
+/// instead of a small number -- at `eta = 40 + 1e20 * b` the gradient in `b` is
+/// `0` rather than about `424.8`. `sigmoid(-eta)` is the same value without the
+/// subtraction.
+pub(crate) fn bernoulli_logit_grad(y: f64, eta: f64) -> f64 {
+    if y == 1.0 {
+        sigmoid_stable(-eta)
+    } else if y == 0.0 {
+        -sigmoid_stable(eta)
+    } else {
+        y - sigmoid_stable(eta)
     }
 }
 
@@ -2725,5 +2765,53 @@ mod reference_boundary_coverage {
                 assert!((logp - expected).abs() < 1e-10);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bernoulli_logit_tail {
+    use super::*;
+
+    /// The Bernoulli-logit density and its derivative keep their saturated tail.
+    ///
+    /// Both constants come from an out-of-crate evaluation (Python `decimal` at 120
+    /// significant digits) of `-ln(1 + exp(-40))` and `exp(-40) / (1 + exp(-40))`.
+    /// They agree to every digit shown, which is itself the point: the two
+    /// quantities are equal at this scale, and both used to be returned as zero.
+    #[test]
+    fn bernoulli_logit_keeps_the_tail_a_saturated_logit_still_has() {
+        const TRUE_VALUE: f64 = 4.248_354_255_291_589e-18;
+
+        // The forms that were in the evaluator and its reference, for contrast.
+        let cancelled_logp = 1.0 * 40.0 - softplus(40.0);
+        let cancelled_grad = 1.0 - crate::graph::stable_sigmoid(40.0);
+        assert_eq!(
+            cancelled_logp, 0.0,
+            "the subtraction this test exists for must still cancel"
+        );
+        assert_eq!(cancelled_grad, 0.0, "likewise for the derivative");
+
+        for (y, eta, sign) in [(1.0, 40.0, 1.0), (0.0, -40.0, -1.0)] {
+            let logp = bernoulli_logit_logp(y, eta);
+            let grad = bernoulli_logit_grad(y, eta);
+            assert!(
+                (logp / -TRUE_VALUE - 1.0).abs() < 1e-12,
+                "logp({y}, {eta}) = {logp}, expected {}",
+                -TRUE_VALUE
+            );
+            assert!(
+                (grad / (sign * TRUE_VALUE) - 1.0).abs() < 1e-12,
+                "grad({y}, {eta}) = {grad}, expected {}",
+                sign * TRUE_VALUE
+            );
+        }
+
+        // An unsaturated logit is unaffected: log P(1 | 2) = -ln(1 + exp(-2)).
+        let ordinary = bernoulli_logit_logp(1.0, 2.0);
+        let reference = -(-2.0f64).exp().ln_1p(); // -ln(1 + exp(-2))
+        assert!(
+            (ordinary - reference).abs() < 1e-15,
+            "logp(1, 2) = {ordinary} vs {reference}"
+        );
     }
 }
