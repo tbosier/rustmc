@@ -53,19 +53,77 @@ fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), Gr
     binding
         .validate_for(graph)
         .map_err(|error| GraphShapeError::new(error.to_string()))?;
+    validate_slot_coverage(graph, binding)
+}
+
+/// Check that `binding` provides every slot the graph indexes by raw index.
+///
+/// Separate from [`validate_binding_slots`] because it has to run before
+/// [`validate_node_lengths`], which reads those slots directly, and
+/// `validate_node_lengths` has a second caller in [`Graph::validate_shapes`]
+/// that has no evaluator and no reason to re-run the payload validation.
+pub(crate) fn validate_slot_coverage(
+    graph: &Graph,
+    binding: &DataBinding,
+) -> Result<(), GraphShapeError> {
     let mut required_vectors = 0usize;
     let mut required_observations = 0usize;
     let mut required_matrices = 0usize;
     for node in &graph.nodes {
+        // Exhaustive and deliberately without a catch-all, for the reason
+        // [`Op::visit_dependencies`] gives. An op that reads a binding slot by
+        // raw index -- not through a node id and not through the parameter
+        // vector -- has to be counted here or the slot it reads is never
+        // checked against the binding, and `validate_node_lengths` then indexes
+        // past the end of a binding this function has just called complete.
+        // `_ => {}` silently gave every new variant the wrong answer;
+        // `Op::BroadcastObservation` and `Op::FusedLinearMu` were already
+        // sitting in it.
         match &node.op {
             Op::Data(index) => required_vectors = required_vectors.max(*index + 1),
-            Op::ObsLogP { obs_data_idx, .. } => {
+            // Predictor columns stored with `store_data_vec`, which creates no
+            // `Op::Data` node to be counted above.
+            Op::FusedLinearMu { data_indices, .. } => {
+                for index in data_indices {
+                    required_vectors = required_vectors.max(*index + 1);
+                }
+            }
+            Op::ObsLogP { obs_data_idx, .. } | Op::BroadcastObservation { obs_data_idx, .. } => {
                 required_observations = required_observations.max(*obs_data_idx + 1)
             }
             Op::MatVecMul { matrix_idx, .. } => {
                 required_matrices = required_matrices.max(*matrix_idx + 1)
             }
-            _ => {}
+            // Everything else reaches its inputs through a node id or the
+            // parameter vector, so the slots it depends on are counted by
+            // whichever op above owns them.
+            Op::Elementwise { .. }
+            | Op::Gather { .. }
+            | Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::ScalarMulData(_, _)
+            | Op::VectorAdd(_, _)
+            | Op::ScalarBroadcastAdd(_, _)
+            | Op::ScalarBroadcast(_)
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => {}
         }
     }
     if binding.vectors.len() < required_vectors
@@ -187,7 +245,33 @@ pub(crate) fn validate_node_lengths(
                 }
                 0
             }
-            _ => 0,
+            // Scalar-valued ops: length zero. Exhaustive and deliberately
+            // without a catch-all, for the reason [`Op::visit_dependencies`]
+            // gives -- under `_ => 0` a new vector-producing variant would be
+            // given length zero, its elements would never be allocated in
+            // `vec_buf`, and the shape would be silently wrong rather than a
+            // build failure.
+            Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => 0,
         };
         let vector_dim = |i: usize| {
             graph
@@ -251,7 +335,31 @@ pub(crate) fn validate_node_lengths(
                 }
                 None
             }
-            _ => None,
+            // Scalar-valued ops carry no named dimension. Same exhaustiveness
+            // rule as the length match above: `_ => None` would let a new
+            // vector-producing variant opt out of the dimension agreement
+            // check without anyone noticing it had.
+            Op::Sum(_)
+            | Op::Param(_)
+            | Op::Constant(_)
+            | Op::Add(_, _)
+            | Op::Mul(_, _)
+            | Op::Exp(_)
+            | Op::Sigmoid(_)
+            | Op::BoundedSigmoid { .. }
+            | Op::NormalLogP { .. }
+            | Op::LogHalfNormalLogP { .. }
+            | Op::StudentTLogP { .. }
+            | Op::PositiveSupport { .. }
+            | Op::BernoulliLogP { .. }
+            | Op::PoissonLogP { .. }
+            | Op::LogGammaLogP { .. }
+            | Op::VectorNormalLogP { .. }
+            | Op::VectorHalfNormalLogP { .. }
+            | Op::VectorStudentTLogP { .. }
+            | Op::VectorGammaLogP { .. }
+            | Op::VectorBetaLogP { .. }
+            | Op::VectorUniformLogP { .. } => None,
         };
         dimensions.push(dimension);
         lengths.push(len);
@@ -269,8 +377,14 @@ impl Evaluator {
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
         let n = graph.nodes.len();
+        // Coverage first: the length pass reads `binding.vectors[i]`,
+        // `binding.observations[i]` and `binding.matrices[i]` at the raw indices
+        // the graph carries, so a missing slot is an out-of-bounds index there
+        // rather than an error. Nothing else moves -- a binding that covers its
+        // slots reaches the length pass and the payload validation in the order
+        // it always did.
+        validate_slot_coverage(graph, &binding)?;
         let node_lengths = validate_node_lengths(graph, &binding)?;
-
         validate_binding_slots(graph, &binding)?;
 
         let mut node_kind = Vec::with_capacity(n);
@@ -321,6 +435,7 @@ impl Evaluator {
 
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
+        validate_slot_coverage(graph, &binding)?;
         validate_binding_slots(graph, &binding)?;
         if validate_node_lengths(graph, &binding)? == self.node_lengths {
             self.binding = binding;
@@ -376,6 +491,13 @@ impl Evaluator {
         // === Forward pass ===
         for node in &graph.nodes {
             let idx = node.id.0;
+            // The one match over `Op` here that keeps its catch-all. Unlike the
+            // shape passes above, the default is not a guess that a new variant
+            // could silently fall into: a node's own length *is* its length, so
+            // `node_lengths[idx]` is right for every variant that exists and
+            // every variant that could be added. `Op::ObsLogP` is the single
+            // exception because it is a scalar node -- length zero -- that still
+            // has to walk its observation vector.
             let vl = match &node.op {
                 Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
                 _ => self.node_lengths[idx],
@@ -768,6 +890,13 @@ impl Evaluator {
 
         for node in graph.nodes.iter().rev() {
             let idx = node.id.0;
+            // The one match over `Op` here that keeps its catch-all. Unlike the
+            // shape passes above, the default is not a guess that a new variant
+            // could silently fall into: a node's own length *is* its length, so
+            // `node_lengths[idx]` is right for every variant that exists and
+            // every variant that could be added. `Op::ObsLogP` is the single
+            // exception because it is a scalar node -- length zero -- that still
+            // has to walk its observation vector.
             let vl = match &node.op {
                 Op::ObsLogP { obs_data_idx, .. } => self.binding.observations[*obs_data_idx].len(),
                 _ => self.node_lengths[idx],

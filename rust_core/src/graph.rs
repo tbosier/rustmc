@@ -1789,6 +1789,14 @@ impl Graph {
     pub fn validate_shapes(&self) -> Result<usize, GraphShapeError> {
         let binding =
             DataBinding::from_graph(self).map_err(|e| GraphShapeError::new(e.to_string()))?;
+        // The same coverage check the evaluator makes, for the same reason:
+        // `validate_node_lengths` indexes the binding at the raw slot indices
+        // the graph carries. Without it, `broadcast_observation(p, 0)` on a
+        // graph with no observation payload -- both public builders -- indexes
+        // an empty vector and panics, and because `sampler::sample` validates
+        // shapes before it does anything else, that panic came out of `sample`
+        // in place of the `Result` it promises.
+        crate::autodiff::validate_slot_coverage(self, &binding)?;
         crate::autodiff::validate_node_lengths(self, &binding)?;
         Ok(binding.n_obs())
     }
