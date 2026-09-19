@@ -855,7 +855,8 @@ mod tests {
         // `observation_means` centres and scales the draws before it sums them,
         // so that a forecast near the top of the representable range still has a
         // representable mean. It therefore no longer reproduces a naive running
-        // sum bit for bit; the two agree to a few ulp of the draws' spread.
+        // sum bit for bit; neither form is the correctly rounded answer, and
+        // here they agree to within eight ulp of the mean.
         assert!(
             (means[0] - manual_first).abs() <= 8.0 * f64::EPSILON * manual_first.abs(),
             "{} vs {manual_first}",
