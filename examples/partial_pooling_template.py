@@ -1,0 +1,150 @@
+"""Hierarchical templates
+
+What rustmc's reusable-hierarchy boundary is today, demonstrated rather than
+asserted: every claim on this page is produced by the code above it.
+
+Short version. A scalar hierarchy is written in the conditional form that reads like
+the mathematics, and rustmc compiles it to noncentered coordinates for you. Vector-
+valued random effects are not compiled that way and must be written noncentered by
+hand. There is no template API in the builder; a template here is a plain Python
+function that makes the same builder calls you would make.
+"""
+
+# %%
+import numpy as np
+
+import rustmc as rmc
+from hierarchical_templates import build_centered_normal_partial_pooling
+
+rng = np.random.default_rng(7)
+
+J = 8
+data = {f"y_{j}": rng.normal(j - 2.5, 1.0, 25) for j in range(J)}
+
+# %% [markdown]
+# ## Write the hierarchy conditionally
+#
+# Declare the hyperparameters, then the group parameters whose `mu` and `sigma` are
+# those hyperparameters. `normal_prior` and `half_normal_prior` accept a `ParamRef`
+# anywhere they accept a float.
+#
+# Order matters: a hyperparameter must be declared before the prior that uses it.
+# rustmc resolves `ParamRef` arguments to graph nodes in declaration order, so there
+# is no forward reference.
+
+# %% The explicit pattern
+builder = rmc.ModelBuilder(data=data)
+mu_global = builder.normal_prior("mu_global", mu=0.0, sigma=10.0)
+sigma_group = builder.half_normal_prior("sigma_group", sigma=5.0)
+for j in range(J):
+    mu_j = builder.normal_prior(f"mu_{j}", mu=mu_global, sigma=sigma_group)
+    builder.normal_likelihood(f"obs_{j}", mu_expr=mu_j, sigma=1.0, observed_key=f"y_{j}")
+
+fit = rmc.sample(
+    model_spec=builder.build(), chains=4, draws=2000, warmup=2000, seed=42, show_progress=False
+)
+print(fit.summary())
+print("Divergences per chain:", fit.divergences())
+
+# %% [markdown]
+# ## What you wrote is not what the sampler sees
+#
+# The code above is the centered form, the textbook case of Neal's funnel, where a
+# sampler stalls in the neck and reports divergent transitions. Eligible scalar
+# hierarchical normals are compiled through a noncentered latent instead, which is
+# the standard remedy for that geometry; the next cell shows the rewrite in the
+# compiled model's coordinate names, and this run reports no divergences. You do
+# not write that latent, and it does not appear in summaries, diagnostics,
+# posterior samples, prior predictive draws or ArviZ export. All of those report
+# `mu_j`, the parameter you declared.
+#
+# Two separate things are worth reading off the table above, and they have
+# different causes. The hyperparameters have wide intervals because eight group
+# means carry about as much information about their common distribution as eight
+# observations do; more draws will not narrow them. Their ESS is also an order of
+# magnitude below the group means', which is a property of this chain, not of the
+# model: the hyperparameter directions are slower to traverse, so each draw buys
+# less. More draws do help there, and cut the Monte Carlo error on the
+# hyperparameter summaries.
+
+# %% The same model from a helper
+# `examples/hierarchical_templates.py` packages the pattern as a plain function.
+# It calls the same builder methods, so the compiled model is the same model.
+helper_builder = rmc.ModelBuilder(data=data)
+build_centered_normal_partial_pooling(
+    helper_builder,
+    observed_keys=[f"y_{j}" for j in range(J)],
+    sigma_obs=1.0,
+)
+
+explicit = rmc.ModelBuilder(data=data)
+mu_global = explicit.normal_prior("mu_global", mu=0.0, sigma=10.0)
+sigma_group = explicit.half_normal_prior("sigma_group", sigma=5.0)
+for j in range(J):
+    mu_j = explicit.normal_prior(f"mu_{j}", mu=mu_global, sigma=sigma_group)
+    explicit.normal_likelihood(f"obs_{j}", mu_expr=mu_j, sigma=1.0, observed_key=f"y_{j}")
+
+from_helper, from_hand = helper_builder.compile(), explicit.compile()
+print("same parameters:  ", from_helper.param_names == from_hand.param_names)
+print("same data keys:   ", from_helper.required_keys == from_hand.required_keys)
+print("parameters:       ", from_hand.param_names)
+
+# %% [markdown]
+# `param_names` is the sampler's coordinate list, and it is where the rewrite shows
+# through: each `mu_j` you declared appears as `mu_j__raw`, the standard-normal latent
+# the noncentered form samples in. Nothing else in the API uses those names. Ask a
+# `FitResult` for `mu_0` and you get `mu_0`.
+
+# %% Where a ParamRef is accepted
+# Each entry declares a prior whose hyperparameter is another parameter rather than
+# a constant. What succeeds here is the supported surface, as of this run.
+probe = rmc.ModelBuilder(data={"y": data["y_0"]})
+loc = probe.normal_prior("loc", 0.0, 1.0)
+scale = probe.half_normal_prior("scale", 1.0)
+
+candidates = {
+    "normal_prior(mu=ParamRef, sigma=ParamRef)": lambda: probe.normal_prior("a", loc, scale),
+    "half_normal_prior(sigma=ParamRef)": lambda: probe.half_normal_prior("b", scale),
+    "exponential_prior(rate=ParamRef)": lambda: probe.exponential_prior("c", scale),
+    "log_normal_prior(mu=ParamRef, sigma=ParamRef)": lambda: probe.log_normal_prior("d", loc, scale),
+    "normal_likelihood(sigma=ParamRef)": lambda: probe.normal_likelihood("obs", loc, scale, "y"),
+    "vector_normal_prior(sigma=ParamRef)": lambda: probe.vector_normal_prior("z", 4, 0.0, scale),
+}
+for description, declare in candidates.items():
+    try:
+        declare()
+        print(f"  accepted  {description}")
+    except Exception as error:  # noqa: BLE001 - what is rejected is the point
+        print(f"  rejected  {description}")
+        print(f"            {type(error).__name__}: {error}")
+
+print("  builder.hierarchical_normal exists:", hasattr(rmc.ModelBuilder(), "hierarchical_normal"))
+
+# %% [markdown]
+# ## The workaround for vector effects
+#
+# A vector parameter takes float hyperparameters only, so a group random-effect block
+# cannot draw its scale from another parameter. Write the noncentered form instead:
+# keep the vector standard normal and multiply it by a scalar scale in the
+# expression.
+#
+# ```python
+# population    = model.normal_prior("population", 0.0, 1.0)
+# between_sites = model.half_normal_prior("between_sites", 0.5)
+# z             = model.vector_normal_prior("z", n_sites, 0.0, 1.0)
+# mean          = population + between_sites * z["site"]
+# ```
+#
+# `examples/site_effects.py` fits exactly that, and is the page to copy from. The
+# cost is that `z`, not the site mean, is what appears in the parameter table, so
+# record the quantity you care about with `deterministic`.
+#
+# ## What is missing
+#
+# Not available today, in the order they would matter most:
+#
+# - vector-valued hierarchical random effects, where automatic noncentering would
+#   help most, and which need logical-parameter mappings for vector blocks;
+# - grouped varying-slope blocks compiled from a single declaration;
+# - correlated random effects;
+# - a high-level template API such as `builder.hierarchical_normal(...)`.

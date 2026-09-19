@@ -36,9 +36,14 @@ README = EXAMPLES / "README.md"
 # what this map enforces: an example may skip only for the dependency it is
 # documented to need. An example that silently acquires a new third-party
 # import fails instead of quietly dropping out of the gate.
+#
+# Only an example that CANNOT run without the package belongs here. An example
+# that merely prints more when the package is present must run either way, and
+# skipping it would leave its NumPy-only path untested -- which is what happened
+# to bayesian_local_level_forecasting.py, whose extra ArviZ diagnostics were
+# treated as a prerequisite for running it at all.
 OPTIONAL_BY_EXAMPLE = {
     "arviz_example.py": {"arviz", "matplotlib"},
-    "bayesian_local_level_forecasting.py": {"arviz"},
 }
 
 

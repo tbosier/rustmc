@@ -21,6 +21,7 @@ a fit.
 | `repeated_calibration.py` | Independent fits with one compiled model and stable IDs. |
 | `arviz_example.py` | Exporting a fit to ArviZ and using its diagnostics and plots. |
 | `large_linear_regression.py` | A 500-coefficient vector parameter on the faer GEMV path. |
+| `batch_inference.py` | Many independent fits in one call, by shared schema and by differing structure. |
 
 ## Pooling and panels
 
@@ -28,6 +29,7 @@ a fit.
 |---|---|
 | `site_effects.py` | Partial pooling and comparisons from joint posterior draws. |
 | `hierarchical_example.py` | Scalar partial pooling with a global mean and a between-group scale. |
+| `partial_pooling_template.py` | What the builder's hierarchical priors do and do not support today. |
 | `hierarchical_mean.py` | A specialized Gaussian Gibbs model and joint totals. |
 | `fixed_effects_panel_forecast.py` | Group indexing with `beta["key"]`, and how to keep a multi-level panel identified. |
 
@@ -56,8 +58,8 @@ Three files here are modules rather than scripts, and running them directly does
 nothing useful.
 
 `hierarchical_templates.py` holds `build_centered_normal_partial_pooling`, the reusable
-builder helper that `hierarchical_example.py` imports; the
-[hierarchical templates guide](../docs/examples/hierarchical-templates.md) explains it.
+builder helper that `hierarchical_example.py` and `partial_pooling_template.py` import;
+[`partial_pooling_template.py`](partial_pooling_template.py) shows what it covers.
 `bench_common.py` is an importable module shared by the comparison scripts; it records
 environment fields and phase-separated timings.
 `run_benchmarks.py` is a compatibility wrapper that forwards to `benchmarks/run.py`.
