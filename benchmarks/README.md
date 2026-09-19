@@ -72,6 +72,23 @@ requested draws; it does **not** mean statistical quality passed. A failed quali
 invalidates interpretation of that timing row. Passing is necessary but not sufficient for
 publishing a comparison.
 
+Each gated metric is screened against a domain before it is compared with its threshold,
+and `quality_gate.domains` publishes those domains alongside `quality_gate.thresholds`.
+A bare `>` or `<` reports false for a NaN, so an unscreened comparison appended nothing to
+the failure list and the gate that authorises a speed claim passed on a fit whose
+diagnostics were not numbers. The gate now fails closed on a metric that is non-finite,
+outside the range its estimator can produce, or absent, and on a divergence count that is
+negative or fractional. Screening happens per parameter, before the R-hats are reduced with
+`max` and the ESS values with `min`: aggregating first hid exactly the half of each domain
+the gate cares about, so per-parameter R-hats of `[-100, 1]` reported a healthy maximum of
+`1`. Failures are listed twice — once under the bare metric name, which is what this
+document and downstream consumers match on, and once as `metric[reason]` so the report says
+why a value was rejected.
+
+A domain is derived from the requested chain and draw counts, so it bounds what an estimator
+could have returned for a fit of that shape. It does not authenticate a payload: a value
+inside the domain is not thereby a value that came from this fit.
+
 A speed ratio should not be published unless:
 
 - all compared engine rows have `status: ok` and the same data SHA-256;
