@@ -1,7 +1,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
-use crate::graph::{Graph, ParamTransform};
+use crate::graph::{Graph, Op, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
@@ -163,40 +163,70 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
+    /// Posterior mean per parameter, from the same implementation the summary
+    /// table uses.
+    ///
+    /// See [`diagnostics::scaled_moments`]: the draws are centred and scaled
+    /// before they are summed, so a posterior whose draws sit near the top of
+    /// the representable range reports a finite mean rather than an infinity,
+    /// and reports the same one `diagnostics()` does.
     pub fn mean(&self) -> Vec<f64> {
         let n_params = self.param_names.len();
-        let mut sums = vec![0.0; n_params];
-        let mut count = 0usize;
-
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    sums[i] += v;
-                }
-                count += 1;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-
-        sums.iter().map(|s| s / count as f64).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter, from the same implementation
+    /// the summary table uses.
+    ///
+    /// This is the sample standard deviation (`n - 1` in the denominator), as
+    /// the summary table has always reported; before the two paths were shared
+    /// this one divided by `n` and the two disagreed by `sqrt(n / (n - 1))`.
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
         let n_params = self.param_names.len();
-        let mut sum_sq = vec![0.0; n_params];
-        let mut count = 0usize;
-
-        for chain in &self.samples {
-            for draw in chain {
-                for (i, v) in draw.iter().enumerate() {
-                    let diff = v - means[i];
-                    sum_sq[i] += diff * diff;
-                }
-                count += 1;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
 
-        sum_sq.iter().map(|s| (s / count as f64).sqrt()).collect()
+    /// Whether `samples` is the rectangular chain × draw × parameter array the
+    /// sampler produces.
+    ///
+    /// These fields are public, so a caller can assemble one that is not.
+    /// `compute_diagnostics` refuses such an array outright — a ragged one has
+    /// no chain axis to compute R-hat along — and reports NaN for every
+    /// parameter; the moments agree with it rather than indexing past the end
+    /// of a short draw or averaging different parameters over different numbers
+    /// of draws.
+    fn is_rectangular(&self) -> bool {
+        let Some(first) = self.samples.first() else {
+            return false;
+        };
+        let n_draws = first.len();
+        let n_params = self.param_names.len();
+        n_draws > 0
+            && self.samples.iter().all(|chain| {
+                chain.len() == n_draws && chain.iter().all(|draw| draw.len() == n_params)
+            })
+    }
+
+    /// Every draw of parameter `index`, chain-major. Requires
+    /// [`Self::is_rectangular`].
+    ///
+    /// The order is the order the naive loop accumulated in, and it is the
+    /// order `BatchModelResult` accumulates in, so the two keep reporting the
+    /// same value for the same draws.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples
+            .iter()
+            .flat_map(move |chain| chain.iter().map(move |draw| draw[index]))
     }
 
     pub fn total_divergences(&self) -> usize {
@@ -267,6 +297,111 @@ fn validate_initial_target(
     Ok(())
 }
 
+/// Reject discrete latent parameters before any gradient-based sampling.
+///
+/// HMC and NUTS evolve a continuous Euclidean state, so a discrete latent needs
+/// marginalisation or a discrete transition kernel. `Bernoulli::prior` and
+/// `Poisson::prior` build exactly that — `Op::BernoulliLogP` / `Op::PoissonLogP`
+/// over a free `Op::Param` — and the two fail differently, neither usefully:
+///
+/// Both densities now check their support — `bernoulli_logp_scalar` returns
+/// -inf off `{0, 1}` and `count_sampling::log_mass` returns -inf for a
+/// fractional count — so every off-integer proposal is rejected and the chain
+/// is pinned to its integer initialization, reporting divergence on every
+/// transition while the step size collapses. Not a wrong number, but no number
+/// at all, and no support error either: without this check the run looks like
+/// an ordinary fit that simply mixed badly.
+///
+/// Before the support check landed, Bernoulli failed worse than that rather
+/// than better: `x * ln p + (1 - x) * ln(1 - p)` is constant over all of R at
+/// `p = 0.5`, so the chain random-walked a flat direction and returned
+/// fractional "draws" for a parameter whose support is `{0, 1}`, reaching -813
+/// within 20 draws.
+///
+/// The `ModelSpec` layer already refuses these priors, but that check is
+/// upstream of the sampler: a Rust caller assembling a `Graph` by hand bypasses
+/// it entirely. This scan sits on the graph itself, so it covers every
+/// gradient-based entry point in this module, plus `model::GraphModel::sample`,
+/// which funnels here.
+///
+/// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
+/// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
+/// they call this directly. That is why they return a `Result` rather than a
+/// bare `ChainResult`. `sampler`'s own call sites use the `_unguarded` variants
+/// instead, having already run this once at their boundary.
+///
+/// Observed data is never rejected, and not by a heuristic: the observation
+/// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
+/// different op entirely — `Op::ObsLogP`, whose response is `obs_data_idx`, an
+/// index into the binding's observation vectors rather than a `NodeId` — so a
+/// sampled value cannot occupy the response side of one, and they are not
+/// visited here at all. A discrete *latent* is the other shape: `x: NodeId`
+/// pointing at `Op::Param`.
+///
+/// A free parameter reaching `x` indirectly counts too —
+/// `bernoulli_logp(graph.exp(param), p)`, or an artifact wiring an
+/// `Add`/`Sigmoid` between them. Such a graph is equally invalid, and worse in
+/// one respect: `Op::BernoulliLogP`'s backward pass propagates no adjoint to
+/// `x` at all, so the term moves the density without moving the gradient.
+/// `Graph::reachable_param` does the walk, over an exhaustive match on `Op`
+/// that lives beside the enum so it cannot fall behind it. No constructor in
+/// this crate builds that shape — `Bernoulli::prior` and `Poisson::prior` both
+/// pass a bare parameter — so this is about what the published `Graph` API
+/// lets a caller assemble.
+pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), String> {
+    let mut offenders: Vec<(usize, &str, &str)> = Vec::new();
+    // Scan every node rather than just `graph.logp_terms`. For a graph built
+    // through `Graph`'s own API the two are equivalent, because `bernoulli_logp`
+    // and `poisson_logp` always register the term they create. Scanning all
+    // nodes costs one extra pass and does not rely on that invariant holding for
+    // every future constructor, so it fails closed if one ever forgets to
+    // register its term.
+    //
+    // Cost is one pass over the nodes, plus one operand walk per discrete term
+    // found. Models with no `Bernoulli`/`Poisson` prior — which is nearly all
+    // of them — pay only the pass; a model with `d` discrete terms pays `d`
+    // walks, each allocating and clearing one bitmap over the nodes. Both are
+    // negligible beside the sampling that follows.
+    for node in &graph.nodes {
+        let (x, family) = match node.op {
+            Op::BernoulliLogP { x, .. } => (x, "Bernoulli"),
+            Op::PoissonLogP { x, .. } => (x, "Poisson"),
+            _ => continue,
+        };
+        // A transform cannot rescue a discrete support, so every free parameter
+        // under one of these densities is an offender regardless of its
+        // `ParamTransform` — and regardless of how many nodes separate it from
+        // the density. A discrete term over a constant reaches no parameter and
+        // is not a latent, so it is left alone.
+        let Some(index) = graph.reachable_param(x) else {
+            continue;
+        };
+        let name = graph
+            .param_names
+            .get(index)
+            .map_or("<unknown>", String::as_str);
+        offenders.push((index, name, family));
+    }
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    offenders.sort_unstable();
+    offenders.dedup();
+    let listed: Vec<String> = offenders
+        .iter()
+        .map(|(_, name, family)| format!("'{name}' ({family})"))
+        .collect();
+    Err(format!(
+        "discrete latent parameter(s) {} cannot be sampled with HMC/NUTS: \
+         gradient-based samplers evolve a continuous state, so a discrete \
+         parameter requires marginalisation or a discrete transition kernel. \
+         Bernoulli and Poisson priors are available for prior-predictive \
+         simulation only; for discrete observations use a Bernoulli-logit or \
+         Poisson-log observation likelihood instead.",
+        listed.join(", ")
+    ))
+}
+
 fn validate_target_accept(target_accept: f64) -> Result<(), String> {
     if target_accept.is_finite() && target_accept > 0.0 && target_accept < 1.0 {
         Ok(())
@@ -299,6 +434,9 @@ pub fn sample_bound_with_init(
     initial: Option<Vec<Vec<f64>>>,
 ) -> Result<SampleResult, String> {
     config.validate()?;
+    // Single chokepoint: `sample`, `sample_bound`, both bound-batch entry points
+    // and `model::GraphModel::sample` all funnel through here.
+    reject_discrete_latent_parameters(&graph)?;
     let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
     binding.validate_for(&graph).map_err(|e| e.to_string())?;
     for position in &initial {
@@ -345,7 +483,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        nuts::run_chain_bound(
+                        nuts::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &nuts_config,
@@ -362,7 +500,7 @@ pub fn sample_bound_with_init(
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
                         };
-                        hmc::run_chain_bound(
+                        hmc::run_chain_bound_unguarded(
                             &graph,
                             binding.clone(),
                             &hmc_config,
@@ -602,30 +740,42 @@ pub fn sample_batch_bound(
 }
 
 impl BatchModelResult {
+    /// Posterior mean per parameter; see [`SampleResult::mean`].
     pub fn mean(&self) -> Vec<f64> {
         let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sums = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                sums[i] += v;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-        sums.iter().map(|s| s / n_draws as f64).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
+            .collect()
     }
 
+    /// Posterior standard deviation per parameter; see [`SampleResult::std`].
     pub fn std(&self) -> Vec<f64> {
-        let means = self.mean();
         let n_params = self.param_names.len();
-        let n_draws = self.samples.len();
-        let mut sum_sq = vec![0.0; n_params];
-        for draw in &self.samples {
-            for (i, v) in draw.iter().enumerate() {
-                let d = v - means[i];
-                sum_sq[i] += d * d;
-            }
+        if !self.is_rectangular() {
+            return vec![f64::NAN; n_params];
         }
-        sum_sq.iter().map(|s| (s / n_draws as f64).sqrt()).collect()
+        (0..n_params)
+            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
+            .collect()
+    }
+
+    /// Whether every draw carries every parameter; see
+    /// [`SampleResult::is_rectangular`].
+    fn is_rectangular(&self) -> bool {
+        !self.samples.is_empty()
+            && self
+                .samples
+                .iter()
+                .all(|draw| draw.len() == self.param_names.len())
+    }
+
+    /// Every draw of parameter `index`. `samples` is already chain-major, so
+    /// this is the same sequence `SampleResult::draws_of` yields.
+    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
+        self.samples.iter().map(move |draw| draw[index])
     }
 
     pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {
@@ -672,6 +822,9 @@ pub fn batch_sample_graphs(
 
     for graph in &models {
         graph.validate_shapes().map_err(|e| e.to_string())?;
+        // The only gradient-based entry point that does not reach
+        // `sample_bound_with_init`; it drives `run_chain` directly.
+        reject_discrete_latent_parameters(graph)?;
         let binding = DataBinding::from_graph(graph).map_err(|e| e.to_string())?;
         validate_initial_target(graph, binding, &vec![0.0; graph.param_count])?;
     }
@@ -697,6 +850,12 @@ pub fn batch_sample_graphs(
             .enumerate()
             .map(|(model_idx, graph)| {
                 let prog_ref = progress_state.as_deref();
+                // Built once per model rather than once per chain. The loop
+                // above already proved every graph binds, and the kernels take
+                // a binding by value, so this is the same `from_graph` call
+                // `run_chain` used to make internally on each pass.
+                let binding = DataBinding::from_graph(&graph)
+                    .expect("graph data must have consistent shapes");
                 let mut samples: Vec<Vec<f64>> = Vec::new();
                 let mut unconstrained_samples = graph
                     .param_transforms
@@ -724,7 +883,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            nuts::run_chain(&graph, &nuts_config, &mut rng, None, prog_ref)
+                            nuts::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &nuts_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                         SamplerType::Hmc => {
                             let hmc_config = HmcConfig {
@@ -734,7 +900,14 @@ pub fn batch_sample_graphs(
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
                             };
-                            hmc::run_chain(&graph, &hmc_config, &mut rng, None, prog_ref)
+                            hmc::run_chain_bound_unguarded(
+                                &graph,
+                                binding.clone(),
+                                &hmc_config,
+                                &mut rng,
+                                None,
+                                prog_ref,
+                            )
                         }
                     };
 
@@ -827,7 +1000,8 @@ mod tests {
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
                 None,
-            );
+            )
+            .expect("continuous test model must run");
             assert_eq!(chain, &expected.samples);
             assert!(chain.iter().all(|q| q[0].is_finite() && q[0] > 39.0));
             assert!(result.samples[chain_index].iter().all(|q| q[0] == 1.0));

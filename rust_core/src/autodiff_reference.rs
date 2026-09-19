@@ -78,20 +78,12 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::Constant(c) => Value::Scalar(*c),
             Op::Data(idx) => Value::Vector(graph.data_vectors[*idx].clone()),
             Op::Add(a, b) => Value::Scalar(values[a.0].as_scalar() + values[b.0].as_scalar()),
-            Op::Sub(a, b) => Value::Scalar(values[a.0].as_scalar() - values[b.0].as_scalar()),
             Op::Mul(a, b) => Value::Scalar(values[a.0].as_scalar() * values[b.0].as_scalar()),
-            Op::Div(a, b) => Value::Scalar(values[a.0].as_scalar() / values[b.0].as_scalar()),
-            Op::Neg(a) => Value::Scalar(-values[a.0].as_scalar()),
             Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
-            Op::Log(a) => Value::Scalar(values[a.0].as_scalar().ln()),
-            Op::Sigmoid(a) => {
-                let v = values[a.0].as_scalar();
-                Value::Scalar(1.0 / (1.0 + (-v).exp()))
-            }
-            Op::Square(a) => {
-                let v = values[a.0].as_scalar();
-                Value::Scalar(v * v)
-            }
+            Op::Sigmoid(a) => Value::Scalar(sigmoid_stable(values[a.0].as_scalar())),
+            Op::BoundedSigmoid { raw, lower, upper } => Value::Scalar(
+                crate::graph::bounded_sigmoid(values[raw.0].as_scalar(), *lower, *upper),
+            ),
             Op::ScalarMulData(scalar, data) => {
                 let s = values[scalar.0].as_scalar();
                 let d = values[data.0].as_vector();
@@ -396,12 +388,19 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         db.push(0.0);
                         continue;
                     }
-                    let (x, y) = operator.derivatives(
+                    // Compose through `adjoints`, not `derivatives` then multiply.
+                    // For Div, Log and Pow the local derivative can leave the
+                    // representable range while the composed adjoint is ordinary;
+                    // multiplying afterwards loses it. The Evaluator composes, so
+                    // this oracle has to as well or the two disagree in the tails
+                    // and the differential test stops meaning anything there.
+                    let (x, y) = operator.adjoints(
+                        *u,
                         read(&values[a.0], i),
                         b.map_or(0.0, |b| read(&values[b.0], i)),
                     );
-                    da.push(u * x);
-                    db.push(u * y);
+                    da.push(x);
+                    db.push(y);
                 }
                 if matches!(values[a.0], Value::Scalar(_)) {
                     adj_scalar[a.0] += da.iter().sum::<f64>();
@@ -442,28 +441,23 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 adj_scalar[a.0] += a_s;
                 adj_scalar[b.0] += a_s;
             }
-            Op::Sub(a, b) => {
-                adj_scalar[a.0] += a_s;
-                adj_scalar[b.0] -= a_s;
-            }
             Op::Mul(a, b) => {
                 adj_scalar[a.0] += a_s * values[b.0].as_scalar();
                 adj_scalar[b.0] += a_s * values[a.0].as_scalar();
             }
-            Op::Div(a, b) => {
-                let va = values[a.0].as_scalar();
-                let vb = values[b.0].as_scalar();
-                adj_scalar[a.0] += a_s / vb;
-                adj_scalar[b.0] -= a_s * va / (vb * vb);
-            }
-            Op::Neg(a) => adj_scalar[a.0] -= a_s,
             Op::Exp(a) => adj_scalar[a.0] += a_s * values[a.0].as_scalar().exp(),
-            Op::Log(a) => adj_scalar[a.0] += a_s / values[a.0].as_scalar(),
             Op::Sigmoid(a) => {
-                let s = values[idx].as_scalar();
-                adj_scalar[a.0] += a_s * s * (1.0 - s);
+                adj_scalar[a.0] +=
+                    a_s * crate::graph::stable_sigmoid_derivative(values[a.0].as_scalar());
             }
-            Op::Square(a) => adj_scalar[a.0] += a_s * 2.0 * values[a.0].as_scalar(),
+            Op::BoundedSigmoid { raw, lower, upper } => {
+                adj_scalar[raw.0] += crate::graph::bounded_sigmoid_adjoint(
+                    a_s,
+                    values[raw.0].as_scalar(),
+                    *lower,
+                    *upper,
+                );
+            }
             Op::ScalarMulData(scalar, data) => {
                 let s = values[scalar.0].as_scalar();
                 let d = values[data.0].as_vector();
@@ -539,15 +533,17 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[upper.0] -= a_s / range;
                 }
             }
+            // Share the Evaluator's scores rather than restating them. The local
+            // copies clamped p into [1e-12, 1 - 1e-12] and never checked the
+            // support, so they disagreed with the densities above once those
+            // learned to refuse an impossible outcome.
             Op::BernoulliLogP { x, p } => {
-                let xv = values[x.0].as_scalar();
-                let pv = values[p.0].as_scalar().clamp(1e-12, 1.0 - 1e-12);
-                adj_scalar[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+                adj_scalar[p.0] +=
+                    a_s * bernoulli_logp_dp(values[x.0].as_scalar(), values[p.0].as_scalar());
             }
             Op::PoissonLogP { x, lam } => {
-                let xv = values[x.0].as_scalar();
-                let lv = values[lam.0].as_scalar();
-                adj_scalar[lam.0] += a_s * (xv / lv - 1.0);
+                adj_scalar[lam.0] +=
+                    a_s * poisson_logp_dlam(values[x.0].as_scalar(), values[lam.0].as_scalar());
             }
             Op::LogGammaLogP { x, alpha, beta } => {
                 let raw = values[x.0].as_scalar();

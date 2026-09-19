@@ -91,11 +91,15 @@ impl Uniform {
         let param_start = graph.param_count;
         let raw =
             graph.add_param_with_transform(name, ParamTransform::BoundedSigmoid { lower, upper });
-        let sig = graph.sigmoid(raw);
-        let range_node = graph.add_constant(upper - lower);
-        let lower_node = graph.add_constant(lower);
-        let scaled = graph.mul(range_node, sig);
-        let x = graph.add(lower_node, scaled);
+        // One fused node, not `lower + (upper - lower) * sigmoid(raw)` spelled
+        // out in the graph. Assembled from nodes this was a second formula for
+        // the constrained value, and it disagreed with the `ParamTransform`
+        // that reports the draw back to the caller — by one ulp on `(0, 1)`,
+        // and by the whole value for `(-1e308, 1)`, where the graph evaluated
+        // the density at 0 while the posterior showed 0.552371377432487. Fusing
+        // also keeps the span out of reverse mode as a separate factor. See
+        // `Op::BoundedSigmoid`.
+        let x = graph.bounded_sigmoid(raw, lower, upper);
 
         // Evaluate density and Jacobian together in raw space: the interval
         // width cancels, and rounded sigmoid endpoints must not truncate tails.
@@ -109,6 +113,13 @@ impl Uniform {
 pub struct Bernoulli;
 
 impl Bernoulli {
+    /// A discrete latent with support {0, 1}, for prior-predictive simulation only.
+    ///
+    /// The parameter is stored unconstrained and the density is not defined off
+    /// the integers, so every gradient-based sampling entry point in
+    /// [`crate::sampler`] rejects a graph containing this term. Discrete
+    /// *observations* belong in [`Graph::obs_logp_bernoulli_logit`], which is
+    /// unaffected.
     pub fn prior(graph: &mut Graph, name: &str, p: f64) -> NodeId {
         let param = graph.add_param(name);
         let p_node = graph.add_constant(p);
@@ -122,6 +133,12 @@ impl Bernoulli {
 pub struct Poisson;
 
 impl Poisson {
+    /// A discrete latent over the non-negative integers, for prior-predictive
+    /// simulation only.
+    ///
+    /// As with [`Bernoulli::prior`], gradient-based sampling rejects a graph
+    /// containing this term; count *observations* belong in
+    /// [`Graph::obs_logp_poisson_log`], which is unaffected.
     pub fn prior(graph: &mut Graph, name: &str, lam: f64) -> NodeId {
         let param = graph.add_param(name);
         let lam_node = graph.add_constant(lam);

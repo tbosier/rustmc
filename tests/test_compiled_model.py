@@ -192,14 +192,15 @@ def test_compiled_and_legacy_sampling_parity():
     np.testing.assert_array_equal(modern, legacy)
 
 
-def test_arviz_ppc_export_includes_observed_data():
+@pytest.mark.parametrize("chains", [1, 3])
+def test_arviz_ppc_export_includes_observed_data(chains):
     pytest.importorskip("arviz")
     _, compiled = make_compiled()
     data = {"x": np.array([1.0, 2.0]), "y": np.array([1.5, 2.5])}
     fit = compiled.sample(
         data,
-        chains=1,
-        draws=2,
+        chains=chains,
+        draws=4,
         warmup=2,
         sampler="hmc",
         num_leapfrog_steps=1,
@@ -221,8 +222,10 @@ def test_arviz_ppc_export_includes_observed_data():
     observed_dataset = dataset("observed_data")
     log_likelihood_dataset = dataset("log_likelihood")
     ppc_dataset = dataset("posterior_predictive")
-    assert posterior_dataset["beta"].shape == (1, 2)
-    assert stats_dataset["diverging"].shape == (1, 2)
+    assert posterior_dataset["beta"].shape == (chains, 4)
+    assert stats_dataset["diverging"].shape == (chains, 4)
     np.testing.assert_array_equal(observed_dataset["obs"].values, data["y"])
-    assert log_likelihood_dataset["obs"].shape == (1, 2, 2)
-    assert ppc_dataset["obs"].shape == (1, 2, 2)
+    assert log_likelihood_dataset["obs"].shape == (chains, 4, 2)
+    # The predictive group carries the posterior's own (chain, draw) axes, not a
+    # single fabricated chain of flattened draws.
+    assert ppc_dataset["obs"].shape == (chains, 4, 2)

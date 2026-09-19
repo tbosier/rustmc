@@ -4,12 +4,13 @@ use std::sync::Arc;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use rustmc_core::graph::ParamTransform;
 use rustmc_core::hmc::TransitionStats;
 use rustmc_core::sampler::SampleResult;
 
 use super::{
-    compile_python_model, constrained_draw_to_raw, core_binding_from_maps,
-    derive_display_sample_result, model_artifact, Data1d, Data2d, FitResult, PyCompiledModel,
+    compile_python_model, constrained_draw_to_raw, core_binding_from_maps, display_sample_result,
+    model_artifact, Data1d, Data2d, FitResult, PyCompiledModel,
 };
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -138,6 +139,43 @@ fn invalid(message: &str) -> PyErr {
     PyValueError::new_err(format!("invalid graph fit artifact: {message}"))
 }
 
+/// The magnitude the position-agreement check must budget for, on top of the
+/// draw's own, when deciding whether stored raw and constrained coordinates
+/// describe the same draw.
+///
+/// `Identity` and `Exp` derive the constrained value from the raw one alone, so
+/// two correct evaluations agree to within a few ULP *of the value*, and the
+/// value's own magnitude is the only scale in play. `Sigmoid` is the same: its
+/// output lies in (0, 1) and approaches its endpoints multiplicatively, so
+/// nothing cancels. These keep a purely value-relative budget.
+///
+/// A bounded transform is different. Both `lower + span * s(raw)` and the
+/// equivalent `upper - span * s(-raw)` round an intermediate term whose size is
+/// set by the *interval*, and the final add or subtract can then cancel that
+/// term down to a result arbitrarily close to zero. So on an interval that
+/// straddles zero the absolute disagreement between two correct formulations
+/// stays of order `EPSILON * span` while `EPSILON * |value|` collapses, and a
+/// value-relative budget rejects artifacts this library itself wrote:
+/// `Uniform(-2, 3)` is enough, and `tests/fixtures/graph_fit_v2_uniform.json`
+/// is a real one, written before the bounded transform was re-associated to
+/// evaluate its density at the point it reports.
+///
+/// Budgeting the span fixes that. Across 3.2M `(lower, upper, raw)` points with
+/// interval widths from 1e-30 to 1e308, the largest disagreement between the
+/// two formulations is 0.125 of `8 * EPSILON * (span + |value|)`. No
+/// value-relative budget can cover the same set, because the required ratio is
+/// unbounded as a draw approaches zero.
+///
+/// This does not blunt corruption detection. A raw position that decodes to a
+/// genuinely different draw misses by a fraction of the interval, not by an ULP
+/// of it, which is many orders of magnitude outside this budget.
+fn agreement_scale(transform: &ParamTransform) -> f64 {
+    match transform {
+        ParamTransform::BoundedSigmoid { lower, upper } => (upper - lower).abs(),
+        ParamTransform::Identity | ParamTransform::Exp | ParamTransform::Sigmoid => 0.0,
+    }
+}
+
 fn training_data(fit: &FitResult) -> PyResult<TrainingData> {
     let mut vectors: Data1d = HashMap::new();
     for (slot, values) in fit
@@ -264,8 +302,12 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     graph
         .validate_shapes()
         .map_err(|error| invalid(&error.to_string()))?;
-    let raw_result = validate_posterior(artifact.posterior, &graph, artifact.version)?;
-    let display_result = derive_display_sample_result(&raw_result, &compiled.display_params)?;
+    let raw_result = Arc::new(validate_posterior(
+        artifact.posterior,
+        &graph,
+        artifact.version,
+    )?);
+    let display_result = display_sample_result(&raw_result, &compiled.display_params)?;
     if display_result
         .samples
         .iter()
@@ -346,7 +388,9 @@ fn validate_posterior(
                     let expected = transform.apply(*raw);
                     // Permit ordinary floating-point JSON reconstruction error,
                     // but verify the supplied coordinates describe the same draw.
-                    let tolerance = 8.0 * f64::EPSILON * expected.abs().max(displayed.abs());
+                    let tolerance = 8.0
+                        * f64::EPSILON
+                        * (agreement_scale(transform) + expected.abs().max(displayed.abs()));
                     if !expected.is_finite() || (expected - displayed).abs() > tolerance {
                         return Err(invalid(
                             "unconstrained posterior positions disagree with constrained samples",

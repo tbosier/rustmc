@@ -1,4 +1,20 @@
 use crate::hmc::TransitionStats;
+use std::collections::HashSet;
+
+/// Narrowest the parameter-name column is ever drawn.
+///
+/// This is the historical width, so tables whose names all fit keep exactly
+/// the layout they have always had.
+const NAME_COLUMN_MIN_WIDTH: usize = 12;
+
+/// Widest the parameter-name column is drawn before names are abbreviated.
+///
+/// A single pathological name (nothing stops a user passing a 200-character
+/// one) would otherwise push the numeric columns past the edge of a terminal,
+/// where line wrapping destroys the alignment of *every* row. Abbreviating one
+/// label is the smaller loss. See `display_names` for the rule that stops
+/// abbreviation from ever making two distinct parameters print identically.
+const NAME_COLUMN_MAX_WIDTH: usize = 48;
 
 /// MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
 ///
@@ -66,6 +82,120 @@ pub struct TransitionDiagnosticsReport {
     pub max_abs_energy_error: f64,
 }
 
+/// Number of `char`s in `text`, the unit this table measures columns in.
+///
+/// Byte length is the wrong measure: the rules are drawn with `─` and
+/// abbreviated names end in `…`, both multi-byte. Counting `char`s is also what
+/// `format!`'s own `{:width$}` padding counts, so measurement and padding
+/// always agree and the table is internally consistent.
+///
+/// This is not true terminal-cell width: a full-width or combining character in
+/// a parameter name would still render misaligned. Computing that needs a
+/// Unicode width table, which is not worth a dependency for parameter names.
+fn display_width(text: &str) -> usize {
+    text.chars().count()
+}
+
+/// Per-column widths: the larger of the minimum, the header and every cell.
+fn column_widths<const N: usize>(
+    headers: &[&str; N],
+    minimums: &[usize; N],
+    rows: &[[String; N]],
+) -> [usize; N] {
+    let mut widths = *minimums;
+    for (width, header) in widths.iter_mut().zip(headers.iter()) {
+        *width = (*width).max(display_width(header));
+    }
+    for row in rows {
+        for (width, cell) in widths.iter_mut().zip(row.iter()) {
+            *width = (*width).max(display_width(cell));
+        }
+    }
+    widths
+}
+
+/// Render one row: first column left aligned, the rest right aligned, joined
+/// by single spaces.
+fn render_row<const N: usize>(cells: &[String; N], widths: &[usize; N]) -> String {
+    cells
+        .iter()
+        .zip(widths.iter())
+        .enumerate()
+        .map(|(index, (cell, &width))| {
+            if index == 0 {
+                format!("{cell:<width$}")
+            } else {
+                format!("{cell:>width$}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The horizontal rule, spanning every column plus the single-space gaps.
+fn rule<const N: usize>(widths: &[usize; N]) -> String {
+    "─".repeat(widths.iter().sum::<usize>() + N.saturating_sub(1))
+}
+
+/// Labels for the parameter-name column.
+///
+/// Names longer than [`NAME_COLUMN_MAX_WIDTH`] are abbreviated keeping both
+/// ends, so indexed names such as `beta[997]` stay distinguishable. If
+/// abbreviating would make any two labels print identically, abbreviation is
+/// abandoned for the whole table: an over-wide table is recoverable, a table in
+/// which two different parameters print the same name is not.
+///
+/// Labels are compared as they will be *printed*, so trailing spaces are
+/// ignored: the column pads every label out to the same width, which would
+/// otherwise hide the difference between `foo` and `foo `.
+fn display_names(params: &[ParamDiagnostics]) -> Vec<String> {
+    let full: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+    if full
+        .iter()
+        .all(|name| display_width(name) <= NAME_COLUMN_MAX_WIDTH)
+    {
+        return full;
+    }
+
+    let shortened: Vec<String> = full
+        .iter()
+        .map(|name| abbreviate(name, NAME_COLUMN_MAX_WIDTH))
+        .collect();
+    let distinct: HashSet<&str> = shortened
+        .iter()
+        .map(|label| label.trim_end_matches(' '))
+        .collect();
+    if distinct.len() == shortened.len() {
+        shortened
+    } else {
+        full
+    }
+}
+
+/// Shorten `text` to `max_width` display columns, keeping its head and tail.
+fn abbreviate(text: &str, max_width: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max_width {
+        return text.to_string();
+    }
+    let tail = max_width / 3;
+    // One column is spent on the ellipsis itself.
+    let head = max_width - tail - 1;
+    let mut out: String = chars[..head].iter().collect();
+    out.push('…');
+    out.extend(&chars[chars.len() - tail..]);
+    out
+}
+
+/// Format an effective-sample-size count, which is NaN when unavailable.
+fn count_cell(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.0}")
+    } else {
+        "NaN".to_string()
+    }
+}
+
 impl DiagnosticsReport {
     /// Render the diagnostics as a formatted table string.
     pub fn to_table(&self) -> String {
@@ -80,8 +210,8 @@ impl DiagnosticsReport {
             self.num_chains, self.num_draws
         ));
         lines.push(String::new());
-        lines.push(format!(
-            "{:<12} {:>8} {:>8} {:>10} {:>10} {:>10} {:>10} {:>8} {:>10}",
+
+        const HEADERS: [&str; 9] = [
             "Parameter",
             "mean",
             "std",
@@ -90,36 +220,40 @@ impl DiagnosticsReport {
             "ess_bulk",
             "ess_tail",
             "r_hat",
-            "mcse_mean"
-        ));
-        lines.push("─".repeat(96));
+            "mcse_mean",
+        ];
+        // The historical fixed widths, now used as minimums. Ordinary tables
+        // keep exactly the columns they had; a column whose content would
+        // overflow grows instead of shoving every column after it out of
+        // alignment. The rules are the one deliberate change even for ordinary
+        // tables: they were hard-coded at 96 while the columns only ever summed
+        // to 94, and they now span the real width.
+        const MIN_WIDTHS: [usize; 9] = [NAME_COLUMN_MIN_WIDTH, 8, 8, 10, 10, 10, 10, 8, 10];
 
-        for p in &self.params {
-            let ess_bulk_s = if p.ess_bulk.is_finite() {
-                format!("{:.0}", p.ess_bulk)
-            } else {
-                "NaN".to_string()
-            };
-            let ess_tail_s = if p.ess_tail.is_finite() {
-                format!("{:.0}", p.ess_tail)
-            } else {
-                "NaN".to_string()
-            };
-            lines.push(format!(
-                "{:<12} {:>8.4} {:>8.4} {:>10.4} {:>10.4} {:>10} {:>10} {:>8.4} {:>10.6}",
-                p.name,
-                p.mean,
-                p.std,
-                p.hdi_3,
-                p.hdi_97,
-                ess_bulk_s,
-                ess_tail_s,
-                p.r_hat,
-                p.mcse_mean,
-            ));
-        }
+        let rows: Vec<[String; 9]> = self
+            .params
+            .iter()
+            .zip(display_names(&self.params))
+            .map(|(p, name)| {
+                [
+                    name,
+                    format!("{:.4}", p.mean),
+                    format!("{:.4}", p.std),
+                    format!("{:.4}", p.hdi_3),
+                    format!("{:.4}", p.hdi_97),
+                    count_cell(p.ess_bulk),
+                    count_cell(p.ess_tail),
+                    format!("{:.4}", p.r_hat),
+                    format!("{:.6}", p.mcse_mean),
+                ]
+            })
+            .collect();
 
-        lines.push("─".repeat(96));
+        let widths = column_widths(&HEADERS, &MIN_WIDTHS, &rows);
+        lines.push(render_row(&HEADERS.map(String::from), &widths));
+        lines.push(rule(&widths));
+        lines.extend(rows.iter().map(|row| render_row(row, &widths)));
+        lines.push(rule(&widths));
 
         if let Some(sampler) = sampler {
             lines.push(sampler.to_string());
@@ -177,28 +311,46 @@ impl TransitionDiagnosticsReport {
             self.total_divergences
         ));
         lines.push(String::new());
-        lines.push(format!(
-            "{:<6} {:>8} {:>8} {:>10} {:>10} {:>12} {:>12} {:>12} {:>10}",
-            "chain", "trans", "warmup", "div", "acc", "mean_acc", "mean_dH", "max|dH|", "leapfrogs"
-        ));
-        lines.push("─".repeat(100));
 
-        for chain in &self.chains {
-            lines.push(format!(
-                "{:<6} {:>8} {:>8} {:>10} {:>10} {:>12.4} {:>12.4} {:>12.4} {:>10}",
-                chain.chain_index,
-                chain.num_transitions,
-                chain.num_warmup_transitions,
-                chain.divergences,
-                chain.accepted_transitions,
-                chain.mean_accept_prob,
-                chain.mean_energy_error,
-                chain.max_abs_energy_error,
-                chain.total_leapfrog_steps
-            ));
-        }
+        const HEADERS: [&str; 9] = [
+            "chain",
+            "trans",
+            "warmup",
+            "div",
+            "acc",
+            "mean_acc",
+            "mean_dH",
+            "max|dH|",
+            "leapfrogs",
+        ];
+        // As above: historical widths as minimums, so a huge leapfrog count or
+        // energy error widens its own column rather than the whole table. This
+        // rule was hard-coded at 100 while the columns summed to 96.
+        const MIN_WIDTHS: [usize; 9] = [6, 8, 8, 10, 10, 12, 12, 12, 10];
 
-        lines.push("─".repeat(100));
+        let rows: Vec<[String; 9]> = self
+            .chains
+            .iter()
+            .map(|chain| {
+                [
+                    chain.chain_index.to_string(),
+                    chain.num_transitions.to_string(),
+                    chain.num_warmup_transitions.to_string(),
+                    chain.divergences.to_string(),
+                    chain.accepted_transitions.to_string(),
+                    format!("{:.4}", chain.mean_accept_prob),
+                    format!("{:.4}", chain.mean_energy_error),
+                    format!("{:.4}", chain.max_abs_energy_error),
+                    chain.total_leapfrog_steps.to_string(),
+                ]
+            })
+            .collect();
+
+        let widths = column_widths(&HEADERS, &MIN_WIDTHS, &rows);
+        lines.push(render_row(&HEADERS.map(String::from), &widths));
+        lines.push(rule(&widths));
+        lines.extend(rows.iter().map(|row| render_row(row, &widths)));
+        lines.push(rule(&widths));
         lines.push(format!(
             "Mean accept prob: {:.4}  |  Mean dH: {:.4}  |  Max |dH|: {:.4}",
             self.mean_accept_prob, self.mean_energy_error, self.max_abs_energy_error
@@ -251,10 +403,7 @@ pub fn compute_diagnostics(
             params.push(unavailable_parameter(param_names[pidx].clone()));
             continue;
         }
-        let (origin, scale, normalized) = normalize_chains(&chains);
-        let normalized_mean = chain_mean_all(&normalized);
-        let mean = origin + scale * normalized_mean;
-        let std = scale * chain_std_all(&normalized, normalized_mean);
+        let (mean, std) = scaled_moments(|| chains.iter().flatten().copied());
         let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
         all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
@@ -398,6 +547,85 @@ pub fn compute_transition_diagnostics(
     }
 }
 
+/// Posterior mean and standard deviation of one parameter's draws, in the
+/// draws' own units and without an intermediate that leaves the exponent range.
+///
+/// This is the single definition of both moments. `compute_diagnostics` uses it
+/// for the summary table, and `SampleResult::mean`/`std` and
+/// `BatchModelResult::mean`/`std` use it for the values they report directly,
+/// so a fit cannot describe its own posterior two different ways.
+///
+/// `draws` is a factory rather than a slice because the two callers hold the
+/// draws in different shapes — chain-major `Vec<Vec<f64>>` per parameter, and a
+/// strided read across a `Vec<Vec<Vec<f64>>>` — and neither should have to
+/// materialise a copy. It is called five times for ordinary input — once for
+/// the first draw, once for the finiteness scan, once for the scale, once for
+/// the mean and once for the variance — and six when the centring falls back to
+/// zero. It must yield the same sequence, in the same order, every time: the
+/// summation order is part of the reported value.
+///
+/// Draws are centred on the first of them and divided by the largest absolute
+/// deviation from it before being summed, so neither the running sum nor
+/// `diff * diff` can overflow: every normalised draw lies in `[-1, 1]`. The
+/// naive form loses `diff * diff` above `|diff| ~ 1.34e154` and the running sum
+/// above `f64::MAX / n`, neither of which is a limit of the posterior. If the
+/// deviations themselves are unrepresentable (`-1e308` and `1e308` in one
+/// chain) the centring is dropped and the draws are scaled about zero instead.
+///
+/// The trade the centring makes, which this has always made for the summary
+/// table and now makes for the moments a caller reads directly: each
+/// normalised draw is rounded once, so the error in the mean is of order one
+/// ulp of the draws' *spread* rather than of the mean itself. Draws
+/// `[1, -1, 1e-16, 1e-16]` report a mean of 0 where naive summation reports
+/// 5e-17. That is 1e-16 of a posterior's spread against a Monte Carlo standard
+/// error of order 1e-2 of it, so it is fourteen orders of magnitude below the
+/// uncertainty the number is reported with; the overflow it buys is not.
+///
+/// Returns `(NaN, NaN)` when any draw is not finite, matching what the summary
+/// reports for such a parameter, and a `NaN` standard deviation for a single
+/// draw, which does not define one. The denominator is `n - 1`: this is the
+/// sample standard deviation of the draws, which is what ArviZ's `summary`
+/// reports and what the summary table here has always reported.
+pub(crate) fn scaled_moments<I, F>(draws: F) -> (f64, f64)
+where
+    F: Fn() -> I,
+    I: Iterator<Item = f64>,
+{
+    let Some(first) = draws().next() else {
+        return (f64::NAN, f64::NAN);
+    };
+    if draws().any(|x| !x.is_finite()) {
+        return (f64::NAN, f64::NAN);
+    }
+
+    let mut origin = first;
+    let mut scale = draws().map(|x| (x - origin).abs()).fold(0.0, f64::max);
+    if !scale.is_finite() {
+        origin = 0.0;
+        scale = draws().map(|x| x.abs()).fold(0.0, f64::max);
+    }
+    let divisor = if scale > 0.0 { scale } else { 1.0 };
+
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    for x in draws() {
+        sum += (x - origin) / divisor;
+        n += 1;
+    }
+    let normalized_mean = sum / n as f64;
+    let mean = origin + scale * normalized_mean;
+
+    if n < 2 {
+        return (mean, f64::NAN);
+    }
+    let mut sum_sq = 0.0;
+    for x in draws() {
+        let d = (x - origin) / divisor - normalized_mean;
+        sum_sq += d * d;
+    }
+    (mean, scale * (sum_sq / (n - 1) as f64).sqrt())
+}
+
 // ── Internal helpers ────────────────────────────────────────────────
 
 // Diagnostics must not depend on the units of a parameter. Center before
@@ -421,34 +649,6 @@ fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
         .map(|chain| chain.iter().map(|x| (x - origin) / divisor).collect())
         .collect();
     (origin, scale, normalized)
-}
-
-fn chain_mean_all(chains: &[Vec<f64>]) -> f64 {
-    let mut sum = 0.0;
-    let mut n = 0usize;
-    for c in chains {
-        for &v in c {
-            sum += v;
-            n += 1;
-        }
-    }
-    sum / n as f64
-}
-
-fn chain_std_all(chains: &[Vec<f64>], mean: f64) -> f64 {
-    let mut sum_sq = 0.0;
-    let mut n = 0usize;
-    for c in chains {
-        for &v in c {
-            let d = v - mean;
-            sum_sq += d * d;
-            n += 1;
-        }
-    }
-    if n < 2 {
-        return f64::NAN;
-    }
-    (sum_sq / (n - 1) as f64).sqrt()
 }
 
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
@@ -1031,5 +1231,276 @@ mod tests {
         assert_eq!(report.chains[0].accepted_transitions, 0);
         assert_eq!(report.chains[0].mean_step_size, 0.5);
         assert_eq!(report.chains[0].max_tree_depth, Some(4));
+    }
+
+    // ---- table layout ---------------------------------------------------
+
+    /// Start/end char offsets of every whitespace-delimited field in `line`.
+    fn row_fields(line: &str) -> Vec<(usize, usize)> {
+        let mut fields = Vec::new();
+        let mut start: Option<usize> = None;
+        for (index, ch) in line.chars().enumerate() {
+            match (ch.is_whitespace(), start) {
+                (false, None) => start = Some(index),
+                (true, Some(begin)) => {
+                    fields.push((begin, index));
+                    start = None;
+                }
+                _ => {}
+            }
+        }
+        if let Some(begin) = start {
+            fields.push((begin, line.chars().count()));
+        }
+        fields
+    }
+
+    /// Assert that every row between the two rules occupies exactly the same
+    /// columns as the header row, and return the table width.
+    ///
+    /// The first column is left aligned, so its fields all start at 0; every
+    /// other column is right aligned, so its fields all end together. Widths
+    /// are measured in chars, because the rule is drawn with a 3-byte
+    /// character.
+    fn assert_columns_aligned(table: &str) -> usize {
+        let lines: Vec<&str> = table.lines().collect();
+        let top = lines
+            .iter()
+            .position(|line| line.starts_with('─'))
+            .expect("table has an opening rule");
+        let bottom = lines
+            .iter()
+            .rposition(|line| line.starts_with('─'))
+            .expect("table has a closing rule");
+        assert!(bottom > top, "expected two distinct rules");
+
+        let width = lines[top].chars().count();
+        assert_eq!(
+            lines[bottom].chars().count(),
+            width,
+            "the two rules disagree about the table width"
+        );
+
+        let header = lines[top - 1];
+        let expected = row_fields(header);
+        for row in std::iter::once(header).chain(lines[top + 1..bottom].iter().copied()) {
+            assert_eq!(
+                row.chars().count(),
+                width,
+                "row width {} disagrees with rule width {width}:\n{row}",
+                row.chars().count()
+            );
+            let fields = row_fields(row);
+            assert_eq!(
+                fields.len(),
+                expected.len(),
+                "row has the wrong number of columns:\n{row}"
+            );
+            assert_eq!(fields[0].0, 0, "first column is not flush left:\n{row}");
+            for (index, (field, reference)) in fields.iter().zip(&expected).enumerate().skip(1) {
+                assert_eq!(
+                    field.1, reference.1,
+                    "column {index} ends at {} in\n{row}\nbut at {} in\n{header}",
+                    field.1, reference.1
+                );
+            }
+        }
+        width
+    }
+
+    fn report_for_names(names: &[&str]) -> DiagnosticsReport {
+        DiagnosticsReport {
+            params: names
+                .iter()
+                .map(|name| ParamDiagnostics {
+                    name: (*name).to_string(),
+                    mean: 0.0603,
+                    std: 0.0225,
+                    hdi_3: 0.0267,
+                    hdi_97: 0.1052,
+                    ess_bulk: 1580.0,
+                    ess_tail: 1338.0,
+                    r_hat: 1.0001,
+                    mcse_mean: 0.001796,
+                })
+                .collect(),
+            num_chains: 4,
+            num_draws: 500,
+            accept_rates: vec![0.9; 4],
+            divergences: 0,
+        }
+    }
+
+    #[test]
+    fn short_name_tables_keep_their_historical_layout() {
+        let table = report_for_names(&["mu", "sigma"]).to_table();
+        let width = assert_columns_aligned(&table);
+        // 12-wide name column, eight numeric columns, eight separating spaces.
+        // (The rules used to be hard-coded at 96, two columns too wide.)
+        assert_eq!(width, 94);
+        let mut lines = table
+            .lines()
+            .skip_while(|line| !line.starts_with("Parameter"));
+        // Header and first data row, character for character: this pins the
+        // displayed values and their precision as well as the layout.
+        assert_eq!(
+            lines.next(),
+            Some(
+                "Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean"
+            )
+        );
+        assert!(lines.next().is_some_and(|line| line.starts_with('─')));
+        assert_eq!(
+            lines.next(),
+            Some(
+                "mu             0.0603   0.0225     0.0267     0.1052       1580       1338   1.0001   0.001796"
+            )
+        );
+    }
+
+    #[test]
+    fn long_parameter_names_do_not_shift_the_numeric_columns() {
+        // Names this library's own BayesianLocalLevel model emits.
+        let table = report_for_names(&[
+            "process_variance",
+            "observation_variance",
+            "terminal_level",
+            "mu",
+        ])
+        .to_table();
+        let width = assert_columns_aligned(&table);
+        assert_eq!(width, 94 - 12 + "observation_variance".len());
+        for name in ["process_variance", "observation_variance", "terminal_level"] {
+            assert!(table.contains(name), "{name} missing from table");
+        }
+    }
+
+    #[test]
+    fn wide_numeric_values_do_not_shift_later_columns() {
+        let mut report = report_for_names(&["mu", "sigma"]);
+        report.params[0].mean = -123_456.789;
+        report.params[0].mcse_mean = -98_765.432_1;
+        report.params[1].ess_bulk = 12_345_678.0;
+        let table = report.to_table();
+        let width = assert_columns_aligned(&table);
+        assert!(
+            width > 94,
+            "columns must grow for oversized values, got {width}"
+        );
+        assert!(
+            table.contains("-123456.7890"),
+            "value was altered:\n{table}"
+        );
+    }
+
+    #[test]
+    fn pathological_names_are_abbreviated_but_stay_aligned() {
+        let long = "z".repeat(200);
+        let table = report_for_names(&[&long, "mu"]).to_table();
+        let width = assert_columns_aligned(&table);
+        assert_eq!(width, 94 - 12 + NAME_COLUMN_MAX_WIDTH);
+        assert!(table.contains('…'), "expected an ellipsis in\n{table}");
+        assert!(!table.contains(&long), "200-char name was not abbreviated");
+    }
+
+    #[test]
+    fn abbreviation_never_makes_two_parameters_print_identically() {
+        // These names share a 40-char head and a 16-char tail, so abbreviating
+        // them would render them identically; the table stays wide instead.
+        let head = "p".repeat(40);
+        let tail = "s".repeat(16);
+        let first = format!("{head}A{tail}");
+        let second = format!("{head}B{tail}");
+        let table = report_for_names(&[&first, &second]).to_table();
+        let width = assert_columns_aligned(&table);
+        assert_eq!(width, 94 - 12 + first.chars().count());
+        assert!(table.contains(&first) && table.contains(&second));
+        assert!(!table.contains('…'));
+    }
+
+    #[test]
+    fn columns_align_when_a_parameter_is_unavailable() {
+        let mut report = report_for_names(&["mu", "observation_variance"]);
+        report.params[1] = unavailable_parameter("observation_variance".to_string());
+        let table = report.to_table();
+        assert_columns_aligned(&table);
+        assert!(table.contains("NaN"));
+    }
+
+    #[test]
+    fn abbreviation_accounts_for_the_padding_the_column_adds() {
+        // The first name abbreviates to the second one plus a trailing space:
+        // distinct as strings, identical once the column pads them out. The
+        // uniqueness check has to compare labels as they will be printed.
+        let first = format!("{}MIDDLE{} ", "a".repeat(31), "b".repeat(15));
+        let second = format!("{}…{}", "a".repeat(31), "b".repeat(15));
+        assert_eq!(
+            abbreviate(&first, NAME_COLUMN_MAX_WIDTH).trim_end_matches(' '),
+            second
+        );
+
+        let table = report_for_names(&[&first, &second]).to_table();
+        let width = assert_columns_aligned(&table);
+        assert_eq!(width, 94 - 12 + first.chars().count());
+        let body: Vec<&str> = table.lines().filter(|line| line.starts_with('a')).collect();
+        assert_eq!(body.len(), 2, "expected two parameter rows in\n{table}");
+        assert_ne!(body[0], body[1], "two parameters printed identically");
+    }
+
+    #[test]
+    fn transition_table_columns_grow_with_their_contents() {
+        let transitions = vec![
+            vec![TransitionStats {
+                is_warmup: false,
+                accepted: true,
+                accept_prob: 0.9,
+                energy_error: 0.1,
+                divergent: false,
+                step_size: 1.0,
+                num_leapfrog_steps: 5,
+                tree_depth: Some(2),
+            }],
+            vec![TransitionStats {
+                is_warmup: false,
+                accepted: true,
+                accept_prob: 0.8,
+                // Renders as 13 chars in a 12-wide column ...
+                energy_error: -1_234_567.89,
+                divergent: false,
+                step_size: 0.5,
+                // ... and 12 chars in a 10-wide one.
+                num_leapfrog_steps: 123_456_789_012,
+                tree_depth: None,
+            }],
+        ];
+        let table = compute_transition_diagnostics(&transitions).to_table();
+        let width = assert_columns_aligned(&table);
+        assert!(
+            table.contains("-1234567.8900"),
+            "value was altered:\n{table}"
+        );
+        assert!(
+            table.contains("123456789012"),
+            "value was altered:\n{table}"
+        );
+        // 96 is the sum of the historical minimum widths, which the rule used
+        // to overstate as 100; the two oversized cells add 1 and 2 columns.
+        assert_eq!(width, 96 + 1 + 2);
+    }
+
+    #[test]
+    fn transition_table_rules_match_the_rendered_width() {
+        let transitions = vec![vec![TransitionStats {
+            is_warmup: false,
+            accepted: true,
+            accept_prob: 0.9,
+            energy_error: 0.1,
+            divergent: false,
+            step_size: 1.0,
+            num_leapfrog_steps: 5,
+            tree_depth: Some(2),
+        }]];
+        let table = compute_transition_diagnostics(&transitions).to_table();
+        assert_eq!(assert_columns_aligned(&table), 96);
     }
 }

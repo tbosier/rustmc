@@ -33,9 +33,8 @@ use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rand::seq::SliceRandom;
-use rand::{Rng, SeedableRng};
+use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Normal as NormalDist};
 use rustmc_core::autodiff::Evaluator;
 use rustmc_core::bayesian_ar::{
     fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
@@ -135,7 +134,7 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
     ))
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 struct ModelSpec(rustmc_core::model::ModelSpec);
@@ -160,14 +159,14 @@ impl ModelSpec {
     }
 }
 
-#[pyclass(name = "BoundModel")]
+#[pyclass(name = "BoundModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyBoundModel {
     structure: Arc<Graph>,
     binding: CoreDataBinding,
 }
 
-#[pyclass(name = "CompiledModel")]
+#[pyclass(name = "CompiledModel", module = "rustmc")]
 #[derive(Clone)]
 struct PyCompiledModel {
     definition: ModelSpec,
@@ -277,7 +276,7 @@ fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
     rustmc_core::model::template_data_for_spec(&spec.0).map_err(model_error)
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 struct ModelBuilder {
     dimensions: HashMap<String, String>,
@@ -361,8 +360,9 @@ impl ModelBuilder {
         Ok(hp)
     }
 
-    /// Parse a likelihood predictor argument (`Expr` or bare `ParamRef`),
-    /// rejecting references that belong to a different model.
+    /// Parse a likelihood predictor argument (`Expr`, bare `ParamRef`, bare
+    /// data key or constant), rejecting references that belong to a different
+    /// model.
     fn likelihood_expr(
         &self,
         value: &Bound<'_, PyAny>,
@@ -375,12 +375,19 @@ impl ModelBuilder {
         } else if let Ok(p) = value.downcast::<ParamRef>() {
             let b = p.borrow();
             (MuExpr::Param(b.name.clone()), Some(b.owner))
+        } else if let Ok(data_key) = value.extract::<String>() {
+            // A bare "x" is the data column keyed x, as everywhere else in the
+            // DSL. Checked before `f64`, as in `extract_expr`, so that a string
+            // is never coerced to a number. Unowned, like a constant: it names
+            // no parameter, so it means the same thing in any model.
+            (MuExpr::Data(data_key), None)
         } else if let Ok(value) = value.extract::<f64>() {
             validate_finite(arg_name, value)?;
             (MuExpr::Const(value), None)
         } else {
             return Err(PyValueError::new_err(format!(
-                "{} must be an Expr (e.g. beta * 'x') or a ParamRef",
+                "{} must be an Expr (e.g. beta * 'x'), a ParamRef, or a data \
+                 key string naming one column (e.g. 'x')",
                 arg_name
             )));
         };
@@ -414,6 +421,21 @@ impl ModelBuilder {
                 arg_name
             )))
         }
+    }
+
+    /// Reject a data key this builder's bound data does not carry.
+    ///
+    /// The likelihood families do this through `validate_data_keys`, which
+    /// also checks the observed key. Potentials and deterministics have no
+    /// observed key, so they get the expression half on its own.
+    ///
+    /// With nothing bound there is nothing to check against, and the key is
+    /// named later at bind time -- the same deferral the likelihood path makes.
+    fn check_data_keys(&self, expr: &MuExpr) -> PyResult<()> {
+        if self.bound_data_1d.is_empty() && self.bound_data_2d.is_empty() {
+            return Ok(());
+        }
+        validate_expr_keys(expr, &self.bound_data_1d, &self.bound_data_2d)
     }
 
     /// Reject a `ParamRef`/`Expr` produced by a different `ModelBuilder`.
@@ -467,6 +489,7 @@ impl ModelBuilder {
         }
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "potential")?;
+        self.check_data_keys(&expr.inner)?;
         if !expr.inner.is_scalar() {
             return Err(PyValueError::new_err(
                 "potential requires a scalar expression; use .sum()",
@@ -482,6 +505,7 @@ impl ModelBuilder {
     fn deterministic(&mut self, name: &str, expression: &Bound<'_, PyAny>) -> PyResult<Expr> {
         let expr = extract_expr(expression)?;
         self.check_owner(expr.owner, &first_param_name(&expr.inner), "deterministic")?;
+        self.check_data_keys(&expr.inner)?;
         if name.is_empty()
             || self.deterministics.iter().any(|(n, _)| n == name)
             || self.priors.iter().any(|p| prior_name(p) == name)
@@ -913,21 +937,14 @@ fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
     Ok(())
 }
 
+/// Adapters over the core validators. The rule and its wording live in
+/// `rustmc_core::model` so the Python surface and the Rust core cannot drift.
 fn validate_finite(name: &str, value: f64) -> PyResult<()> {
-    if value.is_finite() {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be finite", name)))
-    }
+    rustmc_core::model::validate_finite(name, value).map_err(model_error)
 }
 
 fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
-    validate_finite(name, value)?;
-    if value > 0.0 {
-        Ok(())
-    } else {
-        Err(PyValueError::new_err(format!("{} must be > 0", name)))
-    }
+    rustmc_core::model::validate_positive_finite(name, value).map_err(model_error)
 }
 
 /// Merge call-site data over bound data while ensuring a key has exactly one
@@ -1020,7 +1037,7 @@ fn validate_expr_keys(
 }
 
 fn logit_stable(p: f64) -> f64 {
-    p.ln() - (-p).ln_1p()
+    rustmc_core::prior_sampling::logit_stable(p)
 }
 
 fn invert_param_transform(transform: &ParamTransform, value: f64) -> f64 {
@@ -1103,29 +1120,6 @@ fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam>
     }
 }
 
-/// Resolve a `HyperParam` against already-computed parameter values.
-///
-/// `context` names the model location doing the referencing, so the error can
-/// say *which* prior or derived parameter is broken. There is deliberately no
-/// default value: a missing hyperparameter must never be silently replaced.
-fn resolve_hyper_value(
-    hp: &HyperParam,
-    values: &HashMap<String, f64>,
-    context: &str,
-) -> PyResult<f64> {
-    rustmc_core::model::resolve_hyper_value(hp, values, context).map_err(model_error)
-}
-
-fn should_auto_noncenter(prior: &PriorSpec, auto_vector_params: &HashMap<String, usize>) -> bool {
-    match prior {
-        PriorSpec::Normal { name, mu, sigma } => {
-            !auto_vector_params.contains_key(name)
-                && (matches!(mu, HyperParam::Param(_)) || matches!(sigma, HyperParam::Param(_)))
-        }
-        _ => false,
-    }
-}
-
 fn select_posterior_draw_indices(
     total_draws: usize,
     n_samples: Option<usize>,
@@ -1162,33 +1156,41 @@ fn derive_display_sample_result(
     rustmc_core::model::derive_display_sample_result(raw_result, specs).map_err(model_error)
 }
 
-fn derive_display_batch_result(
-    raw_result: &sampler::BatchModelResult,
-    specs: &[DisplayParamSpec],
-) -> PyResult<sampler::BatchModelResult> {
-    let mut samples = Vec::with_capacity(raw_result.samples.len());
-    for draw in &raw_result.samples {
-        samples.push(derive_display_draw(draw, specs)?);
-    }
-    let param_names = specs
-        .iter()
-        .map(|spec| match spec {
-            DisplayParamSpec::Raw { name, .. } => name.clone(),
-            DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name.clone(),
+/// True when the display layer is a pure pass-through of the raw draws: every
+/// parameter is reported as sampled, in the order it was sampled.
+fn display_specs_are_identity(raw_result: &SampleResult, specs: &[DisplayParamSpec]) -> bool {
+    specs.len() == raw_result.param_names.len()
+        && specs.iter().enumerate().all(|(index, spec)| match spec {
+            DisplayParamSpec::Raw { name, raw_index } => {
+                *raw_index == index && *name == raw_result.param_names[index]
+            }
+            DisplayParamSpec::DerivedNonCenteredNormal { .. } => false,
         })
-        .collect();
+}
 
-    Ok(sampler::BatchModelResult {
-        samples,
-        unconstrained_samples: raw_result.unconstrained_samples.clone(),
-        param_names,
-        num_chains: raw_result.num_chains,
-        num_draws: raw_result.num_draws,
-        accept_rates: raw_result.accept_rates.clone(),
-        step_sizes: raw_result.step_sizes.clone(),
-        divergences: raw_result.divergences.clone(),
-        transitions: raw_result.transitions.clone(),
-    })
+/// Display draws for a fit, sharing the raw posterior when nothing is derived.
+///
+/// `derive_display_sample_result` allocates a second copy of every draw. When
+/// no parameter is non-centred, that copy is bit-identical to the raw draws, so
+/// a retained batch cell paid for two posteriors to hold one. Sharing the `Arc`
+/// keeps the display and raw views distinguishable without duplicating them.
+fn display_sample_result(
+    raw_result: &Arc<SampleResult>,
+    specs: &[DisplayParamSpec],
+) -> PyResult<Arc<SampleResult>> {
+    if display_specs_are_identity(raw_result, specs) {
+        // The copying path rejects nonfinite display values; run the same check
+        // so sharing can never accept a fit that copying would have refused.
+        for chain in &raw_result.samples {
+            for draw in chain {
+                if draw.iter().any(|value| !value.is_finite()) {
+                    derive_display_draw(draw, specs)?;
+                }
+            }
+        }
+        return Ok(Arc::clone(raw_result));
+    }
+    Ok(Arc::new(derive_display_sample_result(raw_result, specs)?))
 }
 
 fn validate_sample_config(
@@ -1244,16 +1246,119 @@ fn validate_transition_chain_count(
     }
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct FitResult {
     definition: ModelSpec,
-    raw_result: SampleResult,
-    display_result: SampleResult,
+    /// The posterior draws dominate a fit's memory, so both views are shared
+    /// handles: cloning a `FitResult` never duplicates them, and when no
+    /// parameter is derived the two point at the same allocation.
+    raw_result: Arc<SampleResult>,
+    display_result: Arc<SampleResult>,
     /// A clone of the compiled graph — used for predictive sampling.
     graph: Graph,
     /// Name of each likelihood, in the order they appear in the graph.
     likelihood_names: Vec<String>,
+}
+
+impl FitResult {
+    /// Forward-simulate the observation model at the given `(chain, draw)`
+    /// posterior coordinates.
+    ///
+    /// Returns one flat `coordinates.len() * n_obs` vector per likelihood, in
+    /// the order the coordinates were supplied.
+    fn simulate_predictive(
+        &self,
+        graph: &Graph,
+        heads: &[rustmc_core::graph::ObservationHead],
+        coordinates: &[(usize, usize)],
+        expected: bool,
+        rng: &mut ChaCha8Rng,
+    ) -> PyResult<Vec<Vec<f64>>> {
+        let mut evaluator = Evaluator::new(graph);
+        let mut preds: Vec<Vec<f64>> = heads
+            .iter()
+            .map(|head| Vec::with_capacity(coordinates.len() * head.n_obs))
+            .collect();
+
+        for &(chain_idx, draw_idx) in coordinates {
+            let position = posterior_position(&self.raw_result, graph, chain_idx, draw_idx);
+            evaluator.compute(graph, &position);
+            for (li, head) in heads.iter().enumerate() {
+                for i in 0..head.n_obs {
+                    let eta = evaluator.vec_elem(head.linpred, i, graph);
+                    let aux = head.aux.map(|node| evaluator.scalar_at(node));
+                    preds[li].push(
+                        if expected {
+                            rustmc_core::observation::mean(head.family, eta, aux)
+                        } else {
+                            rustmc_core::observation::sample(head.family, eta, aux, rng)
+                        }
+                        .map_err(PyValueError::new_err)?,
+                    );
+                }
+            }
+        }
+        Ok(preds)
+    }
+
+    /// Posterior-predictive draws laid out on the posterior's own
+    /// `(chain, draw, obs)` grid, so every predictive draw stays paired with the
+    /// parameter draw that produced it.
+    ///
+    /// When `n_samples` asks for fewer draws than were sampled, the thinning is
+    /// chain-stratified: one shared set of per-chain draw indices is retained in
+    /// every chain. That keeps the exported block rectangular (ArviZ groups must
+    /// be dense arrays), represents every chain equally, and leaves a single
+    /// `draw` coordinate vector that identifies exactly which posterior draws
+    /// were kept. The second return value holds those retained draw indices, or
+    /// `None` when nothing was thinned away.
+    fn posterior_predictive_grid<'py>(
+        &self,
+        py: Python<'py>,
+        n_samples: Option<usize>,
+        seed: u64,
+    ) -> PyResult<(Bound<'py, PyDict>, Option<Vec<i64>>)> {
+        let graph = prediction_graph(&self.graph, None, None)?;
+        graph
+            .validate_shapes()
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let heads = graph.observation_heads();
+
+        let n_chains = self.raw_result.samples.len();
+        let n_draws = self.raw_result.samples.first().map_or(0, Vec::len);
+        let per_chain = match n_samples {
+            // A request of fewer draws than there are chains still keeps one
+            // draw per chain: dropping whole chains would be worse than
+            // overshooting the budget by a handful of draws.
+            Some(requested) if n_chains > 0 => (requested / n_chains).max(1).min(n_draws),
+            _ => n_draws,
+        };
+        let retained = select_posterior_draw_indices(n_draws, Some(per_chain), &mut rng);
+
+        let coordinates: Vec<(usize, usize)> = (0..n_chains)
+            .flat_map(|chain_idx| retained.iter().map(move |&draw_idx| (chain_idx, draw_idx)))
+            .collect();
+        let mut preds = self.simulate_predictive(&graph, &heads, &coordinates, false, &mut rng)?;
+
+        let dict = PyDict::new(py);
+        for (li, name) in self.likelihood_names.iter().enumerate() {
+            let n_obs = heads[li].n_obs;
+            let arr = Array3::from_shape_vec(
+                (n_chains, retained.len(), n_obs),
+                std::mem::take(&mut preds[li]),
+            )
+            .map_err(|e| PyValueError::new_err(e.to_string()))?;
+            dict.set_item(name, arr.into_pyarray(py))?;
+        }
+
+        let thinned = retained.len() < n_draws;
+        Ok((
+            dict,
+            thinned.then(|| retained.iter().map(|&index| index as i64).collect()),
+        ))
+    }
 }
 
 #[pymethods]
@@ -1400,8 +1505,18 @@ impl FitResult {
                     let position =
                         posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
                     evaluator.compute(&graph, &position);
+                    // Same standard the prior predictive holds deterministics
+                    // to, and the same one `sampler` holds the parameters to:
+                    // a nonfinite value is a failed computation, not a result.
                     for i in 0..n.max(1) {
-                        values.push(evaluator.vec_elem(*node, i, &graph));
+                        let value = evaluator.vec_elem(*node, i, &graph);
+                        if !value.is_finite() {
+                            return Err(PyValueError::new_err(format!(
+                                "deterministic '{name}' is nonfinite at chain {chain_idx}, \
+                                 draw {draw_idx}"
+                            )));
+                        }
+                        values.push(value);
                     }
                 }
             }
@@ -1477,7 +1592,6 @@ impl FitResult {
         graph
             .validate_shapes()
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
-        let mut evaluator = Evaluator::new(&graph);
         let heads = graph.observation_heads();
 
         // Flatten all chain draws in order, then subsample without replacement
@@ -1493,37 +1607,18 @@ impl FitResult {
             .collect();
         let chosen_indices = select_posterior_draw_indices(all_draws.len(), n_samples, &mut rng);
         let n = chosen_indices.len();
-
-        // Pre-allocate: predictions[likelihood_idx] = flat Vec of n * n_obs values
-        let mut preds: Vec<Vec<f64>> = heads
-            .iter()
-            .map(|head| Vec::with_capacity(n * head.n_obs))
+        let coordinates: Vec<(usize, usize)> = chosen_indices
+            .into_iter()
+            .map(|index| all_draws[index])
             .collect();
 
-        for draw_idx in chosen_indices {
-            let (chain_idx, draw_idx) = all_draws[draw_idx];
-            let position = posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
-            evaluator.compute(&graph, &position);
-            for (li, head) in heads.iter().enumerate() {
-                for i in 0..head.n_obs {
-                    let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                    let aux = head.aux.map(|node| evaluator.scalar_at(node));
-                    preds[li].push(
-                        if expected {
-                            rustmc_core::observation::mean(head.family, eta, aux)
-                        } else {
-                            rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
-                        }
-                        .map_err(PyValueError::new_err)?,
-                    );
-                }
-            }
-        }
+        let mut preds =
+            self.simulate_predictive(&graph, &heads, &coordinates, expected, &mut rng)?;
 
         let dict = PyDict::new(py);
         for (li, name) in self.likelihood_names.iter().enumerate() {
             let n_obs = heads[li].n_obs;
-            let arr = Array2::from_shape_vec((n, n_obs), preds[li].clone())
+            let arr = Array2::from_shape_vec((n, n_obs), std::mem::take(&mut preds[li]))
                 .map_err(|e| PyValueError::new_err(e.to_string()))?;
             dict.set_item(name, arr.into_pyarray(py))?;
         }
@@ -1577,7 +1672,21 @@ impl FitResult {
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
     ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
     ///   - `observed_data`         — the fitted response vector for each likelihood
+    ///   - `log_likelihood`        — (n_chains × n_draws × n_obs) pointwise values
     ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
+    ///
+    /// `posterior_predictive` is exported on the posterior's own
+    /// `(chain, draw, obs)` axes, so predictive draw `(c, d)` is the one
+    /// generated from posterior draw `(c, d)`. LOO/PSIS and per-chain
+    /// predictive diagnostics need that pairing.
+    ///
+    /// `ppc_samples` thins the draw axis rather than the flattened sample list:
+    /// the same `ppc_samples // n_chains` draw indices are retained in every
+    /// chain, and the `posterior_predictive` group's `draw` coordinate records
+    /// which posterior draws they were, so
+    /// `idata.posterior.sel(draw=idata.posterior_predictive.draw)` recovers the
+    /// matching parameters. (Before this, `ppc_samples` subsampled a flattened
+    /// pool and the export was collapsed to a single fake chain.)
     ///
     /// Example
     /// -------
@@ -1668,23 +1777,25 @@ impl FitResult {
             groups.set_item("log_likelihood", log_likelihood)?;
         }
 
+        // Posterior-predictive draws keep the posterior's own (chain, draw)
+        // axes so a consumer can pair a predictive draw with the parameters
+        // that produced it. `retained_draws` is Some only when `ppc_samples`
+        // thinned the draw axis, and then carries the kept draw indices.
+        let mut retained_draws = None;
         if include_ppc && !self.likelihood_names.is_empty() {
-            let ppc_dict =
-                self.posterior_predictive(py, ppc_samples, ppc_seed, None, false, None)?;
-            // Reshape (n_samples, n_obs) → (1, n_samples, n_obs) for ArviZ convention
-            // ArviZ expects posterior_predictive as (chain, draw, obs)
-            // We treat all samples as a single chain.
-            let ppc_reshaped = PyDict::new(py);
-            let np = py.import("numpy")?;
-            for (key, arr) in ppc_dict.iter() {
-                // arr is (n_samples, n_obs); expand_dims to (1, n_samples, n_obs)
-                let expanded = np.call_method1("expand_dims", (arr, 0))?;
-                ppc_reshaped.set_item(key, expanded)?;
-            }
-            groups.set_item("posterior_predictive", ppc_reshaped)?;
+            let (ppc_dict, retained) = self.posterior_predictive_grid(py, ppc_samples, ppc_seed)?;
+            groups.set_item("posterior_predictive", ppc_dict)?;
+            retained_draws = retained;
         }
 
-        arviz_from_groups(&az, groups)
+        let arviz_major = arviz_api_generation(&az)?;
+        let container = arviz_from_groups_versioned(&az, arviz_major, groups)?;
+        if let Some(retained) = retained_draws {
+            // Label the thinned axis with the posterior draw indices it came
+            // from, so `posterior.sel(draw=ppc.draw)` lines the groups back up.
+            assign_posterior_predictive_draw_coords(py, arviz_major, &container, &retained)?;
+        }
+        Ok(container)
     }
 
     fn __repr__(&self) -> String {
@@ -1799,11 +1910,12 @@ fn sample(
             )
         })
         .map_err(PyValueError::new_err)?;
-    let display_result = derive_display_sample_result(&result, &compiled.display_params)?;
+    let raw_result = Arc::new(result);
+    let display_result = display_sample_result(&raw_result, &compiled.display_params)?;
 
     Ok(FitResult {
         definition: model_spec.structure_definition(),
-        raw_result: result,
+        raw_result,
         display_result,
         graph: graph_for_predict,
         likelihood_names: compiled.likelihood_names,
@@ -1947,10 +2059,11 @@ impl PyCompiledModel {
                 sampler::sample_bound_with_init(Arc::clone(&self.structure), binding, config, init)
             })
             .map_err(PyValueError::new_err)?;
-        let display_result = derive_display_sample_result(&result, &self.display_params)?;
+        let raw_result = Arc::new(result);
+        let display_result = display_sample_result(&raw_result, &self.display_params)?;
         Ok(FitResult {
             definition: self.definition.clone(),
-            raw_result: result,
+            raw_result,
             display_result,
             graph: hydrated_graph,
             likelihood_names: self.likelihood_names.clone(),
@@ -2134,12 +2247,10 @@ impl PyCompiledModel {
             results.push(match item {
                 Err(error) => Err(error),
                 Ok(raw_result) => {
-                    let display_result =
-                        derive_display_sample_result(&raw_result, &self.display_params)?;
-                    let inner = batch_from_sample(&display_result);
+                    let raw_result = Arc::new(raw_result);
+                    let display_result = display_sample_result(&raw_result, &self.display_params)?;
                     let binding = binding.map_err(PyValueError::new_err)?;
                     Ok(BatchResult {
-                        inner,
                         full_fit: Some(StoredBatchFit::Bound(Arc::new(
                             generic_results::BoundBatchFit {
                                 structure: Arc::clone(&self.structure),
@@ -2190,28 +2301,23 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
     }
 }
 
-#[pyclass]
+/// One cell of a batch run.
+///
+/// Everything this exposes is read off the retained fit's display draws. It
+/// used to also hold a flattened `BatchModelResult` copy of those same draws,
+/// which made a third posterior per cell alongside the raw and display trees.
+#[pyclass(module = "rustmc")]
 #[derive(Clone)]
 struct BatchResult {
-    inner: sampler::BatchModelResult,
     full_fit: Option<StoredBatchFit>,
 }
 
-fn batch_from_sample(sample: &SampleResult) -> sampler::BatchModelResult {
-    sampler::BatchModelResult {
-        samples: sample.samples.iter().flatten().cloned().collect(),
-        unconstrained_samples: sample.unconstrained_samples.clone(),
-        param_names: sample.param_names.clone(),
-        num_chains: sample.samples.len(),
-        num_draws: sample.samples.first().map_or(0, Vec::len),
-        accept_rates: sample.accept_rates.clone(),
-        step_sizes: sample.step_sizes.clone(),
-        divergences: sample.divergences.clone(),
-        transitions: sample.transitions.clone(),
-    }
-}
-
 impl BatchResult {
+    /// Display draws for this cell, or the legacy-construction error.
+    fn display(&self) -> PyResult<&SampleResult> {
+        Ok(self.stored_fit()?.display())
+    }
+
     fn stored_fit(&self) -> PyResult<&StoredBatchFit> {
         self.full_fit
             .as_ref()
@@ -2229,6 +2335,31 @@ impl BatchResult {
             _ => false,
         }
     }
+    /// Internal regression-test hook: how many distinct posterior sample trees
+    /// this cell retains. One when the display layer passes the raw draws
+    /// through unchanged, two when a parameter is genuinely derived.
+    fn _posterior_allocations(&self) -> PyResult<usize> {
+        let stored = self.stored_fit()?;
+        Ok(if std::ptr::eq(stored.raw(), stored.display()) {
+            1
+        } else {
+            2
+        })
+    }
+
+    /// Internal regression-test hook: whether `fit` reuses this cell's retained
+    /// posterior rather than holding a copy of it. Compares ownership without
+    /// exposing addresses.
+    fn _shares_posterior_with(&self, fit: &FitResult) -> bool {
+        match self.stored_fit() {
+            Ok(stored) => {
+                std::ptr::eq(stored.raw(), &*fit.raw_result)
+                    && std::ptr::eq(stored.display(), &*fit.display_result)
+            }
+            Err(_) => false,
+        }
+    }
+
     #[getter]
     fn fit(&self) -> PyResult<FitResult> {
         self.full_fit
@@ -2266,15 +2397,15 @@ impl BatchResult {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let display = self.display()?;
         let dict = PyDict::new(py);
-        let n_chains = self.inner.num_chains;
-        let n_draws = self.inner.num_draws;
-        for (pidx, name) in self.inner.param_names.iter().enumerate() {
+        let n_chains = display.samples.len();
+        let n_draws = display.samples.first().map_or(0, Vec::len);
+        for (pidx, name) in display.param_names.iter().enumerate() {
             let mut arr = Array2::<f64>::zeros((n_chains, n_draws));
-            for chain_idx in 0..n_chains {
-                for draw_idx in 0..n_draws {
-                    let flat_idx = chain_idx * n_draws + draw_idx;
-                    arr[[chain_idx, draw_idx]] = self.inner.samples[flat_idx][pidx];
+            for (chain_idx, chain) in display.samples.iter().enumerate() {
+                for (draw_idx, draw) in chain.iter().enumerate() {
+                    arr[[chain_idx, draw_idx]] = draw[pidx];
                 }
             }
             dict.set_item(name, arr.into_pyarray(py))?;
@@ -2283,27 +2414,35 @@ impl BatchResult {
     }
 
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let means = self.inner.mean();
+        let display = self.display()?;
+        let means = display.mean();
         let dict = PyDict::new(py);
-        for (name, val) in self.inner.param_names.iter().zip(means.iter()) {
+        for (name, val) in display.param_names.iter().zip(means.iter()) {
             dict.set_item(name, val)?;
         }
         Ok(dict)
     }
 
     fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let stds = self.inner.std();
+        let display = self.display()?;
+        let stds = display.std();
         let dict = PyDict::new(py);
-        for (name, val) in self.inner.param_names.iter().zip(stds.iter()) {
+        for (name, val) in display.param_names.iter().zip(stds.iter()) {
             dict.set_item(name, val)?;
         }
         Ok(dict)
     }
 
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let display = self.display()?;
         let dict = PyDict::new(py);
-        for (pidx, name) in self.inner.param_names.iter().enumerate() {
-            let vals: Vec<f64> = self.inner.samples.iter().map(|d| d[pidx]).collect();
+        for (pidx, name) in display.param_names.iter().enumerate() {
+            let vals: Vec<f64> = display
+                .samples
+                .iter()
+                .flatten()
+                .map(|draw| draw[pidx])
+                .collect();
             let arr = PyArray1::from_vec(py, vals);
             dict.set_item(name, arr)?;
         }
@@ -2311,54 +2450,59 @@ impl BatchResult {
     }
 
     #[getter]
-    fn chains(&self) -> usize {
-        self.inner.num_chains
+    fn chains(&self) -> PyResult<usize> {
+        Ok(self.display()?.samples.len())
     }
 
     #[getter]
-    fn draws(&self) -> usize {
-        self.inner.num_draws
+    fn draws(&self) -> PyResult<usize> {
+        Ok(self.display()?.samples.first().map_or(0, Vec::len))
     }
 
     #[getter]
-    fn accept_rate(&self) -> f64 {
-        self.inner.mean_accept_rate()
+    fn accept_rate(&self) -> PyResult<f64> {
+        let rates = &self.display()?.accept_rates;
+        Ok(if rates.is_empty() {
+            0.0
+        } else {
+            rates.iter().sum::<f64>() / rates.len() as f64
+        })
     }
 
     #[getter]
     fn accept_rates(&self) -> PyResult<Vec<f64>> {
-        Ok(self.inner.accept_rates.clone())
+        Ok(self.display()?.accept_rates.clone())
     }
 
     #[getter]
-    fn divergences(&self) -> usize {
-        self.inner.total_divergences()
+    fn divergences(&self) -> PyResult<usize> {
+        Ok(self.display()?.total_divergences())
     }
 
     #[getter]
     fn divergences_per_chain(&self) -> PyResult<Vec<usize>> {
-        Ok(self.inner.divergences.clone())
+        Ok(self.display()?.divergences.clone())
     }
 
-    fn __repr__(&self) -> String {
-        let means = self.inner.mean();
-        let parts: Vec<String> = self
-            .inner
+    fn __repr__(&self) -> PyResult<String> {
+        let display = self.display()?;
+        let means = display.mean();
+        let parts: Vec<String> = display
             .param_names
             .iter()
             .zip(means.iter())
             .map(|(n, m)| format!("{}={:.4}", n, m))
             .collect();
-        format!(
+        Ok(format!(
             "BatchResult({} chains × {} draws, {})",
-            self.inner.num_chains,
-            self.inner.num_draws,
+            display.samples.len(),
+            display.samples.first().map_or(0, Vec::len),
             parts.join(", ")
-        )
+        ))
     }
 }
 
-#[pyclass(name = "BatchFit")]
+#[pyclass(name = "BatchFit", module = "rustmc")]
 struct PyBatchFit {
     ids: Vec<String>,
     results: Vec<Result<BatchResult, String>>,
@@ -2528,22 +2672,18 @@ fn batch_sample(
         .zip(compiled_models.iter())
         .zip(models.iter())
         .map(|((raw_result, compiled), (spec, _))| {
-            let raw = SampleResult {
-                samples: raw_result
-                    .samples
-                    .chunks(raw_result.num_draws)
-                    .map(|chain| chain.to_vec())
-                    .collect(),
-                unconstrained_samples: raw_result.unconstrained_samples.clone(),
-                param_names: raw_result.param_names.clone(),
-                accept_rates: raw_result.accept_rates.clone(),
-                step_sizes: raw_result.step_sizes.clone(),
-                divergences: raw_result.divergences.clone(),
-                transitions: raw_result.transitions.clone(),
-            };
-            let display_result = derive_display_sample_result(&raw, &compiled.display_params)?;
+            let num_draws = raw_result.num_draws;
+            let raw = Arc::new(SampleResult {
+                samples: regroup_draws_by_chain(raw_result.samples, num_draws),
+                unconstrained_samples: raw_result.unconstrained_samples,
+                param_names: raw_result.param_names,
+                accept_rates: raw_result.accept_rates,
+                step_sizes: raw_result.step_sizes,
+                divergences: raw_result.divergences,
+                transitions: raw_result.transitions,
+            });
+            let display_result = display_sample_result(&raw, &compiled.display_params)?;
             Ok(BatchResult {
-                inner: derive_display_batch_result(&raw_result, &compiled.display_params)?,
                 full_fit: Some(StoredBatchFit::Ready(Arc::new(FitResult {
                     raw_result: raw,
                     display_result,
@@ -2556,16 +2696,44 @@ fn batch_sample(
         .collect()
 }
 
+/// Regroup a flat, chain-major draw list into per-chain blocks.
+///
+/// The draw buffers are moved rather than copied, so regrouping a batch result
+/// does not duplicate the posterior. Draining the source is what keeps that
+/// true: `split_off` would leave each chain holding the capacity of the whole
+/// remaining suffix, which costs O(chains² × draws) descriptor slots.
+fn regroup_draws_by_chain(flat: Vec<Vec<f64>>, num_draws: usize) -> Vec<Vec<Vec<f64>>> {
+    if num_draws == 0 {
+        return Vec::new();
+    }
+    let mut remaining = flat.into_iter();
+    let mut chains = Vec::with_capacity(remaining.len().div_ceil(num_draws));
+    loop {
+        let chain: Vec<Vec<f64>> = remaining.by_ref().take(num_draws).collect();
+        if chain.is_empty() {
+            return chains;
+        }
+        chains.push(chain);
+    }
+}
+
 /// Draw samples from the **prior predictive** distribution.
 ///
 /// Samples parameters from the model priors using their analytic distributions,
 /// then runs a forward pass to generate predicted observations.
 /// Use this to check whether your priors make sense before fitting.
 ///
+/// A likelihood is not required.  With none declared, the result carries the
+/// prior draws of the parameters and of any deterministic, and no predicted
+/// observations -- which is exactly what "check whether your priors make sense
+/// before fitting" means for a model whose likelihood is not written yet.
+/// Potentials *are* refused: a custom density term supplies no random
+/// generator, so a model carrying one has no prior to simulate from.
+///
 /// Parameters
 /// ----------
 /// model_spec : ModelSpec
-///     A compiled model (from `builder.build()`).  Must have at least one likelihood.
+///     A model definition, from `builder.build()`.
 /// data : dict or None
 ///     Data dict (same as `sample()`).  Needed for the predictor covariates (x values).
 /// n_samples : int
@@ -2590,9 +2758,8 @@ fn sample_prior_predictive<'py>(
     if n_samples == 0 {
         return Err(PyValueError::new_err("n_samples must be >= 1"));
     }
-    if !model_spec.potentials.is_empty() {
-        return Err(PyValueError::new_err("prior predictive simulation is not defined for models with potentials; custom density terms do not supply a prior random generator"));
-    }
+    rustmc_core::model::reject_potentials_for_prior_predictive(&model_spec.potentials)
+        .map_err(model_error)?;
     // ── Build data maps ───────────────────────────────────────────────────────
     let mut data_map: HashMap<String, Vec<f64>> = model_spec.bound_data_1d.clone();
     let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> =
@@ -2610,67 +2777,18 @@ fn sample_prior_predictive<'py>(
     let heads = graph.observation_heads();
 
     // ── Sample from priors and run forward passes ─────────────────────────────
+    // The generator itself lives in the core so a `GraphModel` loaded outside
+    // Python simulates from exactly the same code.
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
-    let mut evaluator = Evaluator::new(&graph);
-
-    let mut param_prior_draws: Vec<Vec<f64>> =
-        vec![Vec::with_capacity(n_samples); compiled.display_params.len()];
-    // predictions[lik_idx] = flat Vec (n_samples * n_obs)
-    let mut preds: Vec<Vec<f64>> = heads
-        .iter()
-        .map(|head| Vec::with_capacity(n_samples * head.n_obs))
-        .collect();
-
-    let mut deterministic_draws: Vec<Vec<f64>> = graph
-        .deterministics
-        .iter()
-        .map(|(_, node)| Vec::with_capacity(n_samples * evaluator.node_len(*node).max(1)))
-        .collect();
-    for _ in 0..n_samples {
-        // Sample raw parameters from priors (in declaration order)
-        let raw = sample_prior_raw(&model_spec.priors, &compiled.auto_vector_params, &mut rng)?;
-        if raw.len() != graph.param_count {
-            return Err(PyValueError::new_err(format!(
-                "prior sampler produced {} raw values, but the compiled model requires {}",
-                raw.len(),
-                graph.param_count
-            )));
-        }
-        let constrained_raw: Vec<f64> = raw
-            .iter()
-            .enumerate()
-            .map(|(pi, &r)| graph.param_transforms[pi].apply(r))
-            .collect();
-        let display_draw = derive_display_draw(&constrained_raw, &compiled.display_params)?;
-        if raw
-            .iter()
-            .chain(&display_draw)
-            .any(|value| !value.is_finite())
-        {
-            return Err(PyValueError::new_err("prior draw is not representable"));
-        }
-        for (pi, &value) in display_draw.iter().enumerate() {
-            param_prior_draws[pi].push(value);
-        }
-
-        // Forward pass to get predictions
-        evaluator.compute(&graph, &raw);
-        for (j, (_, node)) in graph.deterministics.iter().enumerate() {
-            for i in 0..evaluator.node_len(*node).max(1) {
-                deterministic_draws[j].push(evaluator.vec_elem(*node, i, &graph));
-            }
-        }
-        for (li, head) in heads.iter().enumerate() {
-            for i in 0..head.n_obs {
-                let eta = evaluator.vec_elem(head.linpred, i, &graph);
-                let aux = head.aux.map(|node| evaluator.scalar_at(node));
-                preds[li].push(
-                    rustmc_core::observation::sample(head.family, eta, aux, &mut rng)
-                        .map_err(PyValueError::new_err)?,
-                );
-            }
-        }
-    }
+    let draws = rustmc_core::prior_sampling::prior_predictive(
+        &graph,
+        &model_spec.priors,
+        &compiled.display_params,
+        &compiled.auto_vector_params,
+        n_samples,
+        &mut rng,
+    )
+    .map_err(model_error)?;
 
     // ── Package results ───────────────────────────────────────────────────────
     let dict = PyDict::new(py);
@@ -2679,229 +2797,32 @@ fn sample_prior_predictive<'py>(
             DisplayParamSpec::Raw { name, .. } => name,
             DisplayParamSpec::DerivedNonCenteredNormal { name, .. } => name,
         };
-        let arr = PyArray1::from_vec(py, param_prior_draws[pi].clone());
+        let arr = PyArray1::from_vec(py, draws.params[pi].clone());
         dict.set_item(name, arr)?;
     }
     for (li, name) in likelihood_names.iter().enumerate() {
         let n_obs = heads[li].n_obs;
-        let arr = Array2::from_shape_vec((n_samples, n_obs), preds[li].clone())
+        let arr = Array2::from_shape_vec((n_samples, n_obs), draws.predictions[li].clone())
             .map_err(|e| PyValueError::new_err(e.to_string()))?;
         dict.set_item(name, arr.into_pyarray(py))?;
     }
-    for (j, (name, node)) in graph.deterministics.iter().enumerate() {
-        let n = evaluator.node_len(*node);
+    for (j, (name, _)) in graph.deterministics.iter().enumerate() {
+        let n = draws.deterministic_lens[j];
         if n == 0 {
-            dict.set_item(name, PyArray1::from_vec(py, deterministic_draws[j].clone()))?;
+            dict.set_item(
+                name,
+                PyArray1::from_vec(py, draws.deterministics[j].clone()),
+            )?;
         } else {
             dict.set_item(
                 name,
-                Array2::from_shape_vec((n_samples, n), deterministic_draws[j].clone())
+                Array2::from_shape_vec((n_samples, n), draws.deterministics[j].clone())
                     .map_err(|e| PyValueError::new_err(e.to_string()))?
                     .into_pyarray(py),
             )?;
         }
     }
     Ok(dict)
-}
-
-/// Sample raw (unconstrained) parameters from the model priors.
-/// Processes priors in declaration order so hierarchical hyperpriors work.
-fn sample_prior_raw(
-    priors: &[PriorSpec],
-    auto_vector_params: &HashMap<String, usize>,
-    rng: &mut ChaCha8Rng,
-) -> Result<Vec<f64>, PyErr> {
-    use rand::distributions::Open01;
-    use rand_distr::{StandardNormal, StudentT as StudentTDist};
-    use rustmc_core::prior_sampling;
-
-    let mut raw: Vec<f64> = Vec::new();
-    // Track post-transform values for HyperParam::Param resolution
-    let mut sampled_values: HashMap<String, f64> = HashMap::new();
-
-    // A hyperparameter that is not yet available is a broken model, not a
-    // reason to substitute 1.0: doing so returns plausible-but-wrong prior
-    // predictive draws with no warning.
-    let resolve = |hp: &HyperParam, sv: &HashMap<String, f64>, owner: &str| -> Result<f64, PyErr> {
-        resolve_hyper_value(hp, sv, &format!("prior '{}'", owner))
-    };
-
-    for prior in priors {
-        match prior {
-            PriorSpec::Normal { name, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let dist = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for k in 0..n {
-                        let x = dist.sample(rng);
-                        if k == 0 {
-                            sampled_values.insert(name.clone(), x);
-                        }
-                        raw.push(x);
-                    }
-                } else if should_auto_noncenter(prior, auto_vector_params) {
-                    let z: f64 = StandardNormal.sample(rng);
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    sampled_values.insert(name.clone(), mu_v + sigma_v * z);
-                    raw.push(z);
-                } else {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let x = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?
-                        .sample(rng);
-                    sampled_values.insert(name.clone(), x);
-                    raw.push(x); // identity transform
-                }
-            }
-            PriorSpec::HalfNormal { name, sigma } => {
-                let sigma_v = resolve(sigma, &sampled_values, name)?;
-                validate_positive_finite("sigma", sigma_v)?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_half_normal(sigma_v, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Exponential { name, rate } => {
-                let rate_v = resolve(rate, &sampled_values, name)?;
-                validate_positive_finite("rate", rate_v)?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_gamma(1.0, rate_v, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::LogNormal { name, mu, sigma } => {
-                if let Some(&n) = auto_vector_params.get(name) {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let dist = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                    for k in 0..n {
-                        let raw_draw = dist.sample(rng);
-                        if k == 0 {
-                            sampled_values.insert(name.clone(), raw_draw.exp());
-                        }
-                        raw.push(raw_draw);
-                    }
-                } else {
-                    let mu_v = resolve(mu, &sampled_values, name)?;
-                    let sigma_v = resolve(sigma, &sampled_values, name)?;
-                    validate_positive_finite("sigma", sigma_v)?;
-                    let raw_draw = NormalDist::new(mu_v, sigma_v)
-                        .map_err(|e| PyValueError::new_err(e.to_string()))?
-                        .sample(rng);
-                    let x = raw_draw.exp();
-                    sampled_values.insert(name.clone(), x);
-                    raw.push(raw_draw);
-                }
-            }
-            PriorSpec::StudentT {
-                name,
-                nu,
-                mu,
-                sigma,
-            } => {
-                let dist =
-                    StudentTDist::new(*nu).map_err(|e| PyValueError::new_err(e.to_string()))?;
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let x = mu + sigma * dist.sample(rng);
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(x);
-                }
-            }
-            PriorSpec::Uniform { name, lower, upper } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let p: f64 = rng.sample(Open01);
-                    let draw = logit_stable(p);
-                    let x = ParamTransform::BoundedSigmoid {
-                        lower: *lower,
-                        upper: *upper,
-                    }
-                    .apply(draw);
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Gamma { name, alpha, beta } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::log_gamma(*alpha, *beta, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), draw.exp());
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Beta { name, alpha, beta } => {
-                let n = auto_vector_params.get(name).copied().unwrap_or(1);
-                for k in 0..n {
-                    let draw = prior_sampling::logit_beta(*alpha, *beta, rng)
-                        .map_err(PyValueError::new_err)?;
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), ParamTransform::Sigmoid.apply(draw));
-                    }
-                    raw.push(draw);
-                }
-            }
-            PriorSpec::Bernoulli { name, p } => {
-                let x: f64 = if rng.gen::<f64>() < *p { 1.0 } else { 0.0 };
-                sampled_values.insert(name.clone(), x);
-                raw.push(x);
-            }
-            PriorSpec::Poisson { name, lam } => {
-                let x = if *lam == 0.0 {
-                    0.0
-                } else {
-                    rustmc_core::observation::sample(
-                        rustmc_core::graph::ObsFamily::PoissonLog,
-                        lam.ln(),
-                        None,
-                        rng,
-                    )
-                    .map_err(PyValueError::new_err)?
-                };
-                sampled_values.insert(name.clone(), x);
-                raw.push(x);
-            }
-            PriorSpec::VectorNormal { name, n, mu, sigma } => {
-                let dist = NormalDist::new(*mu, *sigma)
-                    .map_err(|e| PyValueError::new_err(e.to_string()))?;
-                for k in 0..*n {
-                    let x = dist.sample(rng);
-                    // Store only the first component for HyperParam resolution (rare case)
-                    if k == 0 {
-                        sampled_values.insert(name.clone(), x);
-                    }
-                    raw.push(x); // identity transform
-                }
-            }
-        }
-    }
-    Ok(raw)
 }
 
 fn state_space_error(error: CoreStateSpaceError) -> PyErr {
@@ -2916,15 +2837,10 @@ fn hierarchical_error(error: CoreBayesianForecastError) -> PyErr {
     InferenceError::new_err(error.to_string())
 }
 
-/// Call the version-native ArviZ dictionary converter.
-fn arviz_from_groups<'py>(
-    az: &Bound<'py, PyModule>,
-    groups: Bound<'py, PyDict>,
-) -> PyResult<Bound<'py, PyAny>> {
-    // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
-    // from one keyword per group to a single nested group dictionary.
+/// Major version of the installed ArviZ, which selects its conversion API.
+fn arviz_api_generation(az: &Bound<'_, PyModule>) -> PyResult<u64> {
     let arviz_version: String = az.getattr("__version__")?.extract()?;
-    let arviz_major = arviz_version
+    arviz_version
         .split('.')
         .next()
         .and_then(|part| part.parse::<u64>().ok())
@@ -2932,12 +2848,85 @@ fn arviz_from_groups<'py>(
             PyValueError::new_err(format!(
                 "cannot determine the ArviZ API generation from version '{arviz_version}'"
             ))
-        })?;
+        })
+}
+
+/// Call the version-native ArviZ dictionary converter.
+fn arviz_from_groups<'py>(
+    az: &Bound<'py, PyModule>,
+    groups: Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    let arviz_major = arviz_api_generation(az)?;
+    arviz_from_groups_versioned(az, arviz_major, groups)
+}
+
+fn arviz_from_groups_versioned<'py>(
+    az: &Bound<'py, PyModule>,
+    arviz_major: u64,
+    groups: Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyAny>> {
+    // ArviZ 1.0 moved conversion into arviz-base and changed `from_dict`
+    // from one keyword per group to a single nested group dictionary.
     if arviz_major >= 1 {
         az.call_method1("from_dict", (groups,))
     } else {
         az.call_method("from_dict", (), Some(&groups))
     }
+}
+
+/// The dataset for one group of an ArviZ container.
+///
+/// ArviZ 0.x returns an `InferenceData` whose groups are Dataset attributes;
+/// 1.x returns an xarray `DataTree` whose children are nodes wrapping one.
+fn arviz_group<'py>(
+    arviz_major: u64,
+    container: &Bound<'py, PyAny>,
+    name: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    if arviz_major >= 1 {
+        container.get_item(name)?.getattr("dataset")
+    } else {
+        container.getattr(name)
+    }
+}
+
+/// Relabel the `posterior_predictive` draw axis with the posterior draw labels
+/// that survived thinning.
+///
+/// ArviZ groups are independent datasets, so a shorter predictive draw axis is
+/// legal — but without labels it is anonymous, and the pairing between a
+/// predictive draw and its parameter draw is lost. Writing the retained draws'
+/// labels as the `draw` coordinate restores it: xarray can then align or
+/// `.sel()` the posterior down to exactly the draws that were simulated.
+///
+/// `retained` holds positions along the posterior's draw axis, and the labels
+/// are read back off the posterior group rather than assumed: ArviZ's
+/// `data.index_origin` decides where the `draw` coordinate starts, so writing
+/// bare indices would silently offset the two groups wherever it is not zero.
+fn assign_posterior_predictive_draw_coords(
+    py: Python<'_>,
+    arviz_major: u64,
+    container: &Bound<'_, PyAny>,
+    retained: &[i64],
+) -> PyResult<()> {
+    let positions = PyArray1::from_slice(py, retained);
+    let labels = arviz_group(arviz_major, container, "posterior")?
+        .getattr("draw")?
+        .getattr("values")?
+        .get_item(positions)?;
+    let coords = PyDict::new(py);
+    coords.set_item("draw", labels)?;
+    let relabelled = arviz_group(arviz_major, container, "posterior_predictive")?.call_method(
+        "assign_coords",
+        (),
+        Some(&coords),
+    )?;
+    if arviz_major >= 1 {
+        container.set_item("posterior_predictive", relabelled)?;
+    } else {
+        container.setattr("posterior_predictive", relabelled)?;
+    }
+    Ok(())
 }
 
 fn state_space_matrix(name: &str, value: PyReadonlyArray2<'_, f64>) -> PyResult<(Vec<f64>, usize)> {
@@ -2981,7 +2970,7 @@ fn state_covariances_array<'py>(
 /// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
-#[pyclass(name = "LinearGaussianStateSpace")]
+#[pyclass(name = "LinearGaussianStateSpace", module = "rustmc")]
 #[derive(Clone)]
 struct PyLinearGaussianStateSpace {
     inner: CoreLinearGaussianStateSpace,
@@ -3185,7 +3174,7 @@ impl PyLinearGaussianStateSpace {
     }
 }
 
-#[pyclass(name = "KalmanFilterResult")]
+#[pyclass(name = "KalmanFilterResult", module = "rustmc")]
 struct PyKalmanFilterResult {
     inner: CoreKalmanFilterResult,
     dimension: usize,
@@ -3225,7 +3214,7 @@ impl PyKalmanFilterResult {
     }
 }
 
-#[pyclass(name = "KalmanSmootherResult")]
+#[pyclass(name = "KalmanSmootherResult", module = "rustmc")]
 struct PyKalmanSmootherResult {
     inner: CoreKalmanSmootherResult,
     dimension: usize,
@@ -3265,7 +3254,7 @@ impl PyKalmanSmootherResult {
     }
 }
 
-#[pyclass(name = "ForecastResult")]
+#[pyclass(name = "ForecastResult", module = "rustmc")]
 struct PyForecastResult {
     inner: CoreForecastResult,
     dimension: usize,
@@ -3596,7 +3585,7 @@ fn hierarchical_total_rollup_array<'py>(
 /// Ragged program series are fitted in one conjugate Gibbs posterior. This
 /// structure-aware sampler draws exact full conditionals and therefore avoids
 /// requiring NUTS to traverse a hierarchical funnel.
-#[pyclass(name = "BayesianHierarchicalMean", frozen)]
+#[pyclass(name = "BayesianHierarchicalMean", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianHierarchicalMean {
     population_mean_prior: f64,
@@ -3778,7 +3767,7 @@ fn validate_unique_names(names: &[String], expected: usize, field: &str) -> PyRe
     Ok(())
 }
 
-#[pyclass(name = "BayesianHierarchicalMeanFit")]
+#[pyclass(name = "BayesianHierarchicalMeanFit", module = "rustmc")]
 struct PyBayesianHierarchicalMeanFit {
     posterior: CoreHierarchicalMeanPosterior,
     time_counts: Vec<usize>,
@@ -3946,7 +3935,7 @@ impl PyBayesianHierarchicalMeanFit {
     }
 }
 
-#[pyclass(name = "BayesianHierarchicalForecast")]
+#[pyclass(name = "BayesianHierarchicalForecast", module = "rustmc")]
 struct PyBayesianHierarchicalForecast {
     inner: CoreHierarchicalMeanForecast,
     program_names: Vec<String>,
@@ -4170,7 +4159,7 @@ fn validate_probability(probability: f64) -> PyResult<()> {
 
 /// Inverse-gamma prior for a variance, parameterized by shape and scale.
 /// The density is proportional to x^(-shape-1) exp(-scale/x).
-#[pyclass(name = "InverseGammaPrior", frozen)]
+#[pyclass(name = "InverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone, Copy)]
 struct PyInverseGammaPrior {
     inner: CoreInverseGammaPrior,
@@ -4205,7 +4194,7 @@ impl PyInverseGammaPrior {
 
 /// Bayesian scalar Gaussian local-level model fitted with conjugate
 /// forward-filtering/backward-sampling Gibbs updates.
-#[pyclass(name = "BayesianLocalLevel", frozen)]
+#[pyclass(name = "BayesianLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevel {
     initial_mean: f64,
@@ -4378,7 +4367,7 @@ impl PyBayesianLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianLocalLevelFit")]
+#[pyclass(name = "BayesianLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLevelFit {
     posterior: CoreLocalLevelPosterior,
@@ -4505,7 +4494,7 @@ impl PyBayesianLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianForecastResult")]
+#[pyclass(name = "BayesianForecastResult", module = "rustmc")]
 struct PyBayesianForecastResult {
     inner: CorePosteriorPredictiveForecast,
 }
@@ -4646,7 +4635,7 @@ where
 }
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
-#[pyclass(name = "BayesianSeasonalLocalLevel", frozen)]
+#[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevel {
     period: usize,
@@ -4825,7 +4814,7 @@ impl PyBayesianSeasonalLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalLocalLevelFit")]
+#[pyclass(name = "BayesianSeasonalLocalLevelFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianSeasonalLocalLevelFit {
     posterior: CoreSeasonalLocalLevelPosterior,
@@ -4957,7 +4946,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalForecast")]
+#[pyclass(name = "BayesianSeasonalForecast", module = "rustmc")]
 struct PyBayesianSeasonalForecast {
     inner: CoreSeasonalPosteriorPredictiveForecast,
 }
@@ -5154,7 +5143,7 @@ where
 }
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
-#[pyclass(name = "BayesianLocalLinearTrend", frozen)]
+#[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrend {
     initial_mean: [f64; 2],
@@ -5375,7 +5364,7 @@ impl PyBayesianLocalLinearTrend {
     }
 }
 
-#[pyclass(name = "BayesianLocalLinearTrendFit")]
+#[pyclass(name = "BayesianLocalLinearTrendFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianLocalLinearTrendFit {
     posterior: CoreLocalLinearTrendPosterior,
@@ -5515,7 +5504,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 }
 
-#[pyclass(name = "BayesianTrendForecast")]
+#[pyclass(name = "BayesianTrendForecast", module = "rustmc")]
 struct PyBayesianTrendForecast {
     inner: CoreTrendPosteriorPredictiveForecast,
 }
@@ -5712,7 +5701,7 @@ fn ar_coefficient_array<'py>(
 /// If beta contains ``[intercept, lag_1, ..., lag_p]``, then
 /// ``beta | sigma2 ~ Normal(mean, sigma2 * precision^-1)`` and
 /// ``sigma2 ~ InverseGamma(variance_shape, variance_scale)``.
-#[pyclass(name = "NormalInverseGammaPrior", frozen)]
+#[pyclass(name = "NormalInverseGammaPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyNormalInverseGammaPrior {
     inner: CoreNormalInverseGammaPrior,
@@ -5787,7 +5776,7 @@ impl PyNormalInverseGammaPrior {
 ///
 /// This is distinct from ``LinearGaussianStateSpace.stationary_ar1``: the
 /// latter is a latent AR(1) observed with separate measurement noise.
-#[pyclass(name = "BayesianAutoRegression", frozen)]
+#[pyclass(name = "BayesianAutoRegression", frozen, module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianAutoRegression {
     order: usize,
@@ -5906,7 +5895,7 @@ impl PyBayesianAutoRegression {
     }
 }
 
-#[pyclass(name = "BayesianARFit")]
+#[pyclass(name = "BayesianARFit", module = "rustmc")]
 #[derive(Clone)]
 struct PyBayesianArFit {
     posterior: CoreBayesianArPosterior,
@@ -6012,7 +6001,7 @@ impl PyBayesianArFit {
     }
 }
 
-#[pyclass(name = "BayesianARForecast")]
+#[pyclass(name = "BayesianARForecast", module = "rustmc")]
 struct PyBayesianArForecast {
     inner: CoreBayesianArForecast,
 }

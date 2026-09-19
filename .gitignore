@@ -17,3 +17,8 @@ __pycache__/
 /pair_plot.png
 /examples/forecast_comparison.png
 /examples/ci_debug.csv
+
+# Local build scratch used by scripts/dev_pytest.sh
+/.target/
+/.pybuild/
+/.wheel/

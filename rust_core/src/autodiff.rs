@@ -1,6 +1,10 @@
 use crate::data::DataBinding;
 use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
 
+/// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
+pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
+use crate::graph::{bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid_derivative};
+
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
 // ---------------------------------------------------------------------------
@@ -416,19 +420,11 @@ impl Evaluator {
                 Op::Constant(c) => self.scalars[idx] = *c,
                 Op::Data(_) => {}
                 Op::Add(a, b) => self.scalars[idx] = self.scalars[a.0] + self.scalars[b.0],
-                Op::Sub(a, b) => self.scalars[idx] = self.scalars[a.0] - self.scalars[b.0],
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
-                Op::Div(a, b) => self.scalars[idx] = self.scalars[a.0] / self.scalars[b.0],
-                Op::Neg(a) => self.scalars[idx] = -self.scalars[a.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
-                Op::Log(a) => self.scalars[idx] = self.scalars[a.0].ln(),
-                Op::Sigmoid(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = 1.0 / (1.0 + (-v).exp());
-                }
-                Op::Square(a) => {
-                    let v = self.scalars[a.0];
-                    self.scalars[idx] = v * v;
+                Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
+                Op::BoundedSigmoid { raw, lower, upper } => {
+                    self.scalars[idx] = bounded_sigmoid(self.scalars[raw.0], *lower, *upper);
                 }
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
@@ -826,10 +822,15 @@ impl Evaluator {
                         if upstream == 0.0 {
                             continue;
                         }
-                        let (da, db) = operator.derivatives(av, bv);
-                        self.accumulate(*a, i, upstream * da);
+                        // Composed with the upstream adjoint rather than
+                        // multiplied by it afterwards: several of these local
+                        // derivatives leave the exponent range on their own
+                        // while the product does not. See
+                        // `ElementwiseOp::adjoints`.
+                        let (da, db) = operator.adjoints(upstream, av, bv);
+                        self.accumulate(*a, i, da);
                         if let Some(b) = b {
-                            self.accumulate(*b, i, upstream * db);
+                            self.accumulate(*b, i, db);
                         }
                     }
                 }
@@ -865,33 +866,25 @@ impl Evaluator {
                     self.adj_scalars[a.0] += a_s;
                     self.adj_scalars[b.0] += a_s;
                 }
-                Op::Sub(a, b) => {
-                    self.adj_scalars[a.0] += a_s;
-                    self.adj_scalars[b.0] -= a_s;
-                }
                 Op::Mul(a, b) => {
                     let va = self.scalars[a.0];
                     let vb = self.scalars[b.0];
                     self.adj_scalars[a.0] += a_s * vb;
                     self.adj_scalars[b.0] += a_s * va;
                 }
-                Op::Div(a, b) => {
-                    let va = self.scalars[a.0];
-                    let vb = self.scalars[b.0];
-                    self.adj_scalars[a.0] += a_s / vb;
-                    self.adj_scalars[b.0] -= a_s * va / (vb * vb);
-                }
-                Op::Neg(a) => self.adj_scalars[a.0] -= a_s,
                 Op::Exp(a) => {
                     let va = self.scalars[a.0].exp();
                     self.adj_scalars[a.0] += a_s * va;
                 }
-                Op::Log(a) => self.adj_scalars[a.0] += a_s / self.scalars[a.0],
                 Op::Sigmoid(a) => {
-                    let s = self.scalars[idx];
-                    self.adj_scalars[a.0] += a_s * s * (1.0 - s);
+                    self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
                 }
-                Op::Square(a) => self.adj_scalars[a.0] += a_s * 2.0 * self.scalars[a.0],
+                Op::BoundedSigmoid { raw, lower, upper } => {
+                    // Ordered so that neither a huge span nor a tiny one leaves
+                    // the exponent range; see `bounded_sigmoid_adjoint`.
+                    self.adj_scalars[raw.0] +=
+                        bounded_sigmoid_adjoint(a_s, self.scalars[raw.0], *lower, *upper);
+                }
 
                 Op::ScalarMulData(scalar, data) => {
                     let s = self.scalars[scalar.0];
@@ -999,14 +992,12 @@ impl Evaluator {
                     }
                 }
                 Op::BernoulliLogP { x, p } => {
-                    let xv = self.scalars[x.0];
-                    let pv = self.scalars[p.0].clamp(1e-12, 1.0 - 1e-12);
-                    self.adj_scalars[p.0] += a_s * (xv / pv - (1.0 - xv) / (1.0 - pv));
+                    self.adj_scalars[p.0] +=
+                        a_s * bernoulli_logp_dp(self.scalars[x.0], self.scalars[p.0]);
                 }
                 Op::PoissonLogP { x, lam } => {
-                    let xv = self.scalars[x.0];
-                    let lv = self.scalars[lam.0];
-                    self.adj_scalars[lam.0] += a_s * (xv / lv - 1.0);
+                    self.adj_scalars[lam.0] +=
+                        a_s * poisson_logp_dlam(self.scalars[x.0], self.scalars[lam.0]);
                 }
                 Op::LogGammaLogP { x, alpha, beta } => {
                     let raw = self.scalars[x.0];
@@ -1332,12 +1323,18 @@ impl Evaluator {
 }
 
 // ---------------------------------------------------------------------------
-// Original free functions (kept for tests and simple use)
+// Reference evaluator — differential-testing oracle, not public API
 // ---------------------------------------------------------------------------
 
-pub use reference::{eval_logp, forward, grad_logp, Value};
+/// Allocating re-implementation of the whole IR, used only to cross-check the
+/// zero-allocation `Evaluator`. It is deliberately not exported: it has no
+/// non-test callers and it panics on its entry points when a node's shape is
+/// not what it expected.
+#[cfg(test)]
 #[path = "autodiff_reference.rs"]
-pub mod reference;
+mod reference;
+#[cfg(test)]
+pub(crate) use reference::{eval_logp, grad_logp};
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     if !sigma.is_finite() || sigma <= 0.0 {
@@ -1347,59 +1344,68 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
     -0.5 * std::f64::consts::TAU.ln() - sigma.ln() - 0.5 * z * z
 }
 
-fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    let n = obs.len() as f64;
-    let sum_sq: f64 = mu
-        .iter()
-        .zip(obs.iter())
-        .map(|(m, o)| {
-            let d = (o - m) / sigma;
-            d * d
-        })
-        .sum();
-    n * log_norm - 0.5 * sum_sq
-}
+// Whole-vector observation kernels. Only the reference evaluator uses these:
+// the Evaluator fuses the same arithmetic into its own single pass.
+#[cfg(test)]
+mod obs_logp_sums {
+    use super::softplus;
 
-fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| y * e - softplus(*e))
-        .sum()
-}
+    pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        let n = obs.len() as f64;
+        let sum_sq: f64 = mu
+            .iter()
+            .zip(obs.iter())
+            .map(|(m, o)| {
+                let d = (o - m) / sigma;
+                d * d
+            })
+            .sum();
+        n * log_norm - 0.5 * sum_sq
+    }
 
-fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
-        .sum()
-}
+    pub(super) fn bernoulli_logit_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| y * e - softplus(*e))
+            .sum()
+    }
 
-fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs.iter())
-        .map(|(e, y)| e - y * e.exp())
-        .sum()
-}
+    pub(super) fn poisson_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| crate::count_sampling::log_mass_from_log_rate(*y, *e))
+            .sum()
+    }
 
-fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
-    let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
-    mu.iter()
-        .zip(obs.iter())
-        .map(|(m, y)| {
-            let ly = y.ln();
-            let d = (ly - m) / sigma;
-            log_norm - ly - 0.5 * d * d
-        })
-        .sum()
-}
+    pub(super) fn exponential_log_obs_logp_sum(eta: &[f64], obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs.iter())
+            .map(|(e, y)| e - y * e.exp())
+            .sum()
+    }
 
-fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
-    eta.iter()
-        .zip(obs)
-        .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
-        .sum()
+    pub(super) fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
+        mu.iter()
+            .zip(obs.iter())
+            .map(|(m, y)| {
+                let ly = y.ln();
+                let d = (ly - m) / sigma;
+                log_norm - ly - 0.5 * d * d
+            })
+            .sum()
+    }
+
+    pub(super) fn negative_binomial_log_obs_logp_sum(eta: &[f64], alpha: f64, obs: &[f64]) -> f64 {
+        eta.iter()
+            .zip(obs)
+            .map(|(&e, &y)| crate::negative_binomial::log_mass(y, e, alpha))
+            .sum()
+    }
 }
+#[cfg(test)]
+use obs_logp_sums::*;
 
 // Combined transformed densities avoid materializing exp(raw), and form
 // scale ratios in log space before squaring or multiplying extreme values.
@@ -1472,13 +1478,106 @@ fn uniform_logp_scalar(x: f64, lower: f64, upper: f64) -> f64 {
     }
 }
 
+/// Bernoulli log mass. `-inf` off the support, which is `{0, 1}`.
+///
+/// This is reachable: `model::GraphModel::log_density` evaluates it for a
+/// loaded artifact, so it has to be the density it claims to be even though
+/// gradient-based *sampling* of a discrete latent is refused elsewhere.
+/// Without the support check `x = 0.5` had a finite density, and at `p = 0.5`
+/// the "density" was constant over all of R.
+///
+/// There is no clamp on `p`, and that is the other half of the fix. Clamping to
+/// `[1e-12, 1 - 1e-12]` gave the impossible outcome `x = 1, p = 0` a log mass of
+/// about -27.6 — merely unlikely — and it moved every `p` outside that band. The
+/// clamp existed to avoid `0 * ln(0)`, which is NaN where the limit is 0; that
+/// is handled here by branching on `x` instead of multiplying by it, so the term
+/// that would be multiplied by zero is never formed at all.
+///
+/// `ln_1p(-p)` rather than `(1 - p).ln()`: for `p` below about 1e-16 the
+/// subtraction rounds to exactly 1 and the log to exactly 0, discarding the
+/// whole of `-p`.
 fn bernoulli_logp_scalar(x: f64, p: f64) -> f64 {
-    let p_clamped = p.clamp(1e-12, 1.0 - 1e-12);
-    x * p_clamped.ln() + (1.0 - x) * (1.0 - p_clamped).ln()
+    if !(0.0..=1.0).contains(&p) {
+        return f64::NEG_INFINITY;
+    }
+    if x == 1.0 {
+        p.ln()
+    } else if x == 0.0 {
+        (-p).ln_1p()
+    } else {
+        f64::NEG_INFINITY
+    }
 }
 
+/// d/dp of [`bernoulli_logp_scalar`], zero wherever that is a constant `-inf`.
+///
+/// A density that is `-inf` everywhere in a neighbourhood has no slope, and a
+/// score that moves while the density does not is worse than no score: it sends
+/// a sampler off in a direction the density does not support. At `p = 0` with
+/// `x = 1` the slope is genuinely infinite, which is the limit from inside the
+/// support and not a lost value.
+///
+/// `1 / p` overflows for every `p` below 5.6e-309, where `ln(p)` is still an
+/// ordinary -710. The composition through whatever produced `p` would often be
+/// representable — a `sigmoid` link makes it exactly 1 — but the adjoint at the
+/// `p` node is `1 / p` whatever order the factors are taken in, so there is
+/// nothing to reassociate: the intermediate itself is the unrepresentable
+/// quantity. The clamp this replaced returned 1e12 there, finite and wrong by
+/// 296 orders of magnitude; an infinity is refused at the sampler boundary
+/// instead of being believed.
+fn bernoulli_logp_dp(x: f64, p: f64) -> f64 {
+    if !(0.0..=1.0).contains(&p) {
+        return 0.0;
+    }
+    // `p == -0.0` is accepted by that range check, and `1.0 / -0.0` is negative
+    // infinity — the wrong sign for a limit taken from inside `[0, 1]`, where
+    // the density only approaches its endpoint from above. The density itself
+    // does not distinguish the two zeros, so the score must not either.
+    let p = p + 0.0;
+    if x == 1.0 {
+        1.0 / p
+    } else if x == 0.0 {
+        -1.0 / (1.0 - p)
+    } else {
+        0.0
+    }
+}
+
+/// Poisson log mass, over the exactly representable count range.
+///
+/// [`crate::count_sampling::log_mass`] already refuses a negative, fractional or
+/// nonfinite count and a negative or nonfinite rate, and treats `rate == 0` as
+/// the point mass at zero. It carries no clamp of any kind, so unlike the
+/// Bernoulli case there was nothing here to correct.
 fn poisson_logp_scalar(x: f64, lam: f64) -> f64 {
     crate::count_sampling::log_mass(x, lam)
+}
+
+/// d/dlam of [`poisson_logp_scalar`], zero wherever that is a constant `-inf`.
+///
+/// `(x - lam) / lam` is the score on the support. Not `x / lam - 1`: the
+/// quotient rounds to something near 1 and the subtraction then cancels away
+/// most of what is left, which is precisely the region a count model lives in.
+/// At `x = 1` and `lam` one ulp below it the old form returned
+/// 2.220446049250313e-16 for a score of 1.1102230246251568e-16 — twice the
+/// right answer — and at `x = 1e14, lam = x + 1` it was 0.08% off. `x - lam` is
+/// exact whenever the two are within a factor of two of each other, by
+/// Sterbenz, so the new form has one rounding and no cancellation.
+///
+/// Off the support the mass is `-inf` and the score is zero; at `x == 0` the
+/// mass is `-lam` and the score is `-1`, which the general form would compute
+/// as `-0 / 0` when `lam` is also zero.
+fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
+    if !x.is_finite() || x < 0.0 || x.fract() != 0.0 || !lam.is_finite() || lam < 0.0 {
+        return 0.0;
+    }
+    if x == 0.0 {
+        return -1.0;
+    }
+    // As in `bernoulli_logp_dp`: `lam == -0.0` passes `lam < 0.0` and would give
+    // a negative infinity for a limit that is positive. `count_sampling::log_mass`
+    // treats both zeros identically through its `rate == 0.0` branch.
+    (x - lam) / (lam + 0.0)
 }
 
 fn gamma_logp_scalar(x: f64, alpha: f64, beta: f64) -> f64 {
@@ -1502,15 +1601,6 @@ pub(crate) fn softplus(x: f64) -> f64 {
         x + (-x).exp().ln_1p()
     } else {
         x.exp().ln_1p()
-    }
-}
-
-fn sigmoid_stable(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let ex = x.exp();
-        ex / (1.0 + ex)
     }
 }
 
@@ -2247,6 +2337,57 @@ mod extreme_scale_regressions {
     use super::*;
     use crate::distributions::{Exponential, Gamma, HalfNormal, Normal};
 
+    /// The reference evaluator must agree with the `Evaluator` where only the
+    /// *composed* adjoint is representable.
+    ///
+    /// Every other differential test runs at ordinary scales, where the two agree
+    /// whether the oracle composes or multiplies afterwards. That is why the
+    /// oracle was able to drift: it kept `derivatives(..)` then `* upstream`
+    /// after the `Evaluator` moved to `adjoints(..)`, and nothing noticed.
+    ///
+    /// The target is `-(1/b) * scale`, so the division's upstream adjoint is
+    /// `-scale` rather than 1. `derivatives` alone cannot rescue this: `-1/b^2`
+    /// overflows for a small `b` however it is associated, and only folding
+    /// `scale` in keeps the product in range.
+    #[test]
+    fn the_reference_evaluator_composes_adjoints_like_the_evaluator() {
+        for (scale, b, expected) in [
+            (1e-200, 1e-200, 1e200),
+            (1e-160, 1e-180, 1e200),
+            (1e200, 1e200, 1e-200),
+        ] {
+            let mut graph = Graph::new();
+            let param = graph.add_param("b");
+            let one = graph.add_constant(1.0);
+            let ratio = graph.elementwise(crate::graph::ElementwiseOp::Div, one, Some(param));
+            let scale_node = graph.add_constant(scale);
+            let scaled =
+                graph.elementwise(crate::graph::ElementwiseOp::Mul, ratio, Some(scale_node));
+            let term = graph.elementwise(crate::graph::ElementwiseOp::Neg, scaled, None);
+            graph.add_node_as_logp(term);
+
+            let mut evaluator = Evaluator::new(&graph);
+            evaluator.compute(&graph, &[b]);
+            let (reference_logp, reference_grad) = grad_logp(&graph, &[b]);
+
+            assert_eq!(
+                evaluator.total_logp, reference_logp,
+                "log density disagrees at scale {scale}, b {b}"
+            );
+            assert_eq!(
+                evaluator.grad[0], reference_grad[0],
+                "gradient disagrees at scale {scale}, b {b}: evaluator {} vs reference {}",
+                evaluator.grad[0], reference_grad[0]
+            );
+            let error = (evaluator.grad[0] - expected).abs() / expected;
+            assert!(
+                error < 1e-9,
+                "gradient at scale {scale}, b {b} is {} not {expected}",
+                evaluator.grad[0]
+            );
+        }
+    }
+
     fn check(graph: &Graph, params: &[f64], logp: f64, gradients: &[f64]) {
         let mut evaluator = Evaluator::new(graph);
         evaluator.compute(graph, params);
@@ -2289,12 +2430,6 @@ mod extreme_scale_regressions {
                     Exponential::prior(&mut exponential, "x", beta);
                     check(&exponential, &[raw], expected, &[1.0 - z.exp()]);
                 }
-                // New scalar kernels remain serializable through legacy artifacts.
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], expected, &[alpha - z.exp()]);
             }
         }
     }
@@ -2324,11 +2459,6 @@ mod extreme_scale_regressions {
                     lp,
                     &[(squared_ratio - 1.0) / sigma, 1.0 - squared_ratio],
                 );
-                let rebuilt = crate::compiled_model::CompiledModelRuntime::from_graph(&scalar)
-                    .unwrap()
-                    .to_graph()
-                    .unwrap();
-                check(&rebuilt, &[raw], lp, &[1.0 - squared_ratio]);
             }
         }
     }
@@ -2484,7 +2614,7 @@ mod power_boundary_regressions {
             };
             let powered = graph.elementwise(ElementwiseOp::Pow, x, Some(exponent));
             let total = graph.sum(powered);
-            let penalty = graph.neg(total);
+            let penalty = graph.elementwise(ElementwiseOp::Neg, total, None);
             graph.add_logp_term(penalty);
             for position in [-0.7, 0.0, 0.4] {
                 let params = vec![position; graph.param_count];
@@ -2501,6 +2631,102 @@ mod power_boundary_regressions {
                     let numerical = (eval_logp(&graph, &plus) - eval_logp(&graph, &minus)) / 2e-6;
                     assert!((numerical - evaluator.grad[i]).abs() < 1e-8);
                 }
+            }
+        }
+    }
+}
+
+/// Checks that used to live in `rust_core/tests/output_boundaries.rs` and
+/// `rust_core/tests/poisson_density.rs`, moved here when the reference
+/// evaluator stopped being public API. They pin the *reference* evaluator to
+/// independent expectations, which the surviving `Evaluator` assertions in
+/// those files do not do.
+#[cfg(test)]
+mod reference_boundary_coverage {
+    use super::*;
+    use crate::distributions::Uniform;
+    use crate::graph::{ObsFamily, ParamTransform};
+
+    /// Was `output_boundaries.rs:34`: an invalid interval must be rejected in
+    /// unconstrained coordinates by the reference evaluator too, with a zero
+    /// gradient rather than a NaN.
+    #[test]
+    fn reference_rejects_invalid_uniform_ranges() {
+        for (lower, upper) in [
+            (1.0, 1.0),
+            (2.0, 1.0),
+            (-1e308, 1e308),
+            (f64::NAN, 1.0),
+            (0.0, f64::INFINITY),
+        ] {
+            for scalar in [false, true] {
+                let mut graph = Graph::new();
+                if scalar {
+                    Uniform::prior(&mut graph, "x", lower, upper);
+                } else {
+                    let start = graph.add_vector_params_with_transform(
+                        "x",
+                        1,
+                        ParamTransform::BoundedSigmoid { lower, upper },
+                    );
+                    graph.vector_uniform_logp(start, 1, lower, upper);
+                }
+                for raw in [-40.0, 0.0, 40.0] {
+                    assert_eq!(
+                        grad_logp(&graph, &[raw]),
+                        (f64::NEG_INFINITY, vec![0.0]),
+                        "lower={lower} upper={upper} scalar={scalar} raw={raw}"
+                    );
+                }
+            }
+        }
+    }
+
+    fn poisson_graph(count: f64) -> Graph {
+        let mut graph = Graph::new();
+        let eta = graph.add_param("eta");
+        let observed = graph.add_obs_data(vec![count]);
+        let means = graph.broadcast_observation(eta, observed);
+        graph.obs_logp_poisson_log(means, observed);
+        graph
+    }
+
+    /// Was `poisson_density.rs:37-40`: at rates where Stirling's series is the
+    /// only usable form, the reference `ObsFamily::PoissonLog` branch must
+    /// reproduce the same mode, curvature and score as the Evaluator.
+    #[test]
+    fn reference_matches_high_rate_poisson_density_and_score() {
+        for count in [1e14_f64, 1e15, 8e15] {
+            let graph = poisson_graph(count);
+            let expected_mode =
+                -0.5 * (std::f64::consts::TAU.ln() + count.ln()) - 1.0 / (12.0 * count);
+            let center = count.ln();
+            let sd = 1.0 / count.sqrt();
+            for z in [-1.0, 0.0, 1.0] {
+                let eta = center + z * sd;
+                let (logp, grad) = grad_logp(&graph, &[eta]);
+                assert!((logp - (expected_mode - 0.5 * z * z)).abs() < 3e-6);
+                assert_eq!(grad[0], count - eta.exp());
+                assert_eq!(
+                    logp,
+                    crate::observation::log_density(ObsFamily::PoissonLog, count, eta, None)
+                        .unwrap()
+                );
+            }
+        }
+    }
+
+    /// Was `poisson_density.rs:66`: where the rate itself underflows, the log
+    /// density is still finite and equals `y*eta - ln(y!)`.
+    #[test]
+    fn reference_keeps_finite_densities_when_poisson_rates_underflow() {
+        for count in [0.0, 1.0, 20.0] {
+            for eta in [-740.0, -1000.0] {
+                let graph = poisson_graph(count);
+                let expected = count * eta - ln_gamma(count + 1.0);
+                let (logp, _) = grad_logp(&graph, &[eta]);
+                assert!(logp.is_finite(), "count={count} eta={eta} logp={logp}");
+                assert!((logp - expected).abs() < 1e-10);
             }
         }
     }

@@ -7,7 +7,7 @@ use pyo3::prelude::*;
 /// Recursive expression tree built on the Python side, compiled to graph
 /// nodes at sampling time.
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct VectorParamRef {
     pub(super) name: String,
@@ -18,6 +18,8 @@ pub(super) struct VectorParamRef {
 
 #[pymethods]
 impl VectorParamRef {
+    /// `beta['group']` selects one element per observation, keyed by the
+    /// integer-valued data column `group`.
     fn __getitem__(&self, data_key: &str) -> Expr {
         Expr {
             inner: MuExpr::Gather {
@@ -36,6 +38,81 @@ impl VectorParamRef {
             owner: Some(self.owner),
         }
     }
+
+    // The arithmetic dunders below exist only to *reject* an operand this DSL
+    // would otherwise have to guess at. A vector parameter is not a scalar
+    // expression, and `MuExpr` has no variant standing for "the whole vector",
+    // so there is nothing sound they could build. Without them Python reports
+    // `unsupported operand type(s)` -- or, for `"x" * vec`, the baffling
+    // "can't multiply sequence by non-int" -- which names the wrong problem.
+    //
+    // They deliberately return `NotImplemented` for anything that is *not* a
+    // DSL operand, so Python's reflected-operator protocol still runs and a
+    // third-party type (a NumPy array, say) keeps whatever behaviour it had
+    // before these methods existed.
+    fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __pow__(
+        &self,
+        other: &Bound<'_, PyAny>,
+        _modulo: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __rpow__(
+        &self,
+        other: &Bound<'_, PyAny>,
+        _modulo: Option<&Bound<'_, PyAny>>,
+    ) -> PyResult<PyObject> {
+        self.reject(other)
+    }
+    fn __neg__(&self) -> PyResult<Expr> {
+        Err(vector_param_arithmetic_error(&self.name))
+    }
+}
+
+impl VectorParamRef {
+    /// Raise the explanatory error for a DSL operand; defer to Python's
+    /// reflected-operator protocol for everything else.
+    fn reject(&self, other: &Bound<'_, PyAny>) -> PyResult<PyObject> {
+        if is_dsl_operand(other) {
+            Err(vector_param_arithmetic_error(&self.name))
+        } else {
+            Ok(other.py().NotImplemented())
+        }
+    }
+}
+
+/// Is this something the expression DSL would otherwise have accepted?
+fn is_dsl_operand(value: &Bound<'_, PyAny>) -> bool {
+    value.is_instance_of::<pyo3::types::PyString>()
+        || value.is_instance_of::<pyo3::types::PyFloat>()
+        || value.is_instance_of::<pyo3::types::PyInt>()
+        || value.extract::<PyRef<'_, Expr>>().is_ok()
+        || value.extract::<PyRef<'_, ParamRef>>().is_ok()
+        || value.extract::<PyRef<'_, VectorParamRef>>().is_ok()
 }
 
 /// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
@@ -74,7 +151,7 @@ pub(super) fn first_param_name(expr: &MuExpr) -> String {
 
 /// Collect every parameter name referenced by an expression tree.
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct ParamRef {
     pub(super) name: String,
@@ -82,7 +159,7 @@ pub(super) struct ParamRef {
     pub(super) owner: u64,
 }
 
-#[pyclass]
+#[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct Expr {
     pub(super) inner: MuExpr,
@@ -91,11 +168,44 @@ pub(super) struct Expr {
     pub(super) owner: Option<u64>,
 }
 
+/// A bare `"x"` builds the same `MuExpr::Data("x")` node that
+/// `ModelBuilder.data("x")` returns. It differs in two deliberate ways.
+///
+/// *Owner.* A string is not tied to any `ModelBuilder`, so `owner` is `None`,
+/// exactly as for a numeric constant; `ModelBuilder.data()` records
+/// `Some(builder_id)` because it may also register a dimension on that
+/// builder. `merge_owners` lets a `None` operand adopt the other side's owner,
+/// so an expression that mixes two builders' *parameters* is still rejected,
+/// and `ModelBuilder::check_owner` still rejects any expression carrying a
+/// foreign owner. The only expressions that stay unowned are those with no
+/// parameters at all -- pure data and constants -- which carry no
+/// builder-specific state and mean the same thing in any model. The
+/// consequence to know: `second.deterministic("d", "x")` is accepted where
+/// `second.deterministic("d", first.data("x"))` is rejected.
+///
+/// *Dimension.* A key introduced this way registers no dimension override.
+/// `ModelBuilder.data(name, dim)` only writes into `ModelBuilder::dimensions`,
+/// which `model.rs` applies as a post-hoc rename over schema slots that
+/// otherwise default to `"obs"`. A bare `"x"` is therefore exactly
+/// `builder.data("x")` with `dim=None`; to name a non-`obs` dimension, keep
+/// using `builder.data("x", "dim")`.
+fn data_expr(data_key: String) -> Expr {
+    Expr {
+        inner: MuExpr::Data(data_key),
+        owner: None,
+    }
+}
+
 pub(super) fn extract_expr(value: &Bound<'_, PyAny>) -> PyResult<Expr> {
     if let Ok(e) = value.extract::<PyRef<'_, Expr>>() {
         Ok(e.clone())
     } else if let Ok(p) = value.extract::<PyRef<'_, ParamRef>>() {
         Ok(p.as_expr())
+    } else if let Ok(v) = value.extract::<PyRef<'_, VectorParamRef>>() {
+        Err(vector_param_arithmetic_error(&v.name))
+    } else if let Ok(data_key) = value.extract::<String>() {
+        // Checked before `f64` so that a string is never coerced to a number.
+        Ok(data_expr(data_key))
     } else if let Ok(x) = value.extract::<f64>() {
         validate_finite("expression constant", x)?;
         Ok(Expr {
@@ -104,9 +214,22 @@ pub(super) fn extract_expr(value: &Bound<'_, PyAny>) -> PyResult<Expr> {
         })
     } else {
         Err(PyValueError::new_err(
-            "expected a numeric constant, parameter, or expression",
+            "expected a numeric constant, a parameter, an expression, or a \
+             data key string (e.g. beta * 'x')",
         ))
     }
+}
+
+/// A whole vector parameter has no scalar value, so it cannot take part in
+/// element-wise arithmetic. Name that, rather than claiming it is not an
+/// expression.
+fn vector_param_arithmetic_error(name: &str) -> PyErr {
+    ParameterError::new_err(format!(
+        "vector parameter '{name}' has no single value, so it cannot be used \
+         directly in arithmetic. Select one element per observation with \
+         {name}['group_key'], or take a matrix-vector product with \
+         {name} @ 'matrix_key'."
+    ))
 }
 impl ParamRef {
     fn as_expr(&self) -> Expr {
@@ -149,6 +272,9 @@ impl Expr {
 }
 #[pymethods]
 impl ParamRef {
+    /// `beta * "x"` keeps its fused `ParamTimesData` form, which
+    /// `model.rs::try_extract_linear` compiles into a single `FusedLinearMu`
+    /// op. Every other operand falls through to the generic expression path.
     fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
         if let Ok(data_key) = other.extract::<String>() {
             Ok(Expr {

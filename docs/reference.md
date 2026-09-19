@@ -408,8 +408,25 @@ and cannot be shadowed by a per-dataset dictionary. Dataset IDs must be unique a
 the number of datasets.
 
 `BatchFit.ids` preserves caller order; `len(batch_fit)` returns the dataset count and
-`batch_fit[i]` returns a `BatchResult`. This foundational batch path currently fails fast
-on binding or sampling errors; partial-failure collection is future work.
+`batch_fit[i]` returns a `BatchResult`.
+
+`sample_batch(..., errors=...)` chooses what happens when one dataset fails to bind or
+sample. The default `errors="raise"` propagates the first failure. With
+`errors="collect"`, every cell is attempted and `BatchFit.errors` returns a
+`{dataset_id: message}` mapping containing only the failed cells, so an empty mapping
+means every cell succeeded. Successful cells are retrieved normally; `batch_fit.get(id)`
+and `batch_fit[i]` on a failed cell raise `ValueError` carrying that cell's ID and
+message rather than returning a placeholder. `len(batch_fit)` still counts every dataset,
+failed cells included. Any other value of `errors` raises `ValueError`.
+
+```python
+batch = compiled.sample_batch(
+    [good_data, malformed_data], ids=["a", "broken"], errors="collect",
+)
+batch.errors                 # {"broken": "..."}
+fit = batch.get("a")         # BatchResult
+batch.get("broken")          # raises ValueError: dataset 'broken': ...
+```
 
 ### Context-manager contract
 
@@ -507,6 +524,16 @@ than absolute batch throughput.
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 
+`to_arviz(include_ppc=True)` writes the predictive group with real `(chain, draw, obs)`
+axes that line up with the posterior group, rather than flattening the draws into a
+single synthetic chain. Predictive draw `(c, d)` is the one generated from posterior
+draw `(c, d)`. `ppc_samples` thins the draw axis rather than a flattened pool: the same
+`ppc_samples // n_chains` draw indices are kept in every chain, and those indices are
+written onto the predictive group's `draw` coordinate, so
+`idata.posterior.sel(draw=idata.posterior_predictive.draw)` recovers the parameter draws
+that produced each predictive draw. `fit.posterior_predictive()` is unaffected and still
+returns `(n_samples, n_obs)`.
+
 ## `rmc.sample_prior_predictive()`
 
 ```python
@@ -562,5 +589,33 @@ mu_group = builder.normal_prior("mu_group", mu=mu_global, sigma=sigma_group)
 builder.normal_likelihood("obs", mu_expr=mu_group, sigma=1.0, observed_key="y")
 ```
 
-That scalar hierarchical pattern is supported today and will automatically use the
-non-centered compilation path when eligible.
+That scalar hierarchical pattern compiles to the non-centered form described under
+[hierarchical priors](#hierarchical-priors-and-automatic-non-centering): the sampled
+coordinate is a standard normal `raw`, and the value reported under the declared name is
+`mu + sigma * raw`. Vector priors are not rewritten this way, because
+`vector_normal_prior` takes constant hyperparameters; write a pooled vector block
+explicitly as `sigma * z[key]`.
+
+## Exceptions
+
+`rustmc.StateSpaceError` reports invalid model structure or a numerical failure inside
+a native kernel. `rustmc.ParameterError` reports an invalid parameter or expression,
+including mixing references from two builders. Both subclass `ValueError`, so
+`except ValueError` catches them, and so does `pytest.raises(ValueError)`.
+
+## Result types
+
+Fitting and forecasting calls return named types, and each guide describes the members
+of the types it returns. `FitResult`, `BatchResult`, `BatchFit`,
+`StructuralFit`/`StructuralForecast`, `RunoffFit`,
+`ForecastBatchFit`/`ForecastBatchForecast`, `DynamicGLMForecast`,
+`KalmanFilterResult`/`KalmanSmootherResult`, and one `Bayesian*Fit` /
+`Bayesian*Forecast` pair per specialized model come from those calls and are not
+constructed directly. `ForecastDraws`, `NamedDesign`, `ScenarioForecast`,
+`BacktestResult` and `BacktestFold` are ordinary dataclasses you may also construct
+yourself, which is how you score draws that rustmc did not produce.
+
+Not everything returns a wrapper. `fit.predict()`, `fit.deterministics()`,
+`fit.get_samples()`, `fit.get_samples_2d()`, `fit.log_likelihood()` and
+`fit.posterior_predictive()` return plain dicts of NumPy arrays, and the evaluation
+helpers return NumPy arrays or dicts of them.

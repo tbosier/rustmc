@@ -26,7 +26,11 @@ fn allocation(factors: &[usize]) -> Result<()> {
     Ok(())
 }
 
+/// `deny_unknown_fields` reaches the `InverseGamma` struct variant; the
+/// `Fixed` newtype variant carries no field names for it to act on, and serde
+/// already refuses an unrecognised variant name.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub enum VarianceParameter {
     Fixed(f64),
     InverseGamma { shape: f64, scale: f64 },
@@ -62,6 +66,7 @@ impl VarianceParameter {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Component {
     pub name: String,
     pub transition: Vec<f64>,
@@ -219,6 +224,7 @@ impl Component {
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralConfig {
     pub components: Vec<Component>,
     pub observation_variance: VarianceParameter,
@@ -234,6 +240,7 @@ pub struct SamplingConfig {
     pub store_states: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralDraw {
     pub variances: Vec<f64>,
     pub observation_variance: f64,
@@ -241,12 +248,17 @@ pub struct StructuralDraw {
     pub states: Option<Vec<Vec<f64>>>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralPosterior {
     pub config: StructuralConfig,
     pub chains: Vec<Vec<StructuralDraw>>,
     pub training_rows: Vec<Vec<f64>>,
 }
+/// Not reachable from either structural loader today - it is a forecast/smoother
+/// result, not part of an artifact - but it derives `Deserialize`, so it is held
+/// to the same rule in case it is ever embedded in one.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StructuralPaths {
     /// [chain][draw][time][state]
     pub states: Vec<Vec<Vec<Vec<f64>>>>,
@@ -395,7 +407,8 @@ impl StructuralConfig {
         }
         allocation(&[draws, self.dimension(), 3])?;
         allocation(&[draws, steps, self.dimension() + self.components.len() + 3])?;
-        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let prior_seed = chain_seed(seed, 0, PRIOR_PREDICT_SEED_DOMAIN);
+        let mut rng = ChaCha8Rng::seed_from_u64(prior_seed);
         let mut chain = vec![];
         for _ in 0..draws {
             let q = self
@@ -417,7 +430,11 @@ impl StructuralConfig {
             chains: vec![chain],
             training_rows: vec![],
         }
-        .forecast(steps, design, seed.wrapping_add(0x5052494f52))
+        // `forecast` re-keys whatever it is given through FORECAST_SEED_DOMAIN,
+        // so handing it the prior-predictive key rather than the caller's own
+        // separates these paths from both the prior draws above and a posterior
+        // forecast made with the same caller seed.
+        .forecast(steps, design, prior_seed)
     }
 }
 fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
@@ -426,10 +443,21 @@ fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
-fn chain_seed(seed: u64, chain: usize) -> u64 {
-    let mut x = seed.wrapping_add((chain as u64).wrapping_mul(0x9e3779b97f4a7c15));
-    x = (x ^ (x >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    x = (x ^ (x >> 27)).wrapping_mul(0x94d049bb133111eb);
+const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
+const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
+const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
+
+fn chain_seed(seed: u64, chain: usize, domain: u64) -> u64 {
+    // SplitMix64 finalizer gives each chain a stable, well-separated stream.
+    // The domain keeps fitting, forecasting and prior prediction on disjoint
+    // streams when a caller reuses one seed across those stages. As in the
+    // other forecasting modules the domain is additive, so seeds deliberately
+    // offset by a domain difference still meet; ordinary seeds do not.
+    let mut x = seed
+        .wrapping_add(domain)
+        .wrapping_add((chain as u64).wrapping_mul(0x9E3779B97F4A7C15));
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D049BB133111EB);
     x ^ (x >> 31)
 }
 pub fn fit(
@@ -472,7 +500,8 @@ pub fn fit(
     let chains = (0..sampling.chains)
         .into_par_iter()
         .map(|chain| -> Result<Vec<StructuralDraw>> {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(sampling.seed, chain));
+            let mut rng =
+                ChaCha8Rng::seed_from_u64(chain_seed(sampling.seed, chain, FIT_SEED_DOMAIN));
             let mut q = priors.iter().map(|p| p.initial()).collect::<Vec<_>>();
             let mut r = config.observation_variance.initial();
             let mut lambda = vec![1.0; y.len()];
@@ -590,7 +619,7 @@ impl StructuralPosterior {
         let rows = self.config.observation_rows(steps, design)?;
         let mut out = StructuralPaths::default();
         for (chain, draws) in self.chains.iter().enumerate() {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, chain));
+            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, chain, FORECAST_SEED_DOMAIN));
             let (mut all_s, mut all_c, mut all_m, mut all_o, mut all_t) =
                 (vec![], vec![], vec![], vec![], vec![]);
             for draw in draws {
@@ -693,6 +722,7 @@ impl StructuralPosterior {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SavedPosterior {
     format: String,
     version: u32,
@@ -782,6 +812,7 @@ impl StructuralPosterior {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SavedModel {
     format: String,
     version: u32,
@@ -810,6 +841,37 @@ impl StructuralConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        assert_ne!(
+            chain_seed(42, 0, FIT_SEED_DOMAIN),
+            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
+        );
+        // The keys the three sampling roles actually build, for one caller seed:
+        // `fit` and `forecast` key per chain, while `prior_predict` keys its
+        // prior draws once and then hands that key to `forecast`.
+        for seed in [0, 1, 42, 491, u64::MAX] {
+            let prior = chain_seed(seed, 0, PRIOR_PREDICT_SEED_DOMAIN);
+            for chain in 0..4 {
+                let keys = [
+                    chain_seed(seed, chain, FIT_SEED_DOMAIN),
+                    chain_seed(seed, chain, FORECAST_SEED_DOMAIN),
+                    prior,
+                    chain_seed(prior, chain, FORECAST_SEED_DOMAIN),
+                ];
+                for (i, left) in keys.iter().enumerate() {
+                    for right in &keys[i + 1..] {
+                        assert_ne!(
+                            left, right,
+                            "seed {seed} chain {chain} reuses one stream for two roles"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn fixed(v: f64) -> VarianceParameter {
         VarianceParameter::Fixed(v)
     }

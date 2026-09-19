@@ -1,312 +1,251 @@
 """
-rustmc — Fixed-effects panel forecasting
-==========================================
+rustmc — retail panel forecast with group indexing
+==================================================
 
-Stress test: forecast weekly sales for a retail hierarchy.
+A weekly retail panel: 3 states x 5 stores x 3 categories x 4 items, so 15
+stores, 12 items, and 180 store-item series. The model is fitted on 26 weeks
+and forecasts the next 4.
 
-Hierarchy:
-    3 states × 20 stores × 5 categories × 20 items = 6,000 time series
+Group indexing, not indicator columns
+-------------------------------------
+Each store effect is one element of a vector parameter, selected per row with
+`store_level["store"]`, where `"store"` is an integer data column. That compiles
+to a single gather node: memory and work grow with the number of rows, not with
+rows x levels. Building one dense 0/1 indicator column and one scalar parameter
+per level instead costs a full pass over `n_rows x n_levels` values on every
+gradient evaluation, which is what an earlier version of this script did.
 
-Model (Bayesian fixed-effects regression):
-    y_{s,st,c,i,t} = α_state[s] + α_store[st] + α_cat[c] + α_item[i]
-                    + β_trend · t
-                    + β_sin · sin(2πt/52)
-                    + β_cos · cos(2πt/52)
-                    + ε
+Identification
+--------------
+Stacking `state + store + category + item` intercepts in one linear predictor,
+each with its own wide independent prior, is not identified. Two of those blocks
+are redundant twice over: a store determines its state and an item determines its
+category, so the state and category columns lie exactly in the span of the store
+and item columns; and any constant can be moved between blocks without changing
+the predictor. Only the sum is identified, the rest is fixed by the priors alone,
+and NUTS pays for the resulting flat directions with saturated tree depth.
 
-    171 parameters, ~132K training observations.
+This version uses a reference-level encoding, which is identified by
+construction:
 
-    This is an unpooled fixed-effects model, not hierarchical partial pooling.
-    Train on weeks 0–21, forecast weeks 22–25 with posterior uncertainty
-    in the conditional mean.
-    Compare one series against ARIMA.
+* `store_level[s]` is the expected level of store `s` for the reference item, at
+  the mean of the centred covariates. It absorbs the state effect, because every
+  store belongs to exactly one state.
+* `item_dev[k]` is item `k + 1` relative to item 0, shared across stores. It
+  absorbs the category effect for the same reason. Item 0 rows are excluded from
+  this term with an `item_on` mask, so no coefficient is needed for the reference.
+
+Partial pooling was the other candidate and is not used here. `vector_normal_prior`
+takes constant hyperparameters, so a pooled block has to be written non-centred as
+`sigma * z[key]`. Every store here has 312 training rows and every item 390, which pins
+the product `sigma * z` tightly and leaves a strongly curved `sigma`-`z` ridge — the
+parameterisation that suits sparse groups, not data-rich ones. State and category
+summaries are still reported below, by aggregating the posterior store and item
+effects rather than by giving them their own redundant parameters.
+
+Runtime: 4 chains x (500 warmup + 500 draws) finished in around 30 seconds when this
+was written, on an otherwise idle 24-core machine. Chains run in parallel, so fewer
+cores take longer. That is a rough expectation rather than retained benchmark
+evidence; the script prints its own elapsed time.
 """
 
 import time
+
 import numpy as np
-
-# ─── Hierarchy ───────────────────────────────────────────────────────
-
-N_STATES = 3
-N_STORES_PER_STATE = 20
-N_CATEGORIES = 5
-N_ITEMS_PER_CAT = 20
-
-N_STORES = N_STATES * N_STORES_PER_STATE          # 60
-N_ITEMS = N_CATEGORIES * N_ITEMS_PER_CAT           # 100
-N_SERIES = N_STORES * N_ITEMS                      # 6,000
-
-TRAIN_WEEKS = 22
-TEST_WEEKS = 4
-TOTAL_WEEKS = TRAIN_WEEKS + TEST_WEEKS             # 26
-
-print(f"Hierarchy: {N_STATES} states × {N_STORES_PER_STATE} stores × "
-      f"{N_CATEGORIES} categories × {N_ITEMS_PER_CAT} items")
-print(f"Series: {N_SERIES:,}  |  Train weeks: {TRAIN_WEEKS}  |  "
-      f"Test weeks: {TEST_WEEKS}")
-
-# ─── Generate synthetic data ─────────────────────────────────────────
-
-np.random.seed(42)
-
-state_effects = np.random.normal(100, 20, N_STATES)
-store_effects = np.random.normal(0, 10, N_STORES)
-cat_effects = np.random.normal(0, 15, N_CATEGORIES)
-item_effects = np.random.normal(0, 5, N_ITEMS)
-true_trend = 0.3
-true_sin_amp = 8.0
-true_cos_amp = 5.0
-noise_std = 4.0
-
-store_state = np.repeat(np.arange(N_STATES), N_STORES_PER_STATE)
-item_cat = np.repeat(np.arange(N_CATEGORIES), N_ITEMS_PER_CAT)
-
-rows_state = []
-rows_store = []
-rows_cat = []
-rows_item = []
-rows_t = []
-rows_y = []
-
-for st_idx in range(N_STORES):
-    s_idx = store_state[st_idx]
-    for it_idx in range(N_ITEMS):
-        c_idx = item_cat[it_idx]
-        for t in range(TOTAL_WEEKS):
-            mu = (state_effects[s_idx]
-                  + store_effects[st_idx]
-                  + cat_effects[c_idx]
-                  + item_effects[it_idx]
-                  + true_trend * t
-                  + true_sin_amp * np.sin(2 * np.pi * t / 52)
-                  + true_cos_amp * np.cos(2 * np.pi * t / 52))
-            y = mu + np.random.normal(0, noise_std)
-            rows_state.append(s_idx)
-            rows_store.append(st_idx)
-            rows_cat.append(c_idx)
-            rows_item.append(it_idx)
-            rows_t.append(t)
-            rows_y.append(y)
-
-rows_state = np.array(rows_state)
-rows_store = np.array(rows_store)
-rows_cat = np.array(rows_cat)
-rows_item = np.array(rows_item)
-rows_t = np.array(rows_t, dtype=np.float64)
-rows_y = np.array(rows_y)
-
-N_total = len(rows_y)
-train_mask = rows_t < TRAIN_WEEKS
-N_train = train_mask.sum()
-N_test = N_total - N_train
-
-print(f"Total obs: {N_total:,}  |  Train: {N_train:,}  |  Test: {N_test:,}")
-
-# ─── Build design matrix (indicator columns) ────────────────────────
-
-print("\nBuilding design matrix...")
-t_build = time.time()
-
-data = {}
-param_specs = []  # (name, data_key, mu, sigma)
-
-# State indicators
-for s in range(N_STATES):
-    key = f"x_state_{s}"
-    data[key] = (rows_state[train_mask] == s).astype(np.float64)
-    param_specs.append((f"alpha_state_{s}", key, 0.0, 50.0))
-
-# Store indicators
-for st in range(N_STORES):
-    key = f"x_store_{st}"
-    data[key] = (rows_store[train_mask] == st).astype(np.float64)
-    param_specs.append((f"alpha_store_{st}", key, 0.0, 20.0))
-
-# Category indicators
-for c in range(N_CATEGORIES):
-    key = f"x_cat_{c}"
-    data[key] = (rows_cat[train_mask] == c).astype(np.float64)
-    param_specs.append((f"alpha_cat_{c}", key, 0.0, 30.0))
-
-# Item indicators
-for i in range(N_ITEMS):
-    key = f"x_item_{i}"
-    data[key] = (rows_item[train_mask] == i).astype(np.float64)
-    param_specs.append((f"alpha_item_{i}", key, 0.0, 10.0))
-
-# Trend
-t_normalized = rows_t[train_mask] / TOTAL_WEEKS
-data["x_trend"] = t_normalized
-param_specs.append(("beta_trend", "x_trend", 0.0, 20.0))
-
-# Seasonality
-data["x_sin"] = np.sin(2 * np.pi * rows_t[train_mask] / 52)
-data["x_cos"] = np.cos(2 * np.pi * rows_t[train_mask] / 52)
-param_specs.append(("beta_sin", "x_sin", 0.0, 20.0))
-param_specs.append(("beta_cos", "x_cos", 0.0, 20.0))
-
-# Observed
-data["y"] = rows_y[train_mask]
-
-N_PARAMS = len(param_specs)
-print(f"Parameters: {N_PARAMS}  |  Design matrix: {N_train:,} × {N_PARAMS}")
-print(f"Design matrix built in {time.time() - t_build:.1f}s")
-
-# ─── Build rustmc model ─────────────────────────────────────────────
 
 import rustmc as rmc
 
-print("\nBuilding model...")
-builder = rmc.ModelBuilder(data=data)
+# ── Panel shape ──────────────────────────────────────────────────────────
+N_STATES, STORES_PER_STATE = 3, 5
+N_CATEGORIES, ITEMS_PER_CATEGORY = 3, 4
+N_STORES = N_STATES * STORES_PER_STATE          # 15
+N_ITEMS = N_CATEGORIES * ITEMS_PER_CATEGORY     # 12
 
-params = []
-for name, data_key, mu, sigma in param_specs:
-    p = builder.normal_prior(name, mu=mu, sigma=sigma)
-    params.append((p, data_key))
+TRAIN_WEEKS, TEST_WEEKS = 26, 4
+TOTAL_WEEKS = TRAIN_WEEKS + TEST_WEEKS
+SEASON = 13                                     # quarterly cycle, 2 per training window
 
-mu_expr = params[0][0] * params[0][1]
-for p, dk in params[1:]:
-    mu_expr = mu_expr + p * dk
+store_state = np.repeat(np.arange(N_STATES), STORES_PER_STATE)
+item_category = np.repeat(np.arange(N_CATEGORIES), ITEMS_PER_CATEGORY)
 
-builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=noise_std, observed_key="y")
-model = builder.build()
+# ── Generating parameters ────────────────────────────────────────────────
+rng = np.random.default_rng(11)
 
-# ─── Sample with NUTS ────────────────────────────────────────────────
 
-NUM_CHAINS = 4
-NUM_DRAWS = 500
-NUM_WARMUP = 500
+def centred(n, scale):
+    values = rng.normal(0.0, scale, n)
+    return values - values.mean()
 
-print(f"\nSampling: {NUM_CHAINS} chains × ({NUM_WARMUP} warmup + {NUM_DRAWS} draws)")
-print(f"Sampler: NUTS  |  Max tree depth: 10")
 
+TRUE_BASE = 100.0
+true_state = centred(N_STATES, 12.0)
+true_store = centred(N_STORES, 6.0)
+true_category = centred(N_CATEGORIES, 9.0)
+true_item = centred(N_ITEMS, 4.0)
+TRUE_TREND = 0.3          # per week
+TRUE_SIN, TRUE_COS = 8.0, 5.0
+TRUE_NOISE = 4.0
+
+# Long format: one row per (store, item, week).
+store = np.repeat(np.arange(N_STORES), N_ITEMS * TOTAL_WEEKS)
+item = np.tile(np.repeat(np.arange(N_ITEMS), TOTAL_WEEKS), N_STORES)
+week = np.tile(np.arange(TOTAL_WEEKS, dtype=float), N_STORES * N_ITEMS)
+state, category = store_state[store], item_category[item]
+
+angle = 2 * np.pi * week / SEASON
+mean = (TRUE_BASE + true_state[state] + true_store[store]
+        + true_category[category] + true_item[item]
+        + TRUE_TREND * week + TRUE_SIN * np.sin(angle) + TRUE_COS * np.cos(angle))
+sales = mean + rng.normal(0.0, TRUE_NOISE, mean.size)
+
+train = week < TRAIN_WEEKS
+print(f"Panel: {N_STORES} stores x {N_ITEMS} items = {N_STORES * N_ITEMS} series")
+print(f"Rows: {sales.size:,} total, {int(train.sum()):,} training, "
+      f"{int((~train).sum()):,} held out")
+
+
+def design(rows):
+    """Model columns for a boolean row selection."""
+    a = 2 * np.pi * week[rows] / SEASON
+    return {
+        "store": store[rows].astype(float),
+        # Reference-level encoding: item 0 contributes nothing and needs no
+        # coefficient, so `item_dev` has N_ITEMS - 1 elements.
+        "item_ref": np.maximum(item[rows] - 1, 0).astype(float),
+        "item_on": (item[rows] > 0).astype(float),
+        "t": week[rows] / TRAIN_WEEKS,
+        "sin": np.sin(a),
+        "cos": np.cos(a),
+    }
+
+
+training = design(train)
+# Centring the covariates keeps them close to orthogonal to the level columns.
+shift = {key: float(training[key].mean()) for key in ("t", "sin", "cos")}
+for key, value in shift.items():
+    training[key] = training[key] - value
+training["y"] = sales[train]
+
+# ── Model ────────────────────────────────────────────────────────────────
+builder = rmc.ModelBuilder()
+store_level = builder.vector_normal_prior("store_level", N_STORES, 100.0, 30.0)
+item_dev = builder.vector_normal_prior("item_dev", N_ITEMS - 1, 0.0, 15.0)
+beta_trend = builder.normal_prior("beta_trend", 0.0, 20.0)
+beta_sin = builder.normal_prior("beta_sin", 0.0, 20.0)
+beta_cos = builder.normal_prior("beta_cos", 0.0, 20.0)
+sigma = builder.half_normal_prior("sigma_obs", 20.0)
+
+predictor = (store_level["store"]
+             + item_dev["item_ref"] * "item_on"
+             + beta_trend * "t" + beta_sin * "sin" + beta_cos * "cos")
+builder.normal_likelihood("obs", predictor, sigma, "y")
+compiled = builder.compile()
+print(f"Parameters: {len(compiled.param_names)}")
+
+CHAINS, DRAWS, WARMUP = 4, 500, 500
+print(f"\nSampling: NUTS, {CHAINS} chains x ({WARMUP} warmup + {DRAWS} draws)")
 start = time.time()
-fit = rmc.sample(
-    model_spec=model,
-    chains=NUM_CHAINS,
-    draws=NUM_DRAWS,
-    warmup=NUM_WARMUP,
-    seed=42,
-    sampler="nuts",
-)
-sampling_time = time.time() - start
+fit = compiled.sample(training, chains=CHAINS, draws=DRAWS, warmup=WARMUP,
+                      seed=7, show_progress=False)
+elapsed = time.time() - start
+print(f"Sampling completed in {elapsed:.1f}s")
 
-print(f"\nSampling completed in {sampling_time:.1f}s")
-print(f"\nDiagnostics (first 5 + last 3 parameters):")
+# ── Diagnostics ──────────────────────────────────────────────────────────
+diagnostics = fit.diagnostics()
+print(f"max R-hat {max(d['r_hat'] for d in diagnostics):.4f}  "
+      f"min bulk ESS {min(d['ess_bulk'] for d in diagnostics):.0f}  "
+      f"min tail ESS {min(d['ess_tail'] for d in diagnostics):.0f}  "
+      f"divergences {sum(fit.divergences())}")
+print("Inspect these before reading anything below.")
 
-diags = fit.diagnostics()
-header = f"{'Parameter':<18} {'mean':>8} {'std':>8} {'r_hat':>8} {'ess_bulk':>10}"
-print(header)
-print("─" * len(header))
-for d in diags[:5]:
-    print(f"{d['name']:<18} {d['mean']:>8.3f} {d['std']:>8.4f} {d['r_hat']:>8.4f} {d['ess_bulk']:>10.0f}")
-print(f"  ... ({N_PARAMS - 8} more parameters) ...")
-for d in diags[-3:]:
-    print(f"{d['name']:<18} {d['mean']:>8.3f} {d['std']:>8.4f} {d['r_hat']:>8.4f} {d['ess_bulk']:>10.0f}")
+# ── Parameter recovery ───────────────────────────────────────────────────
+draws = fit.get_samples_2d()
 
-total_divs = sum(fit.divergences())
-print(f"\nDivergences: {total_divs}  |  Accept rates: "
-      f"{[round(r, 2) for r in fit.accept_rates()]}")
 
-# ─── Forecast ────────────────────────────────────────────────────────
+def summarise(name):
+    values = draws[name].reshape(-1)
+    return values.mean(), values.std()
 
-print("\n" + "=" * 60)
-print("FORECAST COMPARISON — Store 0, Item 0")
-print("=" * 60)
 
-target_store = 0
-target_item = 0
-target_state = store_state[target_store]
-target_cat = item_cat[target_item]
+# The covariates were centred, so beta_trend is per TRAIN_WEEKS weeks.
+print("\nRecovered vs generating values")
+print(f"{'parameter':<14} {'posterior mean':>15} {'posterior sd':>13} {'true':>9}")
+for name, truth in (("beta_trend", TRUE_TREND * TRAIN_WEEKS),
+                    ("beta_sin", TRUE_SIN),
+                    ("beta_cos", TRUE_COS),
+                    ("sigma_obs", TRUE_NOISE)):
+    mean_, sd_ = summarise(name)
+    print(f"{name:<14} {mean_:>15.3f} {sd_:>13.3f} {truth:>9.3f}")
 
-# Build test features for this series
-test_t = np.arange(TRAIN_WEEKS, TOTAL_WEEKS, dtype=np.float64)
-n_forecast = len(test_t)
+# Store levels and item contrasts are identified relative to the reference item
+# and the centred covariates, so compare them on that same scale.
+true_store_level = (TRUE_BASE + true_state[store_state] + true_store
+                    + true_category[0] + true_item[0]
+                    + TRUE_TREND * TRAIN_WEEKS * shift["t"]
+                    + TRUE_SIN * shift["sin"] + TRUE_COS * shift["cos"])
+fitted_store_level = np.array(
+    [draws[f"store_level[{s}]"].mean() for s in range(N_STORES)])
+true_item_dev = (true_category[item_category[1:]] + true_item[1:]
+                 - true_category[0] - true_item[0])
+fitted_item_dev = np.array(
+    [draws[f"item_dev[{k}]"].mean() for k in range(N_ITEMS - 1)])
 
-# Get posterior samples
-samples = fit.get_samples()
-n_samples = len(samples[param_specs[0][0]])
+print(f"\nStore levels   max |error| {np.abs(fitted_store_level - true_store_level).max():.3f}"
+      f"   (generating spread {true_store_level.std():.2f})")
+print(f"Item contrasts max |error| {np.abs(fitted_item_dev - true_item_dev).max():.3f}"
+      f"   (generating spread {true_item_dev.std():.2f})")
 
-# Compute posterior draws for the conditional mean. Observation noise is not added,
-# so the resulting interval is not posterior predictive.
-forecasts = np.zeros((n_samples, n_forecast))
-for draw in range(n_samples):
-    for fi, t in enumerate(test_t):
-        mu = 0.0
-        mu += samples[f"alpha_state_{target_state}"][draw]
-        mu += samples[f"alpha_store_{target_store}"][draw]
-        mu += samples[f"alpha_cat_{target_cat}"][draw]
-        mu += samples[f"alpha_item_{target_item}"][draw]
-        mu += samples["beta_trend"][draw] * (t / TOTAL_WEEKS)
-        mu += samples["beta_sin"][draw] * np.sin(2 * np.pi * t / 52)
-        mu += samples["beta_cos"][draw] * np.cos(2 * np.pi * t / 52)
-        forecasts[draw, fi] = mu
+# State and category effects are recovered by aggregation, not by separate
+# redundant parameters.
+print("\nState means from aggregated store levels (differences from state 0)")
+true_state_mean = np.array([true_state[s] + true_store[store_state == s].mean()
+                            for s in range(N_STATES)])
+for s in range(N_STATES):
+    fitted = (fitted_store_level[store_state == s].mean()
+              - fitted_store_level[store_state == 0].mean())
+    truth = true_state_mean[s] - true_state_mean[0]
+    print(f"  state {s}: {fitted:>7.2f}   true {truth:>7.2f}")
 
-forecast_mean = forecasts.mean(axis=0)
-forecast_lo = np.percentile(forecasts, 5, axis=0)
-forecast_hi = np.percentile(forecasts, 95, axis=0)
+print("Category means from aggregated item effects (differences from category 0)")
+fitted_item_effect = np.concatenate([[0.0], fitted_item_dev])   # item 0 is the reference
+true_item_effect = (true_category[item_category] + true_item
+                    - true_category[0] - true_item[0])
+for c in range(N_CATEGORIES):
+    inside = item_category == c
+    fitted = (fitted_item_effect[inside].mean()
+              - fitted_item_effect[item_category == 0].mean())
+    truth = (true_item_effect[inside].mean()
+             - true_item_effect[item_category == 0].mean())
+    print(f"  category {c}: {fitted:>7.2f}   true {truth:>7.2f}")
 
-# Actual values for this series
-series_mask = ((rows_store == target_store) & (rows_item == target_item)
-               & (rows_t >= TRAIN_WEEKS))
-actual = rows_y[series_mask]
+# ── Forecast the held-out weeks ──────────────────────────────────────────
+future = design(~train)
+for key, value in shift.items():
+    future[key] = future[key] - value
+predictive = fit.predict(future, seed=8)["obs"]        # (chain, draw, row)
+expected = fit.predict(future, expected=True, seed=8)["obs"]
+actual = sales[~train]
 
-bayesian_mae = np.mean(np.abs(forecast_mean - actual))
+flat = predictive.reshape(-1, predictive.shape[-1])
+lo, hi = np.quantile(flat, [0.05, 0.95], axis=0)
+point = expected.reshape(-1, expected.shape[-1]).mean(axis=0)
 
-print(f"\n{'Week':<8} {'Actual':>8} {'Bayesian':>10} {'90% credible':>20}")
-print("─" * 50)
-for i in range(n_forecast):
-    print(f"  {int(test_t[i]):<6} {actual[i]:>8.1f} {forecast_mean[i]:>10.1f} "
-          f"  [{forecast_lo[i]:>7.1f}, {forecast_hi[i]:>7.1f}]")
-print(f"\nBayesian MAE: {bayesian_mae:.2f}")
+print(f"\nHeld-out weeks {TRAIN_WEEKS}-{TOTAL_WEEKS - 1}, {actual.size:,} rows")
+print(f"  MAE of the posterior mean          {np.abs(point - actual).mean():.3f}"
+      f"   (irreducible noise {TRUE_NOISE * np.sqrt(2 / np.pi):.3f})")
+print(f"  RMSE of the posterior mean         {np.sqrt(((point - actual) ** 2).mean()):.3f}"
+      f"   (irreducible noise {TRUE_NOISE:.3f})")
+print(f"  90% equal-tailed predictive cover  "
+      f"{np.mean((actual >= lo) & (actual <= hi)):.3f}")
+print("The interval above is a posterior predictive interval, not an HDI and not a"
+      " confidence interval.")
 
-# ─── ARIMA comparison ────────────────────────────────────────────────
+print("\nOne series, store 0 item 0")
+series = (store[~train] == 0) & (item[~train] == 0)
+print(f"{'week':>6} {'actual':>9} {'forecast':>10} {'90% predictive':>22}")
+for w, a, p, l, h in zip(week[~train][series], actual[series], point[series],
+                         lo[series], hi[series]):
+    print(f"{int(w):>6} {a:>9.1f} {p:>10.1f}      [{l:>7.1f}, {h:>7.1f}]")
 
-try:
-    from statsmodels.tsa.arima.model import ARIMA as ARIMA_Model
-
-    train_series_mask = ((rows_store == target_store) & (rows_item == target_item)
-                         & (rows_t < TRAIN_WEEKS))
-    train_y = rows_y[train_series_mask]
-
-    arima_start = time.time()
-    arima = ARIMA_Model(train_y, order=(2, 1, 1))
-    arima_fit = arima.fit()
-    arima_forecast = arima_fit.forecast(steps=n_forecast)
-    arima_time = time.time() - arima_start
-
-    arima_mae = np.mean(np.abs(arima_forecast - actual))
-
-    print(f"\nARIMA(2,1,1) forecast (fit time: {arima_time:.3f}s):")
-    for i in range(n_forecast):
-        print(f"  Week {int(test_t[i]):<4}  Actual: {actual[i]:>7.1f}  "
-              f"ARIMA: {arima_forecast[i]:>7.1f}")
-    print(f"\nARIMA MAE: {arima_mae:.2f}")
-
-    print(f"\n{'Method':<20} {'MAE':>8} {'Time':>10}")
-    print("─" * 40)
-    print(f"{'rustmc Bayesian':<20} {bayesian_mae:>8.2f} {sampling_time:>9.1f}s")
-    print(f"{'ARIMA(2,1,1)':<20} {arima_mae:>8.2f} {arima_time:>9.3f}s")
-    print(f"\nNote: the Bayesian fixed-effects model fits all {N_SERIES:,} series jointly;")
-    print("      the ARIMA timing above is for one series and is not extrapolated.")
-
-except ImportError:
-    print("\nstatsmodels not installed — skipping ARIMA comparison.")
-    print("  Install with: pip install statsmodels")
-except Exception as e:
-    print(f"\nARIMA failed: {e}")
-
-# ─── Summary ─────────────────────────────────────────────────────────
-
-print(f"\n{'=' * 60}")
-print(f"SUMMARY")
-print(f"{'=' * 60}")
-print(f"Hierarchy:      {N_STATES} states × {N_STORES_PER_STATE} stores × "
-      f"{N_CATEGORIES} cat × {N_ITEMS_PER_CAT} items")
-print(f"Time series:    {N_SERIES:,}")
-print(f"Parameters:     {N_PARAMS}")
-print(f"Training obs:   {N_train:,}")
-print(f"Sampler:        NUTS ({NUM_CHAINS} chains × {NUM_DRAWS} draws)")
-print(f"Sampling time:  {sampling_time:.1f}s")
-print(f"Divergences:    {total_divs}")
-print(f"Forecast MAE:   {bayesian_mae:.2f}")
+print("\nData here is generated, and the priors describe this example only."
+      " Performance comparisons belong in benchmarks/.")

@@ -57,8 +57,10 @@ innovation variance parameter, even when constructed with the same inverse-gamma
 specification. AR coefficients and Student-t degrees of freedom are fixed,
 validated inputs. AR initial states use the supplied covariance, which need not
 be the stationary covariance. A zero-innovation component can imply singular
-state transitions; the Gaussian smoother reports an error if its required
-conditional solves become singular.
+state transitions. Those models are fitted: backward conditioning works on
+covariance roots, so a direction a deterministic transition removes is dropped
+exactly instead of surviving as rounding noise. The strictly positive definite
+requirement applies to the initial covariance only.
 
 Inference alternates exact joint state FFBS with inverse-gamma conditional
 variance updates. The complete state trajectory includes `x[-1]`, so all observed
@@ -80,10 +82,14 @@ Forecast `mean_samples` and `observation_samples` alias `mean_paths` and
 Oversized working/retained array requests raise a validation error before allocation
 at a 25-million-value bound. Predictive Gamma precision underflow/overflow aborts
 the request instead of replacing the draw.
-FFBS requires positive definite predictive state covariances. A deterministic AR
-block with both zero innovation variance and a singular transition can be simulated
-but cannot currently be fitted; the sampler returns a factorization error.
-No posterior values are clipped. Numerical overflow or invalid conditionals raise
+FFBS conditions in covariance-root coordinates, so singular predictive state
+covariances are supported. A deterministic AR block with both zero innovation
+variance and a singular transition can be simulated, fitted, forecast, and
+replayed from JSON; its sampled state trajectories reproduce the transition
+exactly. What still has to be strictly positive definite is the initial
+covariance of each component, and the observation variance must be strictly
+positive. A backward conditioning step that fails numerically raises instead of
+returning an approximate draw. No posterior values are clipped. Numerical overflow or invalid conditionals raise
 an error. Variance/state mixing can be slow for short or weakly identified series;
 inspect convergence across chains and calibrate initial and innovation priors.
 
@@ -109,10 +115,17 @@ initial states and variances from their actual priors before advancing through
 the horizon. It returns the same forecast type with one chain axis. Use it to
 check scales before fitting.
 
+Fitting, forecasting, and prior prediction draw from separate random number streams,
+so the same seed may be passed to `fit()`, `forecast()`, and `prior_predict()` without
+any of them replaying another's draws. This changed in the release after 0.12.0:
+seeded forecast output differs from 0.12.0 for every seed, not only for seeds shared
+with a fit, and 0.12.0's seeded forecasts overstated predictive spread.
+
 Models and fits support `to_json()` and class-level `from_json(text)` with
 versioned, validated formats. A fit includes model priors, posterior variances,
 paired terminal states, training observation rows, and optional state history.
-Loading preserves floating-point values and seeded forecasts exactly. The native
+Loading preserves floating-point values and seeded forecasts exactly within one
+version of rustmc; seeded draws are not promised to be stable across versions. The native
 fit intentionally does not store original observed values; retain those in your
 application if you want to refit after new data arrive. Existing specialized
 forecasting presets remain available.

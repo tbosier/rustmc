@@ -25,5 +25,13 @@ supply their own `SamplerConfig` and inspect diagnostics.
 
 Compiled artifacts contain structure, not training data. Fitted Python artifacts
 still contain training data and draws. Neither format checkpoints sampler state.
-The older `CompiledModelArtifact` format remains a separate legacy API. The Rust
-API is alpha; the current-format loader rejects unknown versions and schema changes.
+The older data-owning `CompiledModelArtifact` format and its
+`rustmc_core::compiled_model` module have been removed, so `rustmc.graph-model` is
+the only compiled-model artifact.
+
+The Rust API is alpha. The loader rejects unknown versions, and every artifact type
+it deserializes — `ModelArtifact`, `ModelSpec`, `PriorSpec`, `LikelihoodSpec`,
+`MuExpr`, `DataSchema`, `DataSlot`, and `SlotKind` — denies unknown fields. A field
+this version does not recognise is an error rather than a silent drop, so an
+artifact written by a newer version fails to load instead of loading as a different
+model.

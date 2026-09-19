@@ -1,4 +1,4 @@
-use rustmc_core::autodiff::{grad_logp, Evaluator};
+use rustmc_core::autodiff::Evaluator;
 use rustmc_core::data::DataBinding;
 use rustmc_core::distributions::{LogNormal, Uniform};
 use rustmc_core::graph::{Graph, ParamTransform};
@@ -31,7 +31,6 @@ fn scalar_and_vector_uniform_reject_invalid_ranges() {
                 evaluator.compute(&graph, &[raw]);
                 assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
                 assert_eq!(evaluator.grad, vec![0.0]);
-                assert_eq!(grad_logp(&graph, &[raw]), (f64::NEG_INFINITY, vec![0.0]));
             }
         }
     }

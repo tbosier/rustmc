@@ -1,23 +1,28 @@
 """
-rustmc — large-parameter linear regression benchmark
-=====================================================
-Demonstrates the faer-backed MatVecMul path: 1001 graph nodes instead of
-~15,000, and a single SIMD-vectorized GEMV instead of 5000 scalar axpy loops.
+rustmc — vector-parameter linear regression
+===========================================
+Demonstrates the faer-backed MatVecMul path: the 500 coefficients become one
+contiguous vector parameter and one graph node. Each gradient evaluation then costs
+two faer GEMV calls — `X @ beta` on the forward pass and `X.T @ adjoint` on the
+backward pass — instead of 500 scalar axpy loops in each direction.
 
-normal_prior + @ auto-promotes beta to a contiguous vector parameter block
-backed by faer GEMV — no need to call vector_normal_prior explicitly.
+`normal_prior` combined with `@` auto-promotes `beta` to that vector parameter
+block, so `vector_normal_prior` need not be called explicitly.
 
-Runtime note: NUTS gradient evaluation streams the full design matrix from RAM
-on every leapfrog step. For N_OBS=6000, N_PARAMS=5000 that is ~240 MB per
-GEMV. Expect ~30–90 min for 400 samples depending on core count and NUTS tree
-depth. Reduce N_OBS/N_PARAMS for a quicker test.
+Runtime note: every leapfrog step streams the whole design matrix twice, so cost grows
+with `N_OBS * N_PARAMS`. At 4,000 x 500 the matrix is 16 MB per GEMV, and 1 chain of
+200 warmup + 200 draws finished in under 10 seconds when this was written, on a
+24-core machine. That is a rough expectation, not retained benchmark evidence; the
+script prints its own elapsed time, and `benchmarks/` is where a measurement with
+provenance belongs. Raise N_OBS/N_PARAMS to reach a larger regime: 6,000 x 5,000
+moves 240 MB per GEMV, 15 times this script's traffic, and takes far longer.
 """
 import time
 import numpy as np
 import rustmc as rmc
 
-N_OBS    = 6_000
-N_PARAMS = 5_000
+N_OBS    = 4_000
+N_PARAMS = 500
 
 np.random.seed(42)
 true_beta = np.random.randn(N_PARAMS) * 0.1
@@ -52,4 +57,5 @@ print(f"Diverge : {sum(result.divergences())}")
 samples = result.get_samples()
 beta_means = np.array([samples[f"beta[{k}]"].mean() for k in range(N_PARAMS)])
 rmse = np.sqrt(np.mean((beta_means - true_beta) ** 2))
-print(f"\nbeta recovery RMSE : {rmse:.4f}  (expect small with enough draws)")
+print(f"\nbeta recovery RMSE : {rmse:.4f}  "
+      f"(generating coefficient sd {true_beta.std():.4f})")

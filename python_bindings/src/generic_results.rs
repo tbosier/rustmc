@@ -15,11 +15,17 @@ impl From<Arc<FitResult>> for StoredBatchFit {
         Self::Ready(fit)
     }
 }
+/// A retained batch cell.
+///
+/// The posterior draws are the bulk of a batch's memory, so they are held
+/// behind `Arc` and never deep-copied: `materialize` hands the same buffers to
+/// the `FitResult` it builds, and when the display layer is the identity both
+/// handles point at one allocation.
 pub(super) struct BoundBatchFit {
     pub(super) structure: Arc<Graph>,
     pub(super) binding: DataBinding,
-    pub(super) raw_result: SampleResult,
-    pub(super) display_result: SampleResult,
+    pub(super) raw_result: Arc<SampleResult>,
+    pub(super) display_result: Arc<SampleResult>,
     pub(super) likelihood_names: Vec<String>,
     pub(super) definition: ModelSpec,
 }
@@ -30,8 +36,8 @@ impl StoredBatchFit {
             Self::Bound(fit) => FitResult {
                 definition: fit.definition.clone(),
                 graph: fit.structure.with_binding(&fit.binding),
-                raw_result: fit.raw_result.clone(),
-                display_result: fit.display_result.clone(),
+                raw_result: Arc::clone(&fit.raw_result),
+                display_result: Arc::clone(&fit.display_result),
                 likelihood_names: fit.likelihood_names.clone(),
             },
         }
