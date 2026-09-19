@@ -56,8 +56,32 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
 - `KalmanFilterResult.log_likelihood` and `KalmanSmootherResult.log_likelihood` were
   annotated `dict[str, _FloatArray]` and return `float`. The stub check that should
   have caught this was scoped to the classes one branch had reworked.
-- The local-level filter kept variances inside the representable range, and forecast
-  means are accumulated so that finite paths cannot sum to infinity.
+- **The Bernoulli-logit density and gradient lost their saturated tail.** Both were
+  written as a difference of nearly equal numbers, so at `y = 1, eta = 40` each
+  returned exactly zero against a true magnitude of `4.2483542552915889e-18`. A
+  saturated observation contributed no gradient at all, and a large predictor scale
+  multiplies that zero rather than a small number. `observation.rs` already avoided
+  this; the graph evaluator, its reference and the shared density helper each had
+  their own expression and none of them did.
+- **The local-level filter's variance update left the representable range.** Variances
+  around `3e-162` were up to 9.8% wrong and silently positive, and a well-scaled
+  problem was rejected outright below about `1e-170` and above about `1e155`. Both
+  single orderings of `a b / (a + b)` fail, in opposite directions; the update now
+  divides by the sum whichever factor is larger, which keeps every intermediate in
+  range by an interval argument rather than an empirical bound.
+- Forecast mean accessors on all four specialised results no longer report an infinity
+  for a forecast whose draws are finite and whose mean is representable. Their values
+  shift in the last bits: the error is now of order one ulp of the draws' spread rather
+  than of the mean, which is better for draws sharing a large offset and worse for
+  draws that cancel to near zero.
+- A benchmark config with a non-finite quality threshold was accepted, and every metric
+  then compared false against it, so the gate passed with no failures. Screening the
+  metrics had closed only one side of that.
+- A published claim that a compiled model is "validated and laid out once rather than
+  per instrument". Every chain of every fit revalidates its binding and rebuilds its
+  evaluator layout; what is shared is the graph structure.
+- An unsupported "63x the cost per gradient" figure in the 0.13.0 entry, which no
+  retained measurement in the repository supports.
 - Test assertions that a sampler drawing from the prior alone would have passed, in
   the seasonal, trend and forecast recovery tests and in the Python smoke test.
 - Documentation claims the code did not support, including committed example output
