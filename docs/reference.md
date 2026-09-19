@@ -29,11 +29,12 @@ updating on `y[0]`. This convention also applies when forecasting an empty histo
 
 Construct a general model with NumPy arrays, or use the `local_level()`,
 `local_linear_trend()`, `seasonal_local_level()`, and zero-mean `stationary_ar1()`
-constructors. `filter(y)` returns predicted and filtered
-state means/covariances plus the observed-data log likelihood; `smooth(y)` adds
-smoothed state moments; and `forecast(y, steps)` returns future latent-state and
-observation means/variances. A `NaN` observation is treated as missing and
-causes a prediction-only step; infinities are rejected.
+constructors. `filter(y)` returns predicted and filtered state means/covariances plus
+the observed-data log likelihood. `smooth(y)` returns the filtered and smoothed state
+moments and the same log likelihood; it does not carry the predicted moments, so keep
+the `filter(y)` result if you need those. `forecast(y, steps)` returns future
+latent-state and observation means/variances. A `NaN` observation is treated as missing
+and causes a prediction-only step; infinities are rejected.
 
 `forecast.observation_covariance` contains the joint covariance across future scalar
 observations. `cumulative_observation_means`, `cumulative_observation_variances`, and
@@ -53,8 +54,10 @@ must sum to zero.
 ### What may vary with time
 
 Some of the system may vary with time and some may not. The observation row may vary:
-`with_observation_rows(rows)` supplies one row per training time, and `forecast()`
-takes `future_observation_rows=` for the horizon. See
+`with_observation_rows(rows)` supplies one row per training time. A model built that
+way then *requires* `forecast(y, steps, future_observation_rows=R)`: calling
+`forecast(y, steps)` on it raises rather than silently reusing the constant row, and `R`
+must have exactly `steps` rows. See
 [time-varying observation rows](regression-forecasting.md#fixed-parameter-time-varying-observation-rows).
 The transition matrix, the process covariance, and the initial mean and covariance are
 constant for the whole series and horizon; there is no API to vary them. In the Rust
@@ -146,8 +149,10 @@ one fit is limited to 50 million retained parameter values and one forecast call
 million materialized observation values. Refit with fewer retained chains/draws, or
 reduce the forecast horizon, if a guard is reached.
 
-This first model pools a static intercept only. Time ordering does not affect the fit,
-and future observations are conditionally iid around each program mean. It does not yet
+`BayesianHierarchicalMean` pools a static intercept only. Time ordering does not affect
+the fit, and future observations are conditionally iid around each program mean. For a
+pooled level that moves over time, see `BayesianHierarchicalDynamicRegression` in
+[dynamic GLMs](dynamic-glm.md). This model does not
 pool trends or seasonal shapes and is not a stochastic local-level model. A common
 within-program observation variance and shared group/program variances are assumed;
 variance priors can materially influence singleton programs and weakly populated groups.
@@ -339,11 +344,17 @@ not a simultaneous path band.
 ## `ModelBuilder`
 
 ```python
-builder = rmc.ModelBuilder(data=None)
+builder = rmc.ModelBuilder(data=None, dims=None)
 ```
 
 Constructs a model. Data can be bound at build time or passed later to `rmc.sample()`,
-`rmc.batch_sample()`, or `rmc.sample_prior_predictive()`.
+`rmc.batch_sample()`, or `rmc.sample_prior_predictive()`. `dims` maps a data key to a
+named population dimension; keys left out use the compatibility dimension `"obs"`.
+
+The builder also has `data(name, dim=None)`, `potential(name, expression)` for a bare
+log-density term (the expression must be scalar), and `deterministic(name, expression)`
+for a named quantity recorded alongside the draws. See
+[custom models](custom-models.md).
 
 ### Priors
 
@@ -358,10 +369,16 @@ Constructs a model. Data can be bound at build time or passed later to `rmc.samp
 | `beta_prior(name, alpha, beta)` | Beta(alpha, beta) | scalar only |
 | `uniform_prior(name, lower=0.0, upper=1.0)` | Uniform(lower, upper) | scalar only |
 | `vector_normal_prior(name, n, mu=0.0, sigma=1.0)` | Normal(mu, sigma)^n | explicit vector block |
-| `bernoulli_prior(name, p=0.5)` | Bernoulli(p) | discrete, not suitable for gradient-based inference |
-| `poisson_prior(name, lam)` | Poisson(lam) | discrete, not suitable for gradient-based inference |
+| `bernoulli_prior(name, p=0.5)` | Bernoulli(p) | discrete; see the note below |
+| `poisson_prior(name, lam)` | Poisson(lam) | discrete; see the note below |
 
 All scalar prior methods return a `ParamRef`. `vector_normal_prior()` returns a `VectorParamRef`.
+
+The two discrete priors are not merely a poor fit for gradient-based inference; they
+are refused by it. A model declaring a Bernoulli or Poisson prior raises `ValueError`
+from `builder.compile()`, `rmc.sample()`, and `rmc.batch_sample()`. They are usable
+only with `sample_prior_predictive()`. Posterior inference needs continuous parameters
+or an explicit marginalization you write yourself.
 
 ### Hierarchical priors and automatic non-centering
 
@@ -397,6 +414,12 @@ Likelihood expressions accept:
 - `alpha + beta * "x"`
 - `beta @ "X"` for matrix-vector regression
 - additive constants such as `alpha + beta * "x" + 1.0`
+
+That list is the fused fast paths, not the whole vocabulary. Expressions also support
+`-`, `/`, `**` and unary negation, and the methods `.exp()`, `.log()`, `.sqrt()`,
+`.sigmoid()`, `.tanh()`, `.softplus()`, `.sin()`, `.cos()` and `.sum()`.
+`beta["group_key"]` selects one element of a vector parameter per observation, keyed
+by an integer-valued data column. [Custom models](custom-models.md) has the details.
 
 ### `build()`
 
@@ -491,6 +514,7 @@ fit = rmc.sample(
     max_tree_depth=10,
     num_leapfrog_steps=15,
     show_progress=True,
+    init=None,
 )
 ```
 
@@ -499,6 +523,7 @@ Returns a `FitResult`.
 Notes:
 
 - `sampler` may be `"nuts"` or `"hmc"`.
+- `init` supplies starting positions. `None` uses the sampler's own initialization.
 - `threads=0` uses Rayon defaults.
 - `max_tree_depth` applies to NUTS.
 - `num_leapfrog_steps` applies to HMC.
@@ -543,7 +568,9 @@ than absolute batch throughput.
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
 | `divergences()` | `list[int]` | Per-chain divergence counts |
-| `posterior_predictive(n_samples=None, seed=42)` | `dict[str, np.ndarray]` | Posterior predictive samples shaped `(n_samples, n_obs)` per likelihood |
+| `posterior_predictive(n_samples=None, seed=42, data=None, expected=False, sizes=None)` | `dict[str, np.ndarray]` | Posterior predictive samples shaped `(n_samples, n_obs)` per likelihood. `data` substitutes new predictors; `expected=True` returns conditional means instead of sampled draws |
+| `predict(data=None, seed=42, expected=False, sizes=None)` | `dict[str, np.ndarray]` | Predictive draws on `(chain, draw, obs)` axes |
+| `deterministics(data=None, sizes=None)` | `dict[str, np.ndarray]` | Draws of each declared `deterministic()`, on `(chain, draw)` or `(chain, draw, obs)` axes |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
 | `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood |
 
@@ -574,9 +601,15 @@ Returns `dict[str, np.ndarray]` containing:
 
 - one 1-D array per parameter with `n_samples` prior draws
 - one 2-D array per likelihood with shape `(n_samples, n_obs)`
+- one array per declared `deterministic()`: 1-D when the expression is scalar, and
+  `(n_samples, n)` when it is vector-valued
 
 For automatically non-centered scalar hierarchical normals, the returned parameter draws use
 the logical parameter name, not the hidden raw latent.
+
+A `potential()` term is a bare log-density with no generator behind it, so a model
+declaring one cannot be simulated forward. This call raises `ValueError` for such a
+model. Bernoulli and Poisson priors, by contrast, are supported here and only here.
 
 ## `BatchResult`
 
@@ -625,7 +658,9 @@ explicitly as `sigma * z[key]`.
 
 `rustmc.StateSpaceError` reports invalid model structure or a numerical failure inside
 a native kernel. `rustmc.ParameterError` reports an invalid parameter or expression,
-including mixing references from two builders. Both subclass `ValueError`, so
+including mixing references from two builders. `rustmc.InferenceError` reports invalid
+inputs or a numerical failure in a fitted Bayesian model, and is what the hierarchical
+and forecasting entry points raise. All three subclass `ValueError`, so
 `except ValueError` catches them, and so does `pytest.raises(ValueError)`.
 
 ## Result types
@@ -634,9 +669,14 @@ Fitting and forecasting calls return named types, and each guide describes the m
 of the types it returns. `FitResult`, `BatchResult`, `BatchFit`,
 `StructuralFit`/`StructuralForecast`, `RunoffFit`,
 `ForecastBatchFit`/`ForecastBatchForecast`, `DynamicGLMForecast`,
-`KalmanFilterResult`/`KalmanSmootherResult`, and one `Bayesian*Fit` /
-`Bayesian*Forecast` pair per specialized model come from those calls and are not
-constructed directly. `ForecastDraws`, `NamedDesign`, `ScenarioForecast`,
+`KalmanFilterResult`/`KalmanSmootherResult`, and one fit type plus one forecast type
+per specialized model come from those calls and are not constructed directly. The
+forecast type is not reliably named after the fit type:
+`BayesianLocalLevelFit.forecast()` returns `BayesianForecastResult`,
+`BayesianLocalLinearTrendFit.forecast()` returns `BayesianTrendForecast`,
+`BayesianSeasonalLocalLevelFit.forecast()` returns `BayesianSeasonalForecast`, and
+`BayesianHierarchicalMeanFit.forecast()` returns `BayesianHierarchicalForecast`. Only
+`BayesianARFit` → `BayesianARForecast` matches the naming. `ForecastDraws`, `NamedDesign`, `ScenarioForecast`,
 `BacktestResult` and `BacktestFold` are ordinary dataclasses you may also construct
 yourself, which is how you score draws that rustmc did not produce.
 
