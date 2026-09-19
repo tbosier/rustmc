@@ -124,8 +124,7 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 - `examples/fixed_effects_panel_forecast.py` and `examples/large_linear_regression.py`
   were rewritten; they ran for about 57 and 42 minutes and now take 27s and 5s. The
   panel example used 168 dense one-hot indicator columns instead of the library's own
-  group indexing, measured at 63x the cost per gradient, and stacked four nested
-  intercept blocks that were not identified.
+  group indexing, and stacked four nested intercept blocks that were not identified.
 
 ### Fixed
 

@@ -497,3 +497,44 @@ def test_quick_config_dry_run_is_machine_readable():
     payload = json.loads(completed.stdout)
     assert payload["config"]["name"] == "linear-regression-quick"
     assert len(payload["data_sha256"]) == 64
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "quality_max_rhat",
+        "quality_max_divergences",
+        "quality_min_ess_bulk",
+        "quality_max_mean_error_sd_units",
+        "quality_max_sd_relative_rmse",
+    ],
+)
+@pytest.mark.parametrize("value", [math.nan, math.inf])
+def test_a_non_finite_threshold_is_rejected_by_config_validation(field, value):
+    """A NaN threshold certified any diagnostics at all.
+
+    `validate` compared each threshold with a bare `<` or `<=`, which reports
+    False for a NaN, so the config was accepted. `evaluate_quality_gate` then
+    compared each metric with `value > threshold`, also False, so every metric
+    passed and `failures` came back empty. Screening the metrics closed one side
+    of that; this closes the other.
+    """
+    with pytest.raises(ValueError, match="finite"):
+        BenchmarkConfig(**{field: value}).validate()
+
+
+def test_the_gate_cannot_pass_a_ruinous_metric_under_a_default_config():
+    """The end the threshold hole was reachable from, pinned against the defaults."""
+    config = BenchmarkConfig()
+    config.validate()
+    quality = {
+        "rhat_rank_max": 100.0,
+        "ess_bulk_min": 900.0,
+        "ess_bulk_mean": 1200.0,
+        "divergences": 0,
+        "mean_rmse_exact_posterior_sd_units": 0.01,
+        "sd_relative_rmse_vs_exact_posterior": 0.01,
+    }
+    verdict = evaluate_quality_gate(quality, config)
+    assert not verdict["passed"]
+    assert "rhat_rank_max" in verdict["failures"]

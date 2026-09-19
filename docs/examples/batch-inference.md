@@ -20,6 +20,10 @@ outputs are not directly comparable. `examples/batch_many_series.py` has a match
 rustmc/PyMC+nutpie comparison that reports divergences, R-hat and ESS/s next to wall
 time; `benchmarks/README.md` says what may be claimed from a measurement.
 
+Run it with `python examples/batch_inference.py` from the repository root. The blocks below are
+cells of that one file and share its state, so they assume the blocks above
+them have run.
+
 ```python
 import numpy as np
 

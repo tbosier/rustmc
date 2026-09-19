@@ -21,6 +21,10 @@ noncentered sampling coordinates internally, so the awkward geometry of the cent
 form does not reach the sampler. `mu_j` is still what you see in summaries,
 diagnostics and posterior draws.
 
+Run it with `python examples/hierarchical_example.py` from the repository root. The blocks below are
+cells of that one file and share its state, so they assume the blocks above
+them have run.
+
 ```python
 import numpy as np
 import rustmc as rmc

@@ -60,16 +60,31 @@ class BenchmarkConfig:
             raise ValueError("target_accept must be between zero and one")
         if self.max_tree_depth <= 0:
             raise ValueError("max_tree_depth must be positive")
-        if self.quality_max_rhat < 1:
-            raise ValueError("quality_max_rhat must be at least one")
-        if self.quality_max_divergences < 0:
-            raise ValueError("quality_max_divergences must be non-negative")
-        if self.quality_min_ess_bulk <= 0:
-            raise ValueError("quality_min_ess_bulk must be positive")
-        if self.quality_max_mean_error_sd_units <= 0:
-            raise ValueError("quality_max_mean_error_sd_units must be positive")
-        if self.quality_max_sd_relative_rmse <= 0:
-            raise ValueError("quality_max_sd_relative_rmse must be positive")
+        # Screened for finiteness first, like observation_sigma and prior_sigma
+        # above. A bare comparison reports False for a NaN, so `nan < 1` passed
+        # this check, and later `value > nan` passed the gate itself: a config
+        # with a NaN threshold certified any diagnostics at all. Screening the
+        # metrics without screening the thresholds leaves the same hole open
+        # from the other side.
+        if not math.isfinite(self.quality_max_rhat) or self.quality_max_rhat < 1:
+            raise ValueError("quality_max_rhat must be finite and at least one")
+        if (
+            not math.isfinite(self.quality_max_divergences)
+            or self.quality_max_divergences < 0
+        ):
+            raise ValueError("quality_max_divergences must be finite and non-negative")
+        if not math.isfinite(self.quality_min_ess_bulk) or self.quality_min_ess_bulk <= 0:
+            raise ValueError("quality_min_ess_bulk must be finite and positive")
+        if (
+            not math.isfinite(self.quality_max_mean_error_sd_units)
+            or self.quality_max_mean_error_sd_units <= 0
+        ):
+            raise ValueError("quality_max_mean_error_sd_units must be finite and positive")
+        if (
+            not math.isfinite(self.quality_max_sd_relative_rmse)
+            or self.quality_max_sd_relative_rmse <= 0
+        ):
+            raise ValueError("quality_max_sd_relative_rmse must be finite and positive")
 
     @classmethod
     def from_json(cls, path: str | Path) -> BenchmarkConfig:

@@ -13,6 +13,10 @@ sample the posterior, then check the posterior against the data it was fitted to
 Both the slope and the observation noise are inferred. The HalfNormal(2) prior on
 `sigma` suits this example's units; pick your own for your data.
 
+Run it with `python examples/simple_example.py` from the repository root. The blocks below are
+cells of that one file and share its state, so they assume the blocks above
+them have run.
+
 ```python
 import numpy as np
 import rustmc as rmc

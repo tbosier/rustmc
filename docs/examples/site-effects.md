@@ -13,6 +13,10 @@ with many readings stay close to their own data.
 The observation noise is known here and fixed at 0.5. A real model can give it a
 positive prior instead.
 
+Run it with `python examples/site_effects.py` from the repository root. The blocks below are
+cells of that one file and share its state, so they assume the blocks above
+them have run.
+
 ```python
 import numpy as np
 import rustmc as rmc

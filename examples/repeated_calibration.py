@@ -34,8 +34,10 @@ for name, dataset in zip(ids, datasets):
 #
 # `calibration_model()` comes from `examples/instrument_calibration.py`: an
 # offset, a gain and a noise scale, fitted to `y ~ Normal(offset + gain * x, noise)`.
-# Compiling once and calling `sample_batch` reuses the graph structure across every
-# dataset, so the model is validated and laid out once rather than per instrument.
+# Compiling once and calling `sample_batch` builds the graph structure once and
+# reuses it for every dataset. Each fit still validates its own binding and lays
+# out its own evaluator buffers, because those depend on the data's shapes: what
+# is saved is the model construction, not the per-fit setup.
 #
 # `errors="collect"` keeps one bad dataset from losing the whole batch: the failing
 # ID lands in `batch.errors` and the rest still return fits.

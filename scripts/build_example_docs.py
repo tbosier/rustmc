@@ -114,6 +114,20 @@ BANNER = (
     "     this file: edit the example and regenerate. CI fails on drift. -->\n"
 )
 
+# Every page states how to run the file it came from.
+#
+# The blocks below are cells of one script, and three examples import a sibling
+# helper -- `from instrument_calibration import calibration_model`, and
+# `hierarchical_templates` from two others. Those resolve because running
+# `python examples/<name>.py` puts `examples/` on `sys.path`, which is not true
+# of a block pasted into a fresh session: it raises ModuleNotFoundError, and the
+# page previously gave the reader nothing to go on.
+RUN_NOTE = (
+    "Run it with `python {source}` from the repository root. The blocks below are\n"
+    "cells of that one file and share its state, so they assume the blocks above\n"
+    "them have run.\n"
+)
+
 
 class ExampleError(RuntimeError):
     """An example failed while its page was being generated."""
@@ -243,6 +257,7 @@ def build_page(script: Path, fired: set[str]) -> str:
     parts = [BANNER.format(source=f"examples/{script.name}"), f"# {title.strip()}\n"]
     if intro.strip():
         parts.append(textwrap.dedent(intro).strip("\n") + "\n")
+    parts.append(RUN_NOTE.format(source=f"examples/{script.name}"))
 
     # Run as `python examples/<name>.py` does: the script's directory first on
     # sys.path so sibling-module imports resolve, __name__ == "__main__" so a main

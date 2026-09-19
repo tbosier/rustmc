@@ -18,6 +18,10 @@ this page, and no figure here is a performance claim: `benchmarks/` and
 `benchmarks/README.md` hold the matched protocol, the retained raw output and the
 environment that a claim about speed needs.
 
+Run it with `python examples/large_linear_regression.py` from the repository root. The blocks below are
+cells of that one file and share its state, so they assume the blocks above
+them have run.
+
 ```python
 import time
 
