@@ -17,6 +17,7 @@
 
 use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
+use crate::seeding::chain_seed;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -599,15 +600,6 @@ fn numerical(message: impl Into<String>) -> BayesianForecastError {
 
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4849_4552;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_5F48_4945;
-
-fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-    value ^ (value >> 31)
-}
 
 #[cfg(test)]
 mod tests {

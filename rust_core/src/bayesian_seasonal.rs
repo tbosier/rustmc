@@ -12,6 +12,7 @@ use rand_distr::{Distribution, Gamma, StandardNormal};
 use rayon::prelude::*;
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::seeding::chain_seed;
 use crate::state_space::LinearGaussianStateSpace;
 
 #[derive(Debug, Clone)]
@@ -412,19 +413,26 @@ fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
 }
 
+/// Posterior-predictive mean at each horizon, from the scale-aware
+/// implementation the sampler's `mean()` accessors already use.
+///
+/// Accumulating the paths and dividing by their count at the end overflows on
+/// input that is entirely finite: two paths holding `1e308` sum to infinity,
+/// and the infinity survives the division. See
+/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
+/// horizon on the first of them and divides by the largest deviation from it
+/// before summing, so no partial sum can leave the representable range.
+///
+/// `validate_paths` has already rejected an empty, ragged or non-finite
+/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
+/// reach a caller from here.
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
-    let mut means = vec![0.0; horizon];
-    let mut count = 0;
-    for path in paths.iter().flatten() {
-        for (mean, value) in means.iter_mut().zip(path) {
-            *mean += value;
-        }
-        count += 1;
-    }
-    for mean in &mut means {
-        *mean /= count as f64;
-    }
+    let means: Vec<f64> = (0..horizon)
+        .map(|step| {
+            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
+        })
+        .collect();
     Ok(means)
 }
 
@@ -495,15 +503,6 @@ fn numerical(message: &str) -> BayesianForecastError {
 
 const FIT_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4954;
 const FORECAST_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4353;
-
-fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-    value ^ (value >> 31)
-}
 
 #[cfg(test)]
 mod tests {

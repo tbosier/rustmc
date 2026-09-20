@@ -1639,6 +1639,7 @@ impl GraphModel {
 
 /// Posterior predictions indexed by response, chain, draw, and observation.
 pub type Prediction = HashMap<String, Vec<Vec<Vec<f64>>>>;
+
 #[derive(Clone, Debug)]
 pub struct ModelFit {
     model: GraphModel,
@@ -1660,7 +1661,10 @@ impl ModelFit {
         let prediction_graph = bind_prediction(&graph, inputs, sizes)?;
         let heads = prediction_graph.observation_heads();
         let mut evaluator = Evaluator::new(&prediction_graph);
-        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(seed);
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::seeding::stream_seed(
+            seed,
+            crate::seeding::POSTERIOR_PREDICT_SEED_DOMAIN,
+        ));
         let mut output: Prediction = self
             .model
             .likelihood_names

@@ -117,10 +117,6 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 values[x.0].as_scalar(),
                 values[sigma.0].as_scalar(),
             )),
-            Op::HalfNormalLogP { x, sigma } => Value::Scalar(half_normal_logp_scalar(
-                values[x.0].as_scalar(),
-                values[sigma.0].as_scalar(),
-            )),
             Op::StudentTLogP { x, nu, mu, sigma } => Value::Scalar(student_t_logp_scalar(
                 values[x.0].as_scalar(),
                 values[nu.0].as_scalar(),
@@ -135,11 +131,6 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                     f64::NEG_INFINITY
                 })
             }
-            Op::UniformLogP { x, lower, upper } => Value::Scalar(uniform_logp_scalar(
-                values[x.0].as_scalar(),
-                values[lower.0].as_scalar(),
-                values[upper.0].as_scalar(),
-            )),
             Op::BernoulliLogP { x, p } => Value::Scalar(bernoulli_logp_scalar(
                 values[x.0].as_scalar(),
                 values[p.0].as_scalar(),
@@ -149,16 +140,6 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
                 values[lam.0].as_scalar(),
             )),
             Op::LogGammaLogP { x, alpha, beta } => Value::Scalar(log_gamma_logp(
-                values[x.0].as_scalar(),
-                values[alpha.0].as_scalar(),
-                values[beta.0].as_scalar(),
-            )),
-            Op::GammaLogP { x, alpha, beta } => Value::Scalar(gamma_logp_scalar(
-                values[x.0].as_scalar(),
-                values[alpha.0].as_scalar(),
-                values[beta.0].as_scalar(),
-            )),
-            Op::BetaLogP { x, alpha, beta } => Value::Scalar(beta_logp_scalar(
                 values[x.0].as_scalar(),
                 values[alpha.0].as_scalar(),
                 values[beta.0].as_scalar(),
@@ -503,14 +484,6 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[sigma.0] += a_s * ((z2 - 1.0) / scale);
                 }
             }
-            Op::HalfNormalLogP { x, sigma } => {
-                let xv = values[x.0].as_scalar();
-                let sv = values[sigma.0].as_scalar();
-                if xv >= 0.0 {
-                    adj_scalar[x.0] += a_s * (-(xv / sv) / sv);
-                    adj_scalar[sigma.0] += a_s * (((xv / sv).powi(2) - 1.0) / sv);
-                }
-            }
             Op::StudentTLogP { x, nu, mu, sigma } => {
                 let (dx, dsigma, dnu) = student_t_derivatives(
                     values[x.0].as_scalar(),
@@ -524,15 +497,6 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 adj_scalar[nu.0] += a_s * dnu;
             }
             Op::PositiveSupport { .. } => {}
-            Op::UniformLogP { x: _, lower, upper } => {
-                let lv = values[lower.0].as_scalar();
-                let uv = values[upper.0].as_scalar();
-                let range = uv - lv;
-                if range > 0.0 {
-                    adj_scalar[lower.0] += a_s / range;
-                    adj_scalar[upper.0] -= a_s / range;
-                }
-            }
             // Share the Evaluator's scores rather than restating them. The local
             // copies clamped p into [1e-12, 1 - 1e-12] and never checked the
             // support, so they disagreed with the densities above once those
@@ -555,26 +519,6 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                     adj_scalar[x.0] += a_s * (a - scaled);
                     adj_scalar[alpha.0] += a_s * (log_scaled - digamma(a));
                     adj_scalar[beta.0] += a_s * ((a - scaled) / rate);
-                }
-            }
-            Op::GammaLogP { x, alpha, beta } => {
-                let xv = values[x.0].as_scalar();
-                let av = values[alpha.0].as_scalar();
-                let bv = values[beta.0].as_scalar();
-                if xv > 0.0 {
-                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - bv);
-                    adj_scalar[alpha.0] += a_s * (bv.ln() - digamma(av) + xv.ln());
-                    adj_scalar[beta.0] += a_s * (av / bv - xv);
-                }
-            }
-            Op::BetaLogP { x, alpha, beta } => {
-                let xv = values[x.0].as_scalar();
-                let av = values[alpha.0].as_scalar();
-                let bv = values[beta.0].as_scalar();
-                if xv > 0.0 && xv < 1.0 {
-                    adj_scalar[x.0] += a_s * ((av - 1.0) / xv - (bv - 1.0) / (1.0 - xv));
-                    adj_scalar[alpha.0] += a_s * (digamma(av + bv) - digamma(av) + xv.ln());
-                    adj_scalar[beta.0] += a_s * (digamma(av + bv) - digamma(bv) + (1.0 - xv).ln());
                 }
             }
             Op::ObsLogP {
@@ -611,7 +555,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let deta: Vec<f64> = eta
                             .iter()
                             .zip(obs.iter())
-                            .map(|(e, y)| a_s * (y - sigmoid_stable(*e)))
+                            .map(|(e, y)| a_s * crate::autodiff::bernoulli_logit_grad(*y, *e))
                             .collect();
                         merge_vec_adj(&mut adj_vector[linpred_vec.0], &deta);
                     }

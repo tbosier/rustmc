@@ -1,5 +1,14 @@
 # Regression and calendar seasonality
 
+This page covers two things you add to an existing forecasting model: external
+predictors, through the `exog` argument, and calendar seasonality, through Fourier
+terms. Read it if your series responds to something you can measure — price,
+promotions, weather — or repeats on a known period. It also documents time-varying
+observation rows on `LinearGaussianStateSpace`.
+
+For the basics of fitting and evaluating a forecast, start with
+[forecasting workflows](forecasting-workflows.md).
+
 `BayesianLocalLevel`, `BayesianLocalLinearTrend`, and
 `BayesianSeasonalLocalLevel` accept keyword-only `exog` and `coefficient_prior`
 arguments in `fit`. An exogenous fit returns `BayesianRegressionFit`. Fits without
@@ -8,6 +17,14 @@ exogenous data retain their original result classes and sampling paths.
 ```python
 import numpy as np
 import rustmc as rmc
+
+# A promotion flag and a price change, and a series that responds to both.
+rng = np.random.default_rng(0)
+n = 120
+promotion = rng.binomial(1, 0.25, n).astype(float)
+price_change = rng.normal(0.0, 0.5, n)
+level = np.cumsum(rng.normal(0.0, 0.15, n))
+y = level + 0.9 * promotion - 0.4 * price_change + rng.normal(0.0, 0.3, n)
 
 model = rmc.BayesianLocalLevel(
     rmc.InverseGammaPrior(3.0, 0.08),
@@ -19,7 +36,13 @@ prior = rmc.GaussianCoefficientPrior(
     mean=np.zeros(2), covariance=np.diag([1.0, 0.25]),
 )
 fit = model.fit(y, exog=X, coefficient_prior=prior,
-                chains=4, draws=1000, warmup=500, seed=42)
+                chains=4, draws=2000, warmup=1000, seed=42)
+
+# Future predictors are required, with the columns in their fitting order.
+X_future = np.column_stack([
+    rng.binomial(1, 0.25, 12).astype(float),
+    rng.normal(0.0, 0.5, 12),
+])
 forecast = fit.forecast(steps=12, exog=X_future, seed=43)
 lower, upper = forecast.interval(0.95)
 cumulative_lower, cumulative_upper = forecast.cumulative_interval(0.95)
@@ -106,6 +129,14 @@ finite observation vector per training time. Filtering, smoothing, and FFBS use 
 matching row, including across missing observations. Supply future rows explicitly:
 
 ```python
+# One finite observation row per training time, shaped (time, state_dim). Here a
+# known seasonal exposure scales the level rather than entering as a predictor.
+fixed_model = rmc.LinearGaussianStateSpace.local_level(0.1, 0.3)
+season = 2.0 * np.pi * np.arange(len(y)) / 12.0
+Z_train = (1.0 + 0.25 * np.sin(season)).reshape(-1, 1)
+future_season = 2.0 * np.pi * (len(y) + np.arange(12)) / 12.0
+Z_future = (1.0 + 0.25 * np.sin(future_season)).reshape(-1, 1)
+
 varying = fixed_model.with_observation_rows(Z_train)
 smoothed = varying.smooth(y)
 forecast = varying.forecast(y, steps=12, future_observation_rows=Z_future)

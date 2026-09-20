@@ -81,6 +81,14 @@ jobs:
         run: >-
           ${{ runner.temp }}/source-env/bin/python scripts/run_examples.py
           --timeout 180 --jobs 2
+      # docs/examples/*.md is generated from the examples and shows their real
+      # output. Committed executed notebooks went stale here before: a page
+      # advertised 128 divergent transitions for a model that now has none. This
+      # step regenerates the pages and fails if any committed page disagrees.
+      - name: Check the example pages still match the examples
+        if: matrix.python-version == '3.11'
+        run: >-
+          ${{ runner.temp }}/source-env/bin/python scripts/build_example_docs.py --check
       - name: Check reference posteriors and repeated simulations
         if: matrix.python-version == '3.11'
         run: >-

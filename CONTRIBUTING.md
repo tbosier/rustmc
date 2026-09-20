@@ -19,7 +19,19 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --release
 python -m pytest -q
+
+# CI runs these too, and they fail for reasons the tests above will not catch.
+python3 scripts/verify_version.py             # manifests, binding dep, Cargo.lock agree
+python scripts/run_examples.py --timeout 180  # every example in examples/README.md runs
+python scripts/build_example_docs.py --check  # docs pages still match the code
 ```
+
+The last one covers three things: `docs/examples/*.md` is generated from the example
+of the same name and must not have drifted, the code blocks on each guide page must
+still run when read in order, and the output shown on the landing page must be what
+the code above it prints. If it reports a generated page as stale, run
+`python scripts/build_example_docs.py` and commit the result. The other two it
+reports are for you to fix by hand.
 
 ## Evidence expectations
 

@@ -18,6 +18,7 @@
 //! while indexed collection preserves deterministic chain ordering.
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::seeding::chain_seed;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -610,28 +611,26 @@ fn validate_positive(name: &str, variance: f64) -> Result<(), BayesianForecastEr
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
 
-fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E3779B97F4A7C15));
-    value = (value ^ (value >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
-    value = (value ^ (value >> 27)).wrapping_mul(0x94D049BB133111EB);
-    value ^ (value >> 31)
-}
-
+/// Posterior-predictive mean at each horizon, from the scale-aware
+/// implementation the sampler's `mean()` accessors already use.
+///
+/// Accumulating the paths and dividing by their count at the end overflows on
+/// input that is entirely finite: two paths holding `1e308` sum to infinity,
+/// and the infinity survives the division. See
+/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
+/// horizon on the first of them and divides by the largest deviation from it
+/// before summing, so no partial sum can leave the representable range.
+///
+/// `validate_paths` has already rejected an empty, ragged or non-finite
+/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
+/// reach a caller from here.
 fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
-    let mut means = vec![0.0; horizon];
-    let mut count = 0usize;
-    for path in paths.iter().flatten() {
-        for (mean, value) in means.iter_mut().zip(path) {
-            *mean += value;
-        }
-        count += 1;
-    }
-    for mean in &mut means {
-        *mean /= count as f64;
-    }
+    let means: Vec<f64> = (0..horizon)
+        .map(|step| {
+            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
+        })
+        .collect();
     Ok(means)
 }
 
@@ -960,8 +959,13 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(810);
         let mut level = 0.0;
         let mut slope = 0.08;
-        let mut observations = Vec::with_capacity(280);
-        for _ in 0..280 {
+        // 280 points used to be enough only because config()'s priors already carried
+        // the answer. With a prior that does not, the level/observation split at that
+        // length is not identified: the posterior mean of the level variance comes out
+        // near 0.03 against a truth of 0.12. It is identified at 2000.
+        let count = 2000;
+        let mut observations = Vec::with_capacity(count);
+        for _ in 0..count {
             level += slope + standard_normal(&mut rng) * true_level_variance.sqrt();
             slope += standard_normal(&mut rng) * true_slope_variance.sqrt();
             observations.push(level + standard_normal(&mut rng) * true_observation_variance.sqrt());
@@ -973,6 +977,25 @@ mod tests {
         fit_config.num_warmup = 500;
         fit_config.num_draws = 500;
         fit_config.thinning = 2;
+        // config()'s own priors have means 0.25/2 = 0.125, 0.05/2 = 0.025 and
+        // 0.5/2 = 0.25, against truths of 0.12, 0.025 and 0.35. The first is 0.005 from
+        // its truth and the second is exactly equal to it, so under the tolerances this
+        // test used to carry, prior draws satisfied all three assertions: it asserted
+        // nothing about the observations. Fit with priors whose means are 0.025, 0.0025
+        // and 0.025 instead, a factor of 4.8, 10 and 14 below the three truths. The
+        // negative control below keeps them outside the accepted windows.
+        fit_config.level_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
+        fit_config.slope_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.005,
+        };
+        fit_config.observation_variance_prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.05,
+        };
         let posterior = fit_bayesian_local_linear_trend(&observations, &fit_config).unwrap();
         let count = posterior.chains.iter().map(Vec::len).sum::<usize>() as f64;
         let means = posterior
@@ -985,9 +1008,41 @@ mod tests {
                 sums[2] += draw.observation_variance;
                 sums
             });
-        assert!((means[0] / count - true_level_variance).abs() < 0.12);
-        assert!((means[1] / count - true_slope_variance).abs() < 0.025);
-        assert!((means[2] / count - true_observation_variance).abs() < 0.18);
+        let tolerances = [0.045, 0.008, 0.06];
+        let truths = [
+            true_level_variance,
+            true_slope_variance,
+            true_observation_variance,
+        ];
+        for index in 0..3 {
+            assert!(
+                (means[index] / count - truths[index]).abs() < tolerances[index],
+                "parameter {index}: {} vs {}",
+                means[index] / count,
+                truths[index]
+            );
+        }
+
+        // Negative control: a sampler that ignored the observations would report the
+        // prior means, scale / (shape - 1) = 0.025, 0.0025 and 0.025. Every one must
+        // sit outside the window just asserted, or those assertions prove nothing.
+        let priors = [
+            fit_config.level_variance_prior,
+            fit_config.slope_variance_prior,
+            fit_config.observation_variance_prior,
+        ];
+        for index in 0..3 {
+            let prior_mean = priors[index].scale / (priors[index].shape - 1.0);
+            // One tolerance-width of clearance, not merely exclusion: a window
+            // whose edge sits just short of the prior mean demonstrates nothing,
+            // and `> tolerances[index]` alone permits exactly that.
+            assert!(
+                (prior_mean - truths[index]).abs() > 2.0 * tolerances[index],
+                "parameter {index}: prior mean {prior_mean} is within one tolerance-width \
+                 of the window around {}",
+                truths[index]
+            );
+        }
 
         let forecast = posterior.forecast(15, 812).unwrap();
         let intervals = forecast.observation_quantiles(&[0.1, 0.9]).unwrap();

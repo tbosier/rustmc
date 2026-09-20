@@ -6,6 +6,125 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+This entry closes a second repository-wide review. Two themes dominate: claims —
+in documentation, in test names, and in a release gate — that the code did not
+support, and predictive draws sharing an RNG stream with the fit that produced them.
+
+### Added
+
+- `rustmc_core::seeding`, the single definition of the RNG stream-separation
+  primitive that eight modules each carried a private copy of — seven named
+  `chain_seed` and one `seed_for`, six of them byte-identical and two combining their
+  arguments differently.
+- `scripts/build_example_docs.py`. Every page under `docs/examples/` is generated
+  from the example of the same name and shows that example's real captured output.
+  CI fails if a committed page stops matching the code that produces it. It also
+  checks that each guide page's code blocks run when read in order, and that the
+  output shown on the landing page is what the code above it prints.
+
+### Changed
+
+- **Seeded predictive draws change.** `posterior_predictive`, `predict`,
+  `to_arviz(include_ppc=True)`, `sample_prior_predictive` and
+  `rustmc_core::model::ModelFit::predict` now derive their stream from a domain
+  constant instead of using the caller's seed directly. Draws remain deterministic
+  and reproducible; a given seed produces different values than in 0.13.0. See Fixed.
+- **Seeded hurdle fits change.** Consolidating the seven private copies of the
+  stream-separation primitive settled on the additive form six of them used; `hurdle`
+  combined its arguments with XOR. Its fitting chains therefore draw different streams
+  for the same seed from chain one onward, so a seeded hurdle posterior differs from
+  0.13.0. Nothing about the model changed.
+- The documentation nav is grouped into sections, and `mkdocs.yml` sets
+  `strict: true` so an orphan page or a nav entry pointing at a renamed file fails
+  the build rather than shipping.
+- `benchmarks/README.md` describes the screened quality gate, including the
+  `quality_gate.domains` the report now publishes and what a domain does not
+  establish.
+
+### Fixed
+
+- **The benchmark quality gate passed on diagnostics that were not numbers.** Each
+  metric was compared with a bare `>` or `<`, which reports false for a NaN, so
+  nothing was appended to the failure list and the gate that authorises publishing
+  a speed claim reported success. It now fails closed on non-finite, out-of-domain,
+  absent, negative and fractional values, and screens each parameter before the
+  R-hats are reduced with `max` and the ESS values with `min` — aggregating first
+  hid exactly the half of each domain the gate cares about.
+- **Predictive draws replayed a fitting chain's stream.** `sampler::run` seeds chain
+  `c` as `seed + c`, and every predictive entry point defaulted to the same seed
+  `sample()` defaults to, so a default four-chain fit held streams 42..=45 and
+  prediction under seed 42 reproduced chain 0 exactly. Measured at four chains,
+  1000 warmup and 1000 draws, the standardised predictive residuals under a
+  prediction seed equal to the fit seed were not distinguishable from unrelated
+  seeds; the exposure is short runs, where a chain's tail and the prediction noise
+  overlap over a much smaller sample.
+- `validate_shapes()` never counted the binding indices of `Op::BroadcastObservation`
+  or `Op::FusedLinearMu`, so a model using either could panic out of `sample()`.
+- `KalmanFilterResult.log_likelihood` and `KalmanSmootherResult.log_likelihood` were
+  annotated `dict[str, _FloatArray]` and return `float`. The stub check that should
+  have caught this was scoped to the classes one branch had reworked.
+- **The Bernoulli-logit density and gradient lost their saturated tail.** Both were
+  written as a difference of nearly equal numbers, so at `y = 1, eta = 40` each
+  returned exactly zero against a true magnitude of `4.2483542552915889e-18`. A
+  saturated observation contributed no gradient at all, and a large predictor scale
+  multiplies that zero rather than a small number. `observation.rs` already avoided
+  this; the graph evaluator, its reference and the shared density helper each had
+  their own expression and none of them did.
+- **The local-level filter's variance update left the representable range.** Variances
+  around `3e-162` were up to 9.8% wrong and silently positive, and a well-scaled
+  problem was rejected outright below about `1e-170` and above about `1e155`. Both
+  single orderings of `a b / (a + b)` fail, in opposite directions; the update now
+  divides by the sum whichever factor is larger, which keeps every intermediate in
+  range by an interval argument rather than an empirical bound.
+- Forecast mean accessors on all four specialised results no longer report an infinity
+  for a forecast whose draws are finite and whose mean is representable. Their values
+  shift in the last bits. This is a trade rather than a strict accuracy win: centring
+  the draws before summing is better for draws sharing a large offset and worse for
+  draws that cancel to near zero, and the sum is still uncompensated, so its error
+  grows with the number of draws — 100,000 draws of mostly `0.1` land about 849 ulp of
+  the draws' range from the correctly rounded mean. The reason to take the trade is
+  that an overflow is a failure and this is a rounding.
+- A benchmark config with a non-finite quality threshold was accepted, and every metric
+  then compared false against it, so the gate passed with no failures. Screening the
+  metrics had closed only one side of that.
+- A published claim that a compiled model is "validated and laid out once rather than
+  per instrument". Every chain of every fit revalidates its binding and rebuilds its
+  evaluator layout; what is shared is the graph structure.
+- An unsupported "63x the cost per gradient" figure in the 0.13.0 entry, which no
+  retained measurement in the repository supports.
+- **Recovery tests a prior-only sampler would have passed.** Across the recovery
+  suite, the seasonal, trend and forecast tests, the hurdle, regression, structural
+  and diagnostics modules, and the Python smoke test, acceptance windows contained
+  the prior mean they claimed to beat — in two cases the prior mean was the truth
+  exactly, and two funnel tests carried no data at all while asserting recovery.
+  Windows now have to clear the prior by at least their own width, and vector claims
+  are stated as a fraction of the error a named data-blind estimator would score. The
+  margin is asserted at run time — in the recovery suite on every scalar assertion
+  through a shared helper, and in the trend, regression and hurdle modules by their
+  own guards — so widening a window back onto a prior turns the test red rather than
+  passing quietly. With the likelihood terms stripped
+  so the sampler draws from the prior alone, all 28 assertions across the 9 positive
+  cases now fail; the 3 tests that still pass are the ones documented as geometry
+  checks and negative controls rather than recovery claims.
+- Documentation claims the code did not support, including committed example output
+  that advertised 128 divergent transitions for a model that now has none.
+- The opening code block on the regression-and-seasonality guide used four names it
+  never defined, so a reader copying the page's first example got a `NameError`; a
+  later block on that page did the same. Both now build their own data.
+- Every link in `README.md` was relative. README.md is the package's long description,
+  so on the PyPI project page all twelve resolved against `pypi.org` and 404'd,
+  including every "Start here" entry.
+
+### Removed
+
+- Four `Op` variants no callable path could reach, three public items with no caller,
+  and the `Option` around a batch cell's fit, which could not be `None`.
+- Two committed executed notebooks and their rendered image directories, 1.4 MB in
+  all, replaced by the generated example pages.
+- `docs/repo-review-2026-09-09.local.md` is no longer tracked. Both `.gitignore` and
+  the site build already treated it as local scratch, and it reviewed a revision two
+  releases back. The copy on disk is untouched.
+
 ## [0.13.0] - 2026-09-18
 
 This release closes a repository-wide correctness review. The headline item is a
@@ -51,8 +170,7 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 - `examples/fixed_effects_panel_forecast.py` and `examples/large_linear_regression.py`
   were rewritten; they ran for about 57 and 42 minutes and now take 27s and 5s. The
   panel example used 168 dense one-hot indicator columns instead of the library's own
-  group indexing, measured at 63x the cost per gradient, and stacked four nested
-  intercept blocks that were not identified.
+  group indexing, and stacked four nested intercept blocks that were not identified.
 
 ### Fixed
 

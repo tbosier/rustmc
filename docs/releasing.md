@@ -1,5 +1,8 @@
 # Releasing rustmc
 
+The checklist for cutting a release: which versions must agree, what to verify before
+tagging, and how the two packages are published. It is for maintainers only.
+
 `rustmc_core` on crates.io and `rustmc` on PyPI share one version. The internal
 `python_bindings` crate is also named `rustmc`, but it has `publish = false`:
 that name on crates.io belongs to an unrelated project.
@@ -10,7 +13,7 @@ Before publishing, synchronize the package versions in `rust_core/Cargo.toml`,
 Update the changelog and crate README dependency example. Check the release tag:
 
 ```bash
-python3 scripts/verify_version.py v0.12.0
+python3 scripts/verify_version.py v0.13.0
 cargo metadata --locked --offline --no-deps --format-version 1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings

@@ -26,6 +26,7 @@ pub mod prior_sampling;
 pub mod progress;
 pub mod runoff;
 pub mod sampler;
+pub mod seeding;
 pub mod state_space;
 pub mod structural;
 pub mod target;
