@@ -1,8 +1,8 @@
 //! Helpers shared by the Gaussian forecasting bindings.
 use crate::{arviz_from_groups, forecast_diagnostics, InferenceError, StateSpaceError};
-use ndarray::{Array2, Array3};
-use numpy::PyUntypedArrayMethods;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use ndarray::{Array2, Array3, ArrayD, IxDyn};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
+use numpy::{PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -28,21 +28,90 @@ pub(crate) fn hierarchical_error(error: CoreBayesianForecastError) -> PyErr {
     InferenceError::new_err(error.to_string())
 }
 
-pub(crate) fn state_space_matrix(
-    name: &str,
-    value: PyReadonlyArray2<'_, f64>,
-) -> PyResult<(Vec<f64>, usize)> {
-    let shape = value.shape();
-    if shape[0] != shape[1] {
-        return Err(StateSpaceError::new_err(format!(
-            "invalid dimension: {name} must be a square matrix"
+/// Real numbers with exactly `ndim` axes from any numeric array-like: a
+/// float or integer NumPy array of any width, order or strides, a (nested)
+/// list, or anything else `numpy.asarray` accepts.
+///
+/// `NaN` passes through for the models that read it as missing; each model
+/// still rejects the values it cannot use. Booleans, complex numbers,
+/// strings, objects, ragged nesting and the wrong number of axes raise a
+/// `ValueError` naming `name`, where PyO3's own conversion would only say
+/// "cannot be converted to 'PyArray<T, D>'". An empty sequence is accepted as
+/// an empty array of any dimension.
+fn real_array(value: &Bound<'_, PyAny>, name: &str, ndim: usize) -> PyResult<ArrayD<f64>> {
+    if let Ok(array) = value.downcast::<PyArrayDyn<f64>>() {
+        if array.ndim() == ndim {
+            return Ok(array.readonly().as_array().to_owned());
+        }
+    }
+    let array = value
+        .py()
+        .import("numpy")?
+        .call_method1("asarray", (value,))
+        .map_err(|error| {
+            PyValueError::new_err(format!("{name} must be a real numeric array: {error}"))
+        })?;
+    let dtype = array.getattr("dtype")?;
+    let kind: String = dtype.getattr("kind")?.extract()?;
+    if !matches!(kind.as_str(), "f" | "i" | "u") {
+        return Err(PyValueError::new_err(format!(
+            "{name} must hold real numbers (float or integer); got dtype {dtype}"
         )));
     }
-    Ok((value.as_array().iter().copied().collect(), shape[0]))
+    let actual: usize = array.getattr("ndim")?.extract()?;
+    let size: usize = array.getattr("size")?.extract()?;
+    if actual != ndim && !(actual == 1 && size == 0) {
+        let expected = match ndim {
+            1 => "one-dimensional",
+            2 => "two-dimensional",
+            _ => "three-dimensional",
+        };
+        return Err(PyValueError::new_err(format!(
+            "{name} must be {expected}; got {actual} dimension(s)"
+        )));
+    }
+    if actual != ndim {
+        return Ok(ArrayD::zeros(IxDyn(&vec![0; ndim])));
+    }
+    let floats = array.call_method1("astype", ("float64",))?;
+    let floats = floats.downcast::<PyArrayDyn<f64>>()?;
+    Ok(floats.readonly().as_array().to_owned())
 }
 
-pub(crate) fn state_space_vector(value: PyReadonlyArray1<'_, f64>) -> Vec<f64> {
-    value.as_array().iter().copied().collect()
+/// A real one-dimensional array; see [`real_array`].
+pub(crate) fn real_vector(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<f64>> {
+    Ok(real_array(value, name, 1)?.into_iter().collect())
+}
+
+/// The rows of a real two-dimensional array; see [`real_array`].
+pub(crate) fn real_matrix(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<Vec<f64>>> {
+    let array = real_array(value, name, 2)?;
+    Ok(array
+        .outer_iter()
+        .map(|row| row.iter().copied().collect())
+        .collect())
+}
+
+/// [`real_matrix`] of an optional argument.
+pub(crate) fn optional_matrix(
+    value: Option<&Bound<'_, PyAny>>,
+    name: &str,
+) -> PyResult<Option<Vec<Vec<f64>>>> {
+    value.map(|value| real_matrix(value, name)).transpose()
+}
+
+/// A real three-dimensional array as nested rows; see [`real_array`].
+pub(crate) fn real_cube(value: &Bound<'_, PyAny>, name: &str) -> PyResult<Vec<Vec<Vec<f64>>>> {
+    let array = real_array(value, name, 3)?;
+    Ok(array
+        .outer_iter()
+        .map(|matrix| {
+            matrix
+                .outer_iter()
+                .map(|row| row.iter().copied().collect())
+                .collect()
+        })
+        .collect())
 }
 
 /// `(chains, draws)` of chain-major draws; chains all hold the same count.

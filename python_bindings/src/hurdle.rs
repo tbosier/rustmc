@@ -1,7 +1,7 @@
 //! Python bindings for sparse nonnegative amount forecasting.
 use crate::forecast_batch;
 use crate::forecast_support::*;
-use numpy::{PyArray1, PyArray3, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
@@ -114,14 +114,14 @@ impl PyHurdleLogNormal {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
     ) -> PyResult<PyHurdleFit> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         let mut config = self.config.clone();
         config.num_chains = chains;
         config.num_draws = draws;

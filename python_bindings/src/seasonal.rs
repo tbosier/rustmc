@@ -2,7 +2,7 @@
 use crate::forecast_support::*;
 use crate::StateSpaceError;
 use crate::{forecast_batch, regression};
-use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
@@ -78,11 +78,14 @@ impl PyBayesianSeasonalLocalLevel {
         seasonal_variance_prior: PyRef<'_, PyInverseGammaPrior>,
         observation_variance_prior: PyRef<'_, PyInverseGammaPrior>,
         initial_level: f64,
-        initial_seasonal_effects: Option<Vec<f64>>,
+        initial_seasonal_effects: Option<&Bound<'_, PyAny>>,
         initial_level_variance: f64,
         initial_seasonal_variance: f64,
     ) -> PyResult<Self> {
-        let effects = initial_seasonal_effects.unwrap_or_else(|| vec![0.0; period]);
+        let effects = match initial_seasonal_effects {
+            Some(effects) => real_vector(effects, "initial_seasonal_effects")?,
+            None => vec![0.0; period],
+        };
         // Reuse the fixed structural constructor for immediate shape,
         // sum-to-zero, and covariance validation.
         CoreLinearGaussianStateSpace::seasonal_local_level(
@@ -123,16 +126,16 @@ impl PyBayesianSeasonalLocalLevel {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
-        exog: Option<PyReadonlyArray2<'_, f64>>,
+        exog: Option<&Bound<'_, PyAny>>,
         coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
     ) -> PyResult<PyObject> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         if let Some(exog) = exog {
             let config = regression::config(
                 CoreLinearGaussianStateSpace::seasonal_local_level(

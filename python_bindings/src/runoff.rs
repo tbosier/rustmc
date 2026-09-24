@@ -1,5 +1,6 @@
+use crate::forecast_support::{real_matrix, real_vector};
 use ndarray::{Array2, Array3, Array4};
-use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -22,7 +23,8 @@ pub struct PyRunoff {
 impl PyRunoff {
     #[new]
     #[pyo3(signature = (alpha, *, total_shape=2.0, total_rate=0.1))]
-    fn new(alpha: Vec<f64>, total_shape: f64, total_rate: f64) -> PyResult<Self> {
+    fn new(alpha: &Bound<'_, PyAny>, total_shape: f64, total_rate: f64) -> PyResult<Self> {
+        let alpha = real_vector(alpha, "alpha")?;
         if alpha.len() < 2
             || alpha.iter().any(|a| !a.is_finite() || *a <= 0.0)
             || !alpha.iter().sum::<f64>().is_finite()
@@ -50,7 +52,7 @@ impl PyRunoff {
     fn fit(
         &self,
         py: Python<'_>,
-        counts: PyReadonlyArray2<'_, f64>,
+        counts: &Bound<'_, PyAny>,
         origins: Vec<i64>,
         valuation: i64,
         totals: Option<Vec<Option<u64>>>,
@@ -59,7 +61,7 @@ impl PyRunoff {
         chains: usize,
         seed: u64,
     ) -> PyResult<PyRunoffFit> {
-        let counts = counts.as_array().rows().into_iter().map(|row| {
+        let counts = real_matrix(counts, "counts")?.into_iter().map(|row| {
             row.iter().map(|n| {
                 if n.is_nan() {
                     Ok(None)

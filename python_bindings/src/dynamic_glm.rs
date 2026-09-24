@@ -1,5 +1,7 @@
 //! Python conversion for the native joint dynamic GLM kernel.
-use crate::forecast_support::{bayesian_forecast_error, interval_probabilities};
+use crate::forecast_support::{
+    bayesian_forecast_error, interval_probabilities, optional_matrix, real_cube, real_matrix,
+};
 use crate::{arviz_from_groups, forecast_diagnostics};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray4};
@@ -39,12 +41,13 @@ impl PyDynamicGLM {
         py: Python<'_>,
         steps: usize,
         groups: usize,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         seed: u64,
     ) -> PyResult<PyDynamicGLMForecast> {
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let config = DynamicGlmConfig {
             chains,
             draws,
@@ -109,15 +112,17 @@ impl PyDynamicGLM {
     fn fit(
         &self,
         py: Python<'_>,
-        y: Panel,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        y: &Bound<'_, PyAny>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
     ) -> PyResult<PyDynamicGLMFit> {
+        let y = real_matrix(y, "y")?;
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let config = DynamicGlmConfig {
             chains,
             draws,
@@ -136,6 +141,17 @@ impl PyDynamicGLM {
             observations: y,
         })
     }
+}
+
+/// The optional `(group, time, feature)` design and `(group, time)` exposure.
+fn panel_inputs(
+    exog: Option<&Bound<'_, PyAny>>,
+    exposure: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(Option<Design>, Option<Panel>)> {
+    Ok((
+        exog.map(|exog| real_cube(exog, "exog")).transpose()?,
+        optional_matrix(exposure, "exposure")?,
+    ))
 }
 
 macro_rules! constructor {
@@ -290,10 +306,11 @@ impl PyDynamicGLMFit {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         seed: u64,
     ) -> PyResult<PyDynamicGLMForecast> {
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let inner = py
             .allow_threads(|| {
                 self.posterior

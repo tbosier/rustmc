@@ -1,9 +1,8 @@
 //! Fixed-parameter linear Gaussian state-space bindings.
 use crate::forecast_support::*;
-use crate::regression;
 use crate::StateSpaceError;
 use ndarray::{Array2, Array3};
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 use rustmc_core::state_space::{
     ForecastResult as CoreForecastResult, KalmanFilterResult as CoreKalmanFilterResult,
@@ -44,23 +43,35 @@ pub(crate) struct PyLinearGaussianStateSpace {
     pub(crate) inner: CoreLinearGaussianStateSpace,
 }
 
+/// A square real matrix, row-major, with its dimension.
+fn square_matrix(value: &Bound<'_, PyAny>, name: &str) -> PyResult<(Vec<f64>, usize)> {
+    let rows = real_matrix(value, name)?;
+    let dimension = rows.len();
+    if rows.iter().any(|row| row.len() != dimension) {
+        return Err(StateSpaceError::new_err(format!(
+            "invalid dimension: {name} must be a square matrix"
+        )));
+    }
+    Ok((rows.concat(), dimension))
+}
+
 #[pymethods]
 impl PyLinearGaussianStateSpace {
     #[new]
     #[pyo3(signature = (transition, observation, process_covariance, observation_variance, initial_mean, initial_covariance))]
     fn new(
-        transition: PyReadonlyArray2<'_, f64>,
-        observation: PyReadonlyArray1<'_, f64>,
-        process_covariance: PyReadonlyArray2<'_, f64>,
+        transition: &Bound<'_, PyAny>,
+        observation: &Bound<'_, PyAny>,
+        process_covariance: &Bound<'_, PyAny>,
         observation_variance: f64,
-        initial_mean: PyReadonlyArray1<'_, f64>,
-        initial_covariance: PyReadonlyArray2<'_, f64>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        let (transition, dimension) = state_space_matrix("transition", transition)?;
+        let (transition, dimension) = square_matrix(transition, "transition")?;
         let (process_covariance, process_dimension) =
-            state_space_matrix("process_covariance", process_covariance)?;
+            square_matrix(process_covariance, "process_covariance")?;
         let (initial_covariance, initial_dimension) =
-            state_space_matrix("initial_covariance", initial_covariance)?;
+            square_matrix(initial_covariance, "initial_covariance")?;
         if process_dimension != dimension || initial_dimension != dimension {
             return Err(StateSpaceError::new_err(
                 "invalid dimension: covariance matrices must match the transition matrix",
@@ -70,10 +81,10 @@ impl PyLinearGaussianStateSpace {
             inner: CoreLinearGaussianStateSpace::new(
                 dimension,
                 transition,
-                state_space_vector(observation),
+                real_vector(observation, "observation")?,
                 process_covariance,
                 observation_variance,
-                state_space_vector(initial_mean),
+                real_vector(initial_mean, "initial_mean")?,
                 initial_covariance,
             )
             .map_err(state_space_error)?,
@@ -137,11 +148,14 @@ impl PyLinearGaussianStateSpace {
         seasonal_variance: f64,
         observation_variance: f64,
         initial_level: f64,
-        initial_seasonal_effects: Option<Vec<f64>>,
+        initial_seasonal_effects: Option<&Bound<'_, PyAny>>,
         initial_level_variance: f64,
         initial_seasonal_variance: f64,
     ) -> PyResult<Self> {
-        let effects = initial_seasonal_effects.unwrap_or_else(|| vec![0.0; period]);
+        let effects = match initial_seasonal_effects {
+            Some(effects) => real_vector(effects, "initial_seasonal_effects")?,
+            None => vec![0.0; period],
+        };
         Ok(Self {
             inner: CoreLinearGaussianStateSpace::seasonal_local_level(
                 period,
@@ -181,12 +195,12 @@ impl PyLinearGaussianStateSpace {
     }
 
     /// Return a model with a finite observation row for each training time.
-    fn with_observation_rows(&self, observation_rows: PyReadonlyArray2<'_, f64>) -> PyResult<Self> {
+    fn with_observation_rows(&self, observation_rows: &Bound<'_, PyAny>) -> PyResult<Self> {
         Ok(Self {
             inner: self
                 .inner
                 .clone()
-                .with_observation_rows(regression::rows(observation_rows))
+                .with_observation_rows(real_matrix(observation_rows, "observation_rows")?)
                 .map_err(state_space_error)?,
         })
     }
@@ -194,9 +208,9 @@ impl PyLinearGaussianStateSpace {
     fn filter(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
     ) -> PyResult<PyKalmanFilterResult> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         let result = py
             .allow_threads(|| self.inner.filter(&observations))
             .map_err(state_space_error)?;
@@ -206,9 +220,9 @@ impl PyLinearGaussianStateSpace {
     fn smooth(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
     ) -> PyResult<PyKalmanSmootherResult> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         let result = py
             .allow_threads(|| self.inner.smooth(&observations))
             .map_err(state_space_error)?;
@@ -219,12 +233,14 @@ impl PyLinearGaussianStateSpace {
     fn forecast(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         steps: usize,
-        future_observation_rows: Option<PyReadonlyArray2<'_, f64>>,
+        future_observation_rows: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyForecastResult> {
-        let observations = state_space_vector(observations);
-        let future_rows = future_observation_rows.map(regression::rows);
+        let observations = real_vector(observations, "observations")?;
+        let future_rows = future_observation_rows
+            .map(|rows| real_matrix(rows, "future_observation_rows"))
+            .transpose()?;
         if future_rows.as_ref().is_some_and(|rows| rows.len() != steps) {
             return Err(StateSpaceError::new_err(
                 "future observation row count must equal steps",

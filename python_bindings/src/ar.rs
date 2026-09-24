@@ -3,7 +3,7 @@ use crate::forecast_batch;
 use crate::forecast_support::*;
 use crate::StateSpaceError;
 use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_ar::{
@@ -27,17 +27,13 @@ pub(crate) struct PyNormalInverseGammaPrior {
 impl PyNormalInverseGammaPrior {
     #[new]
     fn new(
-        coefficient_mean: PyReadonlyArray1<'_, f64>,
-        coefficient_precision: PyReadonlyArray2<'_, f64>,
+        coefficient_mean: &Bound<'_, PyAny>,
+        coefficient_precision: &Bound<'_, PyAny>,
         variance_shape: f64,
         variance_scale: f64,
     ) -> PyResult<Self> {
-        let mean = coefficient_mean.as_array().to_vec();
-        let precision = coefficient_precision
-            .as_array()
-            .outer_iter()
-            .map(|row| row.to_vec())
-            .collect();
+        let mean = real_vector(coefficient_mean, "coefficient_mean")?;
+        let precision = real_matrix(coefficient_precision, "coefficient_precision")?;
         Ok(Self {
             inner: CoreNormalInverseGammaPrior::new(
                 mean,
@@ -179,12 +175,12 @@ impl PyBayesianAutoRegression {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         chains: usize,
         draws: usize,
         seed: u64,
     ) -> PyResult<PyBayesianArFit> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         let config = CoreBayesianArConfig {
             order: self.order,
             prior: self.prior.clone(),

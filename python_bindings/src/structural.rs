@@ -68,11 +68,15 @@ impl PyStructuralComponent {
         name: String,
         level_innovation: PyRef<'_, PyVarianceParameter>,
         slope_innovation: PyRef<'_, PyVarianceParameter>,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
         damping: f64,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         component(
             Component::trend(
                 name,
@@ -110,11 +114,15 @@ impl PyStructuralComponent {
     #[pyo3(signature=(name,initial_mean,initial_covariance,innovations=None))]
     fn regression(
         name: String,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
         innovations: Option<Vec<PyRef<'_, PyVarianceParameter>>>,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         let q = innovations
             .map(|v| v.iter().map(|q| q.inner.clone()).collect())
             .unwrap_or_else(|| vec![VarianceParameter::Fixed(0.0); initial_mean.len()]);
@@ -123,16 +131,20 @@ impl PyStructuralComponent {
     #[staticmethod]
     fn ar(
         name: String,
-        coefficients: Vec<f64>,
+        coefficients: &Bound<'_, PyAny>,
         innovation: PyRef<'_, PyVarianceParameter>,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         component(
             Component::ar(
                 name,
-                coefficients,
+                real_vector(coefficients, "coefficients")?,
                 innovation.inner.clone(),
                 initial_mean,
                 covariance,
@@ -201,8 +213,8 @@ impl PyStructuralModel {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: Vec<f64>,
-        exog: Option<Vec<Vec<f64>>>,
+        observations: &Bound<'_, PyAny>,
+        exog: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -210,6 +222,8 @@ impl PyStructuralModel {
         seed: u64,
         store_states: bool,
     ) -> PyResult<PyStructuralFit> {
+        let observations = real_vector(observations, "observations")?;
+        let exog = optional_matrix(exog, "exog")?;
         let config = SamplingConfig {
             chains,
             draws,
@@ -228,10 +242,11 @@ impl PyStructuralModel {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Vec<Vec<f64>>>,
+        exog: Option<&Bound<'_, PyAny>>,
         draws: usize,
         seed: u64,
     ) -> PyResult<PyStructuralForecast> {
+        let exog = optional_matrix(exog, "exog")?;
         let inner = py
             .allow_threads(|| {
                 self.inner
@@ -374,9 +389,10 @@ impl PyStructuralFit {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Vec<Vec<f64>>>,
+        exog: Option<&Bound<'_, PyAny>>,
         seed: u64,
     ) -> PyResult<PyStructuralForecast> {
+        let exog = optional_matrix(exog, "exog")?;
         let inner = py
             .allow_threads(|| self.inner.forecast(steps, exog.as_deref(), seed))
             .map_err(state_space_error)?;

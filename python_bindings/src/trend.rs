@@ -3,7 +3,7 @@ use crate::forecast_support::*;
 use crate::StateSpaceError;
 use crate::{forecast_batch, regression};
 use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
@@ -170,16 +170,16 @@ impl PyBayesianLocalLinearTrend {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
-        exog: Option<PyReadonlyArray2<'_, f64>>,
+        exog: Option<&Bound<'_, PyAny>>,
         coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
     ) -> PyResult<PyObject> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         if let Some(exog) = exog {
             let config = regression::config(
                 CoreLinearGaussianStateSpace::new(

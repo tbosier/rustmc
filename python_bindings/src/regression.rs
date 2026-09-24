@@ -1,7 +1,7 @@
 use crate::forecast_support::*;
 use crate::StateSpaceError;
 use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -21,12 +21,9 @@ pub(crate) struct PyGaussianCoefficientPrior {
 #[pymethods]
 impl PyGaussianCoefficientPrior {
     #[new]
-    fn new(
-        mean: PyReadonlyArray1<'_, f64>,
-        covariance: PyReadonlyArray2<'_, f64>,
-    ) -> PyResult<Self> {
-        let mean = state_space_vector(mean);
-        let (covariance, _) = state_space_matrix("coefficient covariance", covariance)?;
+    fn new(mean: &Bound<'_, PyAny>, covariance: &Bound<'_, PyAny>) -> PyResult<Self> {
+        let mean = real_vector(mean, "mean")?;
+        let covariance = real_matrix(covariance, "covariance")?.concat();
         Ok(Self {
             inner: GaussianCoefficientPrior::new(mean, covariance).map_err(state_space_error)?,
         })
@@ -40,14 +37,6 @@ impl PyGaussianCoefficientPrior {
         let p = self.inner.mean.len();
         Array2::from_shape_fn((p, p), |(i, j)| self.inner.covariance[i * p + j]).into_pyarray(py)
     }
-}
-pub(crate) fn rows(array: PyReadonlyArray2<'_, f64>) -> Vec<Vec<f64>> {
-    array
-        .as_array()
-        .rows()
-        .into_iter()
-        .map(|r| r.iter().copied().collect())
-        .collect()
 }
 
 #[pyfunction]
@@ -69,7 +58,7 @@ fn fourier_design<'py>(
 pub(crate) fn fit(
     py: Python<'_>,
     observations: Vec<f64>,
-    exog: PyReadonlyArray2<'_, f64>,
+    exog: &Bound<'_, PyAny>,
     prior: Option<PyRef<'_, PyGaussianCoefficientPrior>>,
     mut config: RegressionConfig,
 ) -> PyResult<PyObject> {
@@ -81,7 +70,7 @@ pub(crate) fn fit(
         })?
         .inner
         .clone();
-    let design = rows(exog);
+    let design = real_matrix(exog, "exog")?;
     let posterior = py
         .allow_threads(|| core::fit_regression(&observations, &design, &config))
         .map_err(state_space_error)?;
@@ -219,11 +208,12 @@ impl PyBayesianRegressionFit {
         py: Python<'_>,
         steps: usize,
         seed: u64,
-        exog: Option<PyReadonlyArray2<'_, f64>>,
+        exog: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyBayesianRegressionForecast> {
-        let design = rows(exog.ok_or_else(|| {
+        let exog = exog.ok_or_else(|| {
             StateSpaceError::new_err("future exog is required for regression forecasts")
-        })?);
+        })?;
+        let design = real_matrix(exog, "exog")?;
         if design.len() != steps {
             return Err(StateSpaceError::new_err(
                 "future exog row count must equal steps",

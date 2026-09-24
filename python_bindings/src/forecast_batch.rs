@@ -11,7 +11,7 @@ use super::seasonal::{
 use super::trend::{
     PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
 };
-use crate::forecast_support::{DiagnosticsReport, ForecastFit};
+use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit};
 use crate::{forecast_diagnostics, StateSpaceError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -380,6 +380,11 @@ fn run_cells<T: Sync, R: Send>(
     }
 }
 
+/// A cell's input conversion error as the message stored for that cell.
+fn cell_input<T>(py: Python<'_>, input: PyResult<T>) -> Result<T, String> {
+    input.map_err(|error| error.value(py).to_string())
+}
+
 fn check_errors(errors: &str) -> PyResult<()> {
     if errors != "raise" && errors != "collect" {
         return Err(PyValueError::new_err("errors must be 'raise' or 'collect'"));
@@ -452,9 +457,7 @@ pub(crate) fn fit_batch(
     let mut cells = Vec::with_capacity(ids.len());
     for (index, row) in rows.iter().enumerate() {
         let input = (|| -> Result<(Vec<f64>, Config), String> {
-            let y = row
-                .extract::<Vec<f64>>()
-                .map_err(|e| format!("invalid observations: {e}"))?;
+            let y = cell_input(py, real_vector(row, "observations"))?;
             let config = if let Some(models) = &models {
                 let model = &models[index];
                 if model.is_none() {
@@ -493,9 +496,7 @@ pub(crate) fn fit_batch(
             let config =
                 match (design, prior) {
                     (Some(design), Some(prior)) => {
-                        let design = design
-                            .extract::<Vec<Vec<f64>>>()
-                            .map_err(|error| format!("invalid exog: {error}"))?;
+                        let design = cell_input(py, real_matrix(design, "exog"))?;
                         let prior = prior
                             .extract::<PyRef<'_, PyGaussianCoefficientPrior>>()
                             .map_err(|error| format!("invalid coefficient prior: {error}"))?
@@ -612,10 +613,7 @@ impl PyForecastBatchFit {
                     .as_ref()
                     .map(|items| &items[index])
                     .filter(|item| !item.is_none())
-                    .map(|item| {
-                        item.extract::<Vec<Vec<f64>>>()
-                            .map_err(|error| format!("invalid future exog: {error}"))
-                    })
+                    .map(|item| cell_input(py, real_matrix(item, "future exog")))
                     .transpose()
             })
             .collect::<Vec<_>>();

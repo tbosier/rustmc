@@ -2,7 +2,7 @@
 use crate::forecast_support::*;
 use crate::InferenceError;
 use ndarray::{Array2, Array4};
-use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4, PyReadonlyArray1};
+use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
@@ -133,7 +133,7 @@ impl PyBayesianHierarchicalMean {
     fn fit(
         &self,
         py: Python<'_>,
-        series: Vec<PyReadonlyArray1<'_, f64>>,
+        series: &Bound<'_, PyAny>,
         group_index: Vec<usize>,
         program_names: Option<Vec<String>>,
         group_names: Option<Vec<String>>,
@@ -144,9 +144,10 @@ impl PyBayesianHierarchicalMean {
         seed: u64,
     ) -> PyResult<PyBayesianHierarchicalMeanFit> {
         let series = series
-            .into_iter()
-            .map(state_space_vector)
-            .collect::<Vec<_>>();
+            .try_iter()?
+            .enumerate()
+            .map(|(index, item)| real_vector(&item?, &format!("series[{index}]")))
+            .collect::<PyResult<Vec<_>>>()?;
         let program_count = series.len();
         if group_index.len() != program_count {
             return Err(InferenceError::new_err(
