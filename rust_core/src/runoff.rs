@@ -12,10 +12,10 @@ use rand_distr::{Beta, Binomial, Distribution, Gamma};
 use rayon::prelude::*;
 
 use crate::count_sampling::MAX_EXACT_COUNT;
+use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
 use crate::seeding::chain_seed;
 
 const FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46; // "RUNOFF_F"
-const MAX_RETAINED_VALUES: usize = 25_000_000;
 
 /// Why a runoff fit or query failed. The message is the whole explanation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,14 +47,9 @@ fn numerical(message: impl Into<String>) -> RunoffError {
 }
 
 fn validate_allocation(factors: &[usize]) -> Result<(), RunoffError> {
-    if factors
-        .iter()
-        .try_fold(1_usize, |n, factor| n.checked_mul(*factor))
-        .is_none_or(|n| n > MAX_RETAINED_VALUES)
-    {
-        return Err(invalid("requested runoff allocation exceeds 25 million values; reduce cohorts, lags, chains, draws, or horizon"));
-    }
-    Ok(())
+    checked_value_count("runoff", factors, MAX_MATERIALIZED_VALUES)
+        .map(|_| ())
+        .map_err(|error| invalid(error.to_string()))
 }
 
 #[derive(Debug, Clone)]
@@ -825,7 +820,7 @@ mod tests {
         cfg.chains = usize::MAX;
         assert!(fit_runoff(&triangle, &cfg).is_err());
         cfg.chains = 1;
-        cfg.draws = MAX_RETAINED_VALUES;
+        cfg.draws = MAX_MATERIALIZED_VALUES;
         assert!(fit_runoff(&triangle, &cfg).is_err());
     }
 

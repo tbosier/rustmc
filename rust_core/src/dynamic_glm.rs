@@ -4,6 +4,7 @@
 //! deviation; group random walks can additionally share a common random walk.
 use crate::autodiff::softplus;
 use crate::bayesian_forecast::BayesianForecastError as Error;
+use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
 use crate::observation::sigmoid;
 use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
@@ -991,16 +992,9 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
     crate::count_sampling::poisson(rate, rng).map_err(|e| numerical(e.to_string()))
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
-    let n = factors
-        .iter()
-        .try_fold(1usize, |a, b| a.checked_mul(*b))
-        .ok_or_else(|| invalid("allocation overflow"))?;
-    if n > 25_000_000 {
-        return Err(invalid(
-            "requested retained arrays exceed 25 million values",
-        ));
-    }
-    Ok(())
+    checked_value_count("dynamic GLM", factors, MAX_MATERIALIZED_VALUES)
+        .map(|_| ())
+        .map_err(|error| invalid(error.to_string()))
 }
 fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
     StandardNormal.sample(rng)
