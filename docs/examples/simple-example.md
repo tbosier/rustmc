@@ -66,9 +66,9 @@ print(f"  Prior y_hat range:      [{prior_pred['obs'].min():.1f}, {prior_pred['o
 ```
 
 ```text
-  Prior beta  ~ N(0, 5):  mean=0.13, std=5.08
-  Prior sigma ~ HN(2):    mean=1.58, std=1.23
-  Prior y_hat range:      [-61.4, 56.1]
+  Prior beta  ~ N(0, 5):  mean=-0.15, std=4.82
+  Prior sigma ~ HN(2):    mean=1.65, std=1.19
+  Prior y_hat range:      [-54.9, 57.6]
 ```
 
 ## Sample the posterior
@@ -89,8 +89,8 @@ print(fit.summary())
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
 ──────────────────────────────────────────────────────────────────────────────────────────────
-beta           2.3867   0.0662     2.2612     2.5093       7253       4890   1.0015   0.000776
-sigma          1.4658   0.0466     1.3787     1.5509       5516       5066   1.0002   0.000629
+beta           2.3866   0.0654     2.2660     2.5110       7487       5430   1.0000   0.000756
+sigma          1.4663   0.0467     1.3735     1.5502       7526       5332   1.0003   0.000541
 ──────────────────────────────────────────────────────────────────────────────────────────────
 Mean accept rate: 0.91  │  Divergences: 0
 ```
@@ -116,9 +116,9 @@ print(f"Step sizes: {[round(s, 4) for s in fit.step_sizes()]}")
 ```
 
 ```text
-True beta  = 2.5,  estimated = 2.3867 +/- 0.0662
-True sigma = 1.5, estimated = 1.4658 +/- 0.0466
-Step sizes: [0.9439, 0.7827, 1.0519, 0.9063]
+True beta  = 2.5,  estimated = 2.3866 +/- 0.0654
+True sigma = 1.5, estimated = 1.4663 +/- 0.0467
+Step sizes: [0.7992, 0.9171, 0.9021, 0.96]
 ```
 
 ## Posterior predictive check
@@ -138,8 +138,8 @@ print(f"  PPC p-value (std): {ppc_p:.3f}")
 
 ```text
   y_rep shape:  (500, 500)
-  y_rep mean:   0.0117  (data mean: 0.0648)
-  y_rep std:    2.7596   (data std:  2.7586)
+  y_rep mean:   0.0180  (data mean: 0.0648)
+  y_rep std:    2.7615   (data std:  2.7586)
   PPC p-value (std): 0.508
 ```
 

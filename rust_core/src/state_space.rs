@@ -14,6 +14,8 @@ use std::fmt;
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
+use crate::forecast_common::cholesky;
+
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 const LOG_2_PI: f64 = 1.8378770664093453;
 
@@ -50,6 +52,24 @@ impl fmt::Display for StateSpaceError {
 
 impl Error for StateSpaceError {}
 
+impl From<crate::bayesian_forecast::BayesianForecastError> for StateSpaceError {
+    fn from(error: crate::bayesian_forecast::BayesianForecastError) -> Self {
+        use crate::bayesian_forecast::BayesianForecastError as Source;
+        match error {
+            Source::InvalidConfiguration(message) | Source::InvalidObservations(message) => {
+                Self::InvalidParameter(message)
+            }
+            Source::NumericalFailure(message) => Self::NumericalFailure(message),
+        }
+    }
+}
+
+impl From<crate::forecast_common::AllocationLimitError> for StateSpaceError {
+    fn from(error: crate::forecast_common::AllocationLimitError) -> Self {
+        Self::InvalidParameter(error.to_string())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct KalmanFilterResult {
     pub log_likelihood: f64,
@@ -79,6 +99,51 @@ pub struct ForecastResult {
     pub cumulative_observation_means: Vec<f64>,
     /// Prefix-sum variances, including all cross-horizon covariance terms.
     pub cumulative_observation_variances: Vec<f64>,
+}
+
+impl ForecastResult {
+    /// Pointwise central Gaussian interval for each future observation,
+    /// conditional on the fixed model parameters.
+    pub fn observation_interval(
+        &self,
+        level: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+        gaussian_interval(&self.observation_means, &self.observation_variances, level)
+    }
+
+    /// Central Gaussian interval for the cumulative observation 1..h.
+    pub fn cumulative_observation_interval(
+        &self,
+        level: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+        gaussian_interval(
+            &self.cumulative_observation_means,
+            &self.cumulative_observation_variances,
+            level,
+        )
+    }
+}
+
+/// `mean -/+ z * sd` with `z` the `(1 + level) / 2` normal quantile.
+fn gaussian_interval(
+    means: &[f64],
+    variances: &[f64],
+    level: f64,
+) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+    if !level.is_finite() || level <= 0.0 || level >= 1.0 {
+        return Err(StateSpaceError::InvalidParameter(
+            "level must be finite and strictly between 0 and 1".into(),
+        ));
+    }
+    let critical = crate::diagnostics::inv_normal_cdf(0.5 + level / 2.0);
+    Ok(means
+        .iter()
+        .zip(variances)
+        .map(|(&mean, &variance)| {
+            let half_width = critical * variance.sqrt();
+            (mean - half_width, mean + half_width)
+        })
+        .unzip())
 }
 
 #[derive(Debug, Clone)]
@@ -259,9 +324,11 @@ impl LinearGaussianStateSpace {
         }
 
         let dimension = period;
-        let square = dimension.checked_mul(dimension).ok_or_else(|| {
-            StateSpaceError::InvalidDimension("seasonal period is too large".into())
-        })?;
+        let square = crate::forecast_common::checked_value_count(
+            "seasonal state-space matrices",
+            &[dimension, dimension],
+            crate::forecast_common::MAX_MATERIALIZED_VALUES,
+        )?;
         let mut transition = vec![0.0; square];
         transition[0] = 1.0;
         for column in 1..dimension {
@@ -377,6 +444,21 @@ impl LinearGaussianStateSpace {
         Ok(self)
     }
 
+    /// Replace the per-time noise variances in place, as a sampler does on
+    /// every sweep, with the same validation as `with_observation_variances`.
+    pub(crate) fn set_observation_variances(
+        &mut self,
+        variances: Vec<f64>,
+    ) -> Result<(), StateSpaceError> {
+        if variances.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(StateSpaceError::InvalidVariance(
+                "observation variances must be finite and positive".into(),
+            ));
+        }
+        self.observation_variances = Some(variances);
+        Ok(())
+    }
+
     pub(crate) fn has_observation_variances(&self) -> bool {
         self.observation_variances.is_some()
     }
@@ -409,7 +491,13 @@ impl LinearGaussianStateSpace {
             check_finite("simulated state", &draw)?;
             Ok(draw)
         } else {
-            sample_multivariate_normal(&mean, &self.process_covariance, self.dimension, rng)
+            sample_multivariate_normal(
+                "process covariance",
+                &mean,
+                &self.process_covariance,
+                self.dimension,
+                rng,
+            )
         }
     }
 
@@ -418,6 +506,7 @@ impl LinearGaussianStateSpace {
         rng: &mut R,
     ) -> Result<Vec<f64>, StateSpaceError> {
         sample_multivariate_normal(
+            "initial covariance",
             &self.initial_mean,
             &self.initial_covariance,
             self.dimension,
@@ -517,7 +606,8 @@ impl LinearGaussianStateSpace {
         Ok(model)
     }
 
-    pub fn filter(&self, observations: &[f64]) -> Result<KalmanFilterResult, StateSpaceError> {
+    /// Check a training series against the model's per-time rows and noise.
+    fn validate_series(&self, observations: &[f64]) -> Result<(), StateSpaceError> {
         validate_observations(observations)?;
         if let Some(rows) = &self.observation_rows {
             self.validate_rows(rows, observations.len())?;
@@ -529,115 +619,26 @@ impl LinearGaussianStateSpace {
                 observations.len(),
             )?;
         }
-        let d = self.dimension;
-        let mut previous_mean = self.initial_mean.clone();
-        let mut previous_covariance = self.initial_covariance.clone();
-        let mut predicted_means = Vec::with_capacity(observations.len());
-        let mut predicted_covariances = Vec::with_capacity(observations.len());
-        let mut filtered_means = Vec::with_capacity(observations.len());
-        let mut filtered_covariances = Vec::with_capacity(observations.len());
-        let mut log_likelihood = 0.0;
+        Ok(())
+    }
 
-        for (time, &value) in observations.iter().enumerate() {
-            let noise_variance = self
-                .observation_variances
-                .as_ref()
-                .map_or(self.observation_variance, |v| v[time]);
-            let observation = self
-                .observation_rows
-                .as_ref()
-                .map_or(self.observation.as_slice(), |rows| rows[time].as_slice());
-            let predicted_mean = mat_vec(&self.transition, &previous_mean, d);
-            let mut predicted_covariance = mat_mul_transpose_right(
-                &mat_mul(&self.transition, &previous_covariance, d),
-                &self.transition,
-                d,
-            );
-            add_assign(&mut predicted_covariance, &self.process_covariance);
-            symmetrize(&mut predicted_covariance, d);
-            check_computed(
-                "predicted state",
-                &predicted_mean,
-                &predicted_covariance,
-                time,
-            )?;
-
-            let (filtered_mean, filtered_covariance) = if value.is_nan() {
-                (predicted_mean.clone(), predicted_covariance.clone())
-            } else {
-                let ph = mat_vec(&predicted_covariance, observation, d);
-                let innovation_variance = dot(observation, &ph) + noise_variance;
-                if !innovation_variance.is_finite() || innovation_variance <= 0.0 {
-                    return Err(StateSpaceError::NumericalFailure(format!(
-                        "innovation variance at time {time} is not finite and positive"
-                    )));
-                }
-                let predicted_observation = dot(observation, &predicted_mean);
-                let innovation = value - predicted_observation;
-                if !innovation.is_finite() {
-                    return Err(StateSpaceError::NumericalFailure(format!(
-                        "innovation at time {time} is not finite"
-                    )));
-                }
-                let gain: Vec<f64> = ph.iter().map(|entry| entry / innovation_variance).collect();
-                let mut mean = predicted_mean.clone();
-                for i in 0..d {
-                    mean[i] += gain[i] * innovation;
-                }
-
-                // Joseph form is more resistant to roundoff than P - K H P.
-                let mut update = identity(d);
-                for i in 0..d {
-                    for j in 0..d {
-                        update[i * d + j] -= gain[i] * observation[j];
-                    }
-                }
-                let left = mat_mul(&update, &predicted_covariance, d);
-                let mut covariance = mat_mul_transpose_right(&left, &update, d);
-                for i in 0..d {
-                    for j in 0..d {
-                        covariance[i * d + j] += gain[i] * noise_variance * gain[j];
-                    }
-                }
-                symmetrize(&mut covariance, d);
-                check_computed("filtered state", &mean, &covariance, time)?;
-
-                let contribution = -0.5
-                    * (LOG_2_PI
-                        + innovation_variance.ln()
-                        + innovation * innovation / innovation_variance);
-                if !contribution.is_finite() {
-                    return Err(StateSpaceError::NumericalFailure(format!(
-                        "log-likelihood contribution at time {time} is not finite"
-                    )));
-                }
-                log_likelihood += contribution;
-                (mean, covariance)
-            };
-
-            predicted_means.push(predicted_mean);
-            predicted_covariances.push(predicted_covariance);
-            filtered_means.push(filtered_mean.clone());
-            filtered_covariances.push(filtered_covariance.clone());
-            previous_mean = filtered_mean;
-            previous_covariance = filtered_covariance;
-        }
-        if !log_likelihood.is_finite() {
-            return Err(StateSpaceError::NumericalFailure(
-                "total log likelihood is not finite".into(),
-            ));
-        }
-        Ok(KalmanFilterResult {
-            log_likelihood,
-            predicted_means,
-            predicted_covariances,
-            filtered_means,
-            filtered_covariances,
-        })
+    /// Kalman filter moments and log likelihood.
+    ///
+    /// They come from the same rank-revealing square-root pass as
+    /// [`smooth`](Self::smooth) and FFBS, so all three agree. A covariance-form
+    /// update, even in Joseph form, loses small posterior directions to
+    /// roundoff when a diffuse prior meets nearly collinear observation rows,
+    /// and then biases the means and the likelihood.
+    pub fn filter(&self, observations: &[f64]) -> Result<KalmanFilterResult, StateSpaceError> {
+        self.validate_series(observations)?;
+        self.square_root_pass(observations, PassOutputs::Filter)?
+            .take_filter_result()
     }
 
     pub fn smooth(&self, observations: &[f64]) -> Result<KalmanSmootherResult, StateSpaceError> {
-        let filter = self.filter(observations)?;
+        self.validate_series(observations)?;
+        let mut pass = self.square_root_pass(observations, PassOutputs::Smooth)?;
+        let filter = pass.take_filter_result()?;
         let count = observations.len();
         if count == 0 {
             return Ok(KalmanSmootherResult {
@@ -647,7 +648,11 @@ impl LinearGaussianStateSpace {
             });
         }
         let d = self.dimension;
-        let (backward, mut smoothed_factor) = self.backward_parameters(observations)?;
+        let SquareRootPass {
+            conditionals: backward,
+            terminal_factor: mut smoothed_factor,
+            ..
+        } = pass;
         let mut smoothed_means = filter.filtered_means.clone();
         let mut smoothed_covariances = filter.filtered_covariances.clone();
         smoothed_covariances[count - 1] = root_covariance(&smoothed_factor, d, d);
@@ -705,7 +710,30 @@ impl LinearGaussianStateSpace {
                 "future observation rows are required for a time-varying design".into(),
             ));
         }
-        self.forecast_with_observation_rows(observations, &vec![self.observation.clone(); steps])
+        let joint = self.reserve_forecast(steps)?;
+        let mut rows = try_with_capacity(steps, "forecast observation rows")?;
+        rows.resize(steps, self.observation.clone());
+        self.forecast_into(observations, &rows, joint)
+    }
+
+    /// Storage for the `steps^2` joint observation covariance, the largest
+    /// single allocation of a forecast, reserved fallibly: an allocation
+    /// that fails aborts the process, so a horizon too large for memory
+    /// must be refused before it is attempted. There is no fixed cap on the
+    /// horizon beyond what can be allocated.
+    fn reserve_forecast(&self, steps: usize) -> Result<Vec<f64>, StateSpaceError> {
+        let d = self.dimension;
+        let too_large = || {
+            StateSpaceError::InvalidParameter(format!(
+                "a forecast of {steps} steps is too large to represent; reduce the horizon"
+            ))
+        };
+        let square = steps.checked_mul(steps).ok_or_else(too_large)?;
+        steps
+            .checked_mul(d)
+            .and_then(|values| values.checked_mul(d))
+            .ok_or_else(too_large)?;
+        try_with_capacity(square, "forecast joint observation covariance")
     }
 
     /// Forecast with a row for each future step, continuing after the final
@@ -714,6 +742,16 @@ impl LinearGaussianStateSpace {
         &self,
         observations: &[f64],
         future_rows: &[Vec<f64>],
+    ) -> Result<ForecastResult, StateSpaceError> {
+        let joint = self.reserve_forecast(future_rows.len())?;
+        self.forecast_into(observations, future_rows, joint)
+    }
+
+    fn forecast_into(
+        &self,
+        observations: &[f64],
+        future_rows: &[Vec<f64>],
+        mut observation_covariance: Vec<f64>,
     ) -> Result<ForecastResult, StateSpaceError> {
         let steps = future_rows.len();
         self.validate_rows(future_rows, steps)?;
@@ -726,10 +764,10 @@ impl LinearGaussianStateSpace {
             _ => (self.initial_mean.clone(), self.initial_covariance.clone()),
         };
         let d = self.dimension;
-        let mut state_means = Vec::with_capacity(steps);
-        let mut state_covariances = Vec::with_capacity(steps);
-        let mut observation_means = Vec::with_capacity(steps);
-        let mut observation_variances = Vec::with_capacity(steps);
+        let mut state_means = try_with_capacity(steps, "forecast state means")?;
+        let mut state_covariances = try_with_capacity(steps, "forecast state covariances")?;
+        let mut observation_means = try_with_capacity(steps, "forecast observation means")?;
+        let mut observation_variances = try_with_capacity(steps, "forecast observation variances")?;
         for (step, observation) in future_rows.iter().enumerate() {
             let mean = mat_vec(&self.transition, &previous_mean, d);
             let mut covariance = mat_mul_transpose_right(
@@ -759,10 +797,7 @@ impl LinearGaussianStateSpace {
             previous_covariance = covariance;
         }
 
-        let square = steps.checked_mul(steps).ok_or_else(|| {
-            StateSpaceError::InvalidDimension("forecast horizon is too large".into())
-        })?;
-        let mut observation_covariance = vec![0.0; square];
+        observation_covariance.resize(steps * steps, 0.0);
         for first in 0..steps {
             let mut cross_covariance = state_covariances[first].clone();
             for second in first..steps {
@@ -819,22 +854,46 @@ impl LinearGaussianStateSpace {
         })
     }
 
-    /// Propagate covariance roots so rank is determined before squaring them.
-    /// Covariance roundoff is O(epsilon), which cannot distinguish a true small
-    /// eigenvalue from a lost deterministic direction. In root coordinates the
-    /// same small eigenvalue has O(sqrt(epsilon)) amplitude and is retained.
-    fn backward_parameters(
+    /// Forward-filter in square-root form, recording the backward-sampling
+    /// conditionals as it goes.
+    ///
+    /// Covariance roots are propagated so rank is determined before squaring
+    /// them. Covariance roundoff is O(epsilon), which cannot distinguish a true
+    /// small eigenvalue from a lost deterministic direction. In root
+    /// coordinates the same small eigenvalue has O(sqrt(epsilon)) amplitude and
+    /// is retained.
+    ///
+    /// The filtered means and the log likelihood are carried in the same pass.
+    /// The mean update needs only the gain `P_pred h / S`, which the root update
+    /// forms as `L (L' h) / (r + |L' h|^2)`. `outputs` selects what else is
+    /// kept: the per-time covariances for the filter, the backward
+    /// conditionals for smoothing and FFBS.
+    fn square_root_pass(
         &self,
         observations: &[f64],
-    ) -> Result<(Vec<BackwardConditional>, Vec<f64>), StateSpaceError> {
+        outputs: PassOutputs,
+    ) -> Result<SquareRootPass, StateSpaceError> {
+        let record_roots = outputs != PassOutputs::Sample;
+        let record_conditionals = outputs != PassOutputs::Filter;
         let d = self.dimension;
         let width = 2 * d;
         let failure =
-            || StateSpaceError::NumericalFailure("square-root backward conditioning failed".into());
+            || StateSpaceError::NumericalFailure("square-root Kalman recursion failed".into());
         let mut filtered = cholesky(&self.initial_covariance, d).map_err(|_| failure())?;
         let process = process_root(&self.process_covariance, d).map_err(|_| failure())?;
+        // An invertible identity transition with no innovations conveys the
+        // entire state exactly, including arbitrarily small modes.
+        let static_state =
+            self.transition == identity(d) && self.process_covariance.iter().all(|x| *x == 0.0);
         let mut backward = Vec::with_capacity(observations.len());
+        let mut filtered_means = Vec::with_capacity(observations.len() + 1);
+        let mut predicted_means = Vec::with_capacity(observations.len());
+        let mut predicted_covariances = Vec::new();
+        let mut filtered_covariances = Vec::new();
+        let mut log_likelihood = 0.0;
+        filtered_means.push(self.initial_mean.clone());
         for (time, value) in observations.iter().enumerate() {
+            let predicted_mean = mat_vec(&self.transition, &filtered_means[time], d);
             let propagated = mat_mul(&self.transition, &filtered, d);
             let mut joint = vec![0.0; d * width];
             for i in 0..d {
@@ -842,48 +901,14 @@ impl LinearGaussianStateSpace {
                 joint[i * width + d..(i + 1) * width].copy_from_slice(&process[i * d..(i + 1) * d]);
             }
             let roots = orthogonal_rows(&joint, d, width).map_err(|_| failure())?;
-            let rank = roots.indices.len();
-            let mut projection = vec![0.0; d * rank];
-            let mut residual = vec![0.0; d * width];
-            for i in 0..d {
-                residual[i * width..i * width + d].copy_from_slice(&filtered[i * d..(i + 1) * d]);
-                for j in 0..rank {
-                    let coefficient: f64 = (0..d)
-                        .map(|k| filtered[i * d + k] * roots.basis[j * width + k])
-                        .sum();
-                    projection[i * rank + j] = coefficient;
-                    for k in 0..width {
-                        residual[i * width + k] -= coefficient * roots.basis[j * width + k];
-                    }
-                }
+            if record_conditionals {
+                backward.push(self.backward_conditional(&filtered, &roots, static_state, time)?);
             }
-            let mut gain = vec![0.0; d * d];
-            for row in 0..d {
-                // The independent rows of the root form a lower triangular
-                // matrix in pivot order. Solve its transpose, not P_pred.
-                let mut solution = projection[row * rank..(row + 1) * rank].to_vec();
-                for i in (0..rank).rev() {
-                    for j in i + 1..rank {
-                        solution[i] -= roots.factor[roots.indices[j] * d + i] * solution[j];
-                    }
-                    solution[i] /= roots.factor[roots.indices[i] * d + i];
-                    gain[row * d + roots.indices[i]] = solution[i];
-                }
-            }
-            // An invertible identity transition with no innovations conveys
-            // the entire state exactly, including arbitrarily small modes.
-            if self.transition == identity(d) && self.process_covariance.iter().all(|x| *x == 0.0) {
-                gain = identity(d);
-                residual.fill(0.0);
-            }
-            let covariance = root_covariance(&residual, d, width);
-            check_computed("backward conditional", &gain, &covariance, time)?;
-            backward.push(BackwardConditional {
-                gain,
-                factor: residual,
-            });
             filtered = roots.factor;
-            if value.is_finite() {
+            if record_roots {
+                predicted_covariances.push(root_covariance(&filtered, d, d));
+            }
+            let filtered_mean = if value.is_finite() {
                 let h = self
                     .observation_rows
                     .as_ref()
@@ -899,6 +924,14 @@ impl LinearGaussianStateSpace {
                 let gain: Vec<f64> = (0..d)
                     .map(|i| (0..d).map(|j| filtered[i * d + j] * u[j]).sum::<f64>() / variance)
                     .collect();
+                let innovation = value - dot(h, &predicted_mean);
+                let standardized = innovation / variance.sqrt();
+                log_likelihood -= 0.5 * (LOG_2_PI + variance.ln() + standardized * standardized);
+                let mean: Vec<f64> = predicted_mean
+                    .iter()
+                    .zip(&gain)
+                    .map(|(predicted, gain)| predicted + gain * innovation)
+                    .collect();
                 let mut update = vec![0.0; d * (d + 1)];
                 for i in 0..d {
                     for j in 0..d {
@@ -909,9 +942,86 @@ impl LinearGaussianStateSpace {
                 filtered = orthogonal_rows(&update, d, d + 1)
                     .map_err(|_| failure())?
                     .factor;
+                mean
+            } else {
+                predicted_mean.clone()
+            };
+            if predicted_mean
+                .iter()
+                .chain(&filtered_mean)
+                .any(|value| !value.is_finite())
+            {
+                return Err(StateSpaceError::NumericalFailure(format!(
+                    "filtered state mean at index {time} contains a non-finite value"
+                )));
+            }
+            if record_roots {
+                filtered_covariances.push(root_covariance(&filtered, d, d));
+            }
+            predicted_means.push(predicted_mean);
+            filtered_means.push(filtered_mean);
+        }
+        Ok(SquareRootPass {
+            conditionals: backward,
+            terminal_factor: filtered,
+            filtered_means,
+            predicted_means,
+            predicted_covariances,
+            filtered_covariances,
+            log_likelihood,
+        })
+    }
+
+    /// The conditional of the previous state given the current one and the
+    /// past, from the previous filtered root and the orthogonalized joint
+    /// root of the prediction.
+    fn backward_conditional(
+        &self,
+        filtered: &[f64],
+        roots: &OrthogonalRows,
+        static_state: bool,
+        time: usize,
+    ) -> Result<BackwardConditional, StateSpaceError> {
+        let d = self.dimension;
+        let width = 2 * d;
+        let rank = roots.indices.len();
+        let mut projection = vec![0.0; d * rank];
+        let mut residual = vec![0.0; d * width];
+        for i in 0..d {
+            residual[i * width..i * width + d].copy_from_slice(&filtered[i * d..(i + 1) * d]);
+            for j in 0..rank {
+                let coefficient: f64 = (0..d)
+                    .map(|k| filtered[i * d + k] * roots.basis[j * width + k])
+                    .sum();
+                projection[i * rank + j] = coefficient;
+                for k in 0..width {
+                    residual[i * width + k] -= coefficient * roots.basis[j * width + k];
+                }
             }
         }
-        Ok((backward, filtered))
+        let mut gain = vec![0.0; d * d];
+        for row in 0..d {
+            // The independent rows of the root form a lower triangular
+            // matrix in pivot order. Solve its transpose, not P_pred.
+            let mut solution = projection[row * rank..(row + 1) * rank].to_vec();
+            for i in (0..rank).rev() {
+                for j in i + 1..rank {
+                    solution[i] -= roots.factor[roots.indices[j] * d + i] * solution[j];
+                }
+                solution[i] /= roots.factor[roots.indices[i] * d + i];
+                gain[row * d + roots.indices[i]] = solution[i];
+            }
+        }
+        if static_state {
+            gain = identity(d);
+            residual.fill(0.0);
+        }
+        let covariance = root_covariance(&residual, d, width);
+        check_computed("backward conditional", &gain, &covariance, time)?;
+        Ok(BackwardConditional {
+            gain,
+            factor: residual,
+        })
     }
 
     /// Draw the initial state and all observation-time states jointly.
@@ -920,24 +1030,26 @@ impl LinearGaussianStateSpace {
         observations: &[f64],
         rng: &mut R,
     ) -> Result<Vec<Vec<f64>>, StateSpaceError> {
-        let filter = self.filter(observations)?;
+        self.validate_series(observations)?;
         let count = observations.len();
         let d = self.dimension;
-        let mut filtered_means = Vec::with_capacity(count + 1);
-        filtered_means.push(self.initial_mean.clone());
-        filtered_means.extend(filter.filtered_means.iter().cloned());
-
-        let (backward, terminal_factor) = self.backward_parameters(observations)?;
+        let SquareRootPass {
+            conditionals,
+            terminal_factor,
+            filtered_means,
+            predicted_means,
+            ..
+        } = self.square_root_pass(observations, PassOutputs::Sample)?;
         let mut states = vec![vec![0.0; d]; count + 1];
         states[count] = sample_from_factor(&filtered_means[count], &terminal_factor, d, d, rng)?;
 
         for index in (0..count).rev() {
-            let conditional = &backward[index];
+            let conditional = &conditionals[index];
             let gain = &conditional.gain;
 
             let delta: Vec<f64> = states[index + 1]
                 .iter()
-                .zip(&filter.predicted_means[index])
+                .zip(&predicted_means[index])
                 .map(|(sampled, predicted)| sampled - predicted)
                 .collect();
             let correction = mat_vec(gain, &delta, d);
@@ -951,6 +1063,62 @@ impl LinearGaussianStateSpace {
                 sample_from_factor(&conditional_mean, &conditional.factor, d, 2 * d, rng)?;
         }
         Ok(states)
+    }
+}
+
+/// What a square-root pass keeps besides the means and log likelihood.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PassOutputs {
+    /// Per-time predicted and filtered covariances.
+    Filter,
+    /// Covariances and backward conditionals.
+    Smooth,
+    /// Backward conditionals only.
+    Sample,
+}
+
+/// One square-root forward pass: the backward conditionals, the terminal
+/// filtered root, and the means `x[-1], x[0 | 0], ..., x[T-1 | T-1]` with the
+/// one-step predictions `x[0 | -1], ..., x[T-1 | T-2]`. The per-time covariances are
+/// empty unless the pass recorded them.
+struct SquareRootPass {
+    conditionals: Vec<BackwardConditional>,
+    terminal_factor: Vec<f64>,
+    filtered_means: Vec<Vec<f64>>,
+    predicted_means: Vec<Vec<f64>>,
+    predicted_covariances: Vec<Vec<f64>>,
+    filtered_covariances: Vec<Vec<f64>>,
+    log_likelihood: f64,
+}
+
+impl SquareRootPass {
+    /// Move the recorded filter moments out.
+    fn take_filter_result(&mut self) -> Result<KalmanFilterResult, StateSpaceError> {
+        if !self.log_likelihood.is_finite() {
+            return Err(StateSpaceError::NumericalFailure(
+                "total log likelihood is not finite".into(),
+            ));
+        }
+        let predicted_means = std::mem::take(&mut self.predicted_means);
+        let mut filtered_means = std::mem::take(&mut self.filtered_means);
+        filtered_means.remove(0);
+        let predicted_covariances = std::mem::take(&mut self.predicted_covariances);
+        let filtered_covariances = std::mem::take(&mut self.filtered_covariances);
+        for (name, means, covariances) in [
+            ("predicted state", &predicted_means, &predicted_covariances),
+            ("filtered state", &filtered_means, &filtered_covariances),
+        ] {
+            for (time, (mean, covariance)) in means.iter().zip(covariances).enumerate() {
+                check_computed(name, mean, covariance, time)?;
+            }
+        }
+        Ok(KalmanFilterResult {
+            log_likelihood: self.log_likelihood,
+            predicted_means,
+            predicted_covariances,
+            filtered_means,
+            filtered_covariances,
+        })
     }
 }
 
@@ -1118,6 +1286,18 @@ fn process_root(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
     Ok(factor)
 }
 
+/// An empty vector with room for `len` items, or an error where
+/// `Vec::with_capacity` would abort the process.
+fn try_with_capacity<T>(len: usize, what: &str) -> Result<Vec<T>, StateSpaceError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(len).map_err(|_| {
+        StateSpaceError::InvalidParameter(format!(
+            "the {what} ({len} entries) cannot be allocated; reduce the forecast horizon"
+        ))
+    })?;
+    Ok(values)
+}
+
 fn check_len(name: &str, actual: usize, expected: usize) -> Result<(), StateSpaceError> {
     if actual != expected {
         return Err(StateSpaceError::InvalidDimension(format!(
@@ -1162,6 +1342,34 @@ fn check_symmetric(name: &str, matrix: &[f64], d: usize) -> Result<(), StateSpac
             }
         }
     }
+    Ok(())
+}
+
+/// Check a proper Gaussian prior: a nonempty finite mean and a matching
+/// finite, symmetric, strictly positive-definite row-major covariance.
+pub(crate) fn validate_gaussian_prior(
+    name: &str,
+    mean: &[f64],
+    covariance: &[f64],
+) -> Result<(), StateSpaceError> {
+    let p = mean.len();
+    if p == 0 {
+        return Err(StateSpaceError::InvalidDimension(format!(
+            "{name} must not be empty"
+        )));
+    }
+    let square = p
+        .checked_mul(p)
+        .ok_or_else(|| StateSpaceError::InvalidDimension(format!("{name} is too large")))?;
+    check_len(&format!("{name} covariance"), covariance.len(), square)?;
+    check_finite(&format!("{name} mean"), mean)?;
+    check_finite(&format!("{name} covariance"), covariance)?;
+    check_symmetric(&format!("{name} covariance"), covariance, p)?;
+    cholesky(covariance, p).map_err(|_| {
+        StateSpaceError::NotPositiveDefinite(format!(
+            "{name} covariance must be strictly positive definite"
+        ))
+    })?;
     Ok(())
 }
 
@@ -1240,27 +1448,6 @@ fn symmetrize(matrix: &mut [f64], d: usize) {
             matrix[j * d + i] = average;
         }
     }
-}
-
-fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
-    let mut factor = vec![0.0; d * d];
-    for i in 0..d {
-        for j in 0..=i {
-            let mut value = matrix[i * d + j];
-            for k in 0..j {
-                value -= factor[i * d + k] * factor[j * d + k];
-            }
-            if i == j {
-                if !value.is_finite() || value <= 0.0 {
-                    return Err(());
-                }
-                factor[i * d + j] = value.sqrt();
-            } else {
-                factor[i * d + j] = value / factor[j * d + j];
-            }
-        }
-    }
-    Ok(factor)
 }
 
 /// Factor a covariance after diagonal equilibration, so numerical rank is
@@ -1359,16 +1546,17 @@ fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()
     Ok(factor)
 }
 
+/// Draw from `N(mean, covariance)`; `name` identifies the covariance in the
+/// error when it cannot be factored.
 fn sample_multivariate_normal<R: Rng + ?Sized>(
+    name: &str,
     mean: &[f64],
     covariance: &[f64],
     d: usize,
     rng: &mut R,
 ) -> Result<Vec<f64>, StateSpaceError> {
     let factor = positive_semidefinite_factor(covariance, d).map_err(|_| {
-        StateSpaceError::NumericalFailure(
-            "conditional smoothing covariance is not positive semidefinite".into(),
-        )
+        StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
     })?;
     let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
     let mut draw = mean.to_vec();
@@ -1378,9 +1566,9 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
         }
     }
     if draw.iter().any(|value| !value.is_finite()) {
-        return Err(StateSpaceError::NumericalFailure(
-            "FFBS produced a non-finite state draw".into(),
-        ));
+        return Err(StateSpaceError::NumericalFailure(format!(
+            "a draw from the {name} produced a non-finite state"
+        )));
     }
     Ok(draw)
 }
@@ -1519,6 +1707,311 @@ mod tests {
     }
 
     #[test]
+    fn simulation_errors_name_the_covariance_that_failed() {
+        let mut model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1.0, 0.0],
+            vec![1.0, 0.5, 0.5, 1.0],
+            1.0,
+            vec![0.0; 2],
+            identity(2),
+        )
+        .unwrap();
+        // Shrinking one diagonal entry below the squared correlation makes the
+        // correlated process covariance indefinite.
+        model.set_variances(&[0], &[0.01], 1.0);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let message = model
+            .simulate_transition(&[0.0, 0.0], &mut rng)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("process covariance"), "{message}");
+        assert!(!message.contains("smoothing"), "{message}");
+    }
+
+    /// Observations shared by the exact-reference tests, with three missing.
+    fn reference_observations() -> Vec<f64> {
+        (0..25)
+            .map(|t| {
+                if [7, 8, 20].contains(&t) {
+                    f64::NAN
+                } else {
+                    3.0 + 0.1 * t as f64 + (((t * 37) % 11) as f64 / 11.0 - 0.5)
+                }
+            })
+            .collect()
+    }
+
+    struct ExactReference {
+        log_likelihood: f64,
+        filtered_terminal: Vec<f64>,
+        filtered_terminal_variance: Vec<f64>,
+        smoothed: Vec<(usize, Vec<f64>)>,
+        /// Posterior standard deviations, the unit for the mean tolerance.
+        scale: Vec<f64>,
+    }
+
+    fn assert_matches_exact(model: &LinearGaussianStateSpace, exact: &ExactReference) {
+        let y = reference_observations();
+        let filter = model.filter(&y).unwrap();
+        let smooth = model.smooth(&y).unwrap();
+        assert!(
+            (filter.log_likelihood - exact.log_likelihood).abs() < 1e-9,
+            "{} vs {}",
+            filter.log_likelihood,
+            exact.log_likelihood
+        );
+        let d = exact.scale.len();
+        let terminal = filter.filtered_means.last().unwrap();
+        let variance = filter.filtered_covariances.last().unwrap();
+        let mut means = vec![(terminal, &exact.filtered_terminal)];
+        for (time, expected) in &exact.smoothed {
+            means.push((&smooth.smoothed_means[*time], expected));
+        }
+        for (actual, expected) in means {
+            for i in 0..d {
+                assert!(
+                    (actual[i] - expected[i]).abs() < 1e-9 * exact.scale[i],
+                    "state {i}: {} vs {}",
+                    actual[i],
+                    expected[i]
+                );
+            }
+        }
+        for i in 0..d {
+            let expected = exact.filtered_terminal_variance[i];
+            assert!(
+                (variance[i * d + i] - expected).abs() < 1e-8 * expected,
+                "variance {i}: {} vs {expected}",
+                variance[i * d + i]
+            );
+        }
+        // FFBS draws around the means the filter reports, although its pass
+        // keeps backward conditionals instead of per-time covariances.
+        assert_eq!(smooth.smoothed_means.last().unwrap(), terminal);
+        let pass = model.square_root_pass(&y, PassOutputs::Sample).unwrap();
+        assert_eq!(&pass.filtered_means[1..], &filter.filtered_means[..]);
+        assert_eq!(pass.predicted_means, filter.predicted_means);
+    }
+
+    /// Textbook covariance-form Kalman filter (Joseph update), independent of
+    /// the square-root pass: `(log likelihood, predicted means, filtered
+    /// means, filtered covariances)`.
+    #[allow(clippy::type_complexity)]
+    fn covariance_form_filter(
+        model: &LinearGaussianStateSpace,
+        y: &[f64],
+    ) -> (f64, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
+        let d = model.dimension;
+        let (mut mean, mut covariance) =
+            (model.initial_mean.clone(), model.initial_covariance.clone());
+        let (mut log_likelihood, mut predicted, mut means, mut covariances) =
+            (0.0, Vec::new(), Vec::new(), Vec::new());
+        for (time, &value) in y.iter().enumerate() {
+            mean = mat_vec(&model.transition, &mean, d);
+            covariance = mat_mul_transpose_right(
+                &mat_mul(&model.transition, &covariance, d),
+                &model.transition,
+                d,
+            );
+            add_assign(&mut covariance, &model.process_covariance);
+            predicted.push(mean.clone());
+            if !value.is_nan() {
+                let h = model
+                    .observation_rows
+                    .as_ref()
+                    .map_or(model.observation.clone(), |rows| rows[time].clone());
+                let noise = model
+                    .observation_variances
+                    .as_ref()
+                    .map_or(model.observation_variance, |v| v[time]);
+                let ph = mat_vec(&covariance, &h, d);
+                let variance = dot(&h, &ph) + noise;
+                let innovation = value - dot(&h, &mean);
+                let gain: Vec<f64> = ph.iter().map(|x| x / variance).collect();
+                for i in 0..d {
+                    mean[i] += gain[i] * innovation;
+                }
+                let mut update = identity(d);
+                for i in 0..d {
+                    for j in 0..d {
+                        update[i * d + j] -= gain[i] * h[j];
+                    }
+                }
+                covariance = mat_mul_transpose_right(&mat_mul(&update, &covariance, d), &update, d);
+                for i in 0..d {
+                    for j in 0..d {
+                        covariance[i * d + j] += gain[i] * noise * gain[j];
+                    }
+                }
+                log_likelihood -=
+                    0.5 * (LOG_2_PI + variance.ln() + innovation * innovation / variance);
+            }
+            means.push(mean.clone());
+            covariances.push(covariance.clone());
+        }
+        (log_likelihood, predicted, means, covariances)
+    }
+
+    #[test]
+    fn filter_matches_the_covariance_form_on_well_conditioned_models() {
+        // On well-conditioned models the covariance form is accurate, so the
+        // square-root filter must agree with it: correlated innovations,
+        // per-time rows and noise, deterministic seasonal shifts, a singular
+        // transition, and missing values.
+        let seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            4,
+            0.08,
+            0.03,
+            0.2,
+            5.0,
+            vec![1.0, -0.5, -0.25, -0.25],
+            2.0,
+            1.0,
+        )
+        .unwrap();
+        let correlated = LinearGaussianStateSpace::new(
+            3,
+            vec![0.9, 0.1, 0.0, 0.0, 0.8, 0.2, 0.1, 0.0, 0.7],
+            vec![1.0, 0.5, -0.3],
+            vec![0.5, 0.2, 0.0, 0.2, 0.4, 0.1, 0.0, 0.1, 0.3],
+            0.6,
+            vec![1.0, -2.0, 0.5],
+            vec![2.0, 0.3, 0.0, 0.3, 1.0, 0.2, 0.0, 0.2, 1.5],
+        )
+        .unwrap();
+        let observations = [6.0, 4.7, f64::NAN, 4.8, 6.1, 4.5, f64::NAN, 4.8];
+        let rows: Vec<Vec<f64>> = (0..observations.len())
+            .map(|t| vec![1.0, (t as f64).cos(), 0.2 * t as f64])
+            .collect();
+        let with_rows = correlated
+            .clone()
+            .with_observation_rows(rows)
+            .unwrap()
+            .with_observation_variances((1..=8).map(|t| 0.1 * t as f64).collect())
+            .unwrap();
+        let deterministic_seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            12,
+            0.05,
+            0.0,
+            0.2,
+            0.0,
+            vec![0.0; 12],
+            4.0,
+            4.0,
+        )
+        .unwrap();
+        let singular = LinearGaussianStateSpace::new(
+            2,
+            vec![0.5, 0.0, 1.0, 0.0],
+            vec![1.0, 0.0],
+            vec![0.0; 4],
+            1.0,
+            vec![0.0; 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        for model in [
+            seasonal,
+            correlated,
+            with_rows,
+            deterministic_seasonal,
+            singular,
+        ] {
+            let (log_likelihood, predicted, means, covariances) =
+                covariance_form_filter(&model, &observations);
+            let filter = model.filter(&observations).unwrap();
+            let close = |a: f64, e: f64| (a - e).abs() <= 1e-12 * e.abs().max(1.0);
+            assert!(close(filter.log_likelihood, log_likelihood));
+            for time in 0..observations.len() {
+                for (actual, expected) in [
+                    (&filter.predicted_means[time], &predicted[time]),
+                    (&filter.filtered_means[time], &means[time]),
+                    (&filter.filtered_covariances[time], &covariances[time]),
+                ] {
+                    for (a, e) in actual.iter().zip(expected) {
+                        assert!(close(*a, *e), "time {time}: {a} vs {e}");
+                    }
+                }
+            }
+        }
+    }
+
+    // The references were computed with mpmath at 60 significant digits: the
+    // same f64 inputs, converted exactly, run through the covariance-form
+    // Kalman filter, likelihood and RTS smoother, then rounded to f64.
+    // In double precision a covariance-form (Joseph) filter was off by 4.5e-3
+    // in the log likelihood and 4e-4 posterior SDs in the coefficient means
+    // on the collinear model, and by 6e-9 in the trend log likelihood.
+
+    #[test]
+    fn filter_and_smoother_match_exact_conditioning_on_collinear_diffuse_regression() {
+        // Level plus diffuse coefficients on [t, t + 1e-4 w_t, 1]: the first
+        // two columns and the level/intercept pair are nearly collinear.
+        let design: Vec<Vec<f64>> = (0..25)
+            .map(|t| {
+                let w = ((t * 7) % 5) as f64 - 2.0;
+                vec![t as f64, t as f64 + 1e-4 * w, 1.0]
+            })
+            .collect();
+        let model = LinearGaussianStateSpace::local_level(1e-4, 0.3, 0.0, 1e6)
+            .unwrap()
+            .with_static_regression(
+                &design,
+                &[0.0; 3],
+                &[1e8, 0.0, 0.0, 0.0, 1e8, 0.0, 0.0, 0.0, 1e8],
+            )
+            .unwrap();
+        let with_level = |level: f64| {
+            vec![
+                level,
+                338.5590464907912,
+                -338.4497745748929,
+                2.787517373426149,
+            ]
+        };
+        assert_matches_exact(
+            &model,
+            &ExactReference {
+                log_likelihood: -37.006426757339696,
+                filtered_terminal: with_level(0.027875174075608054),
+                filtered_terminal_variance: vec![
+                    990099.0124040862,
+                    755615.1561053565,
+                    755609.2138380228,
+                    990099.0606636141,
+                ],
+                smoothed: vec![
+                    (0, with_level(0.027875173737049008)),
+                    (12, with_level(0.02782301264952992)),
+                ],
+                scale: vec![995.0, 869.0, 869.0, 995.0],
+            },
+        );
+    }
+
+    #[test]
+    fn filter_and_smoother_match_exact_conditioning_on_diffuse_trend() {
+        let model =
+            LinearGaussianStateSpace::local_linear_trend(1e-8, 1e-12, 0.5, 0.0, 0.0, 1e10, 1e10)
+                .unwrap();
+        assert_matches_exact(
+            &model,
+            &ExactReference {
+                log_likelihood: -43.165313758063924,
+                filtered_terminal: vec![5.4204942249894685, 0.10793626122136685],
+                filtered_terminal_variance: vec![0.08252503816374168, 0.0004184264396397355],
+                smoothed: vec![
+                    (0, vec![2.8300239555455313, 0.10793626123489714]),
+                    (12, vec![4.125259087767728, 0.10793626122764347]),
+                ],
+                scale: vec![0.287, 0.0205],
+            },
+        );
+    }
+
+    #[test]
     fn roots_preserve_small_positive_modes_and_reject_nonfinite_draws() {
         let covariance = vec![1.0, 1.0 - f64::EPSILON, 1.0 - f64::EPSILON, 1.0];
         let root = process_root(&covariance, 2).unwrap();
@@ -1533,7 +2026,10 @@ mod tests {
             covariance,
         )
         .unwrap();
-        let (conditionals, _) = model.backward_parameters(&[1e-8, -1e-8, 2e-8]).unwrap();
+        let conditionals = model
+            .square_root_pass(&[1e-8, -1e-8, 2e-8], PassOutputs::Sample)
+            .unwrap()
+            .conditionals;
         for conditional in conditionals {
             assert_eq!(conditional.gain, identity(2));
             assert!(conditional.factor.iter().all(|x| *x == 0.0));
@@ -1822,6 +2318,18 @@ mod tests {
         assert_close(result.cumulative_observation_variances[0], 6.0);
         // Var(y1 + y2) = 6 + 7 + 2 * Cov(y1, y2), where Cov=4.
         assert_close(result.cumulative_observation_variances[1], 21.0);
+
+        let z = crate::diagnostics::inv_normal_cdf(0.975);
+        let (lower, upper) = result.observation_interval(0.95).unwrap();
+        assert_close(lower[1], -z * 7.0f64.sqrt());
+        assert_close(upper[1], z * 7.0f64.sqrt());
+        let (lower, upper) = result.cumulative_observation_interval(0.95).unwrap();
+        assert_close(lower[1], -z * 21.0f64.sqrt());
+        assert_close(upper[1], z * 21.0f64.sqrt());
+        for level in [0.0, 1.0, f64::NAN] {
+            assert!(result.observation_interval(level).is_err());
+            assert!(result.cumulative_observation_interval(level).is_err());
+        }
     }
 
     #[test]
@@ -2053,6 +2561,37 @@ mod tests {
             model.filter(&[f64::INFINITY]),
             Err(StateSpaceError::NonFinite(_))
         ));
+    }
+
+    #[test]
+    fn oversized_forecast_horizons_are_refused_before_allocating() {
+        let model = LinearGaussianStateSpace::local_level(1.0, 1.0, 0.0, 1.0).unwrap();
+        // 2^31 steps need 2^62 joint-covariance values (2^65 bytes), which no
+        // allocator can provide; the larger two overflow the count.
+        for steps in [1 << 31, 1 << 40, usize::MAX] {
+            let error = model.forecast(&[1.0], steps).unwrap_err();
+            assert!(error.to_string().contains("horizon"), "{error}");
+        }
+        // Horizons that fit in memory have no separate cap.
+        assert_eq!(
+            model
+                .forecast(&[1.0], 8000)
+                .unwrap()
+                .observation_means
+                .len(),
+            8000
+        );
+        let seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            10_000,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            vec![0.0; 10_000],
+            1.0,
+            1.0,
+        );
+        assert!(seasonal.unwrap_err().to_string().contains("safety limit"));
     }
 
     #[test]

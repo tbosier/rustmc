@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 
@@ -39,17 +39,18 @@ def _mean_error(draws: np.ndarray, actual: np.ndarray) -> np.ndarray:
 
 
 def _quantiles(draws: np.ndarray, probabilities: Any) -> np.ndarray:
-    """Linear quantiles without overflowing the interpolation span."""
-    ordered = np.sort(draws, axis=0)
-    positions = np.asarray(probabilities, dtype=float) * (len(ordered) - 1)
-    lower_index = np.floor(positions).astype(int)
-    upper_index = np.ceil(positions).astype(int)
-    fraction = (positions - lower_index).reshape(positions.shape + (1,) * (draws.ndim - 1))
-    lower, upper = ordered[lower_index], ordered[upper_index]
-    with np.errstate(over="ignore", invalid="ignore"):
-        span = upper - lower
-        return np.where(np.isinf(span), lower * (1 - fraction) + upper * fraction,
-                        lower + span * fraction)
+    """Quantiles over the leading sample axis, shaped ``probabilities.shape + draws.shape[1:]``.
+
+    Uses the native rule behind every forecast interval (linear between order
+    statistics, exact on ties, overflow-safe), so a score and a native
+    ``interval()`` of the same draws agree exactly.
+    """
+    from ._rustmc import _empirical_quantiles
+
+    draws = np.asarray(draws, dtype=float)
+    positions = np.asarray(probabilities, dtype=float)
+    values = _empirical_quantiles(draws.reshape(len(draws), -1), positions.ravel().tolist())
+    return values.reshape(positions.shape + draws.shape[1:])
 
 
 def interval_score(actual: Any, lower: Any, upper: Any, alpha: float = 0.05) -> np.ndarray:

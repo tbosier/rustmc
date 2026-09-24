@@ -2,7 +2,11 @@
 //! Gaussian prior scales and NB dispersion are fixed model specifications.
 //! Group coefficients equal an uncertain population coefficient plus a Gaussian
 //! deviation; group random walks can additionally share a common random walk.
+use crate::autodiff::softplus;
 use crate::bayesian_forecast::BayesianForecastError as Error;
+use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
+use crate::observation::sigmoid;
+use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
@@ -132,6 +136,15 @@ pub struct DynamicGlmForecast {
     pub positive_mean_paths: Paths,
 }
 
+/// One elliptical-slice block and the likelihood terms it can move.
+struct Block {
+    range: std::ops::Range<usize>,
+    component: usize,
+    /// `None` for the population and shared-walk blocks, which touch every
+    /// group; a group's own blocks touch only that group's observations.
+    group: Option<usize>,
+}
+
 struct Layout {
     groups: usize,
     times: usize,
@@ -161,15 +174,21 @@ impl Layout {
     fn size(&self) -> usize {
         self.width() * self.components
     }
-    fn blocks(&self) -> Vec<std::ops::Range<usize>> {
+    /// Per component: the population coefficients, each group's coefficient
+    /// deviations, the shared walk's innovations, then each group's.
+    fn blocks(&self) -> Vec<Block> {
         let mut out = Vec::new();
-        for c in 0..self.components {
-            let mut offset = c * self.width();
-            for width in std::iter::repeat_n(self.k, self.groups + 1)
-                .chain(std::iter::repeat_n(self.times, self.groups + 1))
-            {
-                out.push(offset..offset + width);
-                offset += width;
+        for component in 0..self.components {
+            let mut offset = component * self.width();
+            for width in [self.k, self.times] {
+                for slot in 0..=self.groups {
+                    out.push(Block {
+                        range: offset..offset + width,
+                        component,
+                        group: slot.checked_sub(1),
+                    });
+                    offset += width;
+                }
             }
         }
         out
@@ -266,51 +285,26 @@ pub fn fit_dynamic_glm(
         },
     )?;
     allocation(&[config.chains, config.draws, layout.size()])?;
-    let likelihood = |z: &[f64]| {
-        let draw = layout.decode(z, config);
-        let mut lp = 0.;
-        for (g, row) in y.iter().enumerate() {
-            for (t, &value) in row.iter().enumerate() {
-                if value.is_nan() {
-                    continue;
-                }
-                let eta = predictor(
-                    &draw.coefficients[0][g],
-                    exog.map(|x| &x[g][t]),
-                    draw.states[0][g][t],
-                );
-                let occurrence = if layout.components == 2 {
-                    predictor(
-                        &draw.coefficients[1][g],
-                        exog.map(|x| &x[g][t]),
-                        draw.states[1][g][t],
-                    )
-                } else {
-                    0.
-                };
-                lp += log_likelihood(
-                    value,
-                    eta,
-                    occurrence,
-                    exposure.map_or(1., |e| e[g][t]),
-                    config,
-                );
-            }
-        }
-        lp
+    let panel = PanelLikelihood {
+        y,
+        exog,
+        exposure,
+        config,
+        layout: &layout,
     };
     let blocks = layout.blocks();
     let results = (0..config.chains)
         .into_par_iter()
         .map(|chain| {
-            let mut rng = ChaCha8Rng::seed_from_u64(seed(config.seed, chain));
+            let mut rng =
+                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, FIT_SEED_DOMAIN));
             let mut z = vec![0.; layout.size()];
             // Independent modest starts; ESS immediately samples prior-only blocks.
             for x in &mut z {
                 *x = normal(&mut rng) * 0.1;
             }
-            let mut lp = likelihood(&z);
-            if !lp.is_finite() {
+            let mut cache = PanelCache::new(&panel, &z);
+            if !cache.group_lp.iter().sum::<f64>().is_finite() {
                 return Err(numerical(
                     "initial likelihood is not finite; review data and prior scales",
                 ));
@@ -319,16 +313,7 @@ pub fn fit_dynamic_glm(
             let mut samples = Vec::with_capacity(config.draws);
             for iteration in 0..config.warmup + config.draws * config.thin {
                 for block in &blocks {
-                    let result = crate::elliptical_slice::update(
-                        &mut z,
-                        block.clone(),
-                        lp,
-                        likelihood,
-                        &mut rng,
-                    )
-                    .map_err(numerical)?;
-                    lp = result.0;
-                    evaluations += result.1;
+                    evaluations += cache.update(&panel, &mut z, block, &mut rng)?;
                 }
                 if iteration >= config.warmup
                     && (iteration + 1 - config.warmup).is_multiple_of(config.thin)
@@ -338,6 +323,10 @@ pub fn fit_dynamic_glm(
             }
             Ok((samples, evaluations))
         })
+        // Collected in chain order first, so the error reported when several
+        // chains fail does not depend on scheduling.
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect::<Result<Vec<_>, Error>>()?;
     let (chains, likelihood_evaluations) = results.into_iter().unzip();
     let posterior = DynamicGlmPosterior {
@@ -353,11 +342,172 @@ pub fn fit_dynamic_glm(
     Ok(posterior)
 }
 
+/// The observation model over the training panel, evaluated one group at a
+/// time: every latent block moves either one group's linear predictor or all
+/// of them, so a block's slice evaluations need only the groups it touches.
+struct PanelLikelihood<'a> {
+    y: &'a Panel,
+    exog: Option<&'a Design>,
+    exposure: Option<&'a Panel>,
+    config: &'a DynamicGlmConfig,
+    layout: &'a Layout,
+}
+
+impl PanelLikelihood<'_> {
+    /// Linear predictor of one component for one group at every training
+    /// time, read straight from the latent vector with the arithmetic
+    /// [`Layout::decode`] and [`predictor`] use.
+    fn fill_predictor(
+        &self,
+        z: &[f64],
+        component: usize,
+        group: usize,
+        beta: &mut [f64],
+        eta: &mut [f64],
+    ) {
+        let (layout, cfg) = (self.layout, self.config);
+        let base = component * layout.width();
+        let initial = if component == 1 {
+            cfg.occurrence_initial_mean
+        } else {
+            cfg.initial_mean
+        };
+        let deviations = base + layout.k * (group + 1);
+        for (j, b) in beta.iter_mut().enumerate() {
+            let mut population = z[base + j] * cfg.coefficient_sd;
+            if j == 0 {
+                population += initial;
+            }
+            *b = population + cfg.group_sd * z[deviations + j];
+        }
+        let shared = base + layout.k * (1 + layout.groups);
+        let own = shared + (group + 1) * layout.times;
+        let mut level = 0.;
+        for (t, out) in eta.iter_mut().enumerate() {
+            level += cfg.shared_process_sd * z[shared + t] + cfg.process_sd * z[own + t];
+            *out = predictor(beta, self.exog.map(|x| &x[group][t]), level);
+        }
+    }
+
+    fn group_log_likelihood(&self, group: usize, eta: &[f64], occurrence: Option<&[f64]>) -> f64 {
+        let mut lp = 0.;
+        for (t, &value) in self.y[group].iter().enumerate() {
+            if value.is_nan() {
+                continue;
+            }
+            lp += log_likelihood(
+                value,
+                eta[t],
+                occurrence.map_or(0., |o| o[t]),
+                self.exposure.map_or(1., |e| e[group][t]),
+                self.config,
+            );
+        }
+        lp
+    }
+}
+
+/// Linear predictors and per-group log likelihoods at the chain's current
+/// latent state, kept in step with it block by block.
+struct PanelCache {
+    /// [component][group * times + time].
+    eta: Vec<Vec<f64>>,
+    group_lp: Vec<f64>,
+    proposed_eta: Vec<f64>,
+    proposed_lp: Vec<f64>,
+    beta: Vec<f64>,
+}
+
+impl PanelCache {
+    fn new(panel: &PanelLikelihood, z: &[f64]) -> Self {
+        let layout = panel.layout;
+        let times = layout.times;
+        let mut beta = vec![0.; layout.k];
+        let eta: Vec<Vec<f64>> = (0..layout.components)
+            .map(|c| {
+                let mut eta = vec![0.; layout.groups * times];
+                for (g, row) in eta.chunks_mut(times).enumerate() {
+                    panel.fill_predictor(z, c, g, &mut beta, row);
+                }
+                eta
+            })
+            .collect();
+        let group_lp = (0..layout.groups)
+            .map(|g| {
+                let rows = g * times..(g + 1) * times;
+                panel.group_log_likelihood(g, &eta[0][rows.clone()], eta.get(1).map(|o| &o[rows]))
+            })
+            .collect();
+        Self {
+            eta,
+            group_lp,
+            proposed_eta: vec![0.; layout.groups * times],
+            proposed_lp: vec![0.; layout.groups],
+            beta,
+        }
+    }
+
+    /// One elliptical slice update of `block`; returns the likelihood
+    /// evaluations it took. The slice sees only the touched groups' terms,
+    /// which differ from the full panel log likelihood by a constant.
+    fn update<R: Rng + ?Sized>(
+        &mut self,
+        panel: &PanelLikelihood,
+        z: &mut [f64],
+        block: &Block,
+        rng: &mut R,
+    ) -> Result<usize, Error> {
+        let layout = panel.layout;
+        let times = layout.times;
+        let groups = block.group.map_or(0..layout.groups, |g| g..g + 1);
+        let current = groups.clone().map(|g| self.group_lp[g]).sum::<f64>();
+        let c = block.component;
+        let Self {
+            eta,
+            proposed_eta,
+            proposed_lp,
+            beta,
+            ..
+        } = self;
+        let (_, evaluations) = crate::elliptical_slice::update(
+            z,
+            block.range.clone(),
+            current,
+            |z| {
+                let mut lp = 0.;
+                for g in groups.clone() {
+                    let rows = g * times..(g + 1) * times;
+                    let row = &mut proposed_eta[rows.clone()];
+                    panel.fill_predictor(z, c, g, beta, row);
+                    let row = &proposed_eta[rows.clone()];
+                    proposed_lp[g] = if c == 0 {
+                        panel.group_log_likelihood(g, row, eta.get(1).map(|o| &o[rows]))
+                    } else {
+                        panel.group_log_likelihood(g, &eta[0][rows], Some(row))
+                    };
+                    lp += proposed_lp[g];
+                }
+                lp
+            },
+            rng,
+        )
+        .map_err(|e| numerical(e.to_string()))?;
+        // The accepted point was the last one evaluated.
+        let rows = groups.start * times..groups.end * times;
+        self.eta[c][rows.clone()].copy_from_slice(&self.proposed_eta[rows]);
+        self.group_lp[groups.clone()].copy_from_slice(&self.proposed_lp[groups]);
+        Ok(evaluations)
+    }
+}
+
 fn predictor(beta: &[f64], x: Option<&Vec<f64>>, state: f64) -> f64 {
     beta[0] + state + x.map_or(0., |x| x.iter().zip(&beta[1..]).map(|(x, b)| x * b).sum())
 }
 
 /// Independent Gaussian prior draws, followed by recursive predictive simulation.
+///
+/// The simulation noise comes from its own seed domain: a posterior forecast
+/// called with the same seed must not replay the prior predictive's noise.
 pub fn prior_predictive(
     config: &DynamicGlmConfig,
     groups: usize,
@@ -365,6 +515,23 @@ pub fn prior_predictive(
     exog: Option<&Design>,
     exposure: Option<&Panel>,
 ) -> Result<DynamicGlmForecast, Error> {
+    prior_draws(config, groups, steps, exog, exposure)?.forecast_in_domain(
+        steps,
+        exog,
+        exposure,
+        config.seed,
+        PRIOR_FORECAST_SEED_DOMAIN,
+    )
+}
+
+/// The prior draws `prior_predictive` simulates from, as a one-time posterior.
+fn prior_draws(
+    config: &DynamicGlmConfig,
+    groups: usize,
+    steps: usize,
+    exog: Option<&Design>,
+    exposure: Option<&Panel>,
+) -> Result<DynamicGlmPosterior, Error> {
     config.validate()?;
     if groups == 0 || steps == 0 {
         return Err(invalid("groups and steps must be positive"));
@@ -386,8 +553,9 @@ pub fn prior_predictive(
     )?;
     allocation(&[config.chains, config.draws, layout.size()])?;
     let chains = (0..config.chains)
+        .into_par_iter()
         .map(|c| {
-            let mut rng = ChaCha8Rng::seed_from_u64(seed(config.seed ^ 0x5052494f52, c));
+            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(config.seed, c, PRIOR_SEED_DOMAIN));
             (0..config.draws)
                 .map(|_| {
                     let z = (0..layout.size())
@@ -404,7 +572,7 @@ pub fn prior_predictive(
                 .collect()
         })
         .collect();
-    DynamicGlmPosterior {
+    Ok(DynamicGlmPosterior {
         config: config.clone(),
         chains,
         groups,
@@ -412,18 +580,7 @@ pub fn prior_predictive(
         features,
         likelihood_evaluations: vec![0; config.chains],
         observed_count: 0,
-    }
-    .forecast(steps, exog, exposure, config.seed)
-}
-fn softplus(x: f64) -> f64 {
-    x.max(0.) + (-x.abs()).exp().ln_1p()
-}
-fn sigmoid(x: f64) -> f64 {
-    if x >= 0. {
-        1. / (1. + (-x).exp())
-    } else {
-        x.exp() / (1. + x.exp())
-    }
+    })
 }
 fn log_likelihood(y: f64, eta: f64, occurrence: f64, exposure: f64, cfg: &DynamicGlmConfig) -> f64 {
     match cfg.family {
@@ -620,6 +777,17 @@ impl DynamicGlmPosterior {
         exposure: Option<&Panel>,
         forecast_seed: u64,
     ) -> Result<DynamicGlmForecast, Error> {
+        self.forecast_in_domain(steps, exog, exposure, forecast_seed, FORECAST_SEED_DOMAIN)
+    }
+
+    fn forecast_in_domain(
+        &self,
+        steps: usize,
+        exog: Option<&Design>,
+        exposure: Option<&Panel>,
+        forecast_seed: u64,
+        domain: u64,
+    ) -> Result<DynamicGlmForecast, Error> {
         self.validate()?;
         if steps == 0 {
             return Err(invalid("steps must be positive"));
@@ -633,108 +801,27 @@ impl DynamicGlmPosterior {
             self.config.family,
         )?;
         allocation(&[self.chains.len(), self.config.draws, self.groups, steps, 4])?;
+        // Each chain has its own stream, so the result does not depend on how
+        // rayon schedules chains; errors are reported in chain order for the
+        // same reason.
+        let chains: Vec<Result<ChainPaths, Error>> = self
+            .chains
+            .par_iter()
+            .enumerate()
+            .map(|(chain, draws)| {
+                let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(forecast_seed, chain, domain));
+                self.forecast_chain(draws, steps, exog, exposure, &mut rng)
+            })
+            .collect();
+        let hurdle = self.config.family == Family::HurdleLogNormal;
         let mut out = DynamicGlmForecast {
             mean_paths: Vec::new(),
             observation_paths: Vec::new(),
             occurrence_paths: Vec::new(),
             positive_mean_paths: Vec::new(),
         };
-        let hurdle = self.config.family == Family::HurdleLogNormal;
-        for (chain, draws) in self.chains.iter().enumerate() {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(seed(forecast_seed ^ 0x464f524543415354, chain));
-            let mut means = Vec::new();
-            let mut observations = Vec::new();
-            let mut occurrences = Vec::new();
-            let mut positives = Vec::new();
-            for draw in draws {
-                let mut levels: Vec<Vec<f64>> = draw
-                    .states
-                    .iter()
-                    .map(|groups| groups.iter().map(|s| s[self.time_count - 1]).collect())
-                    .collect();
-                let mut mean = vec![vec![0.; steps]; self.groups];
-                let mut observation = mean.clone();
-                let mut occurrence = mean.clone();
-                let mut positive = mean.clone();
-                for t in 0..steps {
-                    for component in &mut levels {
-                        let shared = self.config.shared_process_sd * normal(&mut rng);
-                        for level in component {
-                            *level += shared + self.config.process_sd * normal(&mut rng);
-                        }
-                    }
-                    for g in 0..self.groups {
-                        let eta = predictor(
-                            &draw.coefficients[0][g],
-                            exog.map(|x| &x[g][t]),
-                            levels[0][g],
-                        );
-                        let e = exposure.map_or(1., |e| e[g][t]);
-                        match self.config.family {
-                            Family::Gaussian => {
-                                mean[g][t] = eta;
-                                observation[g][t] =
-                                    eta + self.config.observation_sd * normal(&mut rng);
-                            }
-                            Family::Poisson | Family::NegativeBinomial => {
-                                let mu = if e == 0. { 0. } else { (eta + e.ln()).exp() };
-                                if e > 0. && mu == 0. {
-                                    return Err(numerical("positive count mean underflowed; no draws clipped or removed"));
-                                }
-                                mean[g][t] = mu;
-                                let rate = if mu == 0. || self.config.family == Family::Poisson {
-                                    mu
-                                } else {
-                                    Gamma::new(self.config.dispersion, mu / self.config.dispersion)
-                                        .map_err(|e| numerical(e.to_string()))?
-                                        .sample(&mut rng)
-                                };
-                                if mu > 0. && rate == 0. {
-                                    return Err(numerical("positive Gamma intensity underflowed; no draws clipped or removed"));
-                                }
-                                observation[g][t] = poisson(rate, &mut rng)?;
-                            }
-                            Family::HurdleLogNormal => {
-                                let p = sigmoid(predictor(
-                                    &draw.coefficients[1][g],
-                                    exog.map(|x| &x[g][t]),
-                                    levels[1][g],
-                                ));
-                                let positive_mean =
-                                    (eta + 0.5 * self.config.observation_sd.powi(2)).exp();
-                                occurrence[g][t] = p;
-                                positive[g][t] = positive_mean;
-                                mean[g][t] = p * positive_mean;
-                                observation[g][t] = if rng.gen::<f64>() < p {
-                                    let amount =
-                                        (eta + self.config.observation_sd * normal(&mut rng)).exp();
-                                    if amount == 0. {
-                                        return Err(numerical("positive severity underflowed; no draws clipped or removed"));
-                                    }
-                                    amount
-                                } else {
-                                    0.
-                                };
-                                if !positive_mean.is_finite() || positive_mean == 0. {
-                                    return Err(numerical("positive predictive mean overflowed; no draws clipped or removed"));
-                                }
-                            }
-                        }
-                        if !mean[g][t].is_finite() || !observation[g][t].is_finite() {
-                            return Err(numerical(
-                                "predictive value overflowed; no draws clipped or removed",
-                            ));
-                        }
-                    }
-                }
-                means.push(mean);
-                observations.push(observation);
-                if hurdle {
-                    occurrences.push(occurrence);
-                    positives.push(positive);
-                }
-            }
+        for chain in chains {
+            let (means, observations, occurrences, positives) = chain?;
             out.mean_paths.push(means);
             out.observation_paths.push(observations);
             if hurdle {
@@ -744,7 +831,114 @@ impl DynamicGlmPosterior {
         }
         Ok(out)
     }
+
+    fn forecast_chain(
+        &self,
+        draws: &[DynamicGlmDraw],
+        steps: usize,
+        exog: Option<&Design>,
+        exposure: Option<&Panel>,
+        rng: &mut ChaCha8Rng,
+    ) -> Result<ChainPaths, Error> {
+        let hurdle = self.config.family == Family::HurdleLogNormal;
+        let mut means = Vec::new();
+        let mut observations = Vec::new();
+        let mut occurrences = Vec::new();
+        let mut positives = Vec::new();
+        for draw in draws {
+            let mut levels: Vec<Vec<f64>> = draw
+                .states
+                .iter()
+                .map(|groups| groups.iter().map(|s| s[self.time_count - 1]).collect())
+                .collect();
+            let mut mean = vec![vec![0.; steps]; self.groups];
+            let mut observation = mean.clone();
+            let mut occurrence = mean.clone();
+            let mut positive = mean.clone();
+            for t in 0..steps {
+                for component in &mut levels {
+                    let shared = self.config.shared_process_sd * normal(rng);
+                    for level in component {
+                        *level += shared + self.config.process_sd * normal(rng);
+                    }
+                }
+                for g in 0..self.groups {
+                    let eta = predictor(
+                        &draw.coefficients[0][g],
+                        exog.map(|x| &x[g][t]),
+                        levels[0][g],
+                    );
+                    let e = exposure.map_or(1., |e| e[g][t]);
+                    match self.config.family {
+                        Family::Gaussian => {
+                            mean[g][t] = eta;
+                            observation[g][t] = eta + self.config.observation_sd * normal(rng);
+                        }
+                        Family::Poisson | Family::NegativeBinomial => {
+                            let mu = if e == 0. { 0. } else { (eta + e.ln()).exp() };
+                            if e > 0. && mu == 0. {
+                                return Err(numerical(
+                                    "positive count mean underflowed; no draws clipped or removed",
+                                ));
+                            }
+                            mean[g][t] = mu;
+                            let rate = if mu == 0. || self.config.family == Family::Poisson {
+                                mu
+                            } else {
+                                Gamma::new(self.config.dispersion, mu / self.config.dispersion)
+                                    .map_err(|e| numerical(e.to_string()))?
+                                    .sample(rng)
+                            };
+                            if mu > 0. && rate == 0. {
+                                return Err(numerical("positive Gamma intensity underflowed; no draws clipped or removed"));
+                            }
+                            observation[g][t] = poisson(rate, rng)?;
+                        }
+                        Family::HurdleLogNormal => {
+                            let p = sigmoid(predictor(
+                                &draw.coefficients[1][g],
+                                exog.map(|x| &x[g][t]),
+                                levels[1][g],
+                            ));
+                            let positive_mean =
+                                (eta + 0.5 * self.config.observation_sd.powi(2)).exp();
+                            occurrence[g][t] = p;
+                            positive[g][t] = positive_mean;
+                            mean[g][t] = p * positive_mean;
+                            observation[g][t] = if rng.gen::<f64>() < p {
+                                let amount = (eta + self.config.observation_sd * normal(rng)).exp();
+                                if amount == 0. {
+                                    return Err(numerical("positive severity underflowed; no draws clipped or removed"));
+                                }
+                                amount
+                            } else {
+                                0.
+                            };
+                            if !positive_mean.is_finite() || positive_mean == 0. {
+                                return Err(numerical("positive predictive mean overflowed; no draws clipped or removed"));
+                            }
+                        }
+                    }
+                    if !mean[g][t].is_finite() || !observation[g][t].is_finite() {
+                        return Err(numerical(
+                            "predictive value overflowed; no draws clipped or removed",
+                        ));
+                    }
+                }
+            }
+            means.push(mean);
+            observations.push(observation);
+            if hurdle {
+                occurrences.push(occurrence);
+                positives.push(positive);
+            }
+        }
+        Ok((means, observations, occurrences, positives))
+    }
 }
+
+/// One chain's mean, observation, occurrence and positive-mean paths.
+type ChainPaths = (Vec<Panel>, Vec<Panel>, Vec<Panel>, Vec<Panel>);
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -821,34 +1015,192 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
             "Poisson rate outside supported numerical range; no draws clipped or removed",
         ));
     }
-    crate::count_sampling::poisson(rate, rng).map_err(numerical)
+    crate::count_sampling::poisson(rate, rng).map_err(|e| numerical(e.to_string()))
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
-    let n = factors
-        .iter()
-        .try_fold(1usize, |a, b| a.checked_mul(*b))
-        .ok_or_else(|| invalid("allocation overflow"))?;
-    if n > 25_000_000 {
-        return Err(invalid(
-            "requested retained arrays exceed 25 million values",
-        ));
-    }
-    Ok(())
+    checked_value_count("dynamic GLM", factors, MAX_MATERIALIZED_VALUES)
+        .map(|_| ())
+        .map_err(|error| invalid(error.to_string()))
 }
 fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
     StandardNormal.sample(rng)
 }
-fn seed(base: u64, chain: usize) -> u64 {
-    let mut z = base ^ (chain as u64).wrapping_mul(0x9e3779b97f4a7c15);
-    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
-    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
-    z ^ (z >> 31)
-}
+const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4447_4C4D; // "FIT_DGLM"
+const FORECAST_SEED_DOMAIN: u64 = 0x4643_5354_4447_4C4D; // "FCSTDGLM"
+const PRIOR_SEED_DOMAIN: u64 = 0x5052_4952_4447_4C4D; // "PRIRDGLM"
+const PRIOR_FORECAST_SEED_DOMAIN: u64 = 0x5050_4643_4447_4C4D; // "PPFCDGLM"
 fn invalid(message: impl Into<String>) -> Error {
     Error::InvalidConfiguration(message.into())
 }
 fn numerical(message: impl Into<String>) -> Error {
     Error::NumericalFailure(message.into())
+}
+
+#[cfg(test)]
+mod incremental_likelihood_tests {
+    use super::*;
+
+    /// The full-panel log likelihood through the nested draw, which is how the
+    /// sampler evaluated every slice proposal before it went group by group.
+    fn full_log_likelihood(panel: &PanelLikelihood, z: &[f64]) -> f64 {
+        let draw = panel.layout.decode(z, panel.config);
+        let mut lp = 0.;
+        for (g, row) in panel.y.iter().enumerate() {
+            for (t, &value) in row.iter().enumerate() {
+                if value.is_nan() {
+                    continue;
+                }
+                let x = panel.exog.map(|x| &x[g][t]);
+                let eta = predictor(&draw.coefficients[0][g], x, draw.states[0][g][t]);
+                let occurrence = if panel.layout.components == 2 {
+                    predictor(&draw.coefficients[1][g], x, draw.states[1][g][t])
+                } else {
+                    0.
+                };
+                let exposure = panel.exposure.map_or(1., |e| e[g][t]);
+                lp += log_likelihood(value, eta, occurrence, exposure, panel.config);
+            }
+        }
+        lp
+    }
+
+    /// Run every block update on `panel` and compare the cache with a fresh
+    /// evaluation after each one.
+    fn assert_block_updates_keep_the_cache_fresh(panel: &PanelLikelihood, seed: u64) {
+        let layout = panel.layout;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut z: Vec<f64> = (0..layout.size()).map(|_| normal(&mut rng)).collect();
+        let mut cache = PanelCache::new(panel, &z);
+        let blocks = layout.blocks();
+        let mut covered: Vec<usize> = blocks.iter().flat_map(|b| b.range.clone()).collect();
+        covered.sort_unstable();
+        assert_eq!(covered, (0..layout.size()).collect::<Vec<_>>());
+        for _ in 0..10 {
+            for block in &blocks {
+                cache.update(panel, &mut z, block, &mut rng).unwrap();
+                // A block that moved a group it does not declare would leave
+                // that group's cached terms stale.
+                let fresh = PanelCache::new(panel, &z);
+                assert_eq!(cache.eta, fresh.eta);
+                assert_eq!(cache.group_lp, fresh.group_lp);
+                let full = full_log_likelihood(panel, &z);
+                let cached = cache.group_lp.iter().sum::<f64>();
+                assert!(full.is_finite());
+                assert!(
+                    (cached - full).abs() <= 1e-12 * full.abs(),
+                    "{cached} vs {full}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn block_updates_keep_the_cache_equal_to_a_fresh_full_panel_evaluation() {
+        let exog: Design = (0..3)
+            .map(|g| {
+                (0..6)
+                    .map(|t| vec![(g * 6 + t) as f64 * 0.1 - 0.8])
+                    .collect()
+            })
+            .collect();
+        let layout = Layout::checked(3, 6, 2, 1).unwrap();
+        // Counts with missing cells, and exposures that vary by cell,
+        // including zero exposure at an observed zero and at a missing count.
+        let counts = vec![
+            vec![0., 1., f64::NAN, 2., 3., 0.],
+            vec![1., 0., 0., 4., f64::NAN, 0.],
+            vec![0., 0., 2., 1., 1., 7.],
+        ];
+        let exposure = vec![
+            vec![0.5, 2., 0., 0.8, 3.7, 0.],
+            vec![1.25, 0., 0.1, 8., 0., 1.],
+            vec![0., 4., 2.5, 0.3, 1., 12.],
+        ];
+        for family in [Family::Poisson, Family::NegativeBinomial] {
+            let config = DynamicGlmConfig {
+                family,
+                group_sd: 0.4,
+                process_sd: 0.2,
+                shared_process_sd: 0.3,
+                ..Default::default()
+            };
+            assert!(validate_design(Some(&exog), Some(&exposure), 3, 6, 1, family).is_ok());
+            let panel = PanelLikelihood {
+                y: &counts,
+                exog: Some(&exog),
+                exposure: Some(&exposure),
+                config: &config,
+                layout: &layout,
+            };
+            assert_block_updates_keep_the_cache_fresh(&panel, 5);
+        }
+
+        // Hurdle updates move the occurrence component too; exposure does
+        // not apply to it.
+        let config = DynamicGlmConfig {
+            family: Family::HurdleLogNormal,
+            group_sd: 0.4,
+            process_sd: 0.2,
+            shared_process_sd: 0.3,
+            ..Default::default()
+        };
+        let amounts = vec![
+            vec![0., 1.5, f64::NAN, 2.5, 3., 0.],
+            vec![1., 0., 0., 4., f64::NAN, 0.5],
+            vec![0., 0., 2., 1., 1., 7.],
+        ];
+        let layout = Layout::checked(3, 6, 2, 2).unwrap();
+        let panel = PanelLikelihood {
+            y: &amounts,
+            exog: Some(&exog),
+            exposure: None,
+            config: &config,
+            layout: &layout,
+        };
+        assert_block_updates_keep_the_cache_fresh(&panel, 3);
+    }
+
+    #[test]
+    fn seed_domains_separate_fit_forecast_and_prior_streams() {
+        let seeds = [
+            FIT_SEED_DOMAIN,
+            FORECAST_SEED_DOMAIN,
+            PRIOR_SEED_DOMAIN,
+            PRIOR_FORECAST_SEED_DOMAIN,
+        ]
+        .map(|domain| chain_seed(42, 0, domain));
+        for (i, a) in seeds.iter().enumerate() {
+            assert_ne!(*a, 42);
+            assert!(seeds[i + 1..].iter().all(|b| a != b));
+        }
+    }
+
+    #[test]
+    fn prior_predictive_noise_is_not_a_posterior_forecast_stream() {
+        // A posterior forecast with the prior predictive's seed used to draw
+        // the same innovations, so the two simulations were not independent.
+        let config = DynamicGlmConfig {
+            family: Family::Gaussian,
+            chains: 2,
+            draws: 5,
+            seed: 12,
+            ..Default::default()
+        };
+        let prior = prior_predictive(&config, 2, 3, None, None).unwrap();
+        let draws = prior_draws(&config, 2, 3, None, None).unwrap();
+        let same_seed_forecast = draws.forecast(3, None, None, config.seed).unwrap();
+        assert_eq!(prior.mean_paths[0][0][0].len(), 3);
+        for (chain, paths) in prior.observation_paths.iter().enumerate() {
+            for (draw, groups) in paths.iter().enumerate() {
+                for (group, path) in groups.iter().enumerate() {
+                    for (step, value) in path.iter().enumerate() {
+                        let other = same_seed_forecast.observation_paths[chain][draw][group][step];
+                        assert_ne!(*value, other, "{chain} {draw} {group} {step}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

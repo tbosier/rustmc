@@ -54,23 +54,11 @@ installed and says so when it is not.
 
 ## Helpers, not examples
 
-Three files here are modules rather than scripts, and running them directly does
-nothing useful.
-
-`hierarchical_templates.py` holds `build_centered_normal_partial_pooling`, the reusable
+`hierarchical_templates.py` is a module rather than a script, and running it directly
+does nothing useful. It holds `build_centered_normal_partial_pooling`, the reusable
 builder helper that `hierarchical_example.py` and `partial_pooling_template.py` import;
 [`partial_pooling_template.py`](partial_pooling_template.py) shows what it covers.
-`bench_common.py` is an importable module shared by the comparison scripts; it records
-environment fields and phase-separated timings.
-`run_benchmarks.py` is a compatibility wrapper that forwards to `benchmarks/run.py`.
 
-## Exploratory comparisons
-
-Performance comparisons belong in `benchmarks/`. The `benchmark_multivariate.py`,
-`benchmark_vs_pymc.py`, `compare_with_pymc.py`, and `batch_many_series.py` scripts are
-exploratory studies, not retained evidence for speed claims. They also need optional
-third-party packages that rustmc does not depend on — all four need ArviZ, PyMC, and
-nutpie, and `batch_many_series.py` additionally needs Prophet and statsmodels — and they
-skip or fail without them. Use `python -m benchmarks.run --help` for
-the reference protocol and `benchmarks/README.md` for what may be claimed from a
+Performance comparisons belong in `benchmarks/`: use `python -m benchmarks.run --help`
+for the reference protocol and `benchmarks/README.md` for what may be claimed from a
 measurement.

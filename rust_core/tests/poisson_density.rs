@@ -69,10 +69,14 @@ fn poisson_log_rate_tails_keep_finite_log_densities_when_rates_underflow() {
 
 #[test]
 fn high_rate_poisson_posterior_recovers_local_gaussian_width() {
+    // Four chains rather than one: across 30 seeds a single 3000-draw chain
+    // put the variance outside this tolerance once (0.861 at seed 913), which
+    // is sampling noise, not a density error. Pooling chains shrinks that noise
+    // without widening the tolerance.
     let result = sample(
         graph(8e15, true),
         SamplerConfig {
-            num_chains: 1,
+            num_chains: 4,
             num_draws: 3000,
             num_warmup: 500,
             seed: 913,
@@ -81,8 +85,10 @@ fn high_rate_poisson_posterior_recovers_local_gaussian_width() {
         },
     )
     .unwrap();
-    let samples = result.samples[0]
+    let samples = result
+        .samples
         .iter()
+        .flatten()
         .map(|draw| draw[0])
         .collect::<Vec<_>>();
     let mean = samples.iter().sum::<f64>() / samples.len() as f64;

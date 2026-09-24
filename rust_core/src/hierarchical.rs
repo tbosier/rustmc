@@ -9,22 +9,34 @@
 //! y[p, t] ~ Normal(program_mean[p], observation_variance)
 //! ```
 //!
-//! All three variances have inverse-gamma priors. A conjugate Gibbs
-//! sampler draws every full conditional directly, so this specialized model
-//! does not require Hamiltonian trajectories through the funnel geometry of a
-//! centered hierarchical parameterization. Series may have different lengths;
-//! `NaN` values are retained as missing positions and ignored by the likelihood.
+//! All three variances have inverse-gamma priors, and a conjugate Gibbs
+//! sampler draws every full conditional directly. That avoids tuning a
+//! Hamiltonian integrator, but it does not escape the geometry of this centred
+//! parameterization: the means and their variance are updated one given the
+//! other, and when the data say little about the between-group spread (few
+//! groups, or groups whose members are noisy) the chain can stick near
+//! `group_variance` = 0, where the group means are pinned to the population
+//! mean and in turn keep the variance small. Mixing there is slow rather than
+//! wrong, so check R-hat and ESS for `group_variance` and `program_variance`
+//! with [`HierarchicalMeanPosterior::diagnostics`]. Chains start from
+//! overdispersed points, which makes a chain stuck apart from the others more
+//! likely to show in R-hat, but cannot reveal chains that all stick alike.
+//! Series may have different lengths; `NaN` values are retained as missing
+//! positions and ignored by the likelihood.
 
-use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
+use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
-use crate::seeding::chain_seed;
-use rand::SeedableRng;
+use crate::forecast_common::{
+    checked_value_count, overdispersed_location, overdispersed_positive, path_means,
+    path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
+    GibbsSchedule, Paths, MAX_MATERIALIZED_VALUES,
+};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
+use rand_distr::{Distribution, StandardNormal};
 
-const MAX_FORECAST_VALUES: usize = 25_000_000;
-const MAX_POSTERIOR_VALUES: usize = 50_000_000;
+/// Retained posterior values may reach twice the forecast limit: a
+/// hierarchy with many programs is the case this model exists for.
+const MAX_POSTERIOR_VALUES: usize = 2 * MAX_MATERIALIZED_VALUES;
 
 /// Configuration for a joint hierarchical-normal fit.
 #[derive(Debug, Clone)]
@@ -42,7 +54,7 @@ pub struct HierarchicalMeanConfig {
 }
 
 impl HierarchicalMeanConfig {
-    fn validate(&self) -> Result<(), BayesianForecastError> {
+    fn validate(&self) -> Result<GibbsSchedule, BayesianForecastError> {
         if !self.population_mean_prior.is_finite() {
             return Err(invalid_config("population mean prior must be finite"));
         }
@@ -51,23 +63,17 @@ impl HierarchicalMeanConfig {
                 "population variance prior must be finite and strictly positive",
             ));
         }
-        validate_prior(self.group_variance_prior, "group-variance")?;
-        validate_prior(self.program_variance_prior, "program-variance")?;
-        validate_prior(self.observation_variance_prior, "observation-variance")?;
-        if self.num_chains == 0 {
-            return Err(invalid_config("number of chains must be positive"));
-        }
-        if self.num_draws == 0 {
-            return Err(invalid_config("number of posterior draws must be positive"));
-        }
-        if self.thinning == 0 {
-            return Err(invalid_config("thinning must be positive"));
-        }
-        self.num_draws
-            .checked_mul(self.thinning)
-            .and_then(|kept| self.num_warmup.checked_add(kept))
-            .ok_or_else(|| invalid_config("warmup/draw/thinning count overflow"))?;
-        Ok(())
+        self.group_variance_prior.validate("group-variance prior")?;
+        self.program_variance_prior
+            .validate("program-variance prior")?;
+        self.observation_variance_prior
+            .validate("observation-variance prior")?;
+        GibbsSchedule::new(
+            self.num_chains,
+            self.num_warmup,
+            self.num_draws,
+            self.thinning,
+        )
     }
 }
 
@@ -172,64 +178,46 @@ impl HierarchicalMeanPosterior {
                 "every posterior chain must contain the same number of draws",
             ));
         }
-        let forecast_values = chain_count
-            .checked_mul(draw_count)
-            .and_then(|value| value.checked_mul(program_count))
-            .and_then(|value| value.checked_mul(horizon))
-            .ok_or_else(|| invalid_config("forecast dimensions overflow"))?;
-        if forecast_values > MAX_FORECAST_VALUES {
-            return Err(invalid_config(format!(
-                "forecast would materialize {forecast_values} observation values; the safety limit is {MAX_FORECAST_VALUES}. Refit with fewer retained chains/draws or reduce the forecast horizon"
-            )));
-        }
-        let paths: Vec<(Vec<_>, Vec<_>)> = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain_index, chain)| {
-                let mut rng =
-                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain_index, FORECAST_SEED_DOMAIN));
-                let mut chain_states = Vec::with_capacity(chain.len());
-                let mut chain_observations = Vec::with_capacity(chain.len());
-                for draw in chain {
-                    if draw.program_means.len() != program_count {
-                        return Err(numerical("posterior program dimension is inconsistent"));
-                    }
-                    validate_variance(draw.observation_variance, "observation")?;
-                    let observation_sd = draw.observation_variance.sqrt();
-                    let draw_states = draw.program_means.clone();
-                    let draw_len = program_count * horizon;
-                    let mut draw_observations = Vec::new();
-                    draw_observations
-                        .try_reserve_exact(draw_len)
-                        .map_err(|error| {
-                            invalid_config(format!(
-                                "could not reserve posterior predictive storage: {error}"
-                            ))
-                        })?;
-                    for &program_mean in &draw.program_means {
-                        if !program_mean.is_finite() {
-                            return Err(numerical("posterior program mean is not finite"));
-                        }
-                        for _ in 0..horizon {
-                            let observation =
-                                program_mean + standard_normal(&mut rng) * observation_sd;
-                            if !observation.is_finite() {
-                                return Err(numerical(
-                                    "posterior predictive simulation overflowed",
-                                ));
-                            }
-                            draw_observations.push(observation);
-                        }
-                    }
-                    chain_states.push(draw_states);
-                    chain_observations.push(draw_observations);
+        checked_value_count(
+            "hierarchical forecast",
+            &[chain_count, draw_count, program_count, horizon],
+            MAX_MATERIALIZED_VALUES,
+        )?;
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &HierarchicalMeanPosteriorDraw, rng| {
+                if draw.program_means.len() != program_count {
+                    return Err(numerical("posterior program dimension is inconsistent"));
                 }
-                Ok((chain_states, chain_observations))
-            })
-            .collect::<Result<_, BayesianForecastError>>()?;
-
-        let (state_means, observation_paths): (Vec<_>, Vec<_>) = paths.into_iter().unzip();
+                validate_variance(draw.observation_variance, "observation")?;
+                let observation_sd = draw.observation_variance.sqrt();
+                let draw_len = program_count * horizon;
+                let mut draw_observations = Vec::new();
+                draw_observations
+                    .try_reserve_exact(draw_len)
+                    .map_err(|error| {
+                        invalid_config(format!(
+                            "could not reserve posterior predictive storage: {error}"
+                        ))
+                    })?;
+                for &program_mean in &draw.program_means {
+                    if !program_mean.is_finite() {
+                        return Err(numerical("posterior program mean is not finite"));
+                    }
+                    for _ in 0..horizon {
+                        let observation = program_mean + standard_normal(rng) * observation_sd;
+                        if !observation.is_finite() {
+                            return Err(numerical("posterior predictive simulation overflowed"));
+                        }
+                        draw_observations.push(observation);
+                    }
+                }
+                Ok([draw.program_means.clone(), draw_observations])
+            },
+        )?;
+        let [state_means, observation_paths] = split_paths(per_draw);
         Ok(HierarchicalMeanForecast {
             state_means,
             observation_paths,
@@ -256,6 +244,74 @@ impl HierarchicalMeanForecast {
     pub fn horizon(&self) -> usize {
         self.horizon
     }
+
+    /// Posterior-predictive mean of every program and step, indexed
+    /// `[program * horizon + step]`.
+    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.observation_paths)
+    }
+
+    /// Empirical observation quantiles, each indexed `[program * horizon + step]`.
+    pub fn observation_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.observation_paths, probabilities)
+    }
+
+    /// Posterior mean of each program's static expected level.
+    pub fn state_means_by_program(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.state_means)
+    }
+
+    /// Empirical quantiles of each program's static expected level.
+    pub fn state_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.state_means, probabilities)
+    }
+
+    /// Draw-wise group totals indexed `[chain][draw][group * horizon + step]`.
+    /// Summing within each draw keeps the dependence between programs.
+    pub fn group_observation_paths(&self) -> Result<Paths, BayesianForecastError> {
+        self.rollup(self.group_count, |program| self.group_index[program])
+    }
+
+    /// Draw-wise totals across all programs indexed `[chain][draw][step]`.
+    pub fn total_observation_paths(&self) -> Result<Paths, BayesianForecastError> {
+        self.rollup(1, |_| 0)
+    }
+
+    fn rollup(
+        &self,
+        targets: usize,
+        target_of: impl Fn(usize) -> usize,
+    ) -> Result<Paths, BayesianForecastError> {
+        let horizon = self.horizon;
+        self.observation_paths
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        let mut totals = vec![0.0; targets * horizon];
+                        for program in 0..self.program_count() {
+                            let target = target_of(program) * horizon;
+                            for step in 0..horizon {
+                                totals[target + step] += draw[program * horizon + step];
+                            }
+                        }
+                        if totals.iter().all(|total| total.is_finite()) {
+                            Ok(totals)
+                        } else {
+                            Err(numerical("a forecast rollup total is not finite"))
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
+    }
 }
 
 /// Fit every program jointly under one shared posterior.
@@ -264,146 +320,157 @@ pub fn fit_hierarchical_mean(
     group_index: &[usize],
     config: &HierarchicalMeanConfig,
 ) -> Result<HierarchicalMeanPosterior, BayesianForecastError> {
-    config.validate()?;
+    let schedule = config.validate()?;
     let validated = validate_inputs(series, group_index)?;
     let program_count = series.len();
     let group_count = validated.group_count;
     let total_observed = validated.observed_counts.iter().sum::<usize>();
-    let total_iterations = config.num_warmup + config.num_draws * config.thinning;
     let parameter_count = 4usize
         .checked_add(group_count)
         .and_then(|value| value.checked_add(program_count))
         .ok_or_else(|| invalid_config("posterior dimensions overflow"))?;
-    let retained_values = config
-        .num_chains
-        .checked_mul(config.num_draws)
-        .and_then(|value| value.checked_mul(parameter_count))
-        .ok_or_else(|| invalid_config("posterior dimensions overflow"))?;
-    if retained_values > MAX_POSTERIOR_VALUES {
-        return Err(invalid_config(format!(
-            "fit would retain {retained_values} parameter values; the safety limit is {MAX_POSTERIOR_VALUES}. Reduce chains, draws, programs, or groups"
-        )));
-    }
+    checked_value_count(
+        "hierarchical posterior",
+        &[config.num_chains, config.num_draws, parameter_count],
+        MAX_POSTERIOR_VALUES,
+    )?;
 
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain_index| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index, FIT_SEED_DOMAIN));
-            let overall_mean =
-                validated.observation_sums.iter().sum::<f64>() / total_observed as f64;
-            let mut group_means = vec![overall_mean; group_count];
-            for (group, group_mean) in group_means.iter_mut().enumerate() {
-                let members = &validated.group_members[group];
-                let group_sum = members
-                    .iter()
-                    .map(|&program| validated.observation_sums[program])
-                    .sum::<f64>();
-                let group_observed = members
-                    .iter()
-                    .map(|&program| validated.observed_counts[program])
-                    .sum::<usize>();
-                *group_mean = group_sum / group_observed as f64;
-            }
-            let mut program_means = validated
+    let chains = run_gibbs_chains(
+        &schedule,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |rng| {
+            // Variances start around their prior modes, and every mean
+            // around its data average by up to two of the starting
+            // between-group or between-program standard deviations, so that
+            // chains begin apart in every coordinate.
+            let group_variance = overdispersed_positive(config.group_variance_prior.mode(), rng);
+            let program_variance =
+                overdispersed_positive(config.program_variance_prior.mode(), rng);
+            let observation_variance =
+                overdispersed_positive(config.observation_variance_prior.mode(), rng);
+            let group_means = validated
+                .group_members
+                .iter()
+                .map(|members| {
+                    let group_sum = members
+                        .iter()
+                        .map(|&program| validated.observation_sums[program])
+                        .sum::<f64>();
+                    let group_observed = members
+                        .iter()
+                        .map(|&program| validated.observed_counts[program])
+                        .sum::<usize>();
+                    overdispersed_location(
+                        group_sum / group_observed as f64,
+                        group_variance.sqrt(),
+                        rng,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let program_means = validated
                 .observation_sums
                 .iter()
                 .zip(&validated.observed_counts)
-                .map(|(&sum, &count)| sum / count as f64)
+                .map(|(&sum, &count)| {
+                    overdispersed_location(sum / count as f64, program_variance.sqrt(), rng)
+                })
                 .collect::<Vec<_>>();
-            let mut group_variance = prior_mode(config.group_variance_prior);
-            let mut program_variance = prior_mode(config.program_variance_prior);
-            let mut observation_variance = prior_mode(config.observation_variance_prior);
-            let mut posterior_draws = Vec::with_capacity(config.num_draws);
+            Ok::<_, BayesianForecastError>(ChainState {
+                group_means,
+                program_means,
+                group_variance,
+                program_variance,
+                observation_variance,
+            })
+        },
+        |state, rng, retain| {
+            let ChainState {
+                group_means,
+                program_means,
+                group_variance,
+                program_variance,
+                observation_variance,
+            } = state;
+            let population_mean = sample_normal_precision(
+                config.population_mean_prior / config.population_variance_prior
+                    + group_means.iter().sum::<f64>() / *group_variance,
+                1.0 / config.population_variance_prior + group_count as f64 / *group_variance,
+                rng,
+            )?;
 
-            for iteration in 0..total_iterations {
-                let population_mean = sample_normal_precision(
-                    config.population_mean_prior / config.population_variance_prior
-                        + group_means.iter().sum::<f64>() / group_variance,
-                    1.0 / config.population_variance_prior + group_count as f64 / group_variance,
-                    &mut rng,
-                )?;
-
-                for (group, group_mean) in group_means.iter_mut().enumerate() {
-                    let members = &validated.group_members[group];
-                    let member_sum = members
-                        .iter()
-                        .map(|&program| program_means[program])
-                        .sum::<f64>();
-                    let member_count = members.len();
-                    *group_mean = sample_normal_precision(
-                        population_mean / group_variance + member_sum / program_variance,
-                        1.0 / group_variance + member_count as f64 / program_variance,
-                        &mut rng,
-                    )?;
-                }
-
-                for (program, program_mean) in program_means.iter_mut().enumerate() {
-                    let finite_sum = validated.observation_sums[program];
-                    let count = validated.observed_counts[program];
-                    *program_mean = sample_normal_precision(
-                        group_means[group_index[program]] / program_variance
-                            + finite_sum / observation_variance,
-                        1.0 / program_variance + count as f64 / observation_variance,
-                        &mut rng,
-                    )?;
-                }
-
-                let observation_ss = program_means
+            for (group, group_mean) in group_means.iter_mut().enumerate() {
+                let members = &validated.group_members[group];
+                let member_sum = members
                     .iter()
-                    .enumerate()
-                    .map(|(program, &mean)| {
-                        let sample_mean = validated.observation_sums[program]
-                            / validated.observed_counts[program] as f64;
-                        validated.within_program_sum_squares[program]
-                            + validated.observed_counts[program] as f64
-                                * (sample_mean - mean).powi(2)
-                    })
+                    .map(|&program| program_means[program])
                     .sum::<f64>();
-                observation_variance = sample_inverse_gamma(
-                    config.observation_variance_prior.shape + total_observed as f64 / 2.0,
-                    config.observation_variance_prior.scale + observation_ss / 2.0,
-                    &mut rng,
+                let member_count = members.len();
+                *group_mean = sample_normal_precision(
+                    population_mean / *group_variance + member_sum / *program_variance,
+                    1.0 / *group_variance + member_count as f64 / *program_variance,
+                    rng,
                 )?;
-
-                let program_ss = program_means
-                    .iter()
-                    .zip(group_index)
-                    .map(|(&mean, &group)| (mean - group_means[group]).powi(2))
-                    .sum::<f64>();
-                program_variance = sample_inverse_gamma(
-                    config.program_variance_prior.shape + program_count as f64 / 2.0,
-                    config.program_variance_prior.scale + program_ss / 2.0,
-                    &mut rng,
-                )?;
-
-                let group_ss = group_means
-                    .iter()
-                    .map(|&mean| (mean - population_mean).powi(2))
-                    .sum::<f64>();
-                group_variance = sample_inverse_gamma(
-                    config.group_variance_prior.shape + group_count as f64 / 2.0,
-                    config.group_variance_prior.scale + group_ss / 2.0,
-                    &mut rng,
-                )?;
-
-                if iteration >= config.num_warmup
-                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-                {
-                    posterior_draws.push(HierarchicalMeanPosteriorDraw {
-                        population_mean,
-                        group_variance,
-                        program_variance,
-                        observation_variance,
-                        group_means: group_means.clone(),
-                        program_means: program_means.clone(),
-                    });
-                }
             }
-            debug_assert_eq!(posterior_draws.len(), config.num_draws);
-            Ok(posterior_draws)
-        })
-        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
+
+            for (program, program_mean) in program_means.iter_mut().enumerate() {
+                let finite_sum = validated.observation_sums[program];
+                let count = validated.observed_counts[program];
+                *program_mean = sample_normal_precision(
+                    group_means[group_index[program]] / *program_variance
+                        + finite_sum / *observation_variance,
+                    1.0 / *program_variance + count as f64 / *observation_variance,
+                    rng,
+                )?;
+            }
+
+            let observation_ss = program_means
+                .iter()
+                .enumerate()
+                .map(|(program, &mean)| {
+                    let sample_mean = validated.observation_sums[program]
+                        / validated.observed_counts[program] as f64;
+                    validated.within_program_sum_squares[program]
+                        + validated.observed_counts[program] as f64 * (sample_mean - mean).powi(2)
+                })
+                .sum::<f64>();
+            *observation_variance = sample_inverse_gamma(
+                config.observation_variance_prior.shape + total_observed as f64 / 2.0,
+                config.observation_variance_prior.scale + observation_ss / 2.0,
+                rng,
+            )?;
+
+            let program_ss = program_means
+                .iter()
+                .zip(group_index)
+                .map(|(&mean, &group)| (mean - group_means[group]).powi(2))
+                .sum::<f64>();
+            *program_variance = sample_inverse_gamma(
+                config.program_variance_prior.shape + program_count as f64 / 2.0,
+                config.program_variance_prior.scale + program_ss / 2.0,
+                rng,
+            )?;
+
+            let group_ss = group_means
+                .iter()
+                .map(|&mean| (mean - population_mean).powi(2))
+                .sum::<f64>();
+            *group_variance = sample_inverse_gamma(
+                config.group_variance_prior.shape + group_count as f64 / 2.0,
+                config.group_variance_prior.scale + group_ss / 2.0,
+                rng,
+            )?;
+
+            Ok(retain.then(|| HierarchicalMeanPosteriorDraw {
+                population_mean,
+                group_variance: *group_variance,
+                program_variance: *program_variance,
+                observation_variance: *observation_variance,
+                group_means: group_means.clone(),
+                program_means: program_means.clone(),
+            }))
+        },
+    )?;
 
     Ok(HierarchicalMeanPosterior {
         chains,
@@ -411,6 +478,16 @@ pub fn fit_hierarchical_mean(
         observed_counts: validated.observed_counts,
         group_count,
     })
+}
+
+/// The Gibbs state carried between sweeps; the population mean is drawn
+/// first in every sweep, so it is not part of it.
+struct ChainState {
+    group_means: Vec<f64>,
+    program_means: Vec<f64>,
+    group_variance: f64,
+    program_variance: f64,
+    observation_variance: f64,
 }
 
 struct ValidatedInputs {
@@ -507,24 +584,6 @@ fn validate_inputs(
     })
 }
 
-fn validate_prior(prior: InverseGammaPrior, name: &str) -> Result<(), BayesianForecastError> {
-    if !prior.shape.is_finite() || prior.shape <= 0.0 {
-        return Err(invalid_config(format!(
-            "{name} prior shape must be finite and strictly positive"
-        )));
-    }
-    if !prior.scale.is_finite() || prior.scale <= 0.0 {
-        return Err(invalid_config(format!(
-            "{name} prior scale must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
-fn prior_mode(prior: InverseGammaPrior) -> f64 {
-    prior.scale / (prior.shape + 1.0)
-}
-
 fn sample_normal_precision(
     weighted_sum: f64,
     precision: f64,
@@ -555,21 +614,6 @@ fn normal_moments_from_precision(
     } else {
         Err(numerical("normal conditional moments are not finite"))
     }
-}
-
-fn sample_inverse_gamma(
-    shape: f64,
-    scale: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, BayesianForecastError> {
-    if !shape.is_finite() || shape <= 0.0 || !scale.is_finite() || scale <= 0.0 {
-        return Err(numerical("invalid inverse-gamma posterior parameters"));
-    }
-    let gamma = Gamma::new(shape, 1.0 / scale)
-        .map_err(|error| numerical(format!("could not construct gamma distribution: {error}")))?;
-    let variance = 1.0 / gamma.sample(rng);
-    validate_variance(variance, "sampled")?;
-    Ok(variance)
 }
 
 fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
@@ -652,6 +696,50 @@ mod tests {
         assert_eq!(forecast.program_count(), 3);
         assert_eq!(forecast.horizon(), 4);
         assert!(first.forecast(100_000, 13).is_err());
+    }
+
+    #[test]
+    fn forecast_summaries_and_rollups_follow_the_program_major_layout() {
+        let series = vec![vec![0.0, 1.0], vec![5.0, 6.0], vec![20.0, 21.0]];
+        let posterior = fit_hierarchical_mean(&series, &[0, 1, 1], &config(3)).unwrap();
+        let forecast = posterior.forecast(2, 4).unwrap();
+        let draws: Vec<&Vec<f64>> = forecast.observation_paths.iter().flatten().collect();
+        let at = |program: usize, step: usize| -> Vec<f64> {
+            draws.iter().map(|draw| draw[program * 2 + step]).collect()
+        };
+        let means = forecast.observation_means().unwrap();
+        let median = &forecast.observation_quantiles(&[0.5]).unwrap()[0].values;
+        for program in 0..3 {
+            for step in 0..2 {
+                let mut values = at(program, step);
+                let mean = values.iter().sum::<f64>() / values.len() as f64;
+                assert!((means[program * 2 + step] - mean).abs() < 1e-9);
+                values.sort_by(f64::total_cmp);
+                assert_eq!(median[program * 2 + step], sorted_median(&values));
+            }
+        }
+        let groups = forecast.group_observation_paths().unwrap();
+        let totals = forecast.total_observation_paths().unwrap();
+        for (index, draw) in draws.iter().enumerate() {
+            let (chain, row) = (index / 120, index % 120);
+            for step in 0..2 {
+                let program = |p: usize| draw[p * 2 + step];
+                assert_eq!(groups[chain][row][step], program(0));
+                assert_eq!(groups[chain][row][2 + step], program(1) + program(2));
+                assert_eq!(
+                    totals[chain][row][step],
+                    program(0) + program(1) + program(2)
+                );
+            }
+        }
+        let state_means = forecast.state_means_by_program().unwrap();
+        assert_eq!(state_means.len(), 3);
+        assert!(state_means[0] < state_means[1] && state_means[1] < state_means[2]);
+        assert_eq!(forecast.state_quantiles(&[0.5]).unwrap()[0].values.len(), 3);
+    }
+
+    fn sorted_median(ordered: &[f64]) -> f64 {
+        crate::forecast_common::sorted_quantile(ordered, 0.5)
     }
 
     #[test]

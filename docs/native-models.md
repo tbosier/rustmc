@@ -27,8 +27,14 @@ The example prints a log density, gradient, posterior means, and conditional-mea
 predictions. It uses fixed demonstration sampling controls; applications should
 supply their own `SamplerConfig` and inspect diagnostics.
 
-Compiled artifacts contain structure, not training data. Fitted Python artifacts
-still contain training data and draws. Neither format checkpoints sampler state.
+Compiled artifacts contain structure, not training data. Fitted artifacts
+(`rustmc.graph-fit`) contain training data and draws, and load on either side: a fit
+saved with `fit.to_json()` in Python opens in Rust with `ModelFit::from_json`, which
+validates every stored draw against the model, and `ModelFit::to_json` writes a file
+Python's `FitResult.from_json` reads. Both write keys in a fixed order, so the same
+fit saves to the same bytes. `ModelFit` also provides `log_likelihood`,
+`deterministics` and `posterior_predictive`. `GraphModel::sample_batch` fits many
+datasets against one model. Neither format checkpoints sampler state.
 The older data-owning `CompiledModelArtifact` format and its
 `rustmc_core::compiled_model` module have been removed, so `rustmc.graph-model` is
 the only compiled-model artifact.

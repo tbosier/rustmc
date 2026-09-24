@@ -2,9 +2,60 @@ use crate::graph::Graph;
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
+/// Largest parameter block that may receive a dense metric.
 const DENSE_BLOCK_MAX_DIM: usize = 512;
+/// Under [`MetricKind::Auto`], a window needs this many draws per dimension of
+/// a block before a dense estimate of that block is considered at all.
+///
+/// Below it the sample covariance is singular or close to it and there is
+/// nothing to whiten by; above it [`dense_beats_diagonal`] decides from the
+/// estimate itself. This is deliberately a low bar: a strongly correlated
+/// block gains an order of magnitude in step size from even a noisy dense
+/// estimate, while the decision rule keeps weakly structured blocks diagonal.
+const AUTO_DENSE_DRAWS_PER_DIM: usize = 2;
 const REGULARIZATION_WEIGHT: f64 = 5.0;
 const BASE_JITTER: f64 = 1e-3;
+
+/// How warmup estimates the metric of a parameter block with more than one
+/// element. Scalar parameters always get a scalar metric.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MetricKind {
+    /// Diagonal, except that a vector parameter of at most 512 elements gets a
+    /// dense block from any window with at least two draws per element whose
+    /// estimated correlation structure is worse conditioned than that
+    /// estimate's own sampling noise by a wide margin (see
+    /// `dense_beats_diagonal`). Weakly correlated blocks are meant to stay
+    /// diagonal, as under Stan's default metric; this is a statistical
+    /// decision, not a guarantee. Dense blocks never span more than one
+    /// vector parameter, and scalar parameters are always diagonal.
+    #[default]
+    Auto,
+    /// Diagonal for every block, as Stan's default `diag_e` metric.
+    Diagonal,
+    /// Dense within every vector parameter of at most 512 elements,
+    /// estimated from each window whatever its length; a window with fewer
+    /// than two draws per element has its correlations shrunk toward zero so
+    /// that a short window cannot give a near-singular estimate (see
+    /// `shrink_correlations`).
+    /// Unlike Stan's `dense_e`, which estimates one covariance over all
+    /// parameters, there is no correlation across parameters or between
+    /// scalar parameters.
+    Dense,
+}
+
+impl MetricKind {
+    /// Parse the user-facing spelling: `"auto"`, `"diag"` or `"dense"`.
+    pub fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "auto" => Ok(Self::Auto),
+            "diag" | "diagonal" => Ok(Self::Diagonal),
+            "dense" => Ok(Self::Dense),
+            _ => Err(format!(
+                "metric must be 'auto', 'diag' or 'dense', not '{name}'"
+            )),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MassMatrix {
@@ -59,11 +110,30 @@ enum AccumulatorBlock {
         dim: usize,
         count: usize,
         mean: Vec<f64>,
+        /// Lower triangle (row-major, full `dim * dim` storage) of the
+        /// centred cross-product sum.
         m2: Vec<f64>,
+        /// Deviations from the previous mean, reused across updates.
+        delta: Vec<f64>,
+        /// The window's first draw, subtracted before the lag products below
+        /// so they do not lose precision to a large location.
+        shift: Vec<f64>,
+        /// The previous draw, less `shift`.
+        previous: Vec<f64>,
+        /// Sum over consecutive draws of `(x_t - shift) * (x_{t-1} - shift)`,
+        /// per coordinate: the lag-one autocovariance the effective sample
+        /// size in `dense_beats_diagonal` comes from.
+        lag_products: Vec<f64>,
+        /// Fall back to a diagonal estimate unless the dense one is clearly
+        /// better conditioned; see [`dense_beats_diagonal`].
+        require_benefit: bool,
     },
 }
 
 impl MassMatrix {
+    /// The unit metric. Vector blocks start diagonal whatever the adapted
+    /// metric will be: a dense identity costs O(d²) per leapfrog step for
+    /// exactly the same dynamics.
     pub fn identity(graph: &Graph) -> Self {
         let mut blocks = Vec::with_capacity(graph.param_spans.len());
         for span in &graph.param_spans {
@@ -77,10 +147,6 @@ impl MassMatrix {
 
     pub fn from_graph(graph: &Graph) -> Self {
         Self::identity(graph)
-    }
-
-    pub fn accumulator(graph: &Graph) -> MassMatrixAccumulator {
-        MassMatrixAccumulator::from_graph(graph)
     }
 
     pub fn sample_momentum_into<R: Rng + ?Sized>(
@@ -142,24 +208,51 @@ impl MassMatrix {
         dot_left < 0.0 || dot_right < 0.0
     }
 
-    pub fn dim(&self) -> usize {
-        self.dim
+    /// Whether any block carries a dense factor (for tests and diagnostics).
+    #[cfg(test)]
+    pub(crate) fn has_dense_block(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| matches!(block.kind, BlockKind::Dense { .. }))
     }
 }
 
 impl MassMatrixAccumulator {
+    /// An accumulator whose finalized metric is dense within every vector
+    /// parameter of at most 512 elements ([`MetricKind::Dense`]).
     pub fn from_graph(graph: &Graph) -> Self {
+        Self::for_window(graph, MetricKind::Dense, usize::MAX)
+    }
+
+    /// An accumulator for one adaptation window of `window_len` draws.
+    ///
+    /// The window length is known when the window opens, so under
+    /// [`MetricKind::Auto`] the choice between a dense and a diagonal
+    /// estimate is made here, and a block that will be diagonal never pays for
+    /// the O(d²) cross products.
+    pub fn for_window(graph: &Graph, kind: MetricKind, window_len: usize) -> Self {
         let mut blocks = Vec::with_capacity(graph.param_spans.len());
         for span in &graph.param_spans {
-            blocks.push(AccumulatorBlock::new(span.start, span.len));
+            let dense = span.len > 1
+                && span.len <= DENSE_BLOCK_MAX_DIM
+                && match kind {
+                    MetricKind::Diagonal => false,
+                    MetricKind::Dense => true,
+                    MetricKind::Auto => window_len >= AUTO_DENSE_DRAWS_PER_DIM * span.len,
+                };
+            blocks.push(AccumulatorBlock::new(
+                span.start,
+                span.len,
+                dense,
+                kind == MetricKind::Auto,
+            ));
         }
         Self { blocks }
     }
 
-    pub fn reset(&mut self) {
-        for block in &mut self.blocks {
-            block.reset();
-        }
+    /// Draws accumulated so far.
+    pub fn draws(&self) -> usize {
+        self.blocks.first().map_or(0, AccumulatorBlock::count)
     }
 
     pub fn update(&mut self, q: &[f64]) {
@@ -186,10 +279,6 @@ impl MassBlock {
     fn identity(start: usize, len: usize) -> Self {
         let kind = if len == 1 {
             BlockKind::Scalar { variance: 1.0 }
-        } else if len <= DENSE_BLOCK_MAX_DIM {
-            BlockKind::Dense {
-                chol: identity_lower(len),
-            }
         } else {
             BlockKind::Diagonal {
                 variances: vec![1.0; len],
@@ -299,7 +388,7 @@ impl MassBlock {
 }
 
 impl AccumulatorBlock {
-    fn new(start: usize, len: usize) -> Self {
+    fn new(start: usize, len: usize, dense: bool, require_benefit: bool) -> Self {
         if len == 1 {
             Self::Scalar {
                 start,
@@ -307,13 +396,18 @@ impl AccumulatorBlock {
                 mean: 0.0,
                 m2: 0.0,
             }
-        } else if len <= DENSE_BLOCK_MAX_DIM {
+        } else if dense {
             Self::Dense {
                 start,
                 dim: len,
                 count: 0,
                 mean: vec![0.0; len],
                 m2: vec![0.0; len * len],
+                delta: vec![0.0; len],
+                shift: vec![0.0; len],
+                previous: vec![0.0; len],
+                lag_products: vec![0.0; len],
+                require_benefit,
             }
         } else {
             Self::Diagonal {
@@ -325,29 +419,11 @@ impl AccumulatorBlock {
         }
     }
 
-    fn reset(&mut self) {
+    fn count(&self) -> usize {
         match self {
-            Self::Scalar {
-                count, mean, m2, ..
-            } => {
-                *count = 0;
-                *mean = 0.0;
-                *m2 = 0.0;
-            }
-            Self::Diagonal {
-                count, mean, m2, ..
-            } => {
-                *count = 0;
-                mean.fill(0.0);
-                m2.fill(0.0);
-            }
-            Self::Dense {
-                count, mean, m2, ..
-            } => {
-                *count = 0;
-                mean.fill(0.0);
-                m2.fill(0.0);
-            }
+            Self::Scalar { count, .. }
+            | Self::Diagonal { count, .. }
+            | Self::Dense { count, .. } => *count,
         }
     }
 
@@ -389,22 +465,35 @@ impl AccumulatorBlock {
                 count,
                 mean,
                 m2,
+                delta,
+                shift,
+                previous,
+                lag_products,
+                ..
             } => {
                 *count += 1;
                 let n = *count as f64;
-                let mut delta = vec![0.0; *dim];
-                let mut delta2 = vec![0.0; *dim];
-                for i in 0..*dim {
-                    let x = q[*start + i];
-                    delta[i] = x - mean[i];
+                let x = &q[*start..*start + *dim];
+                if *count == 1 {
+                    shift.copy_from_slice(x);
+                } else {
+                    for i in 0..*dim {
+                        lag_products[i] += (x[i] - shift[i]) * previous[i];
+                    }
                 }
                 for i in 0..*dim {
+                    previous[i] = x[i] - shift[i];
+                }
+                for i in 0..*dim {
+                    delta[i] = x[i] - mean[i];
                     mean[i] += delta[i] / n;
-                    delta2[i] = q[*start + i] - mean[i];
                 }
+                // Welford: M2 += (x - mean_old)(x - mean_new)^T, lower triangle.
                 for i in 0..*dim {
-                    for j in 0..*dim {
-                        m2[i * *dim + j] += delta[i] * delta2[j];
+                    let row = &mut m2[i * *dim..i * *dim + i + 1];
+                    let delta_i = delta[i];
+                    for (j, value) in row.iter_mut().enumerate() {
+                        *value += delta_i * (x[j] - mean[j]);
                     }
                 }
             }
@@ -433,22 +522,22 @@ impl AccumulatorBlock {
             Self::Diagonal {
                 start, count, m2, ..
             } => {
-                let len = m2.len();
-                let mut variances = vec![1.0; len];
-                for i in 0..len {
-                    let variance = regularize_variance(
-                        if *count > 1 {
-                            m2[i] / (*count as f64 - 1.0)
-                        } else {
-                            1.0
-                        },
-                        *count,
-                    );
-                    variances[i] = variance;
-                }
+                let variances = m2
+                    .iter()
+                    .map(|&m2| {
+                        regularize_variance(
+                            if *count > 1 {
+                                m2 / (*count as f64 - 1.0)
+                            } else {
+                                1.0
+                            },
+                            *count,
+                        )
+                    })
+                    .collect();
                 MassBlock {
                     start: *start,
-                    len,
+                    len: m2.len(),
                     kind: BlockKind::Diagonal { variances },
                 }
             }
@@ -458,44 +547,235 @@ impl AccumulatorBlock {
                 count,
                 mean,
                 m2,
+                shift,
+                lag_products,
+                require_benefit,
+                ..
             } => {
+                let dim = *dim;
+                if *count < 2 {
+                    return MassBlock::identity(*start, dim);
+                }
+                let scale = 1.0 / (*count as f64 - 1.0);
                 let mut cov = vec![0.0; dim * dim];
-                if *count > 1 {
-                    let scale = 1.0 / (*count as f64 - 1.0);
-                    for i in 0..*dim {
-                        for j in 0..*dim {
-                            cov[i * *dim + j] = m2[i * *dim + j] * scale;
-                        }
-                    }
-                } else {
-                    for i in 0..*dim {
-                        cov[i * *dim + i] = 1.0;
+                for i in 0..dim {
+                    for j in 0..=i {
+                        let value = m2[i * dim + j] * scale;
+                        cov[i * dim + j] = value;
+                        cov[j * dim + i] = value;
                     }
                 }
-
-                let shrink = if *count > 0 {
-                    *count as f64 / (*count as f64 + REGULARIZATION_WEIGHT)
-                } else {
-                    0.0
-                };
-                let jitter =
-                    BASE_JITTER * (REGULARIZATION_WEIGHT / (*count as f64 + REGULARIZATION_WEIGHT));
-                for i in 0..*dim {
-                    for j in 0..*dim {
-                        cov[i * *dim + j] *= shrink;
-                    }
-                    cov[i * *dim + i] += jitter;
+                let effective = effective_draws(*count, mean, shift, lag_products, &cov);
+                if *require_benefit && !dense_beats_diagonal(&cov, dim, effective) {
+                    let variances = (0..dim)
+                        .map(|i| regularize_variance(cov[i * dim + i], *count))
+                        .collect();
+                    return MassBlock {
+                        start: *start,
+                        len: dim,
+                        kind: BlockKind::Diagonal { variances },
+                    };
                 }
 
-                let chol = cholesky_with_jitter(cov, *dim);
-                let _ = mean;
+                shrink_correlations(&mut cov, dim, *count);
+                // Stan's dense_e regularization: shrink toward a small
+                // multiple of the identity, weighted by the draw count.
+                let n = *count as f64;
+                let shrink = n / (n + REGULARIZATION_WEIGHT);
+                let jitter = BASE_JITTER * (REGULARIZATION_WEIGHT / (n + REGULARIZATION_WEIGHT));
+                for i in 0..dim {
+                    for j in 0..dim {
+                        cov[i * dim + j] *= shrink;
+                    }
+                    cov[i * dim + i] += jitter;
+                }
+
                 MassBlock {
                     start: *start,
-                    len: *dim,
-                    kind: BlockKind::Dense { chol },
+                    len: dim,
+                    kind: BlockKind::Dense {
+                        chol: cholesky_with_jitter(cov, dim),
+                    },
                 }
             }
         }
+    }
+}
+
+/// Effective number of independent draws behind a window's covariance,
+/// from the average lag-one autocorrelation `rho` across coordinates:
+/// `n (1 - rho) / (1 + rho)`, the AR(1) approximation. Antithetic chains
+/// (`rho < 0`) are credited with no more than `n`.
+fn effective_draws(
+    count: usize,
+    mean: &[f64],
+    shift: &[f64],
+    lag_products: &[f64],
+    cov: &[f64],
+) -> f64 {
+    let dim = mean.len();
+    let n = count as f64;
+    let mut rho_sum = 0.0;
+    let mut terms = 0usize;
+    for i in 0..dim {
+        let variance = cov[i * dim + i];
+        if variance > 0.0 && variance.is_finite() {
+            let centre = mean[i] - shift[i];
+            let lag_cov = lag_products[i] / (n - 1.0) - centre * centre;
+            rho_sum += (lag_cov / variance).clamp(-1.0, 1.0);
+            terms += 1;
+        }
+    }
+    let rho = if terms > 0 {
+        (rho_sum / terms as f64).clamp(0.0, 0.95)
+    } else {
+        0.0
+    };
+    n * (1.0 - rho) / (1.0 + rho)
+}
+
+/// Draws per dimension from which a dense estimate is used unshrunk.
+const UNSHRUNK_DRAWS_PER_DIM: f64 = 2.0;
+
+/// Shrink the off-diagonal of the sample covariance `cov` of `draws` draws
+/// toward zero when the window holds fewer than [`UNSHRUNK_DRAWS_PER_DIM`]
+/// draws per dimension, and return the weight used.
+///
+/// Such a window gives a sample covariance that is singular, or nearly so, in
+/// directions the target is not, and whitening by it forces a tiny step size
+/// along them: without this, a 300-dimensional isotropic block under
+/// `metric="dense"` took about 30 times the diagonal metric's leapfrog steps
+/// per iteration (`benchmarks/metric_adaptation.py`). Shrinking the
+/// correlation matrix toward the identity by `w` keeps every variance and
+/// lifts every eigenvalue of the correlation estimate to at least `w`. The
+/// weight `1 - n / (2d)` rises from zero at two draws per dimension to one
+/// half at one draw per dimension, where the estimate becomes singular.
+///
+/// This bounds the damage, not the noise: just above two draws per dimension
+/// an isotropic block's estimate is still as noisy as sampling makes it
+/// (condition number near 30 at `n = 2d`), and a dense request there costs
+/// about twice the diagonal metric's steps. A weight that stays positive
+/// further up removes that, but shrinking any correlation also lifts the
+/// smallest eigenvalues of a strongly correlated block, the very directions
+/// a dense metric is for: ramping to zero at three draws per dimension cost
+/// the 20- and 50-dimensional correlated regressions of that benchmark 10 to
+/// 25% more steps. The weight depends on the draw count alone for the same
+/// reason; data-driven targets such as Ledoit–Wolf or Schäfer–Strimmer read a
+/// regression posterior's many small correlations as noise.
+fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
+    let weight = (1.0 - draws as f64 / (UNSHRUNK_DRAWS_PER_DIM * dim as f64)).max(0.0);
+    if weight > 0.0 {
+        for i in 0..dim {
+            for j in 0..dim {
+                if i != j {
+                    cov[i * dim + j] *= 1.0 - weight;
+                }
+            }
+        }
+    }
+    weight
+}
+
+/// Whether a dense metric estimated from a window with `effective_draws`
+/// effective draws and sample covariance `cov` should precondition better
+/// than the diagonal one.
+///
+/// A diagonal metric leaves the target's correlation matrix `R` for the
+/// integrator, whose step size is limited by the condition number `κ(R)`. A
+/// dense metric removes `R` but leaves its own estimation error: whitening by
+/// a sample covariance from `n` independent draws in `d` dimensions leaves a
+/// condition number near `((1 + sqrt(d/n)) / (1 - sqrt(d/n)))²` even for an
+/// isotropic target (the Marchenko–Pastur edges), and autocorrelated MCMC
+/// draws count for fewer than `n`. The sample `κ(R)` carries the same noise,
+/// so a dense block is used only when it exceeds that bound by a wide margin.
+/// The margin errs toward diagonal, Stan's default: a mildly correlated
+/// block may be left diagonal and so cost what it costs under Stan's
+/// default, while a false dense choice could cost more than that. The
+/// extreme eigenvalues come from a fixed number of power and inverse-power
+/// iterations, which can only underestimate `κ(R)`, an error in the same
+/// direction.
+fn dense_beats_diagonal(cov: &[f64], dim: usize, effective_draws: f64) -> bool {
+    // Calibrated on NUTS warmup windows: at 4, isotropic 100-dimensional
+    // blocks with two draws per dimension still went dense in two seeds of
+    // five and cost up to six times the diagonal's steps; at 8, none of 100
+    // isotropic runs (60 to 250 dimensions, 2 to 10 draws per dimension)
+    // differed from diagonal, while equicorrelated (rho = 0.9) blocks of 30 to
+    // 150 dimensions still went dense and took 5 to 12 times fewer steps.
+    const MARGIN: f64 = 8.0;
+    const ITERATIONS: usize = 100;
+    let ratio = dim as f64 / effective_draws;
+    if ratio.is_nan() || ratio >= 1.0 {
+        return false;
+    }
+    let edge = ratio.sqrt();
+    let noise_condition = ((1.0 + edge) / (1.0 - edge)).powi(2);
+
+    let mut corr = vec![0.0; dim * dim];
+    let inv_sd: Vec<f64> = (0..dim).map(|i| cov[i * dim + i].sqrt().recip()).collect();
+    if inv_sd.iter().any(|value| !value.is_finite()) {
+        return false;
+    }
+    for i in 0..dim {
+        for j in 0..dim {
+            corr[i * dim + j] = cov[i * dim + j] * inv_sd[i] * inv_sd[j];
+        }
+    }
+    let mut chol = corr.clone();
+    if !cholesky_lower_in_place(&mut chol, dim) {
+        // Numerically singular: some direction was not explored at all, so
+        // there is nothing trustworthy to whiten by.
+        return false;
+    }
+
+    let start: Vec<f64> = (0..dim).map(|i| 1.0 + i as f64 / dim as f64).collect();
+    let mut v = start.clone();
+    let mut w = vec![0.0; dim];
+    let mut largest = 0.0;
+    for _ in 0..ITERATIONS {
+        normalize(&mut v);
+        symmetric_matvec(&corr, &v, &mut w, dim);
+        largest = dot(&v, &w);
+        std::mem::swap(&mut v, &mut w);
+    }
+    let mut v = start;
+    let mut smallest_inverse = 0.0;
+    for _ in 0..ITERATIONS {
+        normalize(&mut v);
+        w.copy_from_slice(&v);
+        solve_lower_in_place(&chol, &mut w);
+        solve_lower_transpose_in_place(&chol, &mut w);
+        smallest_inverse = dot(&v, &w);
+        std::mem::swap(&mut v, &mut w);
+    }
+    let condition = largest * smallest_inverse;
+    condition.is_finite() && condition > MARGIN * noise_condition
+}
+
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+fn normalize(v: &mut [f64]) {
+    let norm = dot(v, v).sqrt();
+    if norm > 0.0 && norm.is_finite() {
+        v.iter_mut().for_each(|x| *x /= norm);
+    }
+}
+
+fn symmetric_matvec(a: &[f64], x: &[f64], out: &mut [f64], dim: usize) {
+    for i in 0..dim {
+        out[i] = dot(&a[i * dim..(i + 1) * dim], x);
+    }
+}
+
+fn solve_lower_in_place(lower: &[f64], rhs: &mut [f64]) {
+    let dim = rhs.len();
+    for i in 0..dim {
+        let mut sum = rhs[i];
+        for j in 0..i {
+            sum -= lower[i * dim + j] * rhs[j];
+        }
+        rhs[i] = sum / lower[i * dim + i];
     }
 }
 
@@ -551,10 +831,18 @@ fn solve_lower_transpose_in_place(lower: &[f64], rhs: &mut [f64]) {
     }
 }
 
+/// Cholesky factor of `cov`, adding diagonal jitter only if the plain
+/// factorization fails. The regularized estimate is already positive
+/// definite in exact arithmetic, so the jitter is a rounding safeguard and
+/// must not distort a factorization that succeeds without it.
 fn cholesky_with_jitter(cov: Vec<f64>, dim: usize) -> Vec<f64> {
+    let mut candidate = cov.clone();
+    if cholesky_lower_in_place(&mut candidate, dim) {
+        return candidate;
+    }
     let mut jitter = BASE_JITTER;
     for _ in 0..8 {
-        let mut candidate = cov.clone();
+        candidate.copy_from_slice(&cov);
         for i in 0..dim {
             candidate[i * dim + i] += jitter;
         }
@@ -716,5 +1004,160 @@ mod tests {
         assert_close(second_moment[0] / draws as f64, 1.0 / 3.0, 0.02);
         assert_close(second_moment[1] / draws as f64, -1.0 / 3.0, 0.02);
         assert_close(second_moment[2] / draws as f64, 4.0 / 3.0, 0.04);
+    }
+
+    fn vector_graph(dim: usize) -> Graph {
+        let mut graph = Graph::new();
+        let start = graph.add_vector_params("b", dim);
+        graph.vector_normal_logp(start, dim, 0.0, 1.0);
+        graph
+    }
+
+    /// `count` draws from N(0, Σ) with unit variances and equal correlation `rho`.
+    fn equicorrelated_draws(dim: usize, rho: f64, count: usize, seed: u64) -> Vec<Vec<f64>> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        (0..count)
+            .map(|_| {
+                let shared: f64 = StandardNormal.sample(&mut rng);
+                (0..dim)
+                    .map(|_| {
+                        let own: f64 = StandardNormal.sample(&mut rng);
+                        rho.sqrt() * shared + (1.0 - rho).sqrt() * own
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn estimate(graph: &Graph, kind: MetricKind, draws: &[Vec<f64>]) -> MassMatrix {
+        let mut accumulator = MassMatrixAccumulator::for_window(graph, kind, draws.len());
+        for draw in draws {
+            accumulator.update(draw);
+        }
+        accumulator.finalize()
+    }
+
+    #[test]
+    fn auto_metric_keeps_isotropic_blocks_diagonal() {
+        // Enough draws to be eligible for a dense estimate; the sample
+        // covariance's own noise is the only structure there is to find.
+        for (dim, count) in [(20, 100), (20, 400), (50, 1100)] {
+            let graph = vector_graph(dim);
+            let draws = equicorrelated_draws(dim, 0.0, count, dim as u64);
+            assert!(!estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
+            assert!(estimate(&graph, MetricKind::Dense, &draws).has_dense_block());
+            assert!(!estimate(&graph, MetricKind::Diagonal, &draws).has_dense_block());
+        }
+    }
+
+    #[test]
+    fn auto_metric_uses_a_dense_block_for_strong_correlation() {
+        let graph = vector_graph(10);
+        let draws = equicorrelated_draws(10, 0.9, 200, 5);
+        assert!(estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
+        // Too few draws per dimension to estimate it, however correlated.
+        let short = &draws[..15];
+        assert!(!estimate(&graph, MetricKind::Auto, short).has_dense_block());
+        assert!(estimate(&graph, MetricKind::Dense, short).has_dense_block());
+    }
+
+    #[test]
+    fn autocorrelated_isotropic_draws_stay_diagonal() {
+        // MCMC draws are not independent: an AR(1) chain with coefficient 0.6
+        // carries a quarter of the information of independent draws, so the
+        // sample covariance's noise is that of a quarter of the draws. Judged
+        // by the independent-draw noise bound, many of these windows looked
+        // correlated enough to go dense.
+        let dim = 40;
+        let graph = vector_graph(dim);
+        for seed in 0..20 {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let mut state = vec![0.0; dim];
+            let draws: Vec<Vec<f64>> = (0..200)
+                .map(|_| {
+                    for value in state.iter_mut() {
+                        let z: f64 = StandardNormal.sample(&mut rng);
+                        *value = 0.6 * *value + 0.8 * z;
+                    }
+                    state.clone()
+                })
+                .collect();
+            assert!(
+                !estimate(&graph, MetricKind::Auto, &draws).has_dense_block(),
+                "seed {seed}"
+            );
+        }
+    }
+
+    /// Condition number of the covariance a dense block's factor encodes.
+    fn dense_condition(mass: &MassMatrix) -> f64 {
+        let BlockKind::Dense { chol } = &mass.blocks[0].kind else {
+            panic!("expected a dense block");
+        };
+        let dim = mass.blocks[0].len;
+        let cov = faer::Mat::from_fn(dim, dim, |i, j| {
+            (0..dim)
+                .map(|k| chol[i * dim + k] * chol[j * dim + k])
+                .sum::<f64>()
+        });
+        let eigenvalues = cov.selfadjoint_eigenvalues(faer::Side::Lower);
+        let (min, max) = eigenvalues
+            .iter()
+            .fold((f64::INFINITY, 0.0f64), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        max / min
+    }
+
+    #[test]
+    fn dense_estimates_from_few_draws_per_dimension_stay_well_conditioned() {
+        // Twenty draws in thirty dimensions: the sample covariance is singular
+        // and, regularized only toward a small multiple of the identity, had
+        // eigenvalues of 2e-4 beside ones near 4 (condition near 2e4).
+        let graph = vector_graph(30);
+        for seed in 0..5 {
+            let draws = equicorrelated_draws(30, 0.0, 20, seed);
+            let condition = dense_condition(&estimate(&graph, MetricKind::Dense, &draws));
+            assert!(condition < 30.0, "seed {seed}: condition {condition}");
+        }
+    }
+
+    #[test]
+    fn correlations_are_shrunk_only_below_two_draws_per_dimension() {
+        let dim = 4;
+        let original: Vec<f64> = (0..dim * dim)
+            .map(|k| if k % (dim + 1) == 0 { 2.0 } else { 0.9 })
+            .collect();
+        for (draws, weight) in [(8, 0.0), (100, 0.0), (6, 0.25), (4, 0.5), (1, 0.875)] {
+            let mut cov = original.clone();
+            assert_eq!(shrink_correlations(&mut cov, dim, draws), weight);
+            for (k, (&shrunk, &value)) in cov.iter().zip(&original).enumerate() {
+                let expected = if k % (dim + 1) == 0 {
+                    value
+                } else {
+                    value * (1.0 - weight)
+                };
+                assert_eq!(shrunk, expected, "draws {draws}");
+            }
+        }
+    }
+
+    #[test]
+    fn dense_factorization_adds_no_jitter_when_it_succeeds() {
+        let cov = vec![4.0, 1.0, 1.0, 1.0];
+        let chol = cholesky_with_jitter(cov, 2);
+        assert_eq!(chol, vec![2.0, 0.0, 0.5, 0.75_f64.sqrt()]);
+        // A singular matrix still factors, through the jittered retry.
+        let singular = cholesky_with_jitter(vec![1.0, 1.0, 1.0, 1.0], 2);
+        assert!(singular.iter().all(|value| value.is_finite()));
+        assert!(singular[3] > 0.0);
+    }
+
+    #[test]
+    fn metric_names_parse() {
+        assert_eq!(MetricKind::parse("auto"), Ok(MetricKind::Auto));
+        assert_eq!(MetricKind::parse("diag"), Ok(MetricKind::Diagonal));
+        assert_eq!(MetricKind::parse("dense"), Ok(MetricKind::Dense));
+        assert!(MetricKind::parse("unit").is_err());
     }
 }

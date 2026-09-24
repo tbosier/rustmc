@@ -14,7 +14,7 @@ pip install rustmc
 ```
 
 NumPy is the only required Python dependency. Install `rustmc[viz]` for ArviZ and
-Matplotlib. Python 3.9–3.13 are covered by install tests.
+Matplotlib. Python 3.9–3.14 are covered by install tests.
 
 ## Fit a regression
 

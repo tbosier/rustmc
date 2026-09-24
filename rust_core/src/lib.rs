@@ -1,3 +1,4 @@
+mod adaptation;
 pub mod autodiff;
 pub mod bayesian_ar;
 pub mod bayesian_forecast;
@@ -11,6 +12,7 @@ pub mod distributions;
 pub mod dynamic_glm;
 pub mod elliptical_slice;
 pub mod forecast_batch;
+pub mod forecast_common;
 pub mod forecast_diagnostics;
 pub mod graph;
 pub mod hierarchical;
@@ -19,6 +21,7 @@ pub mod hurdle;
 pub mod mass_matrix;
 pub mod model;
 mod negative_binomial;
+mod numerics;
 pub mod nuts;
 pub mod observation;
 pub mod param_ref;
@@ -32,8 +35,3 @@ pub mod structural;
 pub mod target;
 
 pub use data::{BindError, DataBinding, DataInputs, DataSchema, DataSlot, MatrixBinding, SlotKind};
-
-// Future: GPU-accelerated log-probability evaluation via wgpu.
-//
-// Future: Large hierarchical model optimizations — richer block structures
-// for very large correlated groups and sparse graph evaluation.

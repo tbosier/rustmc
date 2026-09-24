@@ -470,10 +470,12 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 let xv = values[x.0].as_scalar();
                 let mv = values[mu.0].as_scalar();
                 let sv = values[sigma.0].as_scalar();
-                let z = (xv - mv) / sv;
-                adj_scalar[x.0] += a_s * (-z / sv);
-                adj_scalar[mu.0] += a_s * (z / sv);
-                adj_scalar[sigma.0] += a_s * ((z * z - 1.0) / sv);
+                if sv.is_finite() && sv > 0.0 {
+                    let z = (xv - mv) / sv;
+                    adj_scalar[x.0] += a_s * (-z / sv);
+                    adj_scalar[mu.0] += a_s * (z / sv);
+                    adj_scalar[sigma.0] += a_s * ((z * z - 1.0) / sv);
+                }
             }
             Op::LogHalfNormalLogP { x, sigma } => {
                 let raw = values[x.0].as_scalar();
@@ -533,6 +535,9 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let mu = values[linpred_vec.0].as_vector();
                         let sigma_node = aux.expect("Normal obs logp requires sigma");
                         let sv = values[sigma_node.0].as_scalar();
+                        if !(sv.is_finite() && sv > 0.0) {
+                            continue;
+                        }
 
                         let dmu: Vec<f64> = mu
                             .iter()
@@ -581,6 +586,9 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                         let mu = values[linpred_vec.0].as_vector();
                         let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                         let sv = values[sigma_node.0].as_scalar();
+                        if !(sv.is_finite() && sv > 0.0) {
+                            continue;
+                        }
 
                         let dmu: Vec<f64> = mu
                             .iter()

@@ -32,6 +32,9 @@ def test_joint_forecast_protocol_and_artifact(name):
                                   restored.forecast(3, seed=92).observation_samples)
     prior = model.prior_predictive(2, groups=2, draws=10, seed=12)
     assert prior.observation_samples.shape == (1, 10, 2, 2)
+    components = 2 if name == "BayesianDynamicHurdleLogNormal" else 1
+    with pytest.raises(rustmc.InferenceError, match="invalid component index"):
+        fit.state_samples(components)
     if name == "BayesianDynamicHurdleLogNormal":
         assert fit.state_samples(component=1).shape == (2, 30, 2, 4)
         np.testing.assert_allclose(f.mean_samples,
@@ -61,7 +64,7 @@ def test_exposure_design_and_missing_validation():
 
 
 def test_single_series_requires_explicit_group_axis():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="y must be two-dimensional"):
         rustmc.BayesianDynamicPoisson().fit([0., 1., 2.])
 
 

@@ -52,6 +52,8 @@ variance per coefficient to select dynamic coefficients. No intercept or centeri
 is added. All states have explicit proper Gaussian initial priors describing
 `x[-1]`, immediately before the first observation. Each observation first advances
 the state once. NaN observations are missing, and still require their exog row.
+Fitting needs one finite observation per inverse-gamma variance, and at least one
+even when every variance is fixed.
 
 `VarianceParameter.inverse_gamma(shape, scale)` uses density proportional to
 `v**(-shape-1) * exp(-scale/v)` on positive variance. Fixed zero innovations are

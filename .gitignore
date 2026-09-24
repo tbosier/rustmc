@@ -1,5 +1,6 @@
 .venv*
-target*
+/target
+target*/
 .env*
 .codex*
 .claude/
@@ -15,8 +16,9 @@ __pycache__/
 /trace_plot.png
 /posterior_plot.png
 /pair_plot.png
+/benchmarks/comparisons/forecast_comparison.png
+# Older checkouts wrote this plot into examples/ before the script moved.
 /examples/forecast_comparison.png
-/examples/ci_debug.csv
 
 # Local build scratch used by scripts/dev_pytest.sh
 /.target/
@@ -41,6 +43,8 @@ __pycache__/
 
 # Internal review notes. CONTRIBUTING.md: "Generated files, local worktrees,
 # editor logs, and internal review notes do not belong in the repository."
-/rustmc-review.md
+# Anchored to the root and docs/ so that a legitimately named file elsewhere
+# (a test fixture, say) is not silently left out of a commit.
 /*-review.md
-/docs/*.local.md
+/docs/**/*-review.md
+/docs/**/*.local.md

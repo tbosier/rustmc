@@ -40,6 +40,13 @@ def test_joint_fit_forecast_components_and_validation(rustmc_module, model_index
     structural = forecast.level_samples
     if model_index == 2:
         structural = structural + forecast.seasonal_samples
+    # A component the model lacks is a forecast-accessor refusal.
+    if model_index != 2:
+        with pytest.raises(rmc.InferenceError, match="no stochastic seasonal"):
+            forecast.seasonal_samples
+    if model_index != 1:
+        with pytest.raises(rmc.InferenceError, match="no slope"):
+            forecast.slope_samples
     np.testing.assert_allclose(forecast.mean_samples, structural + forecast.regression_samples)
     np.testing.assert_array_equal(forecast.cumulative_observation_samples,
                                   np.cumsum(forecast.observation_samples, axis=2))

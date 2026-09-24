@@ -10,10 +10,9 @@ use crate::graph::Graph;
 use crate::hmc::{self, HmcConfig};
 use crate::nuts::{self, NutsConfig};
 use crate::sampler::{
-    validate_initial_values, with_thread_pool, SampleResult, SamplerConfig, SamplerType,
+    chain_rng, check_retained_draws, random_initial_position, validate_initial_values,
+    with_thread_pool, SampleResult, SamplerConfig, SamplerType,
 };
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -100,7 +99,8 @@ impl<T: LogDensity + ?Sized> GradientEvaluator for TargetEvaluator<'_, T> {
     }
 }
 
-/// Sample a custom target. Initial positions are raw, with one row per chain.
+/// Sample a custom target. Initial positions are raw, with one row per chain;
+/// `None` draws each chain's start uniformly from (-2, 2) as graph fits do.
 /// Result draws remain raw; apply the model's transforms for presentation.
 pub fn sample_target<T: LogDensity + ?Sized>(
     target: &T,
@@ -119,30 +119,54 @@ pub fn sample_target<T: LogDensity + ?Sized>(
             "custom target needs a positive dimension and unique nonempty parameter names".into(),
         );
     }
+    check_retained_draws(config.num_chains, config.num_draws, dimension)?;
     let positions = validate_initial_values(initial, config.num_chains, dimension)?;
     let mut graph = Graph::new();
     for name in &names {
         graph.add_param(name);
     }
     let chains = with_thread_pool(config.num_threads, || {
-        positions
-            .par_iter()
-            .enumerate()
-            .map(|(chain, position)| {
+        (0..config.num_chains)
+            .into_par_iter()
+            .map(|chain| {
                 let mut evaluator = TargetEvaluator {
                     target,
                     gradient: vec![0.0; dimension],
                     log_density: f64::NAN,
                     failure: None,
                 };
-                evaluator.compute(&graph, position);
-                if let Some(failure) = evaluator.failure.take() {
-                    return Err(format!("chain {chain}: {failure}"));
-                }
-                if !evaluator.log_density.is_finite() {
-                    return Err(format!("chain {chain}: initial log density is not finite"));
-                }
-                let mut rng = ChaCha8Rng::seed_from_u64(config.seed.wrapping_add(chain as u64));
+                let position = match &positions {
+                    Some(positions) => {
+                        let position = positions[chain].clone();
+                        evaluator.compute(&graph, &position);
+                        if let Some(failure) = evaluator.failure.take() {
+                            return Err(format!("chain {chain}: {failure}"));
+                        }
+                        if !evaluator.log_density.is_finite() {
+                            return Err(format!(
+                                "chain {chain}: initial log density is not finite"
+                            ));
+                        }
+                        position
+                    }
+                    // Called directly rather than through the evaluator, whose
+                    // failure latch would turn one unlucky point into a failed
+                    // fit: a non-finite density or gradient only rules out this
+                    // point, as it does for graph models. An `Err` is the
+                    // target reporting that it cannot evaluate at all, which
+                    // another point will not fix.
+                    None => random_initial_position(config.seed, chain, dimension, |position| {
+                        let gradient = &mut evaluator.gradient;
+                        gradient.fill(f64::NAN);
+                        match target.log_density_gradient(position, gradient) {
+                            Ok(value) => {
+                                Ok(value.is_finite() && gradient.iter().all(|g| g.is_finite()))
+                            }
+                            Err(message) => Err(format!("chain {chain}: {message}")),
+                        }
+                    })?,
+                };
+                let mut rng = chain_rng(config.seed, chain);
                 let result = match config.sampler {
                     SamplerType::Hmc => hmc::run_chain_with_evaluator(
                         &graph,
@@ -152,9 +176,10 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                             num_leapfrog_steps: config.num_leapfrog_steps,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
+                            metric: config.metric,
                         },
                         &mut rng,
-                        Some(position.clone()),
+                        position.clone(),
                         None,
                         &mut evaluator,
                     ),
@@ -166,9 +191,10 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                             max_tree_depth: config.max_tree_depth,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
+                            metric: config.metric,
                         },
                         &mut rng,
-                        Some(position.clone()),
+                        position.clone(),
                         None,
                         &mut evaluator,
                     ),
@@ -263,6 +289,43 @@ mod tests {
 mod boundary_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A standard normal whose gradient is NaN for x < -1: usable from the
+    /// origin, so a random start that lands there must be retried rather than
+    /// failing the fit.
+    struct NanGradientBelowMinusOne;
+    impl LogDensity for NanGradientBelowMinusOne {
+        fn dimension(&self) -> usize {
+            1
+        }
+        fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
+            gradient[0] = if q[0] < -1.0 { f64::NAN } else { -q[0] };
+            Ok(-0.5 * q[0] * q[0])
+        }
+    }
+
+    #[test]
+    fn random_starts_retry_points_with_a_non_finite_gradient() {
+        // Chains start uniformly on (-2, 2), so a quarter of first draws land
+        // in the NaN region; with eight chains at least one does.
+        let fit = sample_target(
+            &NanGradientBelowMinusOne,
+            SamplerConfig {
+                num_chains: 8,
+                num_draws: 5,
+                num_warmup: 5,
+                // Chains barely move, so any failure is the start search's.
+                step_size: 1e-6,
+                max_tree_depth: 1,
+                num_threads: 1,
+                show_progress: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("an unusable random start must be retried, not fail the fit");
+        assert!(fit.samples.iter().flatten().all(|q| q[0] >= -1.0));
+    }
 
     struct FailsAfterInitialization {
         calls: AtomicUsize,

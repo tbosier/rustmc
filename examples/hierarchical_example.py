@@ -17,6 +17,13 @@ that reads like the mathematics. rustmc compiles eligible scalar hierarchies to
 noncentered sampling coordinates internally, so the awkward geometry of the centered
 form does not reach the sampler. `mu_j` is still what you see in summaries,
 diagnostics and posterior draws.
+
+This is the end-to-end workflow for that model: prior predictive check, fit, recovery
+of the simulated values, shrinkage and posterior predictive check. Two other examples
+fit an eight-group Gaussian hierarchy for different reasons. `partial_pooling_template.py`
+maps the builder surface: which priors accept a parameter as a hyperparameter, how the
+compiled coordinates are named, and what is not supported yet. `site_effects.py` pools
+a vector of site effects over unequal sample counts, written noncentered by hand.
 """
 
 # %%

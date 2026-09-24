@@ -1,0 +1,410 @@
+"""
+rustmc — batch SKU demand forecasting comparison (exploratory)
+==============================================================
+
+    python benchmarks/comparisons/batch_many_series.py
+
+Needs ArviZ, PyMC, nutpie, Prophet and statsmodels (and matplotlib for the
+plot); see benchmarks/README.md. Not evidence for a performance claim.
+
+Fit independent Bayesian demand models for N_SKUS SKUs using batch inference.
+Each SKU gets a 3-parameter model (intercept + trend + seasonality) fit on the
+first 44 weeks of a 52-week synthetic sales series.
+
+Then pick one SKU and compare the 8-week-ahead forecast (with a 95%
+posterior-predictive interval) against Prophet and ARIMA.
+
+Corrected from an earlier version of this script (see
+benchmarks/RESULTS_TEMPLATE.md / PR description for the audit):
+  - The docstring and README previously said "10,000 SKUs"; N_SKUS below
+    is actually 100. There is no benchmark run backing a 10,000-SKU claim
+    in this repo — do not restate it until one exists. A larger run is a
+    configuration change, but runtime need not scale linearly because scheduling,
+    memory, and model costs vary; its numbers must be measured, not extrapolated.
+  - rustmc's batch_sample previously defaulted to chains=1 while the
+    PyMC+nutpie loop explicitly used chains=4 — 4x less sampling work on
+    the rustmc side while only wall time (not ESS or R-hat) was reported.
+    rustmc now also uses chains=4 so both engines solve the same amount
+    of work and R-hat is defined on both sides.
+  - Both engines now report divergences, max R-hat, and mean ESS_bulk
+    across all (SKU x parameter) posteriors, not just forecast MAE.
+
+This measures many independent posterior inferences using a shared Rayon
+thread pool, with zero Python in rustmc's sampling inner loop. The current
+batch API still builds one data-owning graph per SKU; it is not a
+compile-once/bind-many API.
+
+Rust data structures (for comparison with JAX):
+    The rustmc core uses plain Rust data structures, not a separate array
+    library in the hot path. The graph is Vec<Node> and Vec<Op>; parameters
+    and gradients are Vec<f64>; the autodiff evaluator uses contiguous
+    vec_buf/adj_vec_buf (flat Vec<f64>) for all vector intermediates. That
+    gives cache-friendly evaluator layout and reusable gradient buffers,
+    and no Python/FFI in the inner loop. JAX traces Python and compiles
+    XLA; rustmc runs a fixed native graph traversal over contiguous buffers
+    during each sampler evaluation. Whether that wins depends on workload;
+    the benchmark reports measured timing and sampling quality together.
+"""
+
+import time
+from pathlib import Path
+
+import numpy as np
+
+from bench_common import PhaseTimer, print_environment, peak_rss_mb
+
+# ─── Generate N_SKUS time series ────────────────────────────────────
+
+N_SKUS = 100
+TRAIN_WEEKS = 44
+FORECAST_WEEKS = 8
+TOTAL_WEEKS = TRAIN_WEEKS + FORECAST_WEEKS
+
+np.random.seed(42)
+
+true_intercepts = np.random.uniform(50, 500, N_SKUS)
+true_trends = np.random.uniform(-2, 5, N_SKUS)
+true_seasonality = np.random.uniform(5, 40, N_SKUS)
+true_noise = np.random.uniform(3, 15, N_SKUS)
+
+t_all = np.arange(TOTAL_WEEKS, dtype=np.float64)
+t_norm = t_all / TOTAL_WEEKS
+sin_t = np.sin(2 * np.pi * t_all / 52)
+cos_t = np.cos(2 * np.pi * t_all / 52)
+
+all_series = np.zeros((N_SKUS, TOTAL_WEEKS))
+for i in range(N_SKUS):
+    all_series[i] = (
+        true_intercepts[i]
+        + true_trends[i] * t_norm
+        + true_seasonality[i] * sin_t
+        + np.random.randn(TOTAL_WEEKS) * true_noise[i]
+    )
+
+print(f"Generated {N_SKUS:,} SKU time series ({TRAIN_WEEKS} train + {FORECAST_WEEKS} forecast weeks)")
+print()
+print_environment()
+
+# Matched sampling protocol used by BOTH rustmc and PyMC+nutpie below.
+CHAINS = 4
+DRAWS = 1000
+WARMUP = 500
+SEED = 42
+
+# ─── Build rustmc batch models ──────────────────────────────────────
+
+import rustmc as rmc
+
+pt = PhaseTimer()
+
+t_train = t_norm[:TRAIN_WEEKS]
+sin_train = sin_t[:TRAIN_WEEKS]
+cos_train = cos_t[:TRAIN_WEEKS]
+
+with pt.phase("build"):
+    models = []
+    for i in range(N_SKUS):
+        data = {
+            "t": t_train,
+            "sin_t": sin_train,
+            "y": all_series[i, :TRAIN_WEEKS],
+        }
+        builder = rmc.ModelBuilder(data=data)
+        intercept = builder.normal_prior("intercept", mu=0.0, sigma=200.0)
+        trend = builder.normal_prior("trend", mu=0.0, sigma=20.0)
+        seas = builder.normal_prior("seasonality", mu=0.0, sigma=50.0)
+
+        mu_expr = intercept + trend * "t" + seas * "sin_t"
+        builder.normal_likelihood("obs", mu_expr=mu_expr, sigma=true_noise[i], observed_key="y")
+        model = builder.build()
+        models.append((model, {}))
+
+print(f"Models built in {pt.phases['build']:.2f}s")
+
+# ─── Batch sample ───────────────────────────────────────────────────
+# NOTE: an earlier version of this script called rmc.batch_sample() without
+# `chains=`, which defaults to chains=1, while the PyMC+nutpie loop below
+# explicitly used chains=4 — 4x less sampling work on the rustmc side.
+# chains=CHAINS matches nutpie's chain count so both engines do the same
+# amount of work and R-hat is defined (needs >=2 chains) on both sides.
+print(f"\nSampling {N_SKUS:,} models (NUTS, {CHAINS} chains, "
+      f"{WARMUP} warmup + {DRAWS} draws each)...")
+with pt.phase("compile+sample"):
+    results = rmc.batch_sample(models, chains=CHAINS, draws=DRAWS, warmup=WARMUP, seed=SEED)
+rustmc_time = pt.phases["compile+sample"]
+
+with pt.phase("postprocess"):
+    total_divs = sum(r.divergences for r in results)
+    avg_accept = np.mean([r.accept_rate for r in results])
+    # Aggregate both engines with ArviZ's estimators, computed directly from
+    # their raw (chain, draw) arrays, so both sides use the exact same
+    # diagnostic implementation for this comparison.
+    import arviz as az
+    rhats, esses = [], []
+    for r in results:
+        samples2d = r.get_samples_2d()
+        for name, arr in samples2d.items():
+            rhats.append(float(az.rhat(arr)))
+            esses.append(float(az.ess(arr)))
+    rustmc_max_rhat = float(np.max(rhats))
+    rustmc_mean_ess = float(np.mean(esses))
+    rustmc_ess_per_sec = float(np.sum(esses)) / rustmc_time
+
+print(f"Done in {rustmc_time:.2f}s  ({N_SKUS / rustmc_time:.0f} models/s)")
+print(f"Avg accept rate: {avg_accept:.2f}  |  Total divergences: {total_divs}")
+print(f"Max R-hat (all SKUs x params): {rustmc_max_rhat:.4f}  |  "
+      f"Mean ESS_bulk: {rustmc_mean_ess:.0f}  |  ESS/s (summed across all "
+      f"SKUs x params): {rustmc_ess_per_sec:.1f}")
+pt.report("rustmc phases")
+print(f"Peak RSS: {peak_rss_mb():.0f} MB")
+
+# ─── PyMC + nutpie (same workload, for comparison) ───────────────────
+
+nutpie_time = None
+nutpie_results = []  # list of (idata or None) per SKU; we keep TARGET for forecast
+try:
+    import pymc as pm
+    import nutpie
+    import arviz as az
+
+    print(f"\nSampling {N_SKUS:,} models with PyMC + nutpie (NUTS, {CHAINS} chains, "
+          f"{WARMUP} tune + {DRAWS} draws)...")
+    nutpie_rhats, nutpie_esses = [], []
+    nutpie_divs_total = 0
+    t0 = time.time()
+    for i in range(N_SKUS):
+        with pm.Model() as model:
+            intercept = pm.Normal("intercept", 0.0, 200.0)
+            trend = pm.Normal("trend", 0.0, 20.0)
+            seas = pm.Normal("seasonality", 0.0, 50.0)
+            mu = intercept + trend * t_train + seas * sin_train
+            pm.Normal("obs", mu=mu, sigma=true_noise[i], observed=all_series[i, :TRAIN_WEEKS])
+            compiled = nutpie.compile_pymc_model(model)
+            idata = nutpie.sample(
+                compiled,
+                draws=DRAWS,
+                tune=WARMUP,
+                chains=CHAINS,
+                seed=SEED,
+                cores=CHAINS,
+                progress_bar=False,
+            )
+        nutpie_results.append(idata)
+        nutpie_divs_total += int(idata.sample_stats["diverging"].values.sum())
+        for name in ("intercept", "trend", "seasonality"):
+            nutpie_rhats.append(float(az.rhat(idata)[name].values))
+            nutpie_esses.append(float(az.ess(idata)[name].values))
+    nutpie_time = time.time() - t0
+    nutpie_max_rhat = float(np.max(nutpie_rhats))
+    nutpie_mean_ess = float(np.mean(nutpie_esses))
+    nutpie_ess_per_sec = float(np.sum(nutpie_esses)) / nutpie_time
+    print(f"PyMC+nutpie done in {nutpie_time:.2f}s  ({N_SKUS / nutpie_time:.0f} models/s)")
+    print(f"Total divergences: {nutpie_divs_total}  |  "
+          f"Max R-hat (all SKUs x params): {nutpie_max_rhat:.4f}  |  "
+          f"Mean ESS_bulk: {nutpie_mean_ess:.0f}  |  ESS/s (summed across all "
+          f"SKUs x params): {nutpie_ess_per_sec:.1f}")
+except ImportError as e:
+    print(f"\nPyMC or nutpie not installed — skipping: {e}")
+except Exception as e:
+    print(f"\nPyMC+nutpie failed: {e}")
+    import traceback
+    traceback.print_exc()
+
+# ─── Pick a random SKU and forecast ─────────────────────────────────
+
+TARGET = 42
+actual_train = all_series[TARGET, :TRAIN_WEEKS]
+actual_test = all_series[TARGET, TRAIN_WEEKS:]
+
+# rustmc forecast
+samples = results[TARGET].get_samples()
+n_samples = len(samples["intercept"])
+t_future = t_norm[TRAIN_WEEKS:TOTAL_WEEKS]
+sin_future = sin_t[TRAIN_WEEKS:TOTAL_WEEKS]
+
+t_future_norm = t_norm[TRAIN_WEEKS:TOTAL_WEEKS]
+forecasts = np.zeros((n_samples, FORECAST_WEEKS))
+for d in range(n_samples):
+    mu_d = (
+        samples["intercept"][d]
+        + samples["trend"][d] * t_future_norm
+        + samples["seasonality"][d] * sin_future
+    )
+    # Posterior predictive: add observation noise for realistic uncertainty
+    forecasts[d] = mu_d + np.random.randn(FORECAST_WEEKS) * true_noise[TARGET]
+
+rustmc_mean = forecasts.mean(axis=0)
+rustmc_lo = np.percentile(forecasts, 2.5, axis=0)
+rustmc_hi = np.percentile(forecasts, 97.5, axis=0)
+rustmc_mae = np.mean(np.abs(rustmc_mean - actual_test))
+
+# PyMC+nutpie forecast for TARGET (if we ran nutpie)
+nutpie_mean = None
+nutpie_lo = None
+nutpie_hi = None
+nutpie_mae = None
+if nutpie_time is not None and nutpie_results and len(nutpie_results) > TARGET:
+    idata = nutpie_results[TARGET]
+    if idata is not None:
+        post = idata.posterior
+        i0 = post["intercept"].values  # (chain, draw)
+        tr0 = post["trend"].values
+        se0 = post["seasonality"].values
+        # flatten chains and draws
+        i_flat = i0.reshape(-1)
+        tr_flat = tr0.reshape(-1)
+        se_flat = se0.reshape(-1)
+        n_d = len(i_flat)
+        fcasts = np.zeros((n_d, FORECAST_WEEKS))
+        for d in range(n_d):
+            mu_d = i_flat[d] + tr_flat[d] * t_future_norm + se_flat[d] * sin_future
+            fcasts[d] = mu_d + np.random.randn(FORECAST_WEEKS) * true_noise[TARGET]
+        nutpie_mean = fcasts.mean(axis=0)
+        nutpie_lo = np.percentile(fcasts, 2.5, axis=0)
+        nutpie_hi = np.percentile(fcasts, 97.5, axis=0)
+        nutpie_mae = np.mean(np.abs(nutpie_mean - actual_test))
+
+# ─── ARIMA comparison ───────────────────────────────────────────────
+
+arima_forecast = None
+arima_time = None
+arima_mae = None
+try:
+    from statsmodels.tsa.arima.model import ARIMA
+
+    t0 = time.time()
+    model_arima = ARIMA(actual_train, order=(1, 1, 1))
+    fit_arima = model_arima.fit()
+    arima_forecast = fit_arima.forecast(steps=FORECAST_WEEKS)
+    arima_time = time.time() - t0
+    arima_mae = np.mean(np.abs(arima_forecast - actual_test))
+    print(f"\nARIMA(1,1,1) fit in {arima_time:.3f}s  |  MAE: {arima_mae:.2f}")
+except Exception as e:
+    print(f"\nARIMA failed: {e}")
+
+# ─── Prophet comparison ─────────────────────────────────────────────
+
+prophet_forecast = None
+prophet_time = None
+prophet_mae = None
+try:
+    from prophet import Prophet
+    import pandas as pd
+    import logging
+    logging.getLogger("prophet").setLevel(logging.WARNING)
+    logging.getLogger("cmdstanpy").setLevel(logging.WARNING)
+
+    df_train = pd.DataFrame({
+        "ds": pd.date_range("2023-01-01", periods=TRAIN_WEEKS, freq="W"),
+        "y": actual_train,
+    })
+    df_future = pd.DataFrame({
+        "ds": pd.date_range(df_train["ds"].iloc[-1] + pd.Timedelta(weeks=1),
+                            periods=FORECAST_WEEKS, freq="W"),
+    })
+
+    t0 = time.time()
+    m = Prophet(yearly_seasonality=True, weekly_seasonality=False, daily_seasonality=False)
+    m.fit(df_train)
+    pred = m.predict(df_future)
+    prophet_time = time.time() - t0
+    prophet_forecast = pred["yhat"].values
+    prophet_lo = pred["yhat_lower"].values
+    prophet_hi = pred["yhat_upper"].values
+    prophet_mae = np.mean(np.abs(prophet_forecast - actual_test))
+    print(f"Prophet fit in {prophet_time:.3f}s  |  MAE: {prophet_mae:.2f}")
+except Exception as e:
+    print(f"Prophet failed: {e}")
+
+# ─── Summary table ──────────────────────────────────────────────────
+
+print(f"\n{'=' * 60}")
+print(f"FORECAST COMPARISON — SKU #{TARGET}")
+print(f"{'=' * 60}")
+print(f"\n{'Week':<8} {'Actual':>8} {'rustmc':>10} {'nutpie':>10} {'ARIMA':>10} {'Prophet':>10}")
+print("─" * 58)
+for i in range(FORECAST_WEEKS):
+    week = TRAIN_WEEKS + i
+    a = f"{actual_test[i]:.1f}"
+    r = f"{rustmc_mean[i]:.1f}"
+    nu = f"{nutpie_mean[i]:.1f}" if nutpie_mean is not None else "N/A"
+    ar = f"{arima_forecast[i]:.1f}" if arima_forecast is not None else "N/A"
+    pr = f"{prophet_forecast[i]:.1f}" if prophet_forecast is not None else "N/A"
+    print(f"  {week:<6} {a:>8} {r:>10} {nu:>10} {ar:>10} {pr:>10}")
+
+print(f"\n{'Method':<28} {'MAE':>8} {'Time':>12} {'Note':>22}")
+print("─" * 72)
+print(f"{'rustmc (batch NUTS)':<28} {rustmc_mae:>8.2f} {rustmc_time:>11.2f}s {f'{N_SKUS} models':>22}")
+if nutpie_time is not None:
+    nm = nutpie_mae if nutpie_mae is not None else 0.0
+    print(f"{'PyMC + nutpie (batch NUTS)':<28} {nm:>8.2f} {nutpie_time:>11.2f}s {f'{N_SKUS} models':>22}")
+
+print(f"\n{'Method':<28} {'MaxR-hat':>10} {'MeanESS':>10} {'ESS/s':>10} {'Divergences':>13}")
+print("─" * 72)
+print(f"{'rustmc (batch NUTS)':<28} {rustmc_max_rhat:>10.4f} {rustmc_mean_ess:>10.0f} "
+      f"{rustmc_ess_per_sec:>10.1f} {total_divs:>13}")
+if nutpie_time is not None:
+    print(f"{'PyMC + nutpie (batch NUTS)':<28} {nutpie_max_rhat:>10.4f} {nutpie_mean_ess:>10.0f} "
+          f"{nutpie_ess_per_sec:>10.1f} {nutpie_divs_total:>13}")
+print("(both engines: same chains/warmup/draws/seed per SKU and the same ArviZ "
+      "diagnostic estimators; MAE above is a point-forecast metric, "
+      "not a substitute for these posterior-quality diagnostics.)")
+if arima_mae is not None:
+    print(f"{'ARIMA(1,1,1)':<28} {arima_mae:>8.2f} {arima_time:>11.3f}s {'one model':>22}")
+if prophet_mae is not None:
+    print(f"{'Prophet':<28} {prophet_mae:>8.2f} {prophet_time:>11.3f}s {'one model':>22}")
+
+# ─── Plot ────────────────────────────────────────────────────────────
+
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(12, 5))
+
+    weeks_train = np.arange(TRAIN_WEEKS)
+    weeks_test = np.arange(TRAIN_WEEKS, TOTAL_WEEKS)
+
+    ax.plot(weeks_train, actual_train, "k-", alpha=0.5, linewidth=1, label="Train")
+    ax.plot(weeks_test, actual_test, "ko", markersize=8, zorder=5, label="Actual (test)")
+
+    if prophet_forecast is not None:
+        ax.plot(weeks_test, prophet_forecast, "C2:", linewidth=2, label=f"Prophet (MAE={prophet_mae:.1f})")
+        ax.fill_between(weeks_test, prophet_lo, prophet_hi, color="C2", alpha=0.2)
+
+    if arima_forecast is not None:
+        ax.plot(weeks_test, arima_forecast, "C1--", linewidth=2, label=f"ARIMA (MAE={arima_mae:.1f})")
+    if nutpie_mean is not None and nutpie_mae is not None:
+        ax.plot(weeks_test, nutpie_mean, "C3-.", linewidth=2, label=f"PyMC+nutpie (MAE={nutpie_mae:.1f})")
+        ax.fill_between(weeks_test, nutpie_lo, nutpie_hi, color="C3", alpha=0.15)
+
+    # Plot rustmc last so its posterior-predictive band is visible.
+    ax.fill_between(weeks_test, rustmc_lo, rustmc_hi, color="C0", alpha=0.2,
+                    label="rustmc 95% posterior predictive", zorder=3)
+    ax.plot(weeks_test, rustmc_mean, "C0-", linewidth=2.5, zorder=4, label=f"rustmc (MAE={rustmc_mae:.1f})")
+
+    ax.axvline(TRAIN_WEEKS - 0.5, color="gray", linestyle="--", alpha=0.5)
+    ax.set_xlabel("Week")
+    ax.set_ylabel("Sales")
+    ax.set_title(f"Demand Forecast — SKU #{TARGET}  (rustmc: {N_SKUS:,} models in {rustmc_time:.1f}s)")
+    ax.legend(loc="upper left", fontsize=9)
+    ax.grid(True, alpha=0.3)
+
+    # Zoom y-axis to the data range so the CI band is visible
+    all_vals = np.concatenate([actual_train, actual_test, rustmc_mean, rustmc_lo, rustmc_hi])
+    if arima_forecast is not None:
+        all_vals = np.concatenate([all_vals, arima_forecast])
+    y_min, y_max = all_vals.min(), all_vals.max()
+    y_pad = (y_max - y_min) * 0.15
+    ax.set_ylim(y_min - y_pad, y_max + y_pad)
+
+    # Only show the last 20 train weeks + forecast for clarity
+    ax.set_xlim(TRAIN_WEEKS - 20, TOTAL_WEEKS + 0.5)
+
+    plt.tight_layout()
+    plot_path = Path(__file__).with_name("forecast_comparison.png")
+    plt.savefig(plot_path, dpi=150)
+    print(f"\nPlot saved to {plot_path}")
+except Exception as e:
+    print(f"\nPlot failed: {e}")

@@ -1,6 +1,10 @@
 //! Python bindings for sparse nonnegative amount forecasting.
-use super::*;
-use rustmc_core::forecast_diagnostics::parameter_diagnostics;
+use crate::forecast_batch;
+use crate::forecast_support::*;
+use numpy::{PyArray1, PyArray3};
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
+use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
 use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
@@ -110,14 +114,14 @@ impl PyHurdleLogNormal {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: PyReadonlyArray1<'_, f64>,
+        observations: &Bound<'_, PyAny>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
     ) -> PyResult<PyHurdleFit> {
-        let observations = state_space_vector(observations);
+        let observations = real_vector(observations, "observations")?;
         let mut config = self.config.clone();
         config.num_chains = chains;
         config.num_draws = draws;
@@ -157,12 +161,41 @@ pub(crate) struct PyHurdleFit {
     pub(crate) config: HurdleLogNormalConfig,
 }
 
-impl PyHurdleFit {
-    pub(crate) fn report(&self) -> rustmc_core::diagnostics::DiagnosticsReport {
-        parameter_diagnostics(
-            &self.posterior.parameter_samples(),
-            &HurdleLogNormalPosterior::parameter_names(),
-        )
+impl ForecastFit for PyHurdleFit {
+    fn sampler(&self) -> &'static str {
+        if self.posterior.positive_count == 0 {
+            "independent_prior_and_beta"
+        } else {
+            "gibbs_ffbs_hurdle_lognormal"
+        }
+    }
+    fn summary_line(&self) -> String {
+        if self.posterior.positive_count == 0 {
+            "Sampler: independent Beta and truncated-prior severity draws (no positive observations)"
+        } else {
+            "Sampler: Beta occurrence and conjugate truncated-variance Gibbs/FFBS severity"
+        }
+        .into()
+    }
+    fn coverage(&self) -> &'static str {
+        "payment probability, variance parameters, and terminal log level"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        let values = self.posterior.parameter_samples();
+        for (index, name) in HurdleLogNormalPosterior::parameter_names()
+            .iter()
+            .enumerate()
+        {
+            samples.set_item(name, draw_array(py, &values, |draw| draw[index]))?;
+        }
+        Ok(samples)
     }
 }
 
@@ -170,11 +203,11 @@ impl PyHurdleFit {
 impl PyHurdleFit {
     #[getter]
     fn chains(&self) -> usize {
-        self.posterior.chains.len()
+        self.shape().0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.posterior.chains[0].len()
+        self.shape().1
     }
     #[getter]
     fn time_count(&self) -> usize {
@@ -202,43 +235,17 @@ impl PyHurdleFit {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        let values = self.posterior.parameter_samples();
-        for (i, name) in HurdleLogNormalPosterior::parameter_names()
-            .iter()
-            .enumerate()
-        {
-            let array =
-                Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| values[c][d][i]);
-            samples.set_item(name, array.into_pyarray(py))?;
-        }
-        Ok(samples)
+        self.posterior(py)
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.report())
+        fit_diagnostics(py, self)
     }
     fn summary(&self) -> String {
-        let sampler = if self.positive_count() == 0 {
-            "Sampler: independent Beta and truncated-prior severity draws (no positive observations)"
-        } else {
-            "Sampler: Beta occurrence and conjugate truncated-variance Gibbs/FFBS severity"
-        };
-        self.report().to_table_with_sampler(Some(sampler))
+        fit_summary(self)
     }
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let name = if self.positive_count() == 0 {
-            "independent_prior_and_beta"
-        } else {
-            "gibbs_ffbs_hurdle_lognormal"
-        };
-        let stats = forecast_diagnostics::sampler_stats(
-            py,
-            name,
-            self.chains(),
-            self.draws(),
-            "payment probability, variance parameters, and terminal log level",
-        )?;
+        let stats = fit_sampler_stats(py, self)?;
         stats.set_item(
             "severity_informed_by_data",
             self.severity_informed_by_data(),
@@ -258,12 +265,7 @@ impl PyHurdleFit {
         Ok(PyHurdleForecast { inner })
     }
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("posterior", self.get_samples_2d(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", self.observations.clone().into_pyarray(py))?;
-        kwargs.set_item("observed_data", observed)?;
-        arviz_from_groups(&py.import("arviz")?, kwargs)
+        fit_to_arviz(py, self, &self.observations)
     }
 }
 
@@ -277,11 +279,11 @@ pub(crate) struct PyHurdleForecast {
 impl PyHurdleForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.paths.observation_paths.len()
+        chain_shape(&self.inner.paths.observation_paths).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.paths.observation_paths[0].len()
+        chain_shape(&self.inner.paths.observation_paths).1
     }
     #[getter]
     fn steps(&self) -> usize {
@@ -289,49 +291,39 @@ impl PyHurdleForecast {
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.paths.observation_paths)
+        path_array(py, &self.inner.paths.observation_paths)
     }
     /// Conditional arithmetic means including probability of no payment.
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.paths.state_paths)
+        path_array(py, self.inner.expected_value_paths())
     }
     #[getter]
     fn positive_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.positive_mean_paths)
+        path_array(py, &self.inner.positive_mean_paths)
     }
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .paths
-            .observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.paths.observation_means())
     }
     #[getter]
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .paths
-            .state_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.expected_value_means())
     }
     #[getter]
     fn cumulative_observation_samples<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-        Ok(local_level_path_array(py, &self.cumulative_paths()?))
+        Ok(path_array(py, &self.cumulative_paths()?))
     }
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        self.quantile_interval(py, &self.inner.paths, level, false)
+        quantile_interval(py, level, |p| self.inner.paths.observation_quantiles(p))
     }
     #[pyo3(signature = (level=0.95))]
     fn mean_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        self.quantile_interval(py, &self.inner.paths, level, true)
+        quantile_interval(py, level, |p| self.inner.expected_value_quantiles(p))
     }
     #[pyo3(signature = (level=0.95))]
     fn cumulative_interval<'py>(
@@ -339,11 +331,8 @@ impl PyHurdleForecast {
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalArrays<'py>> {
-        let paths = CorePosteriorPredictiveForecast {
-            state_paths: Vec::new(),
-            observation_paths: self.cumulative_paths()?,
-        };
-        self.quantile_interval(py, &paths, level, false)
+        let paths = self.cumulative_paths()?;
+        quantile_interval(py, level, |p| path_quantiles(&paths, p))
     }
     #[getter]
     fn uncertainty_kind(&self) -> &'static str {
@@ -356,50 +345,8 @@ impl PyHurdleForecast {
 }
 
 impl PyHurdleForecast {
-    fn cumulative_paths(&self) -> PyResult<Vec<Vec<Vec<f64>>>> {
-        self.inner
-            .paths
-            .observation_paths
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|path| {
-                        let mut sum = 0.0;
-                        path.iter()
-                            .map(|x| {
-                                sum += x;
-                                if sum.is_finite() {
-                                    Ok(sum)
-                                } else {
-                                    Err(InferenceError::new_err("cumulative payment overflowed"))
-                                }
-                            })
-                            .collect()
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-    fn quantile_interval<'py>(
-        &self,
-        py: Python<'py>,
-        paths: &CorePosteriorPredictiveForecast,
-        level: f64,
-        mean: bool,
-    ) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probs = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let q = if mean {
-            paths.state_quantiles(&probs)
-        } else {
-            paths.observation_quantiles(&probs)
-        }
-        .map_err(bayesian_forecast_error)?;
-        Ok((
-            q[0].values.clone().into_pyarray(py),
-            q[1].values.clone().into_pyarray(py),
-        ))
+    fn cumulative_paths(&self) -> PyResult<Paths> {
+        cumulative_paths(&self.inner.paths.observation_paths).map_err(bayesian_forecast_error)
     }
 }
 

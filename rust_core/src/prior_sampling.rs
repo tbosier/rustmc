@@ -11,6 +11,7 @@ use crate::model::{
     DisplayParamSpec, HyperParam, ModelError, ModelResult, PriorSpec,
 };
 use crate::observation;
+use crate::sampler::{check_request_size, MAX_RETAINED_VALUES};
 use rand::{distributions::Open01, Rng};
 use rand_distr::{Distribution, Gamma, StandardNormal};
 use std::collections::HashMap;
@@ -334,17 +335,36 @@ pub fn prior_predictive<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> ModelResult<PriorPredictive> {
     let heads = graph.observation_heads();
-    let mut evaluator = Evaluator::new(graph);
+    let mut evaluator =
+        Evaluator::try_new(graph).map_err(|error| ModelError::invalid(error.to_string()))?;
+    let deterministic_lens: Vec<usize> = graph
+        .deterministics
+        .iter()
+        .map(|(_, node)| evaluator.node_len(*node))
+        .collect();
+    // Refuse a request whose storage could not be allocated before reserving
+    // it: a failed allocation aborts the process rather than returning. At
+    // least one value per sample is counted, because `vec!` below builds one
+    // `n_samples` reservation even for a model with no parameters to display.
+    let per_draw = heads
+        .iter()
+        .map(|head| head.n_obs)
+        .chain(deterministic_lens.iter().map(|len| (*len).max(1)))
+        .try_fold(display_params.len(), |total, n| total.checked_add(n))
+        .unwrap_or(usize::MAX)
+        .max(1);
+    check_request_size(
+        "prior predictive sampling",
+        &[n_samples, per_draw],
+        MAX_RETAINED_VALUES,
+        "reduce n_samples or the number of observations",
+    )
+    .map_err(ModelError::invalid)?;
 
     let mut params: Vec<Vec<f64>> = vec![Vec::with_capacity(n_samples); display_params.len()];
     let mut predictions: Vec<Vec<f64>> = heads
         .iter()
         .map(|head| Vec::with_capacity(n_samples * head.n_obs))
-        .collect();
-    let deterministic_lens: Vec<usize> = graph
-        .deterministics
-        .iter()
-        .map(|(_, node)| evaluator.node_len(*node))
         .collect();
     let mut deterministics: Vec<Vec<f64>> = deterministic_lens
         .iter()
@@ -358,7 +378,7 @@ pub fn prior_predictive<R: Rng + ?Sized>(
         }
 
         // Forward pass to get predictions
-        evaluator.compute(graph, &draw.raw);
+        evaluator.forward(graph, &draw.raw);
         // `sample_prior_draw` has already refused a nonfinite parameter, but a
         // representable draw can still push a deterministic out of range -- a
         // finite `alpha` with an `alpha.exp()` deterministic is enough. A

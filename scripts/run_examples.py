@@ -6,9 +6,8 @@ or adding a runnable script without listing it, is itself a failure -- that is
 what let two examples grow to ~57 and ~42 minutes and drift out of the docs
 without anyone noticing.
 
-Scripts under "Helpers, not examples" and "Exploratory comparisons" are
-excluded by name, because they are modules or need third-party packages this
-project does not depend on.
+Scripts named under "Helpers, not examples" are excluded by name, because
+they are modules rather than runnable examples.
 
     python scripts/run_examples.py [--timeout SECONDS] [--jobs N]
 

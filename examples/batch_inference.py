@@ -13,9 +13,9 @@ Rayon thread pool, and offers two batch shapes:
 This example uses 100 SKUs so it stays practical to run locally. It is an API
 example, not a throughput claim. Whether rustmc, ARIMA or Prophet is faster depends
 on the model, configuration, data and hardware, and their default uncertainty
-outputs are not directly comparable. `examples/batch_many_series.py` has a matched
-rustmc/PyMC+nutpie comparison that reports divergences, R-hat and ESS/s next to wall
-time; `benchmarks/README.md` says what may be claimed from a measurement.
+outputs are not directly comparable. `benchmarks/comparisons/batch_many_series.py` has
+an exploratory rustmc/PyMC+nutpie comparison that reports divergences, R-hat and ESS/s
+next to wall time; `benchmarks/README.md` says what may be claimed from a measurement.
 """
 
 # %%

@@ -26,7 +26,9 @@ def test_batch_identity_reorder_chunk_resume_threads_and_forecasts(rustmc_module
     y = rng.normal(size=16)
     ys = [y, y[:12], y.copy()]
     ids = ["north/α", "south", "same data different ID"]
-    kwargs = dict(chains=2, draws=24, warmup=12, seed=451)
+    kwargs = dict(chains=2, draws=24, seed=451)
+    if model_index != 3:
+        kwargs["warmup"] = 12  # AR draws are exact; it has no warmup
     batch = model.fit_batch(ys, ids, threads=1, chunk_size=3, **kwargs)
     reordered = model.fit_batch(ys[::-1], ids[::-1], threads=3, chunk_size=1, **kwargs)
     resumed = model.fit_batch(ys[1:2], ids[1:2], threads=2, **kwargs)
@@ -67,14 +69,14 @@ def test_ragged_mixed_per_cell_models_errors_and_missing_schedule(rustmc_module)
     assert [batch[cell].time_count for cell in ids[:4]] == [8, 16, 10, 16]
     assert set(batch.diagnostics()) == set(ids)
     assert batch.diagnostics()["empty"] is None
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         batch["empty"]
     with pytest.raises(KeyError):
         batch["unknown"]
     forecast = batch.forecast(3, errors="collect", threads=2)
     assert set(forecast.errors) == set(ids[4:])
     assert forecast.results[4:] == [None, None, None]
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         batch.forecast(3)
     gaps = all_models[0].fit_batch([[0., np.nan, 1., 2.]], ["gaps"], draws=6, warmup=3)
     assert gaps["gaps"].time_count == 4
@@ -94,7 +96,7 @@ def test_batch_validation_and_cell_numerical_failures(rustmc_module):
         model.fit_batch([y], [])
     with pytest.raises(ValueError, match="one entry"):
         model.fit_batch([y], ["one"], models=[])
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         model.fit_batch([[], y], ["empty", "ok"], chunk_size=1)
     batch = model.fit_batch([y, [1e308, -1e308]], ["ok", "overflow"], chains=1,
                             draws=6, warmup=3, errors="collect")
@@ -237,3 +239,17 @@ def test_huge_batch_allocations_return_errors_instead_of_panicking(rustmc_module
     tiny = model.fit_batch([[1., 2., 3.]], ["tiny"], chains=1, draws=8, warmup=0)
     bad_forecast = tiny.forecast(2**61, errors="collect")
     assert "allocation limit" in bad_forecast.errors["tiny"]
+
+
+def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
+    local, _, _, ar = models(rustmc_module)
+    y = np.random.default_rng(5).normal(size=12)
+    for schedule in ({"warmup": 10}, {"thin": 2}):
+        with pytest.raises(ValueError, match="exact and independent"):
+            ar.fit_batch([y], ["ar"], draws=8, **schedule)
+        with pytest.raises(ValueError, match="exact and independent"):
+            local.fit_batch([y, y], ["a", "b"], models=[ar, ar], draws=8, **schedule)
+    # The defaults, and any batch with a Gibbs-sampled cell, still fit.
+    assert ar.fit_batch([y], ["ar"], draws=8)["ar"].draws == 8
+    mixed = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8, warmup=10, thin=2)
+    assert (mixed["ar"].draws, mixed["level"].warmup, mixed["level"].thin) == (8, 10, 2)

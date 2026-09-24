@@ -101,8 +101,12 @@ def test_short_diagnostics_and_invalid_prior():
         np.array([[0., np.nan]]), [0], 0, [2], draws=2, chains=1,
     )
     assert all(row["r_hat"] is None for row in fit.diagnostics())
-    with pytest.raises(ValueError):
+    with pytest.raises(rustmc.InferenceError, match="steps must be positive"):
         fit.calendar_samples(0)
+    with pytest.raises(rustmc.InferenceError, match="cohort 0: closed row"):
+        rustmc.DirichletMultinomialRunoff([1, 1]).fit(
+            np.array([[1., 2.]]), [0], 3, [7], draws=2, chains=1,
+        )
     for alpha in ([1], [1, 0], [1, np.inf]):
         with pytest.raises(ValueError):
             rustmc.DirichletMultinomialRunoff(alpha)
@@ -114,9 +118,9 @@ def test_large_sparse_totals_and_oversized_calendar_are_safe():
         [10**10, 10**10], draws=10, chains=1,
     )
     assert (fit.ultimate_samples == 10**10).all()
-    with pytest.raises(ValueError, match="allocation"):
+    with pytest.raises(ValueError, match="safety limit"):
         fit.calendar_samples(2**61)
-    with pytest.raises(ValueError, match="allocation"):
+    with pytest.raises(ValueError, match="safety limit"):
         rustmc.DirichletMultinomialRunoff([1, 1]).fit(
             np.array([[0., np.nan]]), [0], 0, [1], draws=10**9,
         )

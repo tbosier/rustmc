@@ -100,7 +100,9 @@ artifact format: the older data-owning Rust `CompiledModelArtifact` and the
 `rustmc.FitResult.from_json(text)` restores it. This fitted artifact includes the
 compiled declarative model, keyed training data, every stored chain/draw position,
 parameter names/order, and sampler telemetry. Unlike a compiled-model artifact,
-it contains observed data. `fit.model` provides the compiled model with those
+it contains observed data. The format is defined in the Rust core, so the same file
+loads in Rust with `rustmc_core::model::ModelFit::from_json`, and saving is
+deterministic: one fit always produces the same bytes. `fit.model` provides the compiled model with those
 training defaults, so it can be bound and fitted again independently.
 
 ```python

@@ -47,7 +47,7 @@ def test_initial_positions_are_unconstrained_and_checked():
 def test_batch_initialization_is_keyed_by_id_and_collects_cell_errors():
     b=r.ModelBuilder()
     x=b.normal_prior('x',0.,1.)
-    # Default zero starts are outside support, so success requires the supplied init.
+    # The origin is outside the support; supplied starts inside it must be used as given.
     b.potential('positive',x.log())
     compiled=b.compile()
     options=dict(chains=2,draws=8,warmup=8,seed=58,show_progress=False)
@@ -55,10 +55,13 @@ def test_batch_initialization_is_keyed_by_id_and_collects_cell_errors():
     one=compiled.sample_batch([{},{}],ids=['left','right'],init=init,threads=1,**options)
     two=compiled.sample_batch([{},{}],ids=['right','left'],init=init,threads=2,**options)
     np.testing.assert_array_equal(one.get('left').get_samples_2d()['x'],two.get('left').get_samples_2d()['x'])
-    errors=compiled.sample_batch([{}, {}, {}, {}],ids=['ok','missing','shape','parse'],
-        init={'ok':[[1.],[2.]],'shape':[[1.]],'parse':'bad'},errors='collect',**options)
-    assert set(errors.errors)=={'missing','shape','parse'}
+    errors=compiled.sample_batch([{}, {}, {}, {}, {}],ids=['ok','missing','outside','shape','parse'],
+        init={'ok':[[1.],[2.]],'outside':[[0.],[1.]],'shape':[[1.]],'parse':'bad'},
+        errors='collect',**options)
+    assert set(errors.errors)=={'outside','shape','parse'}
     assert errors.get('ok').fit.get_samples_2d()['x'].shape==(2,8)
+    # Without init, random starts are searched for inside the support.
+    assert (errors.get('missing').fit.get_samples_2d()['x']>0).all()
     with pytest.raises(ValueError,match='unknown dataset ID'):
         compiled.sample_batch([{}],ids=['ok'],init={'typo':[[1.],[2.]]},**options)
 

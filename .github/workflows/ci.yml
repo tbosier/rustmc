@@ -19,15 +19,37 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Verify synchronized package/dependency/lock versions
         run: python3 scripts/verify_version.py
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # Statistical recovery tests exercise thousands of gradient evaluations;
       # run them with production arithmetic/code generation.
       - run: cargo test --workspace --release
+      # Ignored by default because it fits 4 x 2000 draws; with the release
+      # build above already in place it adds well under a minute.
+      - name: Run the ignored realistic-settings prediction test
+        run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
       - name: Verify publishable Rust crate archive
         run: cargo package -p rustmc_core --locked
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust_core/Cargo.toml is the single source of truth for the MSRV.
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' rust_core/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master branch, 2026-09-24
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # --all-targets so the tests, examples and benches rustmc_core ships are held
+      # to the same toolchain as the library.
+      - run: cargo check -p rustmc_core --all-targets --locked
 
   python-source-install:
     name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
@@ -36,13 +58,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # Add macos-latest / windows-latest here once someone has verified
         # the steps below on those platforms (see CONTRIBUTING.md).
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -72,6 +97,12 @@ jobs:
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
+      # Deselected from the default run by pyproject.toml because it needs the
+      # network: builds a wheel with maturin, installs it into a fresh venv with
+      # pip, and imports it from outside the checkout.
+      - name: Install the built wheel into a clean venv (network-marked test)
+        if: matrix.python-version == '3.11'
+        run: ${{ runner.temp }}/source-env/bin/python -m pytest -q -m network tests/test_packaging.py
       # Nothing ran the examples before, so two of them grew to ~57 and ~42
       # minutes and drifted out of examples/README.md unnoticed. The README
       # tables are the manifest; a script in neither a table nor an excluded
@@ -107,13 +138,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # Add macos-latest / windows-latest here once someone has verified
         # the steps below on those platforms (see CONTRIBUTING.md).
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -170,7 +204,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --manifest-path python_bindings/Cargo.toml -i python3.11
@@ -190,11 +224,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-24
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist
           args: --out dist --manifest-path python_bindings/Cargo.toml
@@ -205,11 +239,61 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
-    name: Publish to PyPI
-    needs: [build, sdist]
+  # crates.io first, then PyPI, then the documentation site, from the same tag.
+  # Nothing technical forces the order (the wheels and sdist carry rustmc_core's
+  # source), but publishing one registry by hand and the other from CI is how a
+  # version ends up on only one of them. The crate goes first because packaging
+  # it builds it once more, so a failure there stops the release before anything
+  # is public. If a later job fails, re-run that job alone: re-running
+  # publish-crate fails, since the version already exists on crates.io.
+  publish-crate:
+    name: Publish rustmc_core to crates.io
+    needs: [build, sdist, msrv]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # The release's one approval gate: required reviewers on this environment
+    # hold every publish job below. CARGO_REGISTRY_TOKEN is an environment
+    # secret (docs/releasing.md).
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-24
+      - name: Verify the tag matches the manifests
+        run: python3 scripts/verify_version.py
+      # A maintainer may publish the crate by hand (docs/releasing.md); the
+      # PyPI upload still has to follow, so an existing version is not an error.
+      - name: Check whether this version is already on crates.io
+        id: registry
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('rust_core/Cargo.toml', 'rb'))['package']['version'])")
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A 'rustmc-release (https://github.com/tbosier/rustmc)' \
+            "https://crates.io/api/v1/crates/rustmc_core/$version")
+          case "$status" in
+            200) echo "published=true" >> "$GITHUB_OUTPUT"
+                 echo "rustmc_core $version is already on crates.io; skipping the upload." ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "crates.io answered HTTP $status for rustmc_core $version" >&2; exit 1 ;;
+          esac
+      # Verify (which runs dependency build scripts) without the token in the
+      # environment, then upload the already-verified crate with it.
+      - if: steps.registry.outputs.published != 'true'
+        run: cargo package -p rustmc_core --locked
+      - if: steps.registry.outputs.published != 'true'
+        run: cargo publish -p rustmc_core --locked --no-verify
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish:
+    name: Publish to PyPI
+    needs: [build, sdist, publish-crate]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # PyPI's trusted-publisher entry is restricted to this environment. It
+    # carries no required reviewers of its own: publish-crate's approval already
+    # gates this job, and a second approval declined after the crate uploaded
+    # would leave the version on crates.io only (docs/releasing.md).
+    environment: pypi
     permissions:
       id-token: write
     steps:
@@ -217,6 +301,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          # A re-run after a partial upload re-sends identical files from this
+          # run's artifacts; skip those instead of failing on them.
+          skip-existing: true
+
+  docs:
+    name: Deploy documentation
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    uses: ./.github/workflows/docs.yml
+    with:
+      deploy: true

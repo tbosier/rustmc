@@ -12,7 +12,7 @@ prediction and diagnostics.
 pip install rustmc
 ```
 
-NumPy is the only required dependency. Python 3.9–3.13 are covered by install tests.
+NumPy is the only required dependency. Python 3.9–3.14 are covered by install tests.
 
 ## Is this the right library for you?
 
@@ -69,18 +69,18 @@ print(second.summary())
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
 ──────────────────────────────────────────────────────────────────────────────────────────────
-offset         0.2899   0.0156     0.2581     0.3166       3805       2649   1.0007   0.000253
-gain           1.1793   0.0136     1.1526     1.2038       4695       2901   1.0009   0.000198
-noise          0.1560   0.0112     0.1347     0.1759       3037       3029   1.0012   0.000202
+offset         0.2896   0.0155     0.2599     0.3181       3901       2953   1.0006   0.000249
+gain           1.1789   0.0132     1.1534     1.2033       4053       2940   1.0001   0.000209
+noise          0.1559   0.0111     0.1351     0.1762       3453       2648   1.0012   0.000191
 ──────────────────────────────────────────────────────────────────────────────────────────────
-Mean accept rate: 0.91  │  Divergences: 0
+Mean accept rate: 0.92  │  Divergences: 0
 4 chains × 1000 draws per chain
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
 ──────────────────────────────────────────────────────────────────────────────────────────────
-offset         0.3474   0.0749     0.2056     0.4854       1605       1589   1.0039   0.001878
-gain           1.2329   0.0573     1.1189     1.3350       1553       1595   1.0047   0.001457
-noise          0.1714   0.0201     0.1349     0.2080       1729       1723   1.0035   0.000484
+offset         0.3503   0.0752     0.2023     0.4827       1292       1260   1.0051   0.002115
+gain           1.2352   0.0582     1.1178     1.3369       1272       1462   1.0035   0.001645
+noise          0.1716   0.0204     0.1336     0.2081       1661       1572   1.0030   0.000501
 ──────────────────────────────────────────────────────────────────────────────────────────────
 Mean accept rate: 0.93  │  Divergences: 0
 ```
@@ -101,7 +101,7 @@ as well.
 
 The data were generated with offset 0.3 and gain 1.2, and both fits cover those values.
 The second is much less certain: the posterior standard deviation on `offset` goes from
-0.0156 to 0.0749. Some of that is the smaller sample and some is the narrower predictor
+0.0155 to 0.0752. Some of that is the smaller sample and some is the narrower predictor
 range, since `x[:40]` spans only part of the original sweep — the two are not separable
 here. The point is that the width is reported rather than assumed.
 

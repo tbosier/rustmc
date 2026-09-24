@@ -1,5 +1,8 @@
 //! Python conversion for the native joint dynamic GLM kernel.
-use crate::{arviz_from_groups, bayesian_forecast_error, forecast_diagnostics};
+use crate::forecast_support::{
+    bayesian_forecast_error, interval_probabilities, optional_matrix, real_cube, real_matrix,
+};
+use crate::{arviz_from_groups, forecast_diagnostics};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray4};
 use pyo3::prelude::*;
@@ -38,12 +41,13 @@ impl PyDynamicGLM {
         py: Python<'_>,
         steps: usize,
         groups: usize,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         seed: u64,
     ) -> PyResult<PyDynamicGLMForecast> {
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let config = DynamicGlmConfig {
             chains,
             draws,
@@ -83,7 +87,7 @@ impl PyDynamicGLM {
             "hurdle_lognormal" => Family::HurdleLogNormal,
             "gaussian" => Family::Gaussian,
             _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::InferenceError::new_err(
                     "family must be poisson, negative_binomial, hurdle_lognormal, or gaussian",
                 ))
             }
@@ -108,15 +112,17 @@ impl PyDynamicGLM {
     fn fit(
         &self,
         py: Python<'_>,
-        y: Panel,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        y: &Bound<'_, PyAny>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
         thin: usize,
         seed: u64,
     ) -> PyResult<PyDynamicGLMFit> {
+        let y = real_matrix(y, "y")?;
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let config = DynamicGlmConfig {
             chains,
             draws,
@@ -135,6 +141,17 @@ impl PyDynamicGLM {
             observations: y,
         })
     }
+}
+
+/// The optional `(group, time, feature)` design and `(group, time)` exposure.
+fn panel_inputs(
+    exog: Option<&Bound<'_, PyAny>>,
+    exposure: Option<&Bound<'_, PyAny>>,
+) -> PyResult<(Option<Design>, Option<Panel>)> {
+    Ok((
+        exog.map(|exog| real_cube(exog, "exog")).transpose()?,
+        optional_matrix(exposure, "exposure")?,
+    ))
 }
 
 macro_rules! constructor {
@@ -234,9 +251,10 @@ impl PyDynamicGLMFit {
         component: usize,
     ) -> PyResult<Bound<'py, PyArray4<f64>>> {
         if component >= self.posterior.chains[0][0].states.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "invalid component index",
-            ));
+            return Err(crate::InferenceError::new_err(format!(
+                "invalid component index {component}; this model has {} state component(s)",
+                self.posterior.chains[0][0].states.len()
+            )));
         }
         let paths = self
             .posterior
@@ -289,10 +307,11 @@ impl PyDynamicGLMFit {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Design>,
-        exposure: Option<Panel>,
+        exog: Option<&Bound<'_, PyAny>>,
+        exposure: Option<&Bound<'_, PyAny>>,
         seed: u64,
     ) -> PyResult<PyDynamicGLMForecast> {
+        let (exog, exposure) = panel_inputs(exog, exposure)?;
         let inner = py
             .allow_threads(|| {
                 self.posterior
@@ -386,7 +405,7 @@ impl PyDynamicGLMForecast {
         for ((c, d, t), value) in data.indexed_iter_mut() {
             *value = paths[c][d].iter().map(|g| g[t]).sum::<f64>();
             if !value.is_finite() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::InferenceError::new_err(
                     "aggregate predictive values overflowed",
                 ));
             }
@@ -440,16 +459,12 @@ fn path_means<'py>(py: Python<'py>, paths: &Paths) -> PyResult<Bound<'py, numpy:
     Ok(result.into_pyarray(py))
 }
 fn path_interval<'py>(py: Python<'py>, paths: &Paths, level: f64) -> PyResult<PanelInterval<'py>> {
-    if !level.is_finite() || level <= 0. || level >= 1. {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "level must lie strictly between zero and one",
-        ));
-    }
+    let probabilities = interval_probabilities(level)?;
     let mut lower = Array2::zeros((paths[0][0].len(), paths[0][0][0].len()));
     let mut upper = lower.clone();
     for g in 0..paths[0][0].len() {
         let quantiles = group_paths(paths, g)
-            .observation_quantiles(&[(1. - level) / 2., (1. + level) / 2.])
+            .observation_quantiles(&probabilities)
             .map_err(bayesian_forecast_error)?;
         for t in 0..paths[0][0][0].len() {
             lower[(g, t)] = quantiles[0].values[t];

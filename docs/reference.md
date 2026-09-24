@@ -246,7 +246,8 @@ formed inside each posterior draw before quantiles are calculated.
 The fitted model is equally spaced, scalar, Gaussian, and single-seasonal. Seasonal
 innovations preserve structural identification but do not force every realized rolling
 cycle to sum exactly to zero. Missing values retain their time positions. Fitting
-requires two finite observations, with no full-cycle minimum. Short histories can be
+requires three finite observations, one per inferred variance, with no full-cycle
+minimum. Short histories can be
 strongly sensitive to initial-state and variance priors. The regression extension and
 `fourier_design` provide a smaller harmonic model for long periods.
 
@@ -354,6 +355,14 @@ builder = rmc.ModelBuilder(data=None, dims=None)
 Constructs a model. Data can be bound at build time or passed later to `rmc.sample()`,
 `rmc.batch_sample()`, or `rmc.sample_prior_predictive()`. `dims` maps a data key to a
 named population dimension; keys left out use the compatibility dimension `"obs"`.
+
+Data values must be 1-D or 2-D arrays (or lists) of real numbers. Integer arrays are
+accepted when every value is exactly representable as a float64. Scalars, arrays
+with more than two dimensions, boolean, string, bytes, object or complex arrays,
+`True`/`False` inside a list, masked arrays with a masked entry, and long doubles or
+integers that float64 would round are rejected with an error naming the key rather
+than converted. Convert an object column with `.astype(float)`; mark a missing value
+with `NaN` where the model allows one.
 
 The builder also has `data(name, dim=None)`, `potential(name, expression)` for a bare
 log-density term (the expression must be scalar), and `deterministic(name, expression)`
@@ -519,6 +528,7 @@ fit = rmc.sample(
     num_leapfrog_steps=15,
     show_progress=True,
     init=None,
+    metric="auto",
 )
 ```
 
@@ -527,7 +537,30 @@ Returns a `FitResult`.
 Notes:
 
 - `sampler` may be `"nuts"` or `"hmc"`.
-- `init` supplies starting positions. `None` uses the sampler's own initialization.
+- `init` supplies starting positions. With `None`, each chain starts at its own random
+  point, uniform on (-2, 2) in unconstrained coordinates, as Stan does. A start whose
+  log density or gradient is not finite is redrawn; if none of 100 draws works, the
+  origin is tried, and failing that `sample()` asks for `init`.
+- Chain `c` draws from a stream derived from `seed` and `c` through separate mixing
+  rounds, so neither neighbouring seeds nor any fixed offset of the seed reproduce
+  another fit's chains.
+- `metric` sets how warmup adapts the metric of vector parameters. `"diag"` is Stan's
+  default diagonal metric. `"dense"` estimates a full covariance for each vector
+  parameter of at most 512 elements, shrinking its correlations when a window has
+  fewer than two draws per element. `"auto"` (the default) stays diagonal unless a
+  vector parameter's warmup draws show correlation well beyond their own sampling
+  noise, which suits strongly correlated regression coefficients. It considers a
+  dense block only when a warmup window has at least two draws per element, so at
+  the default `warmup=500` vectors of more than 100 elements stay diagonal; use a
+  longer warmup or `"dense"` for a large, strongly correlated vector. Scalar
+  parameters are always diagonal.
+- Warmup uses a windowed schedule, Stan's from 500 iterations: an initial buffer of
+  `min(75, 15%)` of warmup, doubling metric windows from 25 draws (fewer when warmup
+  is below about 170), and a terminal
+  buffer of `min(50, 10%)` but at least 25 iterations. A window whose successor could
+  not fit at twice its size is stretched to the terminal buffer, so no window after
+  the first is shorter than 25 draws. Below 41 warmup iterations only the step size
+  adapts.
 - `threads=0` uses Rayon defaults.
 - `max_tree_depth` applies to NUTS.
 - `num_leapfrog_steps` applies to HMC.
@@ -549,6 +582,7 @@ results = rmc.batch_sample(
     max_tree_depth=8,
     num_leapfrog_steps=15,
     show_progress=True,
+    metric="auto",
 )
 ```
 
@@ -567,7 +601,7 @@ than absolute batch throughput.
 | `std()` | `dict[str, float]` | Posterior std per parameter |
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
-| `diagnostics()` | `list[dict]` | Per-parameter diagnostics |
+| `diagnostics()` | `list[dict]` | Per-parameter diagnostics; a value that cannot be computed is `None` |
 | `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
@@ -660,17 +694,27 @@ explicitly as `sigma * z[key]`.
 
 ## Exceptions
 
-`rustmc.StateSpaceError` reports invalid model structure or a numerical failure inside
-a native kernel. `rustmc.ParameterError` reports an invalid parameter or expression,
-including mixing references from two builders. `rustmc.InferenceError` reports invalid
-inputs or a numerical failure in a fitted Bayesian model; the hierarchical entry points
-raise it. All three subclass `ValueError`.
+All three rustmc exception classes subclass `ValueError`, so `except ValueError`
+catches any of them.
 
-The forecasting models do not agree on one exception class. The local-level, trend,
-seasonal and AR models raise `StateSpaceError`, as does structural fitting; runoff
-raises plain `ValueError`. Because every one of these subclasses `ValueError`,
-`except ValueError` catches them all, and that — not `except InferenceError` — is the
-form to write if you want to catch a forecasting failure.
+- `rustmc.InferenceError`: a Bayesian model refused its priors, configuration or
+  data, or failed numerically. This covers every forecasting model (local level,
+  seasonal, trend, AR, hierarchical mean, hurdle, regression, structural fitting,
+  dynamic GLM and runoff), their priors, their `fit`, `forecast` and `fit_batch`
+  cells, and the accessors of the fits and forecasts they return.
+- `rustmc.StateSpaceError`: the fixed-parameter `LinearGaussianStateSpace` layer and
+  structural model specifications (`VarianceParameter`, `StructuralComponent`,
+  `StructuralModel` and its JSON).
+- `rustmc.ParameterError`: an invalid parameter or expression in `ModelBuilder`,
+  including mixing references from two builders.
+- Plain `ValueError`: argument checks every model shares, such as array conversion,
+  interval levels, quantile probabilities, batch options and `fourier_design`.
+
+Forecasting models accept any real numeric array-like for observations, `exog` and
+priors: float or integer NumPy arrays in any memory layout, or lists. They follow the
+same exact-conversion rule as `ModelBuilder` data above, so boolean, complex, string
+and object arrays, masked entries, values float64 would round, ragged lists and the
+wrong number of dimensions raise a `ValueError` naming the argument.
 
 ## Result types
 

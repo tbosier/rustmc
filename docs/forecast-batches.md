@@ -37,7 +37,9 @@ configuration, including different seasonal periods or AR orders. An entry of
 `None` uses the calling model. Histories may be ragged. Missing observations retain
 their time positions for the state-space models; AR continues to require finite
 histories. Sampling controls are shared across the call. AR uses exact independent
-conjugate draws and ignores batch `warmup`/`thin`.
+conjugate draws, so it has no warmup or thinning: in a mixed batch `warmup` and
+`thin` apply to the Gibbs cells only, and a batch of only AR cells refuses values
+other than the defaults.
 
 `errors="collect"` returns successful fits alongside a mapping of cell ID to error
 text. Both validation and numerical errors are isolated; failed entries in `.results`

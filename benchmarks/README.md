@@ -2,8 +2,8 @@
 
 `benchmarks/run.py` is the reference comparison for rustmc, native PyMC NUTS,
 PyMC model compilation with nutpie, and direct NumPyro NUTS. Scripts under
-`examples/benchmark_*.py` are exploratory examples and are not evidence for a public
-performance claim.
+`benchmarks/comparisons/` are exploratory (see [below](#exploratory-comparisons)) and
+are not evidence for a public performance claim.
 
 The reference workload is conjugate Gaussian linear regression with known observation
 variance. Every engine receives byte-identical float64 `X` and `y`, the same Normal prior,
@@ -102,3 +102,22 @@ The quick config checks plumbing only. It has too few draws for a performance or
 claim. Use `--repetitions 3 --randomize-order` (or more repetitions) with the standard
 config before treating timing differences as stable; record all repetitions rather than
 selecting the fastest. The chosen engine order and order seed are retained in the JSON.
+
+## Exploratory comparisons
+
+`benchmarks/comparisons/batch_many_series.py` fits 100 independent demand regressions
+with `rustmc.batch_sample` and PyMC+nutpie, then forecasts one of them against Prophet and
+ARIMA. It needs optional packages that rustmc does not depend on — ArviZ, PyMC, nutpie,
+Prophet and statsmodels, plus matplotlib for its plot — and CI never runs it, so it can
+fall behind the API between releases. It does not follow the protocol above, and nothing
+it prints may be quoted as a performance claim. `bench_common.py` beside it records the
+environment and phase-separated timings.
+
+Three single-model comparisons that used to live in `examples/`
+(`compare_with_pymc.py`, `benchmark_vs_pymc.py` and `benchmark_multivariate.py`) were
+removed rather than kept unverified. They were Gaussian regressions with known noise at
+1, 500 and 10 coefficients, which `benchmarks/run.py` measures under the protocol above
+when `observations`, `parameters` and `chains` are changed in a config. They are not
+identical workloads: `run.py` declares the coefficients as one vector parameter, while
+two of the removed scripts used separate scalar priors and one added an intercept. The
+removed scripts remain in the repository history.
