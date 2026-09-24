@@ -202,7 +202,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           target: ${{ matrix.target }}
           args: --release --out dist --manifest-path python_bindings/Cargo.toml -i python3.11
@@ -222,11 +222,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-24
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - uses: PyO3/maturin-action@v1
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           command: sdist
           args: --out dist --manifest-path python_bindings/Cargo.toml
@@ -237,11 +237,39 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  publish:
-    name: Publish to PyPI
-    needs: [build, sdist]
+  # crates.io first, then PyPI, from the same tag. Nothing technical forces the
+  # order (the wheels and sdist carry rustmc_core's source), but publishing one
+  # registry by hand and the other from CI is how a version ends up on only one
+  # of them. The crate goes first because `cargo publish` builds the packaged crate
+  # once more before uploading, so a failure there stops the release before
+  # anything is public.
+  # If the PyPI job fails after the crate published, re-run that failed job
+  # alone; re-running publish-crate fails, since the version already exists.
+  publish-crate:
+    name: Publish rustmc_core to crates.io
+    needs: [build, sdist, msrv]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # Configure required reviewers on this environment in the repository
+    # settings; CARGO_REGISTRY_TOKEN is an environment secret (docs/releasing.md).
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-24
+      - name: Verify the tag matches the manifests
+        run: python3 scripts/verify_version.py
+      - run: cargo publish -p rustmc_core --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  publish:
+    name: Publish to PyPI
+    needs: [build, sdist, publish-crate]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Required reviewers on this environment gate every upload; PyPI's trusted
+    # publisher entry can also be restricted to it (docs/releasing.md).
+    environment: pypi
     permissions:
       id-token: write
     steps:
@@ -249,6 +277,6 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
