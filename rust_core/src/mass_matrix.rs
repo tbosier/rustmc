@@ -33,9 +33,13 @@ pub enum MetricKind {
     /// Diagonal for every block, as Stan's default `diag_e` metric.
     Diagonal,
     /// Dense within every vector parameter of at most 512 elements,
-    /// estimated from each window whatever its length. Unlike Stan's
-    /// `dense_e`, which estimates one covariance over all parameters, there
-    /// is no correlation across parameters or between scalar parameters.
+    /// estimated from each window whatever its length; a window with fewer
+    /// than two draws per element has its correlations shrunk toward zero so
+    /// that a short window cannot give a near-singular estimate (see
+    /// `shrink_correlations`).
+    /// Unlike Stan's `dense_e`, which estimates one covariance over all
+    /// parameters, there is no correlation across parameters or between
+    /// scalar parameters.
     Dense,
 }
 
@@ -561,13 +565,8 @@ impl AccumulatorBlock {
                         cov[j * dim + i] = value;
                     }
                 }
-                if *require_benefit
-                    && !dense_beats_diagonal(
-                        &cov,
-                        dim,
-                        effective_draws(*count, mean, shift, lag_products, &cov),
-                    )
-                {
+                let effective = effective_draws(*count, mean, shift, lag_products, &cov);
+                if *require_benefit && !dense_beats_diagonal(&cov, dim, effective) {
                     let variances = (0..dim)
                         .map(|i| regularize_variance(cov[i * dim + i], *count))
                         .collect();
@@ -578,6 +577,7 @@ impl AccumulatorBlock {
                     };
                 }
 
+                shrink_correlations(&mut cov, dim, *count);
                 // Stan's dense_e regularization: shrink toward a small
                 // multiple of the identity, weighted by the draw count.
                 let n = *count as f64;
@@ -632,6 +632,48 @@ fn effective_draws(
         0.0
     };
     n * (1.0 - rho) / (1.0 + rho)
+}
+
+/// Draws per dimension from which a dense estimate is used unshrunk.
+const UNSHRUNK_DRAWS_PER_DIM: f64 = 2.0;
+
+/// Shrink the off-diagonal of the sample covariance `cov` of `draws` draws
+/// toward zero when the window holds fewer than [`UNSHRUNK_DRAWS_PER_DIM`]
+/// draws per dimension, and return the weight used.
+///
+/// Such a window gives a sample covariance that is singular, or nearly so, in
+/// directions the target is not, and whitening by it forces a tiny step size
+/// along them: without this, a 300-dimensional isotropic block under
+/// `metric="dense"` took about 30 times the diagonal metric's leapfrog steps
+/// per iteration (`benchmarks/metric_adaptation.py`). Shrinking the
+/// correlation matrix toward the identity by `w` keeps every variance and
+/// lifts every eigenvalue of the correlation estimate to at least `w`. The
+/// weight `1 - n / (2d)` rises from zero at two draws per dimension to one
+/// half at one draw per dimension, where the estimate becomes singular.
+///
+/// This bounds the damage, not the noise: just above two draws per dimension
+/// an isotropic block's estimate is still as noisy as sampling makes it
+/// (condition number near 30 at `n = 2d`), and a dense request there costs
+/// about twice the diagonal metric's steps. A weight that stays positive
+/// further up removes that, but shrinking any correlation also lifts the
+/// smallest eigenvalues of a strongly correlated block, the very directions
+/// a dense metric is for: ramping to zero at three draws per dimension cost
+/// the 20- and 50-dimensional correlated regressions of that benchmark 10 to
+/// 25% more steps. The weight depends on the draw count alone for the same
+/// reason; data-driven targets such as Ledoit–Wolf or Schäfer–Strimmer read a
+/// regression posterior's many small correlations as noise.
+fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
+    let weight = (1.0 - draws as f64 / (UNSHRUNK_DRAWS_PER_DIM * dim as f64)).max(0.0);
+    if weight > 0.0 {
+        for i in 0..dim {
+            for j in 0..dim {
+                if i != j {
+                    cov[i * dim + j] *= 1.0 - weight;
+                }
+            }
+        }
+    }
+    weight
 }
 
 /// Whether a dense metric estimated from a window with `effective_draws`
@@ -1044,6 +1086,59 @@ mod tests {
                 !estimate(&graph, MetricKind::Auto, &draws).has_dense_block(),
                 "seed {seed}"
             );
+        }
+    }
+
+    /// Condition number of the covariance a dense block's factor encodes.
+    fn dense_condition(mass: &MassMatrix) -> f64 {
+        let BlockKind::Dense { chol } = &mass.blocks[0].kind else {
+            panic!("expected a dense block");
+        };
+        let dim = mass.blocks[0].len;
+        let cov = faer::Mat::from_fn(dim, dim, |i, j| {
+            (0..dim)
+                .map(|k| chol[i * dim + k] * chol[j * dim + k])
+                .sum::<f64>()
+        });
+        let eigenvalues = cov.selfadjoint_eigenvalues(faer::Side::Lower);
+        let (min, max) = eigenvalues
+            .iter()
+            .fold((f64::INFINITY, 0.0f64), |(lo, hi), &v| {
+                (lo.min(v), hi.max(v))
+            });
+        max / min
+    }
+
+    #[test]
+    fn dense_estimates_from_few_draws_per_dimension_stay_well_conditioned() {
+        // Twenty draws in thirty dimensions: the sample covariance is singular
+        // and, regularized only toward a small multiple of the identity, had
+        // eigenvalues of 2e-4 beside ones near 4 (condition near 2e4).
+        let graph = vector_graph(30);
+        for seed in 0..5 {
+            let draws = equicorrelated_draws(30, 0.0, 20, seed);
+            let condition = dense_condition(&estimate(&graph, MetricKind::Dense, &draws));
+            assert!(condition < 30.0, "seed {seed}: condition {condition}");
+        }
+    }
+
+    #[test]
+    fn correlations_are_shrunk_only_below_two_draws_per_dimension() {
+        let dim = 4;
+        let original: Vec<f64> = (0..dim * dim)
+            .map(|k| if k % (dim + 1) == 0 { 2.0 } else { 0.9 })
+            .collect();
+        for (draws, weight) in [(8, 0.0), (100, 0.0), (6, 0.25), (4, 0.5), (1, 0.875)] {
+            let mut cov = original.clone();
+            assert_eq!(shrink_correlations(&mut cov, dim, draws), weight);
+            for (k, (&shrunk, &value)) in cov.iter().zip(&original).enumerate() {
+                let expected = if k % (dim + 1) == 0 {
+                    value
+                } else {
+                    value * (1.0 - weight)
+                };
+                assert_eq!(shrunk, expected, "draws {draws}");
+            }
         }
     }
 
