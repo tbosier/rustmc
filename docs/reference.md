@@ -358,8 +358,11 @@ named population dimension; keys left out use the compatibility dimension `"obs"
 
 Data values must be 1-D or 2-D arrays (or lists) of real numbers. Integer arrays are
 accepted when every value is exactly representable as a float64. Scalars, arrays
-with more than two dimensions, and boolean, string, bytes, object or complex arrays
-are rejected with an error naming the key rather than converted.
+with more than two dimensions, boolean, string, bytes, object or complex arrays,
+`True`/`False` inside a list, masked arrays with a masked entry, and long doubles or
+integers that float64 would round are rejected with an error naming the key rather
+than converted. Convert an object column with `.astype(float)`; mark a missing value
+with `NaN` where the model allows one.
 
 The builder also has `data(name, dim=None)`, `potential(name, expression)` for a bare
 log-density term (the expression must be scalar), and `deterministic(name, expression)`
@@ -701,9 +704,10 @@ catches any of them.
   interval levels, quantile probabilities, batch options and `fourier_design`.
 
 Forecasting models accept any real numeric array-like for observations, `exog` and
-priors: float or integer NumPy arrays in any memory layout, or lists. Boolean,
-complex, string and object arrays, ragged lists and the wrong number of dimensions
-raise a `ValueError` naming the argument.
+priors: float or integer NumPy arrays in any memory layout, or lists. They follow the
+same exact-conversion rule as `ModelBuilder` data above, so boolean, complex, string
+and object arrays, masked entries, values float64 would round, ragged lists and the
+wrong number of dimensions raise a `ValueError` naming the argument.
 
 ## Result types
 
