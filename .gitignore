@@ -17,6 +17,8 @@ __pycache__/
 /posterior_plot.png
 /pair_plot.png
 /benchmarks/comparisons/forecast_comparison.png
+# Older checkouts wrote this plot into examples/ before the script moved.
+/examples/forecast_comparison.png
 
 # Local build scratch used by scripts/dev_pytest.sh
 /.target/
