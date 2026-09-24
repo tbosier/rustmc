@@ -58,7 +58,9 @@ The coefficient block has exactly zero process noise.
 
 Training `exog` must have shape `(len(y), features)` and contain finite numbers,
 including at missing observations. `NaN` in `y` preserves the calendar position;
-infinite observations are rejected. At least two finite observations are required.
+infinite observations are rejected. Fitting requires one finite observation per
+inferred variance, the observation variance included: two for a local level, three
+for a local linear trend or a stochastic seasonal.
 Every forecast requires finite future `exog` with shape `(steps, features)`.
 Columns have positional identity: supply them in the same order used for fitting.
 The API cannot detect a caller swapping equally shaped columns. Constant or
@@ -115,7 +117,7 @@ into forecasting, including missing observations. Harmonics must be between one 
 even-period Nyquist harmonic, only its cosine is included. For example, period 12
 with 6 harmonics has 11 columns. No intercept is added automatically.
 
-The stochastic seasonal model also accepts short histories with at least two finite
+The stochastic seasonal model also accepts short histories with at least three finite
 observations; there is no full-cycle or period-dependent finite-count requirement.
 This permits 12- and 18-month annual histories and short weekly histories. It does
 not establish that the data identify seasonality. Assess sensitivity to initial-state,

@@ -246,7 +246,8 @@ formed inside each posterior draw before quantiles are calculated.
 The fitted model is equally spaced, scalar, Gaussian, and single-seasonal. Seasonal
 innovations preserve structural identification but do not force every realized rolling
 cycle to sum exactly to zero. Missing values retain their time positions. Fitting
-requires two finite observations, with no full-cycle minimum. Short histories can be
+requires three finite observations, one per inferred variance, with no full-cycle
+minimum. Short histories can be
 strongly sensitive to initial-state and variance priors. The regression extension and
 `fourier_design` provide a smaller harmonic model for long periods.
 
@@ -519,6 +520,7 @@ fit = rmc.sample(
     num_leapfrog_steps=15,
     show_progress=True,
     init=None,
+    metric="auto",
 )
 ```
 
@@ -527,7 +529,22 @@ Returns a `FitResult`.
 Notes:
 
 - `sampler` may be `"nuts"` or `"hmc"`.
-- `init` supplies starting positions. `None` uses the sampler's own initialization.
+- `init` supplies starting positions. With `None`, each chain starts at its own random
+  point, uniform on (-2, 2) in unconstrained coordinates, as Stan does. A start whose
+  log density or gradient is not finite is redrawn; if none of 100 draws works, the
+  origin is tried, and failing that `sample()` asks for `init`.
+- Chain `c` draws from a stream derived from `seed` and `c`, so different seeds never
+  share a chain.
+- `metric` sets how warmup adapts the metric of vector parameters. `"diag"` is Stan's
+  default diagonal metric. `"dense"` estimates a full covariance for each vector
+  parameter of at most 512 elements. `"auto"` (the default) stays diagonal unless a
+  vector parameter's warmup draws show correlation well beyond their own sampling
+  noise, which suits strongly correlated regression coefficients. Scalar parameters
+  are always diagonal.
+- Warmup follows Stan's windowed schedule: a 75-draw initial buffer, doubling
+  metric windows starting at 25 draws, and a 50-draw terminal buffer, shrinking to
+  15%, 75% and 10% of warmup when warmup is too short for those. The last window is
+  stretched to meet the terminal buffer rather than cut short.
 - `threads=0` uses Rayon defaults.
 - `max_tree_depth` applies to NUTS.
 - `num_leapfrog_steps` applies to HMC.
@@ -549,6 +566,7 @@ results = rmc.batch_sample(
     max_tree_depth=8,
     num_leapfrog_steps=15,
     show_progress=True,
+    metric="auto",
 )
 ```
 
