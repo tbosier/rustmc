@@ -513,7 +513,7 @@ pub fn sample_bound(
 
 /// Sample with one explicit raw (unconstrained) initial vector per chain.
 /// `None` draws each chain's start uniformly from (-2, 2) in unconstrained
-/// space; see [`random_initial_position`].
+/// space, retrying until the density and gradient are finite there.
 pub fn sample_bound_with_init(
     graph: Arc<Graph>,
     binding: DataBinding,

@@ -42,8 +42,8 @@ pub fn stable_sigmoid_derivative(x: f64) -> f64 {
 /// value is nearest.
 ///
 /// This is the single definition of the bounded transform. Both the
-/// constrained draw reported back to a caller ([`ParamTransform::apply`]) and
-/// the value the graph evaluates its density at ([`Op::BoundedSigmoid`]) call
+/// constrained draw reported back to a caller ([`ParamTransform::apply`](crate::graph::ParamTransform::apply)) and
+/// the value the graph evaluates its density at ([`Op::BoundedSigmoid`](crate::graph::Op::BoundedSigmoid)) call
 /// it, so they cannot drift into two formulas that disagree about where the
 /// model was evaluated. That drift is what this function exists to prevent —
 /// the formula itself is unchanged.
