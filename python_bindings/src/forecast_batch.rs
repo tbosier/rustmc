@@ -1,13 +1,42 @@
 //! Native independent-cell forecasting bindings. One pool spans cells and chains.
+use super::ar::{PyBayesianArFit, PyBayesianArForecast, PyBayesianAutoRegression};
 use super::hurdle::{PyHurdleFit, PyHurdleForecast, PyHurdleLogNormal};
+use super::local_level::{PyBayesianForecastResult, PyBayesianLocalLevel, PyBayesianLocalLevelFit};
 use super::regression::{
     PyBayesianRegressionFit, PyBayesianRegressionForecast, PyGaussianCoefficientPrior,
 };
-use super::*;
+use super::seasonal::{
+    PyBayesianSeasonalForecast, PyBayesianSeasonalLocalLevel, PyBayesianSeasonalLocalLevelFit,
+};
+use super::trend::{
+    PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
+};
+use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit};
+use crate::{forecast_diagnostics, InferenceError};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use rustmc_core::bayesian_ar::{
+    fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
+    BayesianArForecast as CoreBayesianArForecast,
+};
+use rustmc_core::bayesian_forecast::{
+    fit_bayesian_local_level, BayesianLocalLevelConfig as CoreBayesianLocalLevelConfig,
+    PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
+};
 use rustmc_core::bayesian_regression::{
     fit_regression, GaussianCoefficientPrior, RegressionConfig, RegressionForecast,
 };
-use rustmc_core::diagnostics::DiagnosticsReport;
+use rustmc_core::bayesian_seasonal::{
+    fit_bayesian_seasonal_local_level,
+    BayesianSeasonalLocalLevelConfig as CoreBayesianSeasonalLocalLevelConfig,
+    SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
+};
+use rustmc_core::bayesian_trend::{
+    fit_bayesian_local_linear_trend,
+    BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
+    TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
+};
 use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
@@ -188,23 +217,23 @@ impl Config {
     }
 }
 impl CellFit {
+    fn as_fit(&self) -> &dyn ForecastFit {
+        match self {
+            Self::Local(fit) => fit,
+            Self::Seasonal(fit) => fit,
+            Self::Trend(fit) => fit,
+            Self::Ar(fit) => fit,
+            Self::Hurdle(fit) => fit,
+            Self::Regression(fit) => &**fit,
+        }
+    }
     fn forecast_allocation_size(&self, steps: usize) -> Result<usize, String> {
-        let (chains, draws, components) = match self {
-            Self::Hurdle(fit) => (
-                fit.posterior.chains.len(),
-                fit.posterior.chains.first().map_or(0, Vec::len),
-                3,
-            ),
-            Self::Local(fit) => (fit.chains(), fit.draws(), 3),
-            Self::Seasonal(fit) => (fit.chains(), fit.draws(), 4),
-            Self::Trend(fit) => (fit.chains(), fit.draws(), 4),
-            Self::Ar(fit) => (fit.chains(), fit.draws(), 3),
-            Self::Regression(fit) => (
-                fit.posterior.chains.len(),
-                fit.posterior.chains.first().map_or(0, Vec::len),
-                6,
-            ),
+        let components = match self {
+            Self::Local(_) | Self::Ar(_) | Self::Hurdle(_) => 3,
+            Self::Seasonal(_) | Self::Trend(_) => 4,
+            Self::Regression(_) => 6,
         };
+        let (chains, draws) = self.as_fit().shape();
         allocation_product(&[chains, draws, steps, components])
     }
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -218,14 +247,7 @@ impl CellFit {
         }
     }
     fn report(&self) -> DiagnosticsReport {
-        match self {
-            Self::Regression(fit) => fit.posterior.diagnostics(),
-            Self::Hurdle(fit) => fit.report(),
-            Self::Local(fit) => fit.posterior.diagnostics(),
-            Self::Seasonal(fit) => fit.posterior.diagnostics(),
-            Self::Trend(fit) => fit.posterior.diagnostics(),
-            Self::Ar(fit) => fit.posterior.diagnostics(),
-        }
+        self.as_fit().report()
     }
     fn forecast(
         &self,
@@ -350,12 +372,51 @@ fn run_cells<T: Sync, R: Send>(
             .map_err(|error| match error {
                 BatchError::Configuration(error) => PyValueError::new_err(error),
                 BatchError::Cell { id, error } => {
-                    StateSpaceError::new_err(format!("cell {id:?}: {error}"))
+                    InferenceError::new_err(format!("cell {id:?}: {error}"))
                 }
             })
     } else {
         execute_batch(cells, seed, threads, chunk_size, fit).map_err(PyValueError::new_err)
     }
+}
+
+/// A cell's converted observations and model, or why it could not be built.
+type CellInput = Result<(Vec<f64>, Config), String>;
+
+/// The `fit_batch` defaults for the Gibbs schedule.
+const DEFAULT_WARMUP: usize = 500;
+const DEFAULT_THIN: usize = 1;
+
+/// Refuse a non-default `warmup` or `thin` that no cell would use.
+///
+/// AR draws are exact and independent, so an all-AR batch has no warmup or
+/// thinning; silently dropping the settings would let a caller believe they
+/// had changed the fit.
+fn reject_unused_schedule(
+    cells: &[(String, CellInput)],
+    warmup: usize,
+    thin: usize,
+) -> PyResult<()> {
+    if (warmup, thin) == (DEFAULT_WARMUP, DEFAULT_THIN) {
+        return Ok(());
+    }
+    let mut configs = cells
+        .iter()
+        .filter_map(|(_, input)| input.as_ref().ok())
+        .map(|(_, config)| config)
+        .peekable();
+    if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
+        return Err(PyValueError::new_err(format!(
+            "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
+             draws are exact and independent; leave them at {DEFAULT_WARMUP} and {DEFAULT_THIN}"
+        )));
+    }
+    Ok(())
+}
+
+/// A cell's input conversion error as the message stored for that cell.
+fn cell_input<T>(py: Python<'_>, input: PyResult<T>) -> Result<T, String> {
+    input.map_err(|error| error.value(py).to_string())
 }
 
 fn check_errors(errors: &str) -> PyResult<()> {
@@ -430,9 +491,7 @@ pub(crate) fn fit_batch(
     let mut cells = Vec::with_capacity(ids.len());
     for (index, row) in rows.iter().enumerate() {
         let input = (|| -> Result<(Vec<f64>, Config), String> {
-            let y = row
-                .extract::<Vec<f64>>()
-                .map_err(|e| format!("invalid observations: {e}"))?;
+            let y = cell_input(py, real_vector(row, "observations"))?;
             let config = if let Some(models) = &models {
                 let model = &models[index];
                 if model.is_none() {
@@ -447,7 +506,7 @@ pub(crate) fn fit_batch(
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLinearTrend>>() {
                     model.batch_config(chains, draws, warmup, thin)
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianAutoRegression>>() {
-                    model.batch_config(chains, draws, warmup, thin)
+                    model.batch_config(chains, draws)
                 } else {
                     return Err(
                         "invalid configuration: models entries must be forecasting models or None"
@@ -471,9 +530,7 @@ pub(crate) fn fit_batch(
             let config =
                 match (design, prior) {
                     (Some(design), Some(prior)) => {
-                        let design = design
-                            .extract::<Vec<Vec<f64>>>()
-                            .map_err(|error| format!("invalid exog: {error}"))?;
+                        let design = cell_input(py, real_matrix(design, "exog"))?;
                         let prior = prior
                             .extract::<PyRef<'_, PyGaussianCoefficientPrior>>()
                             .map_err(|error| format!("invalid coefficient prior: {error}"))?
@@ -492,6 +549,7 @@ pub(crate) fn fit_batch(
         })();
         cells.push((ids[index].clone(), input));
     }
+    reject_unused_schedule(&cells, warmup, thin)?;
     check_total_retention(
         cells
             .iter()
@@ -514,7 +572,7 @@ pub(crate) fn fit_batch(
     if errors == "raise" {
         for (id, result) in ids.iter().zip(&results) {
             if let Err(error) = result {
-                return Err(StateSpaceError::new_err(format!("cell {id:?}: {error}")));
+                return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
             }
         }
     }
@@ -539,7 +597,7 @@ impl PyForecastBatchFit {
     fn __getitem__(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.results[index_of(&self.ids, id)?]
             .as_ref()
-            .map_err(|error| StateSpaceError::new_err(format!("cell {id:?}: {error}")))?
+            .map_err(|error| InferenceError::new_err(format!("cell {id:?}: {error}")))?
             .to_python(py)
     }
     #[getter]
@@ -590,10 +648,7 @@ impl PyForecastBatchFit {
                     .as_ref()
                     .map(|items| &items[index])
                     .filter(|item| !item.is_none())
-                    .map(|item| {
-                        item.extract::<Vec<Vec<f64>>>()
-                            .map_err(|error| format!("invalid future exog: {error}"))
-                    })
+                    .map(|item| cell_input(py, real_matrix(item, "future exog")))
                     .transpose()
             })
             .collect::<Vec<_>>();
@@ -632,7 +687,7 @@ impl PyForecastBatchFit {
         if errors == "raise" {
             for (id, result) in self.ids.iter().zip(&results) {
                 if let Err(error) = result {
-                    return Err(StateSpaceError::new_err(format!("cell {id:?}: {error}")));
+                    return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
                 }
             }
         }
@@ -659,7 +714,7 @@ impl PyForecastBatchForecast {
     fn __getitem__(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.results[index_of(&self.ids, id)?]
             .as_ref()
-            .map_err(|error| StateSpaceError::new_err(format!("cell {id:?}: {error}")))?
+            .map_err(|error| InferenceError::new_err(format!("cell {id:?}: {error}")))?
             .to_python(py)
     }
     #[getter]
@@ -686,4 +741,11 @@ pub(crate) fn forecast_cell_seed(seed: u64, cell_id: &str, domain: &str) -> PyRe
         return Err(PyValueError::new_err("domain must be 'fit' or 'forecast'"));
     }
     Ok(stable_cell_seed(seed, cell_id, domain))
+}
+
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(forecast_cell_seed, m)?)?;
+    m.add_class::<PyForecastBatchFit>()?;
+    m.add_class::<PyForecastBatchForecast>()?;
+    Ok(())
 }

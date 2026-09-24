@@ -61,7 +61,7 @@ def test_exposure_design_and_missing_validation():
 
 
 def test_single_series_requires_explicit_group_axis():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError, match="y must be two-dimensional"):
         rustmc.BayesianDynamicPoisson().fit([0., 1., 2.])
 
 

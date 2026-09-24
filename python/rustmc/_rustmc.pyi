@@ -160,7 +160,14 @@ class BayesianAutoRegression:
         threads: int = 1,
         chunk_size: int = 64,
         errors: Literal["raise", "collect"] = "raise",
-    ) -> ForecastBatchFit: ...
+    ) -> ForecastBatchFit:
+        """Fit independent cells; AR posterior draws are exact and independent.
+
+        ``warmup`` and ``thin`` reach only the Gibbs-sampled cells named in
+        ``models``. A batch whose cells are all autoregressions raises
+        ``ValueError`` for values other than the defaults rather than
+        ignoring them.
+        """
     def __init__(self, order: int, prior: NormalInverseGammaPrior) -> None: ...
     @property
     def order(self) -> int: ...
@@ -168,7 +175,7 @@ class BayesianAutoRegression:
     def prior(self) -> NormalInverseGammaPrior: ...
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         seed: int = 42,
@@ -269,8 +276,8 @@ class BayesianHierarchicalForecast:
     def observation_mean(self) -> _FloatArray: ...
     def state_quantile(self, probability: float) -> _FloatArray: ...
     def observation_quantile(self, probability: float) -> _FloatArray: ...
-    def interval(self, level: float) -> tuple[_FloatArray, _FloatArray]: ...
-    def state_interval(self, level: float) -> tuple[_FloatArray, _FloatArray]: ...
+    def interval(self, level: float = 0.95) -> tuple[_FloatArray, _FloatArray]: ...
+    def state_interval(self, level: float = 0.95) -> tuple[_FloatArray, _FloatArray]: ...
     @property
     def uncertainty_kind(self) -> str: ...
     @property
@@ -298,7 +305,7 @@ class BayesianHierarchicalMean:
     def observation_variance_prior(self) -> InverseGammaPrior: ...
     def fit(
         self,
-        series: _FloatArray,
+        series: Sequence[ArrayLike],
         group_index: Sequence[int],
         program_names: Sequence[str] | None = None,
         group_names: Sequence[str] | None = None,
@@ -376,7 +383,7 @@ class BayesianHurdleLogNormal:
     ) -> None: ...
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
@@ -477,7 +484,7 @@ class BayesianLocalLevel:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
@@ -490,27 +497,27 @@ class BayesianLocalLevel:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray,
+        exog: ArrayLike,
         coefficient_prior: GaussianCoefficientPrior,
     ) -> BayesianRegressionFit: ...
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray | None = None,
+        exog: ArrayLike | None = None,
         coefficient_prior: GaussianCoefficientPrior | None = None,
     ) -> BayesianLocalLevelFit | BayesianRegressionFit: ...
     def __repr__(self) -> str: ...
@@ -581,7 +588,7 @@ class BayesianLocalLinearTrend:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
@@ -594,27 +601,27 @@ class BayesianLocalLinearTrend:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray,
+        exog: ArrayLike,
         coefficient_prior: GaussianCoefficientPrior,
     ) -> BayesianRegressionFit: ...
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray | None = None,
+        exog: ArrayLike | None = None,
         coefficient_prior: GaussianCoefficientPrior | None = None,
     ) -> BayesianLocalLinearTrendFit | BayesianRegressionFit: ...
     def __repr__(self) -> str: ...
@@ -664,7 +671,7 @@ class BayesianRegressionFit:
         steps: int,
         seed: int = 43,
         *,
-        exog: _FloatArray | None = None,
+        exog: ArrayLike | None = None,
     ) -> BayesianRegressionForecast: ...
     def to_arviz(self) -> Any: ...
 
@@ -778,7 +785,7 @@ class BayesianSeasonalLocalLevel:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
@@ -791,27 +798,27 @@ class BayesianSeasonalLocalLevel:
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray,
+        exog: ArrayLike,
         coefficient_prior: GaussianCoefficientPrior,
     ) -> BayesianRegressionFit: ...
     @overload
     def fit(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         chains: int = 4,
         draws: int = 1000,
         warmup: int = 500,
         thin: int = 1,
         seed: int = 42,
         *,
-        exog: _FloatArray | None = None,
+        exog: ArrayLike | None = None,
         coefficient_prior: GaussianCoefficientPrior | None = None,
     ) -> BayesianSeasonalLocalLevelFit | BayesianRegressionFit: ...
     def __repr__(self) -> str: ...
@@ -946,7 +953,7 @@ class DirichletMultinomialRunoff:
     def __init__(self, alpha: ArrayLike, *, total_shape: float = 2.0, total_rate: float = 0.1) -> None: ...
     def fit(
         self,
-        counts: _FloatArray,
+        counts: ArrayLike,
         origins: Sequence[int],
         valuation: int,
         totals: Sequence[int | None] | None = None,
@@ -1140,7 +1147,7 @@ class ForecastResult:
     def uncertainty_kind(self) -> str: ...
 
 class GaussianCoefficientPrior:
-    def __init__(self, mean: _FloatArray, covariance: _FloatArray) -> None: ...
+    def __init__(self, mean: ArrayLike, covariance: ArrayLike) -> None: ...
     @property
     def mean(self) -> _FloatArray: ...
     @property
@@ -1181,12 +1188,12 @@ class KalmanSmootherResult:
 class LinearGaussianStateSpace:
     def __init__(
         self,
-        transition: _FloatArray,
-        observation: _FloatArray,
-        process_covariance: _FloatArray,
+        transition: ArrayLike,
+        observation: ArrayLike,
+        process_covariance: ArrayLike,
         observation_variance: float,
-        initial_mean: _FloatArray,
-        initial_covariance: _FloatArray,
+        initial_mean: ArrayLike,
+        initial_covariance: ArrayLike,
     ) -> None: ...
     @staticmethod
     def local_level(
@@ -1224,15 +1231,15 @@ class LinearGaussianStateSpace:
     ) -> LinearGaussianStateSpace: ...
     @property
     def dimension(self) -> int: ...
-    def with_observation_rows(self, observation_rows: _FloatArray) -> LinearGaussianStateSpace: ...
-    def filter(self, observations: _FloatArray) -> KalmanFilterResult: ...
-    def smooth(self, observations: _FloatArray) -> KalmanSmootherResult: ...
+    def with_observation_rows(self, observation_rows: ArrayLike) -> LinearGaussianStateSpace: ...
+    def filter(self, observations: ArrayLike) -> KalmanFilterResult: ...
+    def smooth(self, observations: ArrayLike) -> KalmanSmootherResult: ...
     def forecast(
         self,
-        observations: _FloatArray,
+        observations: ArrayLike,
         steps: int,
         *,
-        future_observation_rows: _FloatArray | None = None,
+        future_observation_rows: ArrayLike | None = None,
     ) -> ForecastResult: ...
 
 class ModelBuilder:
@@ -1298,8 +1305,8 @@ class ModelSpec:
 class NormalInverseGammaPrior:
     def __init__(
         self,
-        coefficient_mean: _FloatArray,
-        coefficient_precision: _FloatArray,
+        coefficient_mean: ArrayLike,
+        coefficient_precision: ArrayLike,
         variance_shape: float,
         variance_scale: float,
     ) -> None: ...

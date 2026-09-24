@@ -1,4 +1,9 @@
-use super::*;
+use crate::forecast_support::*;
+use crate::{forecast_diagnostics, InferenceError, StateSpaceError};
+use ndarray::Array4;
+use numpy::{IntoPyArray, PyArray3, PyArray4};
+use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rustmc_core::structural::{
     self as core, Component, SamplingConfig, StructuralConfig, StructuralPaths,
     StructuralPosterior, VarianceParameter,
@@ -63,11 +68,15 @@ impl PyStructuralComponent {
         name: String,
         level_innovation: PyRef<'_, PyVarianceParameter>,
         slope_innovation: PyRef<'_, PyVarianceParameter>,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
         damping: f64,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         component(
             Component::trend(
                 name,
@@ -105,11 +114,15 @@ impl PyStructuralComponent {
     #[pyo3(signature=(name,initial_mean,initial_covariance,innovations=None))]
     fn regression(
         name: String,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
         innovations: Option<Vec<PyRef<'_, PyVarianceParameter>>>,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         let q = innovations
             .map(|v| v.iter().map(|q| q.inner.clone()).collect())
             .unwrap_or_else(|| vec![VarianceParameter::Fixed(0.0); initial_mean.len()]);
@@ -118,16 +131,20 @@ impl PyStructuralComponent {
     #[staticmethod]
     fn ar(
         name: String,
-        coefficients: Vec<f64>,
+        coefficients: &Bound<'_, PyAny>,
         innovation: PyRef<'_, PyVarianceParameter>,
-        initial_mean: Vec<f64>,
-        initial_covariance: Vec<Vec<f64>>,
+        initial_mean: &Bound<'_, PyAny>,
+        initial_covariance: &Bound<'_, PyAny>,
     ) -> PyResult<Self> {
-        let covariance = matrix(initial_covariance, initial_mean.len())?;
+        let initial_mean = real_vector(initial_mean, "initial_mean")?;
+        let covariance = matrix(
+            real_matrix(initial_covariance, "initial_covariance")?,
+            initial_mean.len(),
+        )?;
         component(
             Component::ar(
                 name,
-                coefficients,
+                real_vector(coefficients, "coefficients")?,
                 innovation.inner.clone(),
                 initial_mean,
                 covariance,
@@ -196,8 +213,8 @@ impl PyStructuralModel {
     fn fit(
         &self,
         py: Python<'_>,
-        observations: Vec<f64>,
-        exog: Option<Vec<Vec<f64>>>,
+        observations: &Bound<'_, PyAny>,
+        exog: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
         warmup: usize,
@@ -205,6 +222,8 @@ impl PyStructuralModel {
         seed: u64,
         store_states: bool,
     ) -> PyResult<PyStructuralFit> {
+        let observations = real_vector(observations, "observations")?;
+        let exog = optional_matrix(exog, "exog")?;
         let config = SamplingConfig {
             chains,
             draws,
@@ -215,7 +234,7 @@ impl PyStructuralModel {
         };
         let inner = py
             .allow_threads(|| core::fit(&observations, exog.as_deref(), &self.inner, &config))
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralFit { inner })
     }
     #[pyo3(signature=(steps,*,exog=None,draws=1000,seed=43))]
@@ -223,16 +242,17 @@ impl PyStructuralModel {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Vec<Vec<f64>>>,
+        exog: Option<&Bound<'_, PyAny>>,
         draws: usize,
         seed: u64,
     ) -> PyResult<PyStructuralForecast> {
+        let exog = optional_matrix(exog, "exog")?;
         let inner = py
             .allow_threads(|| {
                 self.inner
                     .prior_predict(steps, exog.as_deref(), draws, seed)
             })
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralForecast {
             inner,
             names: self.component_names(),
@@ -247,11 +267,11 @@ pub(crate) struct PyStructuralFit {
 impl PyStructuralFit {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.chains.len()
+        chain_shape(&self.inner.chains).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.chains[0].len()
+        chain_shape(&self.inner.chains).1
     }
     #[getter]
     fn param_names(&self) -> Vec<String> {
@@ -261,11 +281,7 @@ impl PyStructuralFit {
         let output = PyDict::new(py);
         let samples = self.inner.parameter_samples();
         for (j, name) in self.param_names().iter().enumerate() {
-            output.set_item(
-                name,
-                Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| samples[c][d][j])
-                    .into_pyarray(py),
-            )?;
+            output.set_item(name, draw_array(py, &samples, |draw| draw[j]))?;
         }
         Ok(output)
     }
@@ -325,27 +341,19 @@ impl PyStructuralFit {
     /// Variance draws, shape (chain, draw, state_dimension+1).
     #[getter]
     fn variance_draws<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        let c = self.inner.chains.len();
-        let n = self.inner.chains[0].len();
         let d = self.inner.config.dimension();
-        Array3::from_shape_fn((c, n, d + 1), |(i, j, k)| {
+        draw_vector_array(py, &self.inner.chains, d + 1, |draw, k| {
             if k == d {
-                self.inner.chains[i][j].observation_variance
+                draw.observation_variance
             } else {
-                self.inner.chains[i][j].variances[k]
+                draw.variances[k]
             }
         })
-        .into_pyarray(py)
     }
     #[getter]
     fn terminal_states<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        let c = self.inner.chains.len();
-        let n = self.inner.chains[0].len();
         let d = self.inner.config.dimension();
-        Array3::from_shape_fn((c, n, d), |(i, j, k)| {
-            self.inner.chains[i][j].terminal_state[k]
-        })
-        .into_pyarray(py)
+        draw_vector_array(py, &self.inner.chains, d, |draw, k| draw.terminal_state[k])
     }
     /// Historical states include x[-1] at index zero.
     #[getter]
@@ -359,7 +367,7 @@ impl PyStructuralFit {
                     .map(|d| {
                         d.states
                             .clone()
-                            .ok_or_else(|| StateSpaceError::new_err("fit with store_states=True"))
+                            .ok_or_else(|| InferenceError::new_err("fit with store_states=True"))
                     })
                     .collect::<PyResult<Vec<_>>>()
             })
@@ -373,7 +381,7 @@ impl PyStructuralFit {
             &self
                 .inner
                 .historical_components()
-                .map_err(state_space_error)?,
+                .map_err(inference_error)?,
         ))
     }
     #[pyo3(signature=(steps,*,exog=None,seed=43))]
@@ -381,36 +389,35 @@ impl PyStructuralFit {
         &self,
         py: Python<'_>,
         steps: usize,
-        exog: Option<Vec<Vec<f64>>>,
+        exog: Option<&Bound<'_, PyAny>>,
         seed: u64,
     ) -> PyResult<PyStructuralForecast> {
+        let exog = optional_matrix(exog, "exog")?;
         let inner = py
             .allow_threads(|| self.inner.forecast(steps, exog.as_deref(), seed))
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralForecast {
             inner,
             names: self.component_names(),
         })
     }
     fn to_json(&self) -> PyResult<String> {
-        self.inner.to_json().map_err(state_space_error)
+        self.inner.to_json().map_err(inference_error)
     }
     #[staticmethod]
     fn from_json(value: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: StructuralPosterior::from_json(value).map_err(state_space_error)?,
+            inner: StructuralPosterior::from_json(value).map_err(inference_error)?,
         })
     }
 }
-fn array3<'py>(py: Python<'py>, v: &[Vec<Vec<f64>>]) -> Bound<'py, PyArray3<f64>> {
-    Array3::from_shape_fn((v.len(), v[0].len(), v[0][0].len()), |(i, j, k)| v[i][j][k])
-        .into_pyarray(py)
-}
+/// Per-draw `[time][coordinate]` values, shaped `(chain, draw, time, coordinate)`.
 fn array4<'py>(py: Python<'py>, v: &[Vec<Vec<Vec<f64>>>]) -> Bound<'py, PyArray4<f64>> {
-    let h = v[0][0].len();
-    let d = v[0][0].first().map_or(0, Vec::len);
-    Array4::from_shape_fn((v.len(), v[0].len(), h, d), |(i, j, k, l)| v[i][j][k][l])
-        .into_pyarray(py)
+    let (chains, draws) = chain_shape(v);
+    let first = v.first().and_then(|chain| chain.first());
+    let h = first.map_or(0, Vec::len);
+    let d = first.and_then(|times| times.first()).map_or(0, Vec::len);
+    Array4::from_shape_fn((chains, draws, h, d), |(i, j, k, l)| v[i][j][k][l]).into_pyarray(py)
 }
 #[pyclass(name = "StructuralForecast", frozen, module = "rustmc")]
 pub(crate) struct PyStructuralForecast {
@@ -421,15 +428,19 @@ pub(crate) struct PyStructuralForecast {
 impl PyStructuralForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observations.len()
+        chain_shape(&self.inner.observations).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observations[0].len()
+        chain_shape(&self.inner.observations).1
     }
     #[getter]
     fn steps(&self) -> usize {
-        self.inner.observations[0][0].len()
+        self.inner
+            .observations
+            .first()
+            .and_then(|chain| chain.first())
+            .map_or(0, Vec::len)
     }
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
@@ -457,15 +468,15 @@ impl PyStructuralForecast {
     }
     #[getter]
     fn mean_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.means)
+        path_array(py, &self.inner.means)
     }
     #[getter]
     fn observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.observations)
+        path_array(py, &self.inner.observations)
     }
     #[getter]
     fn cumulative_observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.cumulative)
+        path_array(py, &self.inner.cumulative)
     }
 }
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

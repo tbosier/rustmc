@@ -8,9 +8,19 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from .evaluation import _quantiles
+
 
 def _conditional_mean_samples(result: Any) -> np.ndarray | None:
-    """Adapt legacy native names without guessing the meaning of arbitrary states."""
+    """The conditional expected response draws of a native forecast, or None.
+
+    The native classes name these draws differently - ``mean_samples``
+    (regression, hurdle, structural, dynamic GLM), ``conditional_mean_samples``
+    (AR) and ``state_samples`` / ``level_samples`` (local level, hierarchical,
+    trend), with the seasonal mean the sum of level and seasonal paths - so
+    ``ForecastDraws`` maps each explicitly rather than guessing what an
+    arbitrary state array means. Unknown results get no mean draws.
+    """
     from . import _rustmc as native
 
     means = getattr(result, "mean_samples", None)
@@ -28,6 +38,12 @@ def _conditional_mean_samples(result: Any) -> np.ndarray | None:
 
 
 def _cumulative(values: np.ndarray) -> np.ndarray:
+    """Running totals along the horizon, as the native cumulative forecasts.
+
+    ForecastDraws keeps only arrays (possibly aggregated or mixed across
+    scenarios), not the native forecast, so the native accessors are not
+    available here.
+    """
     with np.errstate(over="raise", invalid="raise"):
         try:
             return values.cumsum(axis=-1)
@@ -127,7 +143,8 @@ class ForecastDraws:
             raise ValueError("this forecast does not expose conditional mean draws")
         if cumulative:
             draws = _cumulative(draws)
-        lower, upper = np.quantile(draws, ((1-level)/2, (1+level)/2), axis=(0, 1))
+        pooled = draws.reshape((-1,) + draws.shape[2:])
+        lower, upper = _quantiles(pooled, ((1-level)/2, (1+level)/2))
         return lower, upper
 
     def aggregate(self, weights: Sequence[float] | None = None) -> ForecastDraws:

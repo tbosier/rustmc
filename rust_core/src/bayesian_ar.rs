@@ -701,8 +701,8 @@ mod tests {
         let lower_index = quantile_index.floor() as usize;
         let upper_index = quantile_index.ceil() as usize;
         let weight = quantile_index - lower_index as f64;
-        let expected_lower =
-            ordered_first[lower_index] * (1.0 - weight) + ordered_first[upper_index] * weight;
+        let expected_lower = ordered_first[lower_index]
+            + (ordered_first[upper_index] - ordered_first[lower_index]) * weight;
         assert_eq!(quantiles[0].values[0], expected_lower);
         for step in 0..5 {
             assert!(quantiles[0].values[step] <= quantiles[1].values[step]);

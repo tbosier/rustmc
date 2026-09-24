@@ -171,30 +171,30 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
 
 def test_bayesian_ar_prior_and_model_validation(rustmc_module):
     rmc = rustmc_module
-    with pytest.raises(rmc.StateSpaceError, match="intercept"):
+    with pytest.raises(rmc.InferenceError, match="intercept"):
         rmc.NormalInverseGammaPrior(np.zeros(1), np.eye(1), 2.0, 1.0)
-    with pytest.raises(rmc.StateSpaceError, match="shape"):
+    with pytest.raises(rmc.InferenceError, match="shape"):
         rmc.NormalInverseGammaPrior(np.zeros(2), np.eye(3), 2.0, 1.0)
-    with pytest.raises(rmc.StateSpaceError, match="finite"):
+    with pytest.raises(rmc.InferenceError, match="finite"):
         rmc.NormalInverseGammaPrior(np.array([0.0, np.nan]), np.eye(2), 2.0, 1.0)
-    with pytest.raises(rmc.StateSpaceError, match="finite"):
+    with pytest.raises(rmc.InferenceError, match="finite"):
         rmc.NormalInverseGammaPrior(
             np.zeros(2), np.array([[1.0, 0.0], [0.0, np.inf]]), 2.0, 1.0
         )
-    with pytest.raises(rmc.StateSpaceError, match="symmetric"):
+    with pytest.raises(rmc.InferenceError, match="symmetric"):
         rmc.NormalInverseGammaPrior(
             np.zeros(2), np.array([[1.0, 0.5], [0.0, 1.0]]), 2.0, 1.0
         )
-    with pytest.raises(rmc.StateSpaceError, match="positive definite"):
+    with pytest.raises(rmc.InferenceError, match="positive definite"):
         rmc.NormalInverseGammaPrior(np.zeros(2), np.diag([1.0, 0.0]), 2.0, 1.0)
     for shape, scale in ((0.0, 1.0), (2.0, 0.0), (np.nan, 1.0)):
-        with pytest.raises(rmc.StateSpaceError):
+        with pytest.raises(rmc.InferenceError):
             rmc.NormalInverseGammaPrior(np.zeros(2), np.eye(2), shape, scale)
 
     ar1_prior = make_prior(rmc, order=1)
-    with pytest.raises(rmc.StateSpaceError, match="at least one"):
+    with pytest.raises(rmc.InferenceError, match="at least one"):
         rmc.BayesianAR(order=0, prior=ar1_prior)
-    with pytest.raises(rmc.StateSpaceError, match="requires 3"):
+    with pytest.raises(rmc.InferenceError, match="requires 3"):
         rmc.BayesianAR(order=2, prior=ar1_prior)
 
 
@@ -207,16 +207,16 @@ def test_bayesian_ar_data_sampling_and_forecast_validation(rustmc_module):
         np.array([1.0, 2.0, 3.0, np.nan]),
         np.array([1.0, 2.0, 3.0, np.inf]),
     ):
-        with pytest.raises(rmc.StateSpaceError):
+        with pytest.raises(rmc.InferenceError):
             model.fit(observations, chains=1, draws=2)
     observations = simulate_ar3(size=30)
-    with pytest.raises(rmc.StateSpaceError, match="chains"):
+    with pytest.raises(rmc.InferenceError, match="chains"):
         model.fit(observations, chains=0, draws=2)
-    with pytest.raises(rmc.StateSpaceError, match="draws"):
+    with pytest.raises(rmc.InferenceError, match="draws"):
         model.fit(observations, chains=1, draws=0)
 
     fit = model.fit(observations, chains=1, draws=8)
-    with pytest.raises(rmc.StateSpaceError, match="horizon"):
+    with pytest.raises(rmc.InferenceError, match="horizon"):
         fit.forecast(0)
     forecast = fit.forecast(2)
     for level in (0.0, 1.0, -0.1, 1.1, np.nan):
@@ -225,9 +225,9 @@ def test_bayesian_ar_data_sampling_and_forecast_validation(rustmc_module):
         with pytest.raises(ValueError, match="strictly between"):
             forecast.conditional_mean_interval(level)
     for probability in (-0.1, 1.1, np.nan):
-        with pytest.raises(rmc.StateSpaceError, match="probabilities"):
+        with pytest.raises(ValueError, match="probability"):
             forecast.observation_quantile(probability)
-        with pytest.raises(rmc.StateSpaceError, match="probabilities"):
+        with pytest.raises(ValueError, match="probability"):
             forecast.conditional_mean_quantile(probability)
 
 
