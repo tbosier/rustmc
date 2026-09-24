@@ -125,11 +125,11 @@ for i in ok[:5]:
 
 ```text
 SKU                 intercept      true              trend      true
-sku-000      135.50 +/-  1.39    135.28     0.842 +/- 0.046     0.877
-sku-001      106.17 +/-  1.33    108.00     0.302 +/- 0.046     0.230
-sku-002      118.36 +/-  1.37    119.57     0.247 +/- 0.044     0.246
-sku-003      143.45 +/-  1.21    144.82     0.716 +/- 0.044     0.694
-sku-004      138.01 +/-  1.38    137.35     0.240 +/- 0.046     0.265
+sku-000      135.77 +/-  1.48    135.28     0.833 +/- 0.050     0.877
+sku-001      106.28 +/-  1.18    108.00     0.298 +/- 0.042     0.230
+sku-002      118.32 +/-  1.37    119.57     0.248 +/- 0.047     0.246
+sku-003      143.51 +/-  1.46    144.82     0.714 +/- 0.048     0.694
+sku-004      137.82 +/-  1.34    137.35     0.246 +/- 0.045     0.265
 ```
 
 ## Batch-wide recovery and diagnostics
@@ -150,8 +150,8 @@ print(f"divergences:     {divergences.sum()} across {len(ok)} fits "
 ```
 
 ```text
-intercept error: mean -0.075, rmse 1.245
-trend error:     mean -0.0011, rmse 0.0391
+intercept error: mean -0.050, rmse 1.243
+trend error:     mean -0.0020, rmse 0.0386
 divergences:     0 across 100 fits (0 fits affected)
 ```
 
@@ -174,15 +174,15 @@ print("corr(intercept, trend)", round(float(np.corrcoef(draws["intercept"], draw
 ```
 
 ```text
-mean()                 {'intercept': 135.505, 'trend': 0.842}
-std()                  {'intercept': 1.385, 'trend': 0.046}
+mean()                 {'intercept': 135.767, 'trend': 0.833}
+std()                  {'intercept': 1.475, 'trend': 0.05}
 get_samples()          {'intercept': (500,), 'trend': (500,)}
 get_samples_2d()       {'intercept': (1, 500), 'trend': (1, 500)}
-accept_rate            0.918
-accept_rates           [0.918]
+accept_rate            0.93
+accept_rates           [0.93]
 divergences            0
 divergences_per_chain  [0]
-corr(intercept, trend) -0.839
+corr(intercept, trend) -0.885
 ```
 
 `chains=1` is the throughput-first setting, and it gives up R-hat, which needs
@@ -221,9 +221,9 @@ print(f"true lift on model 2: {true_lift:.1f}")
 ```
 
 ```text
-model 0: intercept=135.698 +/- 1.425, trend=0.836 +/- 0.046
-model 1: intercept=106.015 +/- 1.367, trend=0.307 +/- 0.047
-model 2: intercept=123.307 +/- 1.505, lift=10.753 +/- 2.016, trend=0.130 +/- 0.047
+model 0: intercept=135.542 +/- 1.502, trend=0.841 +/- 0.050
+model 1: intercept=106.152 +/- 1.319, trend=0.302 +/- 0.044
+model 2: intercept=123.313 +/- 1.479, lift=10.622 +/- 1.955, trend=0.133 +/- 0.048
 true lift on model 2: 12.0
 ```
 
