@@ -790,6 +790,12 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            // As `normal_logp_scalar`: outside the scale's
+                            // support the density is zero, not NaN.
+                            if !scale_is_valid(sv) {
+                                self.scalars[idx] = f64::NEG_INFINITY;
+                                continue;
+                            }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let n = obs.len() as f64;
@@ -828,6 +834,10 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                self.scalars[idx] = f64::NEG_INFINITY;
+                                continue;
+                            }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let mut sum = 0.0f64;
@@ -1202,6 +1212,9 @@ impl Evaluator {
                     let xv = self.scalars[x.0];
                     let mv = self.scalars[mu.0];
                     let sv = self.scalars[sigma.0];
+                    if !scale_is_valid(sv) {
+                        continue;
+                    }
                     let z = (xv - mv) / sv;
                     self.adj_scalars[x.0] += a_s * (-z / sv);
                     self.adj_scalars[mu.0] += a_s * (z / sv);
@@ -1260,6 +1273,9 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                continue;
+                            }
 
                             let mut dsigma = 0.0f64;
 
@@ -1320,6 +1336,9 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                continue;
+                            }
 
                             let mu_off = match self.node_kind[linpred_vec.0] {
                                 NodeKind::ComputedVec(o) => Some(o),
@@ -1552,8 +1571,14 @@ mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
+/// Whether `sigma` is a usable scale: finite and strictly positive.
+#[inline]
+fn scale_is_valid(sigma: f64) -> bool {
+    sigma.is_finite() && sigma > 0.0
+}
+
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0 {
+    if !scale_is_valid(sigma) {
         return f64::NEG_INFINITY;
     }
     let z = (x - mu) / sigma;
@@ -1566,6 +1591,9 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
 mod obs_logp_sums {
 
     pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        if !super::scale_is_valid(sigma) {
+            return f64::NEG_INFINITY;
+        }
         let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
         let n = obs.len() as f64;
         let sum_sq: f64 = mu
@@ -1601,6 +1629,9 @@ mod obs_logp_sums {
     }
 
     pub(super) fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        if !super::scale_is_valid(sigma) {
+            return f64::NEG_INFINITY;
+        }
         let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
         mu.iter()
             .zip(obs.iter())
@@ -1853,6 +1884,23 @@ pub fn ln_gamma(x: f64) -> f64 {
 
 /// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
 fn digamma(mut x: f64) -> f64 {
+    // The recurrence below steps x up by one until it reaches 8, which never
+    // terminates for -inf or for x <= -2^53 (where x + 1 == x) and takes |x|
+    // steps for any large negative x. Poles and non-finite arguments have no
+    // value; other negative arguments go through the reflection formula
+    // psi(x) = psi(1 - x) - pi / tan(pi x).
+    if x.is_nan() || x == f64::NEG_INFINITY {
+        return f64::NAN;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    if x <= 0.0 {
+        if x == x.floor() {
+            return f64::NAN;
+        }
+        return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
+    }
     let mut result = 0.0;
     while x < 8.0 {
         result -= 1.0 / x;
@@ -1896,6 +1944,47 @@ mod tests {
             assert_eq!(evaluator.total_logp, expected);
             assert_eq!(evaluator.grad, vec![0.0]);
             assert_eq!(grad_logp(&graph, &[x]), (expected, vec![0.0]));
+        }
+    }
+
+    #[test]
+    fn digamma_terminates_and_reflects_for_negative_arguments() {
+        let euler = 0.577_215_664_901_532_9;
+        assert!((digamma(1.0) + euler).abs() < 1e-9);
+        // psi(-2.5) = psi(3.5) - pi / tan(-2.5 pi) = psi(3.5), since
+        // tan(-2.5 pi) is infinite: 1.1031566406452432.
+        assert!((digamma(-2.5) - 1.103_156_640_645_243).abs() < 1e-9);
+        // psi(-0.5) = 0.03648997397857652.
+        assert!((digamma(-0.5) - 0.036_489_973_978_576_5).abs() < 1e-9);
+        // These used to loop forever: x + 1 == x below -2^53, and -inf + 1
+        // is -inf.
+        for pole in [0.0, -1.0, -1e300, f64::MIN, f64::NEG_INFINITY, f64::NAN] {
+            assert!(digamma(pole).is_nan(), "{pole}");
+        }
+        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn observation_scales_outside_their_support_give_zero_density() {
+        for (lognormal, sigma) in [(false, 0.0), (false, -1.0), (true, 0.0), (true, -2.0)] {
+            let mut g = Graph::new();
+            let s = g.add_param("s");
+            let mu = g.add_constant(1.0);
+            let x = g.add_data("x", vec![1.0, 1.0]);
+            let linpred = g.scalar_mul_data(mu, x);
+            let obs = g.add_obs_data(vec![0.5, 2.0]);
+            if lognormal {
+                g.obs_logp_lognormal(linpred, s, obs);
+            } else {
+                g.obs_logp_normal(linpred, s, obs);
+            }
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &[sigma]);
+            // Previously ln(sigma) made this NaN, where the scalar Normal
+            // density already returned -inf for the same scale.
+            assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
+            assert!(evaluator.grad.iter().all(|g| g.is_finite()));
+            assert_eq!(eval_logp(&g, &[sigma]), f64::NEG_INFINITY);
         }
     }
 
