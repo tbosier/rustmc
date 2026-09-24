@@ -15,8 +15,7 @@ __pycache__/
 /trace_plot.png
 /posterior_plot.png
 /pair_plot.png
-/examples/forecast_comparison.png
-/examples/ci_debug.csv
+/benchmarks/comparisons/forecast_comparison.png
 
 # Local build scratch used by scripts/dev_pytest.sh
 /.target/

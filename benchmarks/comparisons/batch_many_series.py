@@ -1,10 +1,15 @@
 """
-rustmc — batch SKU demand forecasting benchmark
-=================================================
+rustmc — batch SKU demand forecasting comparison (exploratory)
+==============================================================
+
+    python benchmarks/comparisons/batch_many_series.py
+
+Needs ArviZ, PyMC, nutpie, Prophet and statsmodels (and matplotlib for the
+plot); see benchmarks/README.md. Not evidence for a performance claim.
 
 Fit independent Bayesian demand models for N_SKUS SKUs using batch inference.
-Each SKU gets a 3-parameter model (intercept + trend + seasonality) fit on
-52 weeks of synthetic sales data.
+Each SKU gets a 3-parameter model (intercept + trend + seasonality) fit on the
+first 44 weeks of a 52-week synthetic sales series.
 
 Then pick one SKU and compare the 8-week-ahead forecast (with a 95%
 posterior-predictive interval) against Prophet and ARIMA.
@@ -42,6 +47,8 @@ Rust data structures (for comparison with JAX):
 """
 
 import time
+from pathlib import Path
+
 import numpy as np
 
 from bench_common import PhaseTimer, print_environment, peak_rss_mb
@@ -396,7 +403,8 @@ try:
     ax.set_xlim(TRAIN_WEEKS - 20, TOTAL_WEEKS + 0.5)
 
     plt.tight_layout()
-    plt.savefig("examples/forecast_comparison.png", dpi=150)
-    print(f"\nPlot saved to examples/forecast_comparison.png")
+    plot_path = Path(__file__).with_name("forecast_comparison.png")
+    plt.savefig(plot_path, dpi=150)
+    print(f"\nPlot saved to {plot_path}")
 except Exception as e:
     print(f"\nPlot failed: {e}")

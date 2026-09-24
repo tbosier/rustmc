@@ -1,25 +1,20 @@
 """
-Shared utilities for rustmc benchmark/comparison scripts.
+Shared utilities for the exploratory comparison scripts in this directory.
 
-This module exists so every comparison script:
-  - records the same environment fields (CPU, thread count, OS, library
-    versions) alongside its numbers,
-  - times model construction, compilation, sampling, and post-processing
-    as separate phases instead of one conflated wall-clock number,
-  - reports the same statistical-quality metrics (R-hat, bulk ESS,
-    divergences, posterior error vs. known simulated truth) for every
-    engine it compares, not just wall time.
+It gives a comparison script two things:
+  - the same environment fields (CPU, thread count, OS, library versions)
+    recorded alongside its numbers,
+  - model construction, compilation, sampling, and post-processing timed as
+    separate phases instead of one conflated wall-clock number.
 
-Nothing in here changes the statistical model being fit; it only makes
-timing and reporting consistent across scripts so results are comparable
-and reproducible.
+Which statistical-quality metrics a script reports is up to that script.
+Nothing in here changes the statistical model being fit.
 """
 from __future__ import annotations
 
 import contextlib
 import os
 import platform
-import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
@@ -141,33 +136,11 @@ class PhaseTimer:
 
 
 # --------------------------------------------------------------------------
-# Posterior-quality metrics (engine-agnostic reporting helpers)
+# Memory
 # --------------------------------------------------------------------------
 
-@dataclass
-class QualityReport:
-    engine: str
-    wall_time_total: float
-    ess_bulk_mean: float
-    ess_per_sec: float
-    r_hat_max: float
-    divergences: int
-    posterior_error_rmse: float | None = None
-    peak_rss_mb: float | None = None
-
-    def print_row(self) -> None:
-        rmse = f"{self.posterior_error_rmse:.4f}" if self.posterior_error_rmse is not None else "n/a"
-        rss = f"{self.peak_rss_mb:.0f}" if self.peak_rss_mb is not None else "n/a"
-        print(
-            f"{self.engine:<16} time={self.wall_time_total:>8.2f}s  "
-            f"ess_bulk={self.ess_bulk_mean:>8.0f}  ess/s={self.ess_per_sec:>9.1f}  "
-            f"max_r_hat={self.r_hat_max:>6.3f}  divergences={self.divergences:>4}  "
-            f"rmse_vs_truth={rmse:>8}  peak_rss_mb={rss:>8}"
-        )
-
-
 def peak_rss_mb() -> float | None:
-    """Peak resident set size for this process, in MB. Linux-only; returns
+    """Peak resident set size for this process, in MB. Unix-only; returns
     None elsewhere so callers can report 'n/a' rather than a wrong number."""
     try:
         import resource
