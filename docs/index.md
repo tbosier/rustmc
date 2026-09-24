@@ -12,7 +12,7 @@ prediction and diagnostics.
 pip install rustmc
 ```
 
-NumPy is the only required dependency. Python 3.9–3.13 are covered by install tests.
+NumPy is the only required dependency. Python 3.9–3.14 are covered by install tests.
 
 ## Is this the right library for you?
 

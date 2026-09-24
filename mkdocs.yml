@@ -78,12 +78,10 @@ nav:
 # The site has shipped orphan pages before: a file under docs/ that no nav entry
 # reached, and a nav entry pointing at a file that had been renamed.
 #
-# `strict` lives here rather than on the command line on purpose. `gh-deploy`
-# does accept --strict, but the deploy workflow runs `mkdocs gh-deploy --force`
-# without it, and that workflow is not editable from this branch. Setting it
-# here makes every warning below fail the build wherever it runs, including in
-# the job that actually publishes the site, and it cannot be dropped by
-# someone editing a command line later.
+# `strict` lives here rather than on the command line on purpose. Setting it
+# here makes every warning below fail the build wherever it runs (a local
+# `mkdocs serve`, the docs workflow's build check, and the job that publishes
+# the site), and it cannot be dropped by someone editing a command line later.
 strict: true
 
 # `error` is not an accepted value for the nav sub-options; `warn` plus the
@@ -103,13 +101,13 @@ validation:
   absolute_links: warn
   unrecognized_links: warn
 
-# Internal review notes that live in some working trees but are not in git and
-# never reach CI. CONTRIBUTING.md keeps them out of the repository; excluding
-# them here keeps a local `mkdocs build --strict` honest without anyone having
-# to move them aside first. Nothing published is excluded.
+# Internal review notes that some working trees keep under docs/. CONTRIBUTING.md
+# keeps them out of the repository and .gitignore ignores these same patterns, so
+# nothing excluded here is in git; excluding them lets a local strict build pass
+# without anyone having to move the notes aside first.
 exclude_docs: |
   *.local.md
-  forecasting-extension-review.md
+  *-review.md
 
 plugins:
   - search
