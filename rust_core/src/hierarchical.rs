@@ -24,11 +24,12 @@
 //! Series may have different lengths; `NaN` values are retained as missing
 //! positions and ignored by the likelihood.
 
-use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
+use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    checked_value_count, overdispersed_location, overdispersed_positive, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    checked_value_count, overdispersed_location, overdispersed_positive, path_means,
+    path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
+    GibbsSchedule, Paths, MAX_MATERIALIZED_VALUES,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
@@ -242,6 +243,74 @@ impl HierarchicalMeanForecast {
 
     pub fn horizon(&self) -> usize {
         self.horizon
+    }
+
+    /// Posterior-predictive mean of every program and step, indexed
+    /// `[program * horizon + step]`.
+    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.observation_paths)
+    }
+
+    /// Empirical observation quantiles, each indexed `[program * horizon + step]`.
+    pub fn observation_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.observation_paths, probabilities)
+    }
+
+    /// Posterior mean of each program's static expected level.
+    pub fn state_means_by_program(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.state_means)
+    }
+
+    /// Empirical quantiles of each program's static expected level.
+    pub fn state_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.state_means, probabilities)
+    }
+
+    /// Draw-wise group totals indexed `[chain][draw][group * horizon + step]`.
+    /// Summing within each draw keeps the dependence between programs.
+    pub fn group_observation_paths(&self) -> Result<Paths, BayesianForecastError> {
+        self.rollup(self.group_count, |program| self.group_index[program])
+    }
+
+    /// Draw-wise totals across all programs indexed `[chain][draw][step]`.
+    pub fn total_observation_paths(&self) -> Result<Paths, BayesianForecastError> {
+        self.rollup(1, |_| 0)
+    }
+
+    fn rollup(
+        &self,
+        targets: usize,
+        target_of: impl Fn(usize) -> usize,
+    ) -> Result<Paths, BayesianForecastError> {
+        let horizon = self.horizon;
+        self.observation_paths
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        let mut totals = vec![0.0; targets * horizon];
+                        for program in 0..self.program_count() {
+                            let target = target_of(program) * horizon;
+                            for step in 0..horizon {
+                                totals[target + step] += draw[program * horizon + step];
+                            }
+                        }
+                        if totals.iter().all(|total| total.is_finite()) {
+                            Ok(totals)
+                        } else {
+                            Err(numerical("a forecast rollup total is not finite"))
+                        }
+                    })
+                    .collect()
+            })
+            .collect()
     }
 }
 
@@ -627,6 +696,50 @@ mod tests {
         assert_eq!(forecast.program_count(), 3);
         assert_eq!(forecast.horizon(), 4);
         assert!(first.forecast(100_000, 13).is_err());
+    }
+
+    #[test]
+    fn forecast_summaries_and_rollups_follow_the_program_major_layout() {
+        let series = vec![vec![0.0, 1.0], vec![5.0, 6.0], vec![20.0, 21.0]];
+        let posterior = fit_hierarchical_mean(&series, &[0, 1, 1], &config(3)).unwrap();
+        let forecast = posterior.forecast(2, 4).unwrap();
+        let draws: Vec<&Vec<f64>> = forecast.observation_paths.iter().flatten().collect();
+        let at = |program: usize, step: usize| -> Vec<f64> {
+            draws.iter().map(|draw| draw[program * 2 + step]).collect()
+        };
+        let means = forecast.observation_means().unwrap();
+        let median = &forecast.observation_quantiles(&[0.5]).unwrap()[0].values;
+        for program in 0..3 {
+            for step in 0..2 {
+                let mut values = at(program, step);
+                let mean = values.iter().sum::<f64>() / values.len() as f64;
+                assert!((means[program * 2 + step] - mean).abs() < 1e-9);
+                values.sort_by(f64::total_cmp);
+                assert_eq!(median[program * 2 + step], sorted_median(&values));
+            }
+        }
+        let groups = forecast.group_observation_paths().unwrap();
+        let totals = forecast.total_observation_paths().unwrap();
+        for (index, draw) in draws.iter().enumerate() {
+            let (chain, row) = (index / 120, index % 120);
+            for step in 0..2 {
+                let program = |p: usize| draw[p * 2 + step];
+                assert_eq!(groups[chain][row][step], program(0));
+                assert_eq!(groups[chain][row][2 + step], program(1) + program(2));
+                assert_eq!(
+                    totals[chain][row][step],
+                    program(0) + program(1) + program(2)
+                );
+            }
+        }
+        let state_means = forecast.state_means_by_program().unwrap();
+        assert_eq!(state_means.len(), 3);
+        assert!(state_means[0] < state_means[1] && state_means[1] < state_means[2]);
+        assert_eq!(forecast.state_quantiles(&[0.5]).unwrap()[0].values.len(), 3);
+    }
+
+    fn sorted_median(ordered: &[f64]) -> f64 {
+        crate::forecast_common::sorted_quantile(ordered, 0.5)
     }
 
     #[test]

@@ -101,6 +101,51 @@ pub struct ForecastResult {
     pub cumulative_observation_variances: Vec<f64>,
 }
 
+impl ForecastResult {
+    /// Pointwise central Gaussian interval for each future observation,
+    /// conditional on the fixed model parameters.
+    pub fn observation_interval(
+        &self,
+        level: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+        gaussian_interval(&self.observation_means, &self.observation_variances, level)
+    }
+
+    /// Central Gaussian interval for the cumulative observation 1..h.
+    pub fn cumulative_observation_interval(
+        &self,
+        level: f64,
+    ) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+        gaussian_interval(
+            &self.cumulative_observation_means,
+            &self.cumulative_observation_variances,
+            level,
+        )
+    }
+}
+
+/// `mean -/+ z * sd` with `z` the `(1 + level) / 2` normal quantile.
+fn gaussian_interval(
+    means: &[f64],
+    variances: &[f64],
+    level: f64,
+) -> Result<(Vec<f64>, Vec<f64>), StateSpaceError> {
+    if !level.is_finite() || level <= 0.0 || level >= 1.0 {
+        return Err(StateSpaceError::InvalidParameter(
+            "level must be finite and strictly between 0 and 1".into(),
+        ));
+    }
+    let critical = crate::diagnostics::inv_normal_cdf(0.5 + level / 2.0);
+    Ok(means
+        .iter()
+        .zip(variances)
+        .map(|(&mean, &variance)| {
+            let half_width = critical * variance.sqrt();
+            (mean - half_width, mean + half_width)
+        })
+        .unzip())
+}
+
 #[derive(Debug, Clone)]
 pub struct LinearGaussianStateSpace {
     dimension: usize,
@@ -1265,6 +1310,34 @@ fn check_symmetric(name: &str, matrix: &[f64], d: usize) -> Result<(), StateSpac
     Ok(())
 }
 
+/// Check a proper Gaussian prior: a nonempty finite mean and a matching
+/// finite, symmetric, strictly positive-definite row-major covariance.
+pub(crate) fn validate_gaussian_prior(
+    name: &str,
+    mean: &[f64],
+    covariance: &[f64],
+) -> Result<(), StateSpaceError> {
+    let p = mean.len();
+    if p == 0 {
+        return Err(StateSpaceError::InvalidDimension(format!(
+            "{name} must not be empty"
+        )));
+    }
+    let square = p
+        .checked_mul(p)
+        .ok_or_else(|| StateSpaceError::InvalidDimension(format!("{name} is too large")))?;
+    check_len(&format!("{name} covariance"), covariance.len(), square)?;
+    check_finite(&format!("{name} mean"), mean)?;
+    check_finite(&format!("{name} covariance"), covariance)?;
+    check_symmetric(&format!("{name} covariance"), covariance, p)?;
+    cholesky(covariance, p).map_err(|_| {
+        StateSpaceError::NotPositiveDefinite(format!(
+            "{name} covariance must be strictly positive definite"
+        ))
+    })?;
+    Ok(())
+}
+
 fn check_computed(
     name: &str,
     mean: &[f64],
@@ -2036,6 +2109,18 @@ mod tests {
         assert_close(result.cumulative_observation_variances[0], 6.0);
         // Var(y1 + y2) = 6 + 7 + 2 * Cov(y1, y2), where Cov=4.
         assert_close(result.cumulative_observation_variances[1], 21.0);
+
+        let z = crate::diagnostics::inv_normal_cdf(0.975);
+        let (lower, upper) = result.observation_interval(0.95).unwrap();
+        assert_close(lower[1], -z * 7.0f64.sqrt());
+        assert_close(upper[1], z * 7.0f64.sqrt());
+        let (lower, upper) = result.cumulative_observation_interval(0.95).unwrap();
+        assert_close(lower[1], -z * 21.0f64.sqrt());
+        assert_close(upper[1], z * 21.0f64.sqrt());
+        for level in [0.0, 1.0, f64::NAN] {
+            assert!(result.observation_interval(level).is_err());
+            assert!(result.cumulative_observation_interval(level).is_err());
+        }
     }
 
     #[test]

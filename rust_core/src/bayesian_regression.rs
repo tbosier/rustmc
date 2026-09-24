@@ -24,6 +24,15 @@ pub struct GaussianCoefficientPrior {
     pub covariance: Vec<f64>,
 }
 
+impl GaussianCoefficientPrior {
+    /// A validated prior: `mean` is nonempty and finite, and `covariance` is
+    /// its finite, symmetric, strictly positive-definite row-major matrix.
+    pub fn new(mean: Vec<f64>, covariance: Vec<f64>) -> Result<Self, StateSpaceError> {
+        crate::state_space::validate_gaussian_prior("coefficient prior", &mean, &covariance)?;
+        Ok(Self { mean, covariance })
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct RegressionConfig {
     pub structural_model: LinearGaussianStateSpace,
@@ -412,6 +421,17 @@ impl RegressionPosterior {
     }
 }
 
+/// Number of columns [`fourier_design`] produces: a sine and a cosine per
+/// harmonic, except the even-period Nyquist harmonic, whose sine is zero.
+pub fn fourier_width(period: usize, harmonics: usize) -> Result<usize, StateSpaceError> {
+    if period < 2 || harmonics == 0 || harmonics > period / 2 {
+        return Err(invalid(
+            "period must be at least two; harmonics must be between one and floor(period/2)",
+        ));
+    }
+    Ok(2 * harmonics - usize::from(2 * harmonics == period))
+}
+
 /// Calendar Fourier rows at integer positions `start..start+count`. Column order
 /// is sin(1), cos(1), ..., with only cos at the even-period Nyquist harmonic.
 pub fn fourier_design(
@@ -420,16 +440,12 @@ pub fn fourier_design(
     harmonics: usize,
     start: i64,
 ) -> Result<Vec<Vec<f64>>, StateSpaceError> {
-    if period < 2 || harmonics == 0 || harmonics > period / 2 {
-        return Err(invalid(
-            "period must be at least two; harmonics must be between one and floor(period/2)",
-        ));
-    }
+    let width = fourier_width(period, harmonics)?;
     let mut rows = Vec::with_capacity(count);
     for offset in 0..count {
         let time = i128::from(start) + offset as i128;
         let phase = time.rem_euclid(period as i128) as f64;
-        let mut row = Vec::with_capacity(2 * harmonics);
+        let mut row = Vec::with_capacity(width);
         for k in 1..=harmonics {
             let angle = std::f64::consts::TAU * k as f64 * phase / period as f64;
             if 2 * k != period {
@@ -447,6 +463,33 @@ mod tests {
     use super::*;
     use crate::seeding::chain_seed;
     use rand::SeedableRng;
+
+    #[test]
+    fn coefficient_prior_validates_itself_and_fourier_width_matches_rows() {
+        assert!(GaussianCoefficientPrior::new(vec![0.0, 1.0], vec![2.0, 0.5, 0.5, 1.0]).is_ok());
+        for (mean, covariance, message) in [
+            (vec![], vec![], "must not be empty"),
+            (vec![0.0], vec![1.0, 0.0], "entries"),
+            (vec![f64::NAN], vec![1.0], "finite"),
+            (vec![0.0, 0.0], vec![1.0, 0.9, 0.0, 1.0], "symmetric"),
+            (
+                vec![0.0, 0.0],
+                vec![1.0, 2.0, 2.0, 1.0],
+                "positive definite",
+            ),
+        ] {
+            let error = GaussianCoefficientPrior::new(mean, covariance).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+        for (period, harmonics) in [(12, 1), (12, 5), (12, 6), (7, 3), (2, 1)] {
+            let rows = fourier_design(3, period, harmonics, 0).unwrap();
+            assert!(rows
+                .iter()
+                .all(|row| row.len() == fourier_width(period, harmonics).unwrap()));
+        }
+        assert!(fourier_width(12, 7).is_err());
+        assert!(fourier_width(1, 1).is_err());
+    }
 
     #[test]
     fn fit_and_forecast_seed_domains_are_distinct() {

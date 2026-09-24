@@ -388,7 +388,7 @@ where
 }
 
 /// Paths indexed `[chain][draw][step]`.
-pub(crate) type Paths = Vec<Vec<Vec<f64>>>;
+pub type Paths = Vec<Vec<Vec<f64>>>;
 
 /// Turn per-draw groups of `K` paths into `K` separate `[chain][draw][step]`
 /// arrays.
@@ -422,7 +422,7 @@ pub(crate) fn split_paths<const K: usize>(per_draw: Vec<Vec<[Vec<f64>; K]>>) -> 
 /// `validate_paths` has already rejected an empty, ragged or non-finite
 /// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
 /// reach a caller from here.
-pub(crate) fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
+pub fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
     let horizon = validate_paths(paths)?;
     Ok((0..horizon)
         .map(|step| {
@@ -431,9 +431,8 @@ pub(crate) fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianFo
         .collect())
 }
 
-/// Empirical quantiles at each horizon, linearly interpolated between order
-/// statistics.
-pub(crate) fn path_quantiles(
+/// Empirical quantiles at each horizon, by [`sorted_quantile`].
+pub fn path_quantiles(
     paths: &[Vec<Vec<f64>>],
     probabilities: &[f64],
 ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
@@ -459,14 +458,14 @@ pub(crate) fn path_quantiles(
             probability,
             values: ordered_by_step
                 .iter()
-                .map(|ordered| interpolated_quantile(ordered, probability))
+                .map(|ordered| sorted_quantile(ordered, probability))
                 .collect(),
         })
         .collect())
 }
 
 /// The common horizon of a non-empty, rectangular, finite forecast.
-pub(crate) fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecastError> {
+pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecastError> {
     let horizon = paths
         .first()
         .and_then(|chain| chain.first())
@@ -494,16 +493,59 @@ pub(crate) fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianF
     Ok(horizon)
 }
 
-fn interpolated_quantile(ordered: &[f64], probability: f64) -> f64 {
-    let index = probability * (ordered.len() - 1) as f64;
-    let lower = index.floor() as usize;
-    let upper = index.ceil() as usize;
-    if lower == upper {
-        ordered[lower]
+/// The `probability` quantile of the non-empty ascending `ordered`,
+/// interpolated linearly between the order statistics either side of
+/// position `probability * (n - 1)` (NumPy's default `linear` rule).
+///
+/// This is the one empirical-quantile rule behind every forecast interval
+/// and quantile, native or in `rustmc.evaluation`. The step is taken from the
+/// lower neighbour, `lower + (upper - lower) * weight`, so a whole-number
+/// position or two equal neighbours return an order statistic exactly: the
+/// interval of a constant forecast is that constant. The convex form
+/// `lower * (1 - weight) + upper * weight` rounds both terms and can miss it.
+/// Only a gap too wide to represent, between draws of opposite sign near the
+/// top of the range, falls back to the convex form, which cannot overflow.
+pub fn sorted_quantile(ordered: &[f64], probability: f64) -> f64 {
+    let last = ordered.len() - 1;
+    let index = probability * last as f64;
+    let lower = (index.floor() as usize).min(last);
+    let upper = (index.ceil() as usize).min(last);
+    let weight = index - lower as f64;
+    let (below, above) = (ordered[lower], ordered[upper]);
+    let span = above - below;
+    if span.is_finite() {
+        below + span * weight
     } else {
-        let weight = index - lower as f64;
-        ordered[lower] * (1.0 - weight) + ordered[upper] * weight
+        below * (1.0 - weight) + above * weight
     }
+}
+
+/// Running totals along every path: step `h` holds the sum of steps `0..=h`
+/// of the same draw, so the dependence between horizons is kept.
+pub fn cumulative_paths(paths: &[Vec<Vec<f64>>]) -> Result<Paths, BayesianForecastError> {
+    paths
+        .iter()
+        .map(|chain| {
+            chain
+                .iter()
+                .map(|path| {
+                    let mut total = 0.0;
+                    path.iter()
+                        .map(|&value| {
+                            total += value;
+                            if total.is_finite() {
+                                Ok(total)
+                            } else {
+                                Err(BayesianForecastError::NumericalFailure(
+                                    "a cumulative forecast total is not finite".into(),
+                                ))
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect()
 }
 
 /// Lower Cholesky factor of a row-major `d x d` matrix, written into `factor`
@@ -665,6 +707,39 @@ mod tests {
         assert!(error.to_string().contains("at least 2 finite observations"));
         assert!(require_finite_observations(&[f64::NAN], 0, "structural").is_err());
         assert_eq!(require_finite_observations(&[0.0], 0, "structural"), Ok(1));
+    }
+
+    #[test]
+    fn sorted_quantile_is_exact_on_ties_and_order_statistics() {
+        // The convex form 0.1 * (1 - w) + 0.1 * w is not 0.1 for this weight.
+        let constant = vec![0.1; 41];
+        assert_eq!(sorted_quantile(&constant, 0.025), 0.1);
+        assert_eq!(sorted_quantile(&constant, 0.975), 0.1);
+        let ordered = [1.0, 2.0, 4.0, 8.0, 16.0];
+        assert_eq!(sorted_quantile(&ordered, 0.0), 1.0);
+        assert_eq!(sorted_quantile(&ordered, 0.5), 4.0);
+        assert_eq!(sorted_quantile(&ordered, 1.0), 16.0);
+        assert_eq!(sorted_quantile(&ordered, 0.125), 1.5);
+        assert_eq!(sorted_quantile(&ordered, 0.875), 12.0);
+        assert_eq!(sorted_quantile(&[3.0], 0.3), 3.0);
+        // A span wider than f64::MAX interpolates without overflowing.
+        let extremes = [-f64::MAX, f64::MAX];
+        assert_eq!(sorted_quantile(&extremes, 0.5), 0.0);
+        assert!(sorted_quantile(&extremes, 0.25).is_finite());
+    }
+
+    #[test]
+    fn cumulative_paths_keep_draws_aligned_and_refuse_overflow() {
+        let paths = vec![vec![vec![1.0, 2.0, 3.0], vec![-1.0, 0.5, 0.5]]];
+        assert_eq!(
+            cumulative_paths(&paths).unwrap(),
+            vec![vec![vec![1.0, 3.0, 6.0], vec![-1.0, -0.5, 0.0]]]
+        );
+        let overflowing = vec![vec![vec![f64::MAX, f64::MAX]]];
+        assert!(matches!(
+            cumulative_paths(&overflowing),
+            Err(BayesianForecastError::NumericalFailure(_))
+        ));
     }
 
     #[test]
