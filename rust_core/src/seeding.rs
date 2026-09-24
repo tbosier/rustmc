@@ -24,6 +24,14 @@ pub fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
     value ^ (value >> 31)
 }
 
+/// Domain separator for the chains of an HMC/NUTS fit through `sampler`,
+/// `"SMPL_FIT"`.
+pub const SAMPLER_FIT_SEED_DOMAIN: u64 = 0x534D_504C_5F46_4954;
+
+/// Domain separator for the random starting points of those chains,
+/// `"SMPLINIT"`.
+pub const SAMPLER_INIT_SEED_DOMAIN: u64 = 0x534D_504C_494E_4954;
+
 /// Domain separator for the posterior-predictive stream, `"PRED_GEN"`.
 pub const POSTERIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_4544_5F47_454E;
 
@@ -32,15 +40,15 @@ pub const PRIOR_PREDICT_SEED_DOMAIN: u64 = 0x5052_494F_525F_474E;
 
 /// Re-key a caller's seed into a named RNG stream.
 ///
-/// [`sampler::sample`](crate::sampler::sample) seeds fitting chain `i` with
-/// `config.seed.wrapping_add(i)`, so a simulation that seeds a generator with
-/// the raw integer replays chain zero's stream when the caller passes the fit
-/// seed, and chain `k`'s when they pass `fit_seed + k` — and passing the fit
-/// seed is exactly what a caller reaches for. Mixing a domain constant in
-/// through the SplitMix64 finalizer separates the streams, the way the
-/// structural, hierarchical, hurdle and dynamic-GLM fits already separate their
-/// fit, forecast and prior-predictive streams. The finalizer is a bijection, so
-/// distinct seeds still give distinct streams within a domain.
+/// A simulation that seeded a generator with the raw integer would replay
+/// whichever stream some other stage keyed from that integer — and passing the
+/// fit seed is exactly what a caller reaches for. Mixing a domain constant in
+/// through the SplitMix64 finalizer separates the streams, the way
+/// [`sampler`](crate::sampler) keys its chains through
+/// [`SAMPLER_FIT_SEED_DOMAIN`] and the structural, hierarchical, hurdle and
+/// dynamic-GLM fits separate their fit, forecast and prior-predictive streams.
+/// The finalizer is a bijection, so distinct seeds still give distinct streams
+/// within a domain.
 ///
 /// This is [`chain_seed`] for a stage that has only one stream.
 pub fn stream_seed(seed: u64, domain: u64) -> u64 {
@@ -70,11 +78,26 @@ mod tests {
 
     #[test]
     fn predictive_stream_avoids_every_default_fit_chain() {
-        // The collision this domain exists to prevent: `sampler::run` seeds
-        // chain `c` as `seed + c`, so a default fit holds 42..=45.
         let predictive = chain_seed(42, 0, POSTERIOR_PREDICT_SEED_DOMAIN);
-        for chain in 0..64u64 {
-            assert_ne!(predictive, 42u64.wrapping_add(chain));
+        for chain in 0..64 {
+            assert_ne!(predictive, chain_seed(42, chain, SAMPLER_FIT_SEED_DOMAIN));
+            assert_ne!(predictive, chain_seed(42, chain, SAMPLER_INIT_SEED_DOMAIN));
+        }
+    }
+
+    #[test]
+    fn adjacent_fit_seeds_do_not_share_chains() {
+        // `seed + chain` made seed 42's chain 1 the same stream as seed 43's
+        // chain 0.
+        for seed in [0u64, 42, u64::MAX] {
+            for chain in 0..16 {
+                for other in 0..16 {
+                    assert_ne!(
+                        chain_seed(seed, chain + 1, SAMPLER_FIT_SEED_DOMAIN),
+                        chain_seed(seed.wrapping_add(1), other, SAMPLER_FIT_SEED_DOMAIN)
+                    );
+                }
+            }
         }
     }
 

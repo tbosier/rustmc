@@ -1,10 +1,12 @@
 //! The native posterior-predictive stream must not be the stream a fitting
 //! chain used for the seed the caller actually passed.
 //!
-//! `sampler::sample` seeds chain `i` with `config.seed.wrapping_add(i)`, so a
-//! prediction that seeded `ChaCha8Rng::seed_from_u64(seed)` directly replayed
-//! chain zero's draws whenever the caller passed the fit seed — which is the
-//! natural thing for a caller to do. The oracle below is `rand_chacha` and
+//! `sampler::sample` once seeded chain `i` with `config.seed.wrapping_add(i)`,
+//! so a prediction that seeded `ChaCha8Rng::seed_from_u64(seed)` directly
+//! replayed chain zero's draws whenever the caller passed the fit seed — which
+//! is the natural thing for a caller to do. Chains are now keyed through
+//! `chain_seed(seed, i, SAMPLER_FIT_SEED_DOMAIN)`, and the prediction streams
+//! through domains of their own. The oracle below is `rand_chacha` and
 //! `rand_distr` used directly, not another copy of the crate's own sampling.
 //!
 //! Re-keying is a permutation of the 64-bit seeds, not a partition of them, so
@@ -18,7 +20,10 @@ use rand_distr::{Distribution, Normal};
 use rustmc_core::data::DataInputs;
 use rustmc_core::model::{compile, GraphModel, ModelSpec};
 use rustmc_core::sampler::SamplerConfig;
-use rustmc_core::seeding::{stream_seed, POSTERIOR_PREDICT_SEED_DOMAIN, PRIOR_PREDICT_SEED_DOMAIN};
+use rustmc_core::seeding::{
+    chain_seed, stream_seed, POSTERIOR_PREDICT_SEED_DOMAIN, PRIOR_PREDICT_SEED_DOMAIN,
+    SAMPLER_FIT_SEED_DOMAIN,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -127,9 +132,10 @@ fn native_prediction_does_not_replay_the_fitting_chain_stream() {
 /// For a seed a caller would pass, a simulation stream is not the stream any
 /// plausible fitting chain used, and the two simulation domains differ.
 ///
-/// `sample` seeds chain `i` with `config.seed + i`, so it is not enough for the
-/// re-keyed seed to miss chain zero: it has to miss every chain index a run
-/// could use. This checks the first 4096. It is a per-seed property, not a
+/// It is not enough for the re-keyed seed to miss chain zero: it has to miss
+/// every chain index a run could use, both under the current chain keying and
+/// under the old `seed + i`. This checks the first 4096. It is a per-seed
+/// property, not a
 /// universal one — re-keying permutes the seed space rather than partitioning
 /// it — so the claim is about the seeds listed, and about the shape of the
 /// mapping, not about every seed in `u64`.
@@ -140,16 +146,14 @@ fn stream_seeds_avoid_the_fitting_chain_seeds_and_each_other() {
         let prior = stream_seed(seed, PRIOR_PREDICT_SEED_DOMAIN);
         assert_ne!(posterior, prior, "domains collide at {seed}");
         for chain in 0..4096u64 {
-            assert_ne!(
-                posterior,
-                seed.wrapping_add(chain),
-                "posterior stream at {seed} is chain {chain}'s"
-            );
-            assert_ne!(
-                prior,
-                seed.wrapping_add(chain),
-                "prior stream at {seed} is chain {chain}'s"
-            );
+            let fit = chain_seed(seed, chain as usize, SAMPLER_FIT_SEED_DOMAIN);
+            for fitting in [fit, seed.wrapping_add(chain)] {
+                assert_ne!(
+                    posterior, fitting,
+                    "posterior stream at {seed} is chain {chain}'s"
+                );
+                assert_ne!(prior, fitting, "prior stream at {seed} is chain {chain}'s");
+            }
         }
     }
     let mut seen = std::collections::HashSet::new();

@@ -10,10 +10,9 @@ use crate::graph::Graph;
 use crate::hmc::{self, HmcConfig};
 use crate::nuts::{self, NutsConfig};
 use crate::sampler::{
-    validate_initial_values, with_thread_pool, SampleResult, SamplerConfig, SamplerType,
+    chain_rng, random_initial_position, validate_initial_values, with_thread_pool, SampleResult,
+    SamplerConfig, SamplerType,
 };
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -100,7 +99,8 @@ impl<T: LogDensity + ?Sized> GradientEvaluator for TargetEvaluator<'_, T> {
     }
 }
 
-/// Sample a custom target. Initial positions are raw, with one row per chain.
+/// Sample a custom target. Initial positions are raw, with one row per chain;
+/// `None` draws each chain's start uniformly from (-2, 2) as graph fits do.
 /// Result draws remain raw; apply the model's transforms for presentation.
 pub fn sample_target<T: LogDensity + ?Sized>(
     target: &T,
@@ -125,24 +125,38 @@ pub fn sample_target<T: LogDensity + ?Sized>(
         graph.add_param(name);
     }
     let chains = with_thread_pool(config.num_threads, || {
-        positions
-            .par_iter()
-            .enumerate()
-            .map(|(chain, position)| {
+        (0..config.num_chains)
+            .into_par_iter()
+            .map(|chain| {
                 let mut evaluator = TargetEvaluator {
                     target,
                     gradient: vec![0.0; dimension],
                     log_density: f64::NAN,
                     failure: None,
                 };
-                evaluator.compute(&graph, position);
-                if let Some(failure) = evaluator.failure.take() {
-                    return Err(format!("chain {chain}: {failure}"));
-                }
-                if !evaluator.log_density.is_finite() {
-                    return Err(format!("chain {chain}: initial log density is not finite"));
-                }
-                let mut rng = ChaCha8Rng::seed_from_u64(config.seed.wrapping_add(chain as u64));
+                let position = match &positions {
+                    Some(positions) => {
+                        let position = positions[chain].clone();
+                        evaluator.compute(&graph, &position);
+                        if let Some(failure) = evaluator.failure.take() {
+                            return Err(format!("chain {chain}: {failure}"));
+                        }
+                        if !evaluator.log_density.is_finite() {
+                            return Err(format!(
+                                "chain {chain}: initial log density is not finite"
+                            ));
+                        }
+                        position
+                    }
+                    None => random_initial_position(config.seed, chain, dimension, |position| {
+                        evaluator.compute(&graph, position);
+                        match evaluator.failure.take() {
+                            Some(failure) => Err(format!("chain {chain}: {failure}")),
+                            None => Ok(evaluator.log_density.is_finite()),
+                        }
+                    })?,
+                };
+                let mut rng = chain_rng(config.seed, chain);
                 let result = match config.sampler {
                     SamplerType::Hmc => hmc::run_chain_with_evaluator(
                         &graph,
@@ -155,7 +169,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                             metric: config.metric,
                         },
                         &mut rng,
-                        Some(position.clone()),
+                        position.clone(),
                         None,
                         &mut evaluator,
                     ),
@@ -170,7 +184,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                             metric: config.metric,
                         },
                         &mut rng,
-                        Some(position.clone()),
+                        position.clone(),
                         None,
                         &mut evaluator,
                     ),

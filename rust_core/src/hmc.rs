@@ -4,7 +4,7 @@ use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
-use crate::sampler::reject_discrete_latent_parameters;
+use crate::sampler::{kernel_initial_position, reject_discrete_latent_parameters};
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -88,7 +88,9 @@ pub struct ChainResult {
 /// Returns the rejection message from
 /// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
 /// discrete latent. This entry point does not go through `sampler`, so the
-/// check has to happen here or not at all — see [`run_chain_bound`].
+/// check has to happen here or not at all — see [`run_chain_bound`]. Also
+/// returns an error when the graph's data do not bind, or when `init` is not a
+/// finite vector with one entry per parameter. `None` starts at the origin.
 pub fn run_chain(
     graph: &Graph,
     config: &HmcConfig,
@@ -97,10 +99,8 @@ pub fn run_chain(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     reject_discrete_latent_parameters(graph)?;
-    let binding = DataBinding::from_graph(graph).expect("graph data must have consistent shapes");
-    Ok(run_chain_bound_unguarded(
-        graph, binding, config, rng, init, progress,
-    ))
+    let binding = DataBinding::from_graph(graph).map_err(|error| error.to_string())?;
+    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
@@ -120,9 +120,7 @@ pub fn run_chain_bound(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     reject_discrete_latent_parameters(graph)?;
-    Ok(run_chain_bound_unguarded(
-        graph, binding, config, rng, init, progress,
-    ))
+    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
 }
 
 /// [`run_chain_bound`] without the discrete-latent check.
@@ -136,23 +134,32 @@ pub(crate) fn run_chain_bound_unguarded(
     rng: &mut ChaCha8Rng,
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
-) -> ChainResult {
-    let mut evaluator = Evaluator::with_binding(graph, binding);
-    run_chain_with_evaluator(graph, config, rng, init, progress, &mut evaluator)
+) -> Result<ChainResult, String> {
+    let mut evaluator =
+        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
+    let position = kernel_initial_position(init, graph.param_count)?;
+    Ok(run_chain_with_evaluator(
+        graph,
+        config,
+        rng,
+        position,
+        progress,
+        &mut evaluator,
+    ))
 }
 
 pub(crate) fn run_chain_with_evaluator(
     graph: &Graph,
     config: &HmcConfig,
     rng: &mut ChaCha8Rng,
-    init: Option<Vec<f64>>,
+    init: Vec<f64>,
     progress: Option<&ProgressState>,
     evaluator: &mut impl GradientEvaluator,
 ) -> ChainResult {
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
-    let mut q = init.unwrap_or_else(|| vec![0.0; dim]);
+    let mut q = init;
     let mut q_prop = vec![0.0; dim];
     let mut p = vec![0.0; dim];
     let mut p_prop = vec![0.0; dim];
