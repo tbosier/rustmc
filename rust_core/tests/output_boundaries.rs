@@ -108,3 +108,155 @@ fn a_data_slot_the_graph_names_but_does_not_own_is_an_error_not_a_panic() {
         "got {message}"
     );
 }
+
+const GROUPED_MODEL: &str = r#"{"format":"rustmc.graph-model","version":1,"definition":{"dimensions":{},"potentials":[],"deterministics":[],"priors":[{"Normal":{"name":"mu","mu":{"Const":0.0},"sigma":{"Const":1.0}}},{"VectorNormal":{"name":"z","n":3,"mu":0.0,"sigma":1.0}}],"likelihoods":[{"family":"Normal","name":"obs","mu_expr":{"Add":[{"Param":"mu"},{"Gather":{"param_name":"z","data_key":"site"}}]},"sigma":{"Const":1.0},"observed_key":"y"}]},"schema":{"vectors":[{"key":"site","kind":"Vector","dim":"obs"}],"observations":[{"key":"y","kind":{"Observation":{"likelihood":"obs"}},"dim":"obs"}],"matrices":[]}}"#;
+
+fn grouped_inputs(site: Vec<f64>, observed: bool) -> rustmc_core::data::DataInputs {
+    let mut inputs = rustmc_core::data::DataInputs::default();
+    if observed {
+        inputs
+            .vectors
+            .insert("y".into(), Arc::from(vec![0.5; site.len()]));
+    }
+    inputs.vectors.insert("site".into(), Arc::from(site));
+    inputs
+}
+
+/// Group indices outside the group count used to pass binding validation and
+/// reach `Evaluator::new`'s `expect` from `GraphModel::log_density`,
+/// `ModelFit::predict` and prior-predictive simulation.
+#[test]
+fn out_of_range_group_indices_are_errors_not_panics() {
+    use rustmc_core::model::GraphModel;
+    use std::collections::HashMap;
+    let model = GraphModel::from_json(GROUPED_MODEL).unwrap();
+    for site in [vec![0.0, 3.0], vec![-1.0, 0.0], vec![0.5, 1.0]] {
+        let error = model
+            .bind(grouped_inputs(site.clone(), true), "bad")
+            .expect_err("indices outside [0, 3) must not bind");
+        assert!(error.to_string().contains("group indices"), "{error}");
+    }
+    let good = model
+        .bind(grouped_inputs(vec![0.0, 1.0, 2.0], true), "fit")
+        .unwrap();
+    let fit = model
+        .sample(
+            good,
+            SamplerConfig {
+                num_chains: 1,
+                num_draws: 5,
+                num_warmup: 20,
+                show_progress: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+    let error = fit
+        .predict(
+            grouped_inputs(vec![0.0, 7.0], false),
+            HashMap::new(),
+            1,
+            false,
+        )
+        .expect_err("prediction at an unknown group must be refused");
+    assert!(error.to_string().contains("group"), "{error}");
+}
+
+/// An empty data vector in a hand-built graph used to classify the vector op
+/// reading it as a scalar and reach an `unreachable!()` inside `sample`.
+#[test]
+fn empty_data_vectors_are_rejected_by_the_graph_path() {
+    let mut graph = Graph::new();
+    let beta = Normal::prior(&mut graph, "beta", 0.0, 1.0);
+    let x = graph.add_data("x", Vec::new());
+    let mu = graph.scalar_mul_data(beta, x);
+    let one = graph.add_constant(1.0);
+    let obs = graph.add_obs_data(Vec::new());
+    graph.normal_obs_logp(mu, one, obs);
+    let error = sample(graph, SamplerConfig::default()).expect_err("empty data must not sample");
+    assert!(error.contains("must not be empty"), "{error}");
+
+    let mut graph = Graph::new();
+    graph.add_data("x", Vec::new());
+    assert!(DataBinding::from_graph(&graph).is_err());
+}
+
+/// `Graph::nodes` is public, so a node can name a later node or a parameter
+/// that does not exist; shape validation indexed by those ids and panicked.
+#[test]
+fn out_of_order_and_dangling_references_are_rejected() {
+    use rustmc_core::graph::{NodeId, Op};
+    let mut graph = Graph::new();
+    let x = Normal::prior(&mut graph, "x", 0.0, 1.0);
+    let later = NodeId(graph.nodes.len() + 1);
+    graph.add(x, later);
+    graph.add_constant(1.0);
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("not an earlier node"), "{message}");
+    assert!(sample(graph, SamplerConfig::default()).is_err());
+
+    let mut graph = Graph::new();
+    Normal::prior(&mut graph, "x", 0.0, 1.0);
+    graph.nodes[0].op = Op::Param(5);
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("parameters 5..6"), "{message}");
+    assert!(Evaluator::try_new(&graph).is_err());
+}
+
+/// The total log density sums node scalars, so a vector registered as a term,
+/// or passed where a scalar is read, silently contributed zero or garbage.
+#[test]
+fn vector_nodes_in_scalar_positions_are_rejected() {
+    let mut graph = Graph::new();
+    let beta = Normal::prior(&mut graph, "beta", 0.0, 1.0);
+    let x = graph.add_data("x", vec![1.0, 2.0, 3.0]);
+    let mu = graph.scalar_mul_data(beta, x);
+    graph.add_logp_term(mu);
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("log-density term"), "{message}");
+
+    let mut graph = Graph::new();
+    let beta = Normal::prior(&mut graph, "beta", 0.0, 1.0);
+    let x = graph.add_data("x", vec![1.0, 2.0, 3.0]);
+    let scale = graph.scalar_mul_data(beta, x);
+    let zero = graph.add_constant(0.0);
+    graph.normal_logp(beta, zero, scale);
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("as a scalar"), "{message}");
+    assert!(sample(graph, SamplerConfig::default()).is_err());
+}
+
+/// The raw kernels returned `expect` panics for data that do not bind and
+/// never checked `init` at all.
+#[test]
+fn raw_kernels_return_errors_for_bad_inputs() {
+    use rand::SeedableRng;
+    use rustmc_core::hmc::{self, HmcConfig};
+    use rustmc_core::nuts::{self, NutsConfig};
+    let mut graph = Graph::new();
+    Normal::prior(&mut graph, "x", 0.0, 1.0);
+    let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1);
+    let nuts_config = NutsConfig {
+        num_draws: 2,
+        num_warmup: 2,
+        ..Default::default()
+    };
+    let hmc_config = HmcConfig {
+        num_draws: 2,
+        num_warmup: 2,
+        ..Default::default()
+    };
+    for init in [vec![], vec![0.0, 0.0], vec![f64::NAN]] {
+        let error = nuts::run_chain(&graph, &nuts_config, &mut rng, Some(init.clone()), None)
+            .expect_err("wrong init must be refused");
+        assert!(error.contains("init"), "{error}");
+        assert!(hmc::run_chain(&graph, &hmc_config, &mut rng, Some(init), None).is_err());
+    }
+    let mut empty = Graph::new();
+    let beta = Normal::prior(&mut empty, "beta", 0.0, 1.0);
+    let x = empty.add_data("x", Vec::new());
+    empty.scalar_mul_data(beta, x);
+    assert!(nuts::run_chain(&empty, &nuts_config, &mut rng, None, None).is_err());
+    assert!(hmc::run_chain(&empty, &hmc_config, &mut rng, None, None).is_err());
+}

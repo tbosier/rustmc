@@ -334,7 +334,8 @@ pub fn prior_predictive<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> ModelResult<PriorPredictive> {
     let heads = graph.observation_heads();
-    let mut evaluator = Evaluator::new(graph);
+    let mut evaluator =
+        Evaluator::try_new(graph).map_err(|error| ModelError::invalid(error.to_string()))?;
 
     let mut params: Vec<Vec<f64>> = vec![Vec::with_capacity(n_samples); display_params.len()];
     let mut predictions: Vec<Vec<f64>> = heads

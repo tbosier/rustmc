@@ -1550,7 +1550,8 @@ impl GraphModel {
             ));
         }
         let graph = self.structure.with_binding(binding);
-        let mut evaluator = Evaluator::new(&graph);
+        let mut evaluator =
+            Evaluator::try_new(&graph).map_err(|error| ModelError::invalid(error.to_string()))?;
         evaluator.compute(&graph, position);
         Ok((evaluator.total_logp, evaluator.grad))
     }
@@ -1660,7 +1661,8 @@ impl ModelFit {
         let graph = self.model.structure.with_binding(&self.binding);
         let prediction_graph = bind_prediction(&graph, inputs, sizes)?;
         let heads = prediction_graph.observation_heads();
-        let mut evaluator = Evaluator::new(&prediction_graph);
+        let mut evaluator = Evaluator::try_new(&prediction_graph)
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::seeding::stream_seed(
             seed,
             crate::seeding::POSTERIOR_PREDICT_SEED_DOMAIN,

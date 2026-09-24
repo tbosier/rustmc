@@ -120,6 +120,12 @@ pub enum BindError {
         value: f64,
         requirement: &'static str,
     },
+    InvalidGroupIndex {
+        key: String,
+        index: usize,
+        value: f64,
+        n_groups: usize,
+    },
     SchemaMismatch,
 }
 
@@ -191,6 +197,16 @@ impl Display for BindError {
                 f,
                 "{} likelihood '{}' requires {} observed values; found {} at index {}",
                 family, likelihood, requirement, value, index
+            ),
+            Self::InvalidGroupIndex {
+                key,
+                index,
+                value,
+                n_groups,
+            } => write!(
+                f,
+                "group indices in '{}' must be integers in [0, {}); found {} at index {}",
+                key, n_groups, value, index
             ),
             Self::SchemaMismatch => write!(f, "binding was created for a different data schema"),
         }
@@ -528,6 +544,36 @@ impl DataBinding {
                 }
             }
         }
+        // `bind()` refuses an empty payload, but `from_graph` builds a binding
+        // from whatever a hand-built graph carries, and an empty vector gives
+        // the vector ops that read it no elements to hold: the evaluator would
+        // classify them as scalars and fall into an unreachable arm.
+        let slot_key = |slots: &[DataSlot], index: usize, kind: &str| {
+            slots
+                .get(index)
+                .map_or_else(|| format!("{kind} slot {index}"), |slot| slot.key.clone())
+        };
+        for (index, values) in self.observations.iter().enumerate() {
+            if values.is_empty() {
+                return Err(BindError::Empty {
+                    key: slot_key(&self.schema.observations, index, "observation"),
+                });
+            }
+        }
+        for (index, values) in self.vectors.iter().enumerate() {
+            if values.is_empty() {
+                return Err(BindError::Empty {
+                    key: slot_key(&self.schema.vectors, index, "data vector"),
+                });
+            }
+        }
+        for (index, matrix) in self.matrices.iter().enumerate() {
+            if matrix.n_rows == 0 || matrix.n_cols == 0 {
+                return Err(BindError::Empty {
+                    key: slot_key(&self.schema.matrices, index, "matrix"),
+                });
+            }
+        }
         for (index, matrix) in self.matrices.iter().enumerate() {
             if matrix.n_rows.checked_mul(matrix.n_cols) != Some(matrix.data.len()) {
                 return Err(BindError::RaggedMatrix {
@@ -535,6 +581,35 @@ impl DataBinding {
                     n_rows: matrix.n_rows,
                     n_cols: matrix.n_cols,
                     values: matrix.data.len(),
+                });
+            }
+        }
+        // Group indices select parameters by value, so a binding whose indices
+        // fall outside the group count is as malformed as one with the wrong
+        // length; refuse it here rather than leave it to the evaluator.
+        for node in &graph.nodes {
+            let crate::graph::Op::Gather {
+                n_params, indices, ..
+            } = &node.op
+            else {
+                continue;
+            };
+            let Some(crate::graph::Op::Data(data_index)) =
+                graph.nodes.get(indices.0).map(|node| &node.op)
+            else {
+                continue;
+            };
+            let Some(values) = self.vectors.get(*data_index) else {
+                continue;
+            };
+            if let Some((index, value)) = values.iter().copied().enumerate().find(|(_, x)| {
+                !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
+            }) {
+                return Err(BindError::InvalidGroupIndex {
+                    key: slot_key(&self.schema.vectors, *data_index, "data vector"),
+                    index,
+                    value,
+                    n_groups: *n_params,
                 });
             }
         }

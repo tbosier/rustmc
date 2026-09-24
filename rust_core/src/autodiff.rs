@@ -137,11 +137,114 @@ pub(crate) fn validate_slot_coverage(
     Ok(())
 }
 
+/// Check the references a graph's nodes make before anything indexes by them.
+///
+/// `Graph::nodes` is public and a `NodeId` is an unchecked index, so a
+/// hand-built graph can name a node that comes later (or does not exist), a
+/// parameter past `param_count`, or a node whose id disagrees with its
+/// position. Every pass below indexes per-node buffers by those ids in
+/// declaration order, so each of these is an out-of-bounds read or a value read
+/// before it is computed.
+fn validate_topology(graph: &Graph) -> Result<(), GraphShapeError> {
+    for (position, node) in graph.nodes.iter().enumerate() {
+        if node.id.0 != position {
+            return Err(GraphShapeError::new(format!(
+                "node at position {position} carries id {}",
+                node.id.0
+            )));
+        }
+        let mut later_node = None;
+        let mut bad_span = None;
+        node.op.visit_dependencies(
+            &mut |operand| {
+                if operand.0 >= position {
+                    later_node.get_or_insert(operand.0);
+                }
+            },
+            &mut |start, len| {
+                if start
+                    .checked_add(len)
+                    .is_none_or(|end| end > graph.param_count)
+                {
+                    bad_span.get_or_insert((start, len));
+                }
+            },
+        );
+        if let Some(operand) = later_node {
+            return Err(GraphShapeError::new(format!(
+                "node {position} reads node {operand}, which is not an earlier node"
+            )));
+        }
+        if let Some((start, len)) = bad_span {
+            return Err(GraphShapeError::new(format!(
+                "node {position} reads parameters {start}..{} of {}",
+                start.saturating_add(len),
+                graph.param_count
+            )));
+        }
+    }
+    for id in graph
+        .logp_terms
+        .iter()
+        .chain(graph.deterministics.iter().map(|(_, id)| id))
+    {
+        if id.0 >= graph.nodes.len() {
+            return Err(GraphShapeError::new(format!(
+                "graph output refers to node {}, past the last node",
+                id.0
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The operands `op` reads as scalars (through `scalars[id]`), which must
+/// therefore not be vector-valued nodes.
+fn scalar_operands(op: &Op) -> Vec<NodeId> {
+    match op {
+        Op::Add(a, b) | Op::Mul(a, b) => vec![*a, *b],
+        Op::Exp(a) | Op::Sigmoid(a) => vec![*a],
+        Op::BoundedSigmoid { raw, .. } => vec![*raw],
+        Op::ScalarMulData(scalar, _)
+        | Op::ScalarBroadcastAdd(scalar, _)
+        | Op::ScalarBroadcast(scalar)
+        | Op::BroadcastObservation { scalar, .. } => vec![*scalar],
+        Op::NormalLogP { x, mu, sigma } => vec![*x, *mu, *sigma],
+        Op::LogHalfNormalLogP { x, sigma } => vec![*x, *sigma],
+        Op::StudentTLogP { x, nu, mu, sigma } => vec![*x, *nu, *mu, *sigma],
+        Op::PositiveSupport { x } => vec![*x],
+        Op::BernoulliLogP { x, p } => vec![*x, *p],
+        Op::PoissonLogP { x, lam } => vec![*x, *lam],
+        Op::LogGammaLogP { x, alpha, beta } => vec![*x, *alpha, *beta],
+        Op::ObsLogP { aux, .. } => aux.iter().copied().collect(),
+        Op::FusedLinearMu {
+            param_nodes,
+            intercept,
+            ..
+        } => param_nodes.iter().chain(intercept).copied().collect(),
+        Op::MatVecMul { intercept, .. } => intercept.iter().copied().collect(),
+        Op::Elementwise { .. }
+        | Op::Gather { .. }
+        | Op::Sum(_)
+        | Op::Param(_)
+        | Op::Constant(_)
+        | Op::Data(_)
+        | Op::VectorAdd(_, _)
+        | Op::VectorNormalLogP { .. }
+        | Op::VectorHalfNormalLogP { .. }
+        | Op::VectorStudentTLogP { .. }
+        | Op::VectorGammaLogP { .. }
+        | Op::VectorBetaLogP { .. }
+        | Op::VectorUniformLogP { .. } => Vec::new(),
+    }
+}
+
 /// Derive every vector length from its inputs; scalars have length zero.
 pub(crate) fn validate_node_lengths(
     graph: &Graph,
     binding: &DataBinding,
 ) -> Result<Vec<usize>, GraphShapeError> {
+    validate_topology(graph)?;
     let mut output_names: std::collections::HashSet<&str> =
         graph.param_names.iter().map(String::as_str).collect();
     for name in graph
@@ -361,8 +464,44 @@ pub(crate) fn validate_node_lengths(
             | Op::VectorBetaLogP { .. }
             | Op::VectorUniformLogP { .. } => None,
         };
+        // A vector-producing op with no elements would be stored as a scalar
+        // and reach the evaluator's unreachable vector arms.
+        let produces_vector = matches!(
+            node.op,
+            Op::Gather { .. }
+                | Op::BroadcastObservation { .. }
+                | Op::ScalarMulData(_, _)
+                | Op::VectorAdd(_, _)
+                | Op::ScalarBroadcastAdd(_, _)
+                | Op::ScalarBroadcast(_)
+                | Op::FusedLinearMu { .. }
+                | Op::MatVecMul { .. }
+        );
+        if produces_vector && len == 0 {
+            return Err(GraphShapeError::new(format!(
+                "vector operation at node {} has no elements",
+                node.id.0
+            )));
+        }
+        if let Some(operand) = scalar_operands(&node.op)
+            .into_iter()
+            .find(|operand| lengths[operand.0] != 0)
+        {
+            return Err(GraphShapeError::new(format!(
+                "node {} reads node {} as a scalar, but it is a vector of length {}",
+                node.id.0, operand.0, lengths[operand.0]
+            )));
+        }
         dimensions.push(dimension);
         lengths.push(len);
+    }
+    // The total log density sums node scalars, so a vector-valued term would
+    // silently contribute nothing.
+    if let Some(term) = graph.logp_terms.iter().find(|term| lengths[term.0] != 0) {
+        return Err(GraphShapeError::new(format!(
+            "log-density term node {} is a vector of length {}; sum it first",
+            term.0, lengths[term.0]
+        )));
     }
     Ok(lengths)
 }
@@ -425,10 +564,20 @@ impl Evaluator {
         })
     }
 
+    /// [`Self::try_new`] for graphs already known to be valid.
+    ///
+    /// # Panics
+    ///
+    /// If the graph fails shape validation; library code uses `try_new`.
     pub fn new(graph: &Graph) -> Self {
         Self::try_new(graph).expect("graph shape validation failed")
     }
 
+    /// [`Self::try_with_binding`] for bindings already known to match.
+    ///
+    /// # Panics
+    ///
+    /// If the binding does not match the structure.
     pub fn with_binding(graph: &Graph, binding: DataBinding) -> Self {
         Self::try_with_binding(graph, binding).expect("validated binding does not match structure")
     }

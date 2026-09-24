@@ -1083,7 +1083,8 @@ fn pointwise_log_likelihood_for_draw(
     raw_draw: &[f64],
     heads: &[rustmc_core::graph::ObservationHead],
 ) -> PyResult<Vec<Vec<f64>>> {
-    let mut evaluator = Evaluator::new(graph);
+    let mut evaluator =
+        Evaluator::try_new(graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
     evaluator.forward(graph, raw_draw);
 
     heads
@@ -1276,7 +1277,8 @@ impl FitResult {
         expected: bool,
         rng: &mut ChaCha8Rng,
     ) -> PyResult<Vec<Vec<f64>>> {
-        let mut evaluator = Evaluator::new(graph);
+        let mut evaluator =
+            Evaluator::try_new(graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
         let mut preds: Vec<Vec<f64>> = heads
             .iter()
             .map(|head| Vec::with_capacity(coordinates.len() * head.n_obs))
@@ -1494,7 +1496,8 @@ impl FitResult {
         sizes: Option<HashMap<String, usize>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let graph = prediction_graph(&self.graph, data, sizes)?;
-        let mut evaluator = Evaluator::new(&graph);
+        let mut evaluator =
+            Evaluator::try_new(&graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
         let chains = self.raw_result.samples.len();
         let draws = self.raw_result.samples.first().map_or(0, Vec::len);
         let result = PyDict::new(py);
