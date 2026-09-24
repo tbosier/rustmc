@@ -62,6 +62,10 @@ def test_quantiles_are_bitwise_numpy_linear_quantiles():
         actual = _quantiles(draws, probabilities) + 0.0
         assert actual.tobytes() == expected.tobytes(), (trial, np.flatnonzero(actual != expected))
     assert _quantiles(np.array([-1e16, 1e16 + 2]), 0.5) == 2.0
+    # Ordering is undefined with NaN, so the rule refuses it.
+    for bad in (np.nan, -np.nan):
+        with pytest.raises(ValueError, match="finite"):
+            _quantiles(np.array([1.0, bad, 3.0]), 0.5)
 
 
 @pytest.mark.parametrize("baseline", [False, True])

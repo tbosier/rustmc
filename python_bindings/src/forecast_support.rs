@@ -349,6 +349,10 @@ fn empirical_quantiles<'py>(
     if columns.shape()[0] == 0 {
         return Err(PyValueError::new_err("draws must hold at least one sample"));
     }
+    // The shared rule orders draws, which NaN does not allow.
+    if columns.iter().any(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err("draws must be finite"));
+    }
     for &probability in &probabilities {
         validate_probability(probability)?;
     }

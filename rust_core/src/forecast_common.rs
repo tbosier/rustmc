@@ -498,9 +498,10 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
 /// position `(n - 1) * probability`.
 ///
 /// This is the one empirical-quantile rule behind every forecast interval
-/// and quantile, native or in `rustmc.evaluation`. It reproduces NumPy's
-/// default `linear` method bit for bit, including its interpolation
-/// `_lerp`: the step is taken from the nearer neighbour, `lower + span * w`
+/// and quantile, native or in `rustmc.evaluation`. On finite draws it
+/// reproduces NumPy's default `linear` method bit for bit (up to the sign of
+/// a zero, as NumPy's partition leaves `-0.0` and `0.0` unordered), including
+/// its interpolation `_lerp`: the step is taken from the nearer neighbour, `lower + span * w`
 /// below the midpoint and `upper - span * (1 - w)` from it on, so each end
 /// of a gap is reproduced exactly and a small value between large draws is
 /// not rounded against the far one. A whole-number position or two equal
