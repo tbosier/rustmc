@@ -1057,26 +1057,45 @@ mod incremental_likelihood_tests {
                 } else {
                     0.
                 };
-                lp += log_likelihood(value, eta, occurrence, 1., panel.config);
+                let exposure = panel.exposure.map_or(1., |e| e[g][t]);
+                lp += log_likelihood(value, eta, occurrence, exposure, panel.config);
             }
         }
         lp
     }
 
+    /// Run every block update on `panel` and compare the cache with a fresh
+    /// evaluation after each one.
+    fn assert_block_updates_keep_the_cache_fresh(panel: &PanelLikelihood, seed: u64) {
+        let layout = panel.layout;
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let mut z: Vec<f64> = (0..layout.size()).map(|_| normal(&mut rng)).collect();
+        let mut cache = PanelCache::new(panel, &z);
+        let blocks = layout.blocks();
+        let mut covered: Vec<usize> = blocks.iter().flat_map(|b| b.range.clone()).collect();
+        covered.sort_unstable();
+        assert_eq!(covered, (0..layout.size()).collect::<Vec<_>>());
+        for _ in 0..10 {
+            for block in &blocks {
+                cache.update(panel, &mut z, block, &mut rng).unwrap();
+                // A block that moved a group it does not declare would leave
+                // that group's cached terms stale.
+                let fresh = PanelCache::new(panel, &z);
+                assert_eq!(cache.eta, fresh.eta);
+                assert_eq!(cache.group_lp, fresh.group_lp);
+                let full = full_log_likelihood(panel, &z);
+                let cached = cache.group_lp.iter().sum::<f64>();
+                assert!(full.is_finite());
+                assert!(
+                    (cached - full).abs() <= 1e-12 * full.abs(),
+                    "{cached} vs {full}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn block_updates_keep_the_cache_equal_to_a_fresh_full_panel_evaluation() {
-        let config = DynamicGlmConfig {
-            family: Family::HurdleLogNormal,
-            group_sd: 0.4,
-            process_sd: 0.2,
-            shared_process_sd: 0.3,
-            ..Default::default()
-        };
-        let y = vec![
-            vec![0., 1.5, f64::NAN, 2.5, 3., 0.],
-            vec![1., 0., 0., 4., f64::NAN, 0.5],
-            vec![0., 0., 2., 1., 1., 7.],
-        ];
         let exog: Design = (0..3)
             .map(|g| {
                 (0..6)
@@ -1084,37 +1103,61 @@ mod incremental_likelihood_tests {
                     .collect()
             })
             .collect();
+        let layout = Layout::checked(3, 6, 2, 1).unwrap();
+        // Counts with missing cells, and exposures that vary by cell,
+        // including zero exposure at an observed zero and at a missing count.
+        let counts = vec![
+            vec![0., 1., f64::NAN, 2., 3., 0.],
+            vec![1., 0., 0., 4., f64::NAN, 0.],
+            vec![0., 0., 2., 1., 1., 7.],
+        ];
+        let exposure = vec![
+            vec![0.5, 2., 0., 0.8, 3.7, 0.],
+            vec![1.25, 0., 0.1, 8., 0., 1.],
+            vec![0., 4., 2.5, 0.3, 1., 12.],
+        ];
+        for family in [Family::Poisson, Family::NegativeBinomial] {
+            let config = DynamicGlmConfig {
+                family,
+                group_sd: 0.4,
+                process_sd: 0.2,
+                shared_process_sd: 0.3,
+                ..Default::default()
+            };
+            assert!(validate_design(Some(&exog), Some(&exposure), 3, 6, 1, family).is_ok());
+            let panel = PanelLikelihood {
+                y: &counts,
+                exog: Some(&exog),
+                exposure: Some(&exposure),
+                config: &config,
+                layout: &layout,
+            };
+            assert_block_updates_keep_the_cache_fresh(&panel, 5);
+        }
+
+        // Hurdle updates move the occurrence component too; exposure does
+        // not apply to it.
+        let config = DynamicGlmConfig {
+            family: Family::HurdleLogNormal,
+            group_sd: 0.4,
+            process_sd: 0.2,
+            shared_process_sd: 0.3,
+            ..Default::default()
+        };
+        let amounts = vec![
+            vec![0., 1.5, f64::NAN, 2.5, 3., 0.],
+            vec![1., 0., 0., 4., f64::NAN, 0.5],
+            vec![0., 0., 2., 1., 1., 7.],
+        ];
         let layout = Layout::checked(3, 6, 2, 2).unwrap();
         let panel = PanelLikelihood {
-            y: &y,
+            y: &amounts,
             exog: Some(&exog),
             exposure: None,
             config: &config,
             layout: &layout,
         };
-        let mut rng = ChaCha8Rng::seed_from_u64(3);
-        let mut z: Vec<f64> = (0..layout.size()).map(|_| normal(&mut rng)).collect();
-        let mut cache = PanelCache::new(&panel, &z);
-        let blocks = layout.blocks();
-        let mut covered: Vec<usize> = blocks.iter().flat_map(|b| b.range.clone()).collect();
-        covered.sort_unstable();
-        assert_eq!(covered, (0..layout.size()).collect::<Vec<_>>());
-        for _ in 0..10 {
-            for block in &blocks {
-                cache.update(&panel, &mut z, block, &mut rng).unwrap();
-                // A block that moved a group it does not declare would leave
-                // that group's cached terms stale.
-                let fresh = PanelCache::new(&panel, &z);
-                assert_eq!(cache.eta, fresh.eta);
-                assert_eq!(cache.group_lp, fresh.group_lp);
-                let full = full_log_likelihood(&panel, &z);
-                let cached = cache.group_lp.iter().sum::<f64>();
-                assert!(
-                    (cached - full).abs() <= 1e-12 * full.abs(),
-                    "{cached} vs {full}"
-                );
-            }
-        }
+        assert_block_updates_keep_the_cache_fresh(&panel, 3);
     }
 
     #[test]
