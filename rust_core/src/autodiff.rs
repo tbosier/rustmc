@@ -480,7 +480,15 @@ impl Evaluator {
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
-        // === Forward pass ===
+        self.forward(graph, params);
+        self.backward(graph, params);
+    }
+
+    /// Evaluate node values and `self.total_logp` without the reverse pass.
+    ///
+    /// For callers that only read forward values (prediction, deterministic
+    /// outputs); `self.grad` is left as it was.
+    pub fn forward(&mut self, graph: &Graph, params: &[f64]) {
         for node in &graph.nodes {
             let idx = node.id.0;
             // The one match over `Op` here that keeps its catch-all. Unlike the
@@ -868,8 +876,10 @@ impl Evaluator {
 
         // Total log-probability
         self.total_logp = graph.logp_terms.iter().map(|id| self.scalars[id.0]).sum();
+    }
 
-        // === Backward pass ===
+    /// Reverse pass over the values the last [`Self::forward`] left behind.
+    fn backward(&mut self, graph: &Graph, params: &[f64]) {
         // Zero adjoint buffers and gradient
         self.adj_scalars.iter_mut().for_each(|x| *x = 0.0);
         self.adj_vec_buf.iter_mut().for_each(|x| *x = 0.0);
@@ -1770,6 +1780,31 @@ mod tests {
         let (logp, grad) = grad_logp(&g, &params);
         assert!((logp - (-0.5 * 1.5_f64.powi(2) - 0.5 * std::f64::consts::TAU.ln())).abs() < 1e-10);
         assert!((grad[0] - (-1.5)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn forward_only_evaluation_matches_the_values_of_a_full_pass() {
+        let mut g = Graph::new();
+        let beta = g.add_param("beta");
+        let zero = g.add_constant(0.0);
+        let one = g.add_constant(1.0);
+        g.normal_logp(beta, zero, one);
+        let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
+        let mu = g.scalar_mul_data(beta, x_data);
+        let obs = g.add_obs_data(vec![2.5, 5.0, 7.5]);
+        g.normal_obs_logp(mu, one, obs);
+
+        let mut full = Evaluator::new(&g);
+        full.compute(&g, &[0.7]);
+        let mut forward = Evaluator::new(&g);
+        forward.forward(&g, &[0.7]);
+        assert_eq!(forward.total_logp, full.total_logp);
+        for i in 0..3 {
+            assert_eq!(forward.vec_elem(mu, i, &g), full.vec_elem(mu, i, &g));
+        }
+        // No reverse pass ran, so the gradient buffer is untouched.
+        assert_eq!(forward.grad, vec![0.0]);
+        assert_ne!(full.grad, vec![0.0]);
     }
 
     #[test]

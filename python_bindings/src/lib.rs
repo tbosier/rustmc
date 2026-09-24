@@ -1084,7 +1084,7 @@ fn pointwise_log_likelihood_for_draw(
     heads: &[rustmc_core::graph::ObservationHead],
 ) -> PyResult<Vec<Vec<f64>>> {
     let mut evaluator = Evaluator::new(graph);
-    evaluator.compute(graph, raw_draw);
+    evaluator.forward(graph, raw_draw);
 
     heads
         .iter()
@@ -1284,7 +1284,7 @@ impl FitResult {
 
         for &(chain_idx, draw_idx) in coordinates {
             let position = posterior_position(&self.raw_result, graph, chain_idx, draw_idx);
-            evaluator.compute(graph, &position);
+            evaluator.forward(graph, &position);
             for (li, head) in heads.iter().enumerate() {
                 for i in 0..head.n_obs {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
@@ -1505,7 +1505,7 @@ impl FitResult {
                 for draw_idx in 0..chain.len() {
                     let position =
                         posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
-                    evaluator.compute(&graph, &position);
+                    evaluator.forward(&graph, &position);
                     // Same standard the prior predictive holds deterministics
                     // to, and the same one `sampler` holds the parameters to:
                     // a nonfinite value is a failed computation, not a result.

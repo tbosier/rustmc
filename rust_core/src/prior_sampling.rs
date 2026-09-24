@@ -358,7 +358,7 @@ pub fn prior_predictive<R: Rng + ?Sized>(
         }
 
         // Forward pass to get predictions
-        evaluator.compute(graph, &draw.raw);
+        evaluator.forward(graph, &draw.raw);
         // `sample_prior_draw` has already refused a nonfinite parameter, but a
         // representable draw can still push a deterministic out of range -- a
         // finite `alpha` with an `alpha.exp()` deterministic is enough. A

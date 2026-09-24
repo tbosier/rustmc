@@ -1693,7 +1693,7 @@ impl ModelFit {
                         .collect::<Vec<_>>();
                     &reconstructed
                 };
-                evaluator.compute(&prediction_graph, position);
+                evaluator.forward(&prediction_graph, position);
                 for (i, head) in heads.iter().enumerate() {
                     let aux = head.aux.map(|n| evaluator.scalar_at(n));
                     let mut observations = Vec::with_capacity(head.n_obs);

@@ -170,6 +170,7 @@ pub(crate) fn run_chain_with_evaluator(
     let mut mass = MassMatrix::from_graph(graph);
     let mut mass_acc = MassMatrixAccumulator::from_graph(graph);
     let mut scratch = vec![0.0f64; dim];
+    let mut pool = PointPool::new(dim);
     let mut w_count = 0usize;
 
     // --- Windowed warmup schedule (Stan defaults) ---
@@ -230,9 +231,9 @@ pub(crate) fn run_chain_with_evaluator(
             &mass,
             h0,
             config.max_tree_depth,
-            dim,
             rng,
             &mut scratch,
+            &mut pool,
         );
 
         if evaluator.has_failed() {
@@ -243,6 +244,7 @@ pub(crate) fn run_chain_with_evaluator(
         // divergence terminates trajectory construction, but does not
         // invalidate a candidate selected from the valid trajectory prefix.
         update_current(&mut current, &proposal);
+        pool.give(proposal);
 
         let accept_stat = tree_stats.mean_accept_prob;
         // Retain warmup telemetry, but report posterior-draw diagnostics only.
@@ -367,12 +369,64 @@ fn update_current(current: &mut PhasePoint, proposal: &PhasePoint) {
     current.logp = proposal.logp;
 }
 
+/// Recycled phase points for tree construction.
+///
+/// A trajectory of depth `j` holds a bounded number of live points (the
+/// endpoints and proposal of each subtree on the recursion stack), so once
+/// the pool has grown to that size tree building stops allocating: every
+/// point a merge discards goes back here and is overwritten by the next
+/// leapfrog step.
+struct PointPool {
+    dim: usize,
+    free: Vec<PhasePoint>,
+}
+
+impl PointPool {
+    fn new(dim: usize) -> Self {
+        Self {
+            dim,
+            free: Vec::new(),
+        }
+    }
+
+    fn take(&mut self) -> PhasePoint {
+        self.free.pop().unwrap_or_else(|| PhasePoint {
+            q: vec![0.0; self.dim],
+            p: vec![0.0; self.dim],
+            grad: vec![0.0; self.dim],
+            logp: 0.0,
+        })
+    }
+
+    fn copy_of(&mut self, source: &PhasePoint) -> PhasePoint {
+        let mut point = self.take();
+        point.q.copy_from_slice(&source.q);
+        point.p.copy_from_slice(&source.p);
+        point.grad.copy_from_slice(&source.grad);
+        point.logp = source.logp;
+        point
+    }
+
+    fn give(&mut self, point: PhasePoint) {
+        self.free.push(point);
+    }
+
+    fn give_tree(&mut self, tree: TreeResult) {
+        self.give(tree.left);
+        self.give(tree.right);
+        self.give(tree.proposal);
+    }
+}
+
 /// Build the NUTS tree iteratively by doubling depth.
 ///
 /// At each depth j, the tree has 2^j leaves. We randomly choose to extend
 /// the trajectory forward (+ε) or backward (-ε). After extending, we check
 /// the endpoint-momentum U-turn criterion across the full tree. If a U-turn is
 /// detected or a divergence occurs, we stop and return the current candidate.
+///
+/// The returned proposal is a pooled point; the caller hands it back to
+/// `pool` once it has copied what it needs.
 // NUTS tree construction passes explicit state and reusable buffers on its hot path.
 #[allow(clippy::too_many_arguments)]
 fn build_tree_iterative(
@@ -383,13 +437,13 @@ fn build_tree_iterative(
     mass: &MassMatrix,
     h0: f64,
     max_depth: usize,
-    dim: usize,
     rng: &mut ChaCha8Rng,
     scratch: &mut [f64],
+    pool: &mut PointPool,
 ) -> (PhasePoint, TreeStats) {
-    let mut left = initial.clone();
-    let mut right = initial.clone();
-    let mut proposal = initial.clone();
+    let mut left = pool.copy_of(initial);
+    let mut right = pool.copy_of(initial);
+    let mut proposal = pool.copy_of(initial);
     let mut log_sum_weight = 0.0f64; // log(exp(-H(initial))) normalized
     let mut depth = 0;
     let mut n_leapfrog_total = 0;
@@ -403,11 +457,11 @@ fn build_tree_iterative(
 
         let subtree = if direction > 0.0 {
             build_subtree(
-                graph, evaluator, &right, eps, mass, h0, depth, dim, rng, scratch,
+                graph, evaluator, &right, eps, mass, h0, depth, rng, scratch, pool,
             )
         } else {
             build_subtree(
-                graph, evaluator, &left, -eps, mass, h0, depth, dim, rng, scratch,
+                graph, evaluator, &left, -eps, mass, h0, depth, rng, scratch, pool,
             )
         };
 
@@ -419,10 +473,12 @@ fn build_tree_iterative(
 
         if subtree.diverging {
             diverging = true;
+            pool.give_tree(subtree);
             break;
         }
 
         if subtree.turning {
+            pool.give_tree(subtree);
             break;
         }
 
@@ -431,17 +487,28 @@ fn build_tree_iterative(
         // normalized selection used while recursively merging equal-depth
         // halves below.
         let accept_prob = progressive_selection_prob(subtree.log_sum_weight, log_sum_weight);
+        let TreeResult {
+            left: sub_left,
+            right: sub_right,
+            proposal: sub_proposal,
+            log_sum_weight: sub_log_sum_weight,
+            ..
+        } = subtree;
         if rng.gen::<f64>() < accept_prob {
-            proposal = subtree.proposal;
+            pool.give(std::mem::replace(&mut proposal, sub_proposal));
+        } else {
+            pool.give(sub_proposal);
         }
 
-        log_sum_weight = log_sum_exp(log_sum_weight, subtree.log_sum_weight);
+        log_sum_weight = log_sum_exp(log_sum_weight, sub_log_sum_weight);
 
         // Update tree boundaries
         if direction > 0.0 {
-            right = subtree.right;
+            pool.give(std::mem::replace(&mut right, sub_right));
+            pool.give(sub_left);
         } else {
-            left = subtree.left;
+            pool.give(std::mem::replace(&mut left, sub_left));
+            pool.give(sub_right);
         }
 
         // Check U-turn across the full tree
@@ -449,6 +516,8 @@ fn build_tree_iterative(
             break;
         }
     }
+    pool.give(left);
+    pool.give(right);
 
     let mean_accept = if n_accept_stat > 0 {
         (sum_accept_stat / n_accept_stat as f64).min(1.0)
@@ -483,13 +552,14 @@ fn build_subtree(
     mass: &MassMatrix,
     h0: f64,
     depth: usize,
-    dim: usize,
     rng: &mut ChaCha8Rng,
     scratch: &mut [f64],
+    pool: &mut PointPool,
 ) -> TreeResult {
     if depth == 0 {
         // Base case: single leapfrog step
-        let next = leapfrog(graph, evaluator, point, eps, mass, dim, scratch);
+        let mut next = pool.take();
+        leapfrog(graph, evaluator, point, eps, mass, &mut next, scratch);
         let h_new = next.energy(mass, scratch);
         let delta_h = h_new - h0;
         let diverging = delta_h > MAX_DELTA_H || !delta_h.is_finite();
@@ -501,8 +571,8 @@ fn build_subtree(
         };
 
         return TreeResult {
-            left: next.clone(),
-            right: next.clone(),
+            left: pool.copy_of(&next),
+            right: pool.copy_of(&next),
             proposal: next,
             log_sum_weight: log_weight,
             n_leapfrog: 1,
@@ -522,9 +592,9 @@ fn build_subtree(
         mass,
         h0,
         depth - 1,
-        dim,
         rng,
         scratch,
+        pool,
     );
     if inner.diverging || inner.turning {
         return inner;
@@ -540,22 +610,24 @@ fn build_subtree(
         mass,
         h0,
         depth - 1,
-        dim,
         rng,
         scratch,
+        pool,
     );
 
+    let n_leapfrog = inner.n_leapfrog + outer.n_leapfrog;
+    let sum_accept_prob = inner.sum_accept_prob + outer.sum_accept_prob;
+    let n_accept_prob = inner.n_accept_prob + outer.n_accept_prob;
+
     if outer.diverging {
+        pool.give_tree(outer);
         return TreeResult {
-            left: inner.left,
-            right: inner.right,
-            proposal: inner.proposal,
-            log_sum_weight: inner.log_sum_weight,
-            n_leapfrog: inner.n_leapfrog + outer.n_leapfrog,
+            n_leapfrog,
             turning: false,
             diverging: true,
-            sum_accept_prob: inner.sum_accept_prob + outer.sum_accept_prob,
-            n_accept_prob: inner.n_accept_prob + outer.n_accept_prob,
+            sum_accept_prob,
+            n_accept_prob,
+            ..inner
         };
     }
 
@@ -563,15 +635,21 @@ fn build_subtree(
     let log_sum = log_sum_exp(inner.log_sum_weight, outer.log_sum_weight);
     let accept_outer = normalized_selection_prob(outer.log_sum_weight, log_sum);
     let proposal = if rng.gen::<f64>() < accept_outer {
+        pool.give(inner.proposal);
         outer.proposal
     } else {
+        pool.give(outer.proposal);
         inner.proposal
     };
 
     // Merge boundaries: inner is "closer" to start, outer is "farther"
     let (left, right) = if eps > 0.0 {
+        pool.give(inner.right);
+        pool.give(outer.left);
         (inner.left, outer.right)
     } else {
+        pool.give(inner.left);
+        pool.give(outer.right);
         (outer.left, inner.right)
     };
 
@@ -583,55 +661,43 @@ fn build_subtree(
         right,
         proposal,
         log_sum_weight: log_sum,
-        n_leapfrog: inner.n_leapfrog + outer.n_leapfrog,
+        n_leapfrog,
         turning,
         diverging: false,
-        sum_accept_prob: inner.sum_accept_prob + outer.sum_accept_prob,
-        n_accept_prob: inner.n_accept_prob + outer.n_accept_prob,
+        sum_accept_prob,
+        n_accept_prob,
     }
 }
 
-/// Single leapfrog step (half-step momentum, full-step position, half-step momentum).
+/// Single leapfrog step (half-step momentum, full-step position, half-step
+/// momentum) from `point` into `out`, without allocating.
 fn leapfrog(
     graph: &Graph,
     evaluator: &mut impl GradientEvaluator,
     point: &PhasePoint,
     eps: f64,
     mass: &MassMatrix,
-    dim: usize,
+    out: &mut PhasePoint,
     scratch: &mut [f64],
-) -> PhasePoint {
-    let mut p_new = vec![0.0; dim];
-    let mut q_new = vec![0.0; dim];
-
+) {
     // Half step momentum
-    for ((momentum, &old_momentum), &gradient) in p_new
-        .iter_mut()
-        .zip(point.p.iter())
-        .zip(point.grad.iter())
-        .take(dim)
+    for ((momentum, &old_momentum), &gradient) in
+        out.p.iter_mut().zip(point.p.iter()).zip(point.grad.iter())
     {
         *momentum = old_momentum + 0.5 * eps * gradient;
     }
     // Full step position
-    mass.velocity_into(&p_new, &mut q_new, scratch);
-    for (position, &old_position) in q_new.iter_mut().zip(point.q.iter()).take(dim) {
+    mass.velocity_into(&out.p, &mut out.q, scratch);
+    for (position, &old_position) in out.q.iter_mut().zip(point.q.iter()) {
         *position = old_position + eps * *position;
     }
     // Evaluate gradient at new position
-    evaluator.compute(graph, &q_new);
-    let logp_new = evaluator.log_density();
-    let grad_new = evaluator.gradient().to_vec();
+    evaluator.compute(graph, &out.q);
+    out.logp = evaluator.log_density();
+    out.grad.copy_from_slice(evaluator.gradient());
     // Half step momentum
-    for i in 0..dim {
-        p_new[i] += 0.5 * eps * grad_new[i];
-    }
-
-    PhasePoint {
-        q: q_new,
-        p: p_new,
-        grad: grad_new,
-        logp: logp_new,
+    for (momentum, &gradient) in out.p.iter_mut().zip(out.grad.iter()) {
+        *momentum += 0.5 * eps * gradient;
     }
 }
 
@@ -701,7 +767,16 @@ fn find_initial_step_size(
         logp: logp0,
     };
 
-    let test = leapfrog(graph, evaluator, &initial_point, eps, mass, dim, scratch);
+    let mut test = initial_point.clone();
+    leapfrog(
+        graph,
+        evaluator,
+        &initial_point,
+        eps,
+        mass,
+        &mut test,
+        scratch,
+    );
     let h0 = initial_point.energy(mass, scratch);
     let h1 = test.energy(mass, scratch);
     let log_ratio = h0 - h1;
@@ -710,8 +785,16 @@ fn find_initial_step_size(
     let direction = if log_ratio > log_half { 1.0 } else { -1.0 };
 
     for _ in 0..50 {
-        let t = leapfrog(graph, evaluator, &initial_point, eps, mass, dim, scratch);
-        let lr = h0 - t.energy(mass, scratch);
+        leapfrog(
+            graph,
+            evaluator,
+            &initial_point,
+            eps,
+            mass,
+            &mut test,
+            scratch,
+        );
+        let lr = h0 - test.energy(mass, scratch);
         if !lr.is_finite() {
             eps *= 0.5;
             break;
@@ -925,9 +1008,9 @@ mod tests {
                         &mass,
                         h0,
                         1,
-                        1,
                         &mut rng,
                         &mut scratch,
+                        &mut PointPool::new(1),
                     );
                     assert_eq!(tree.n_accept_prob, 2);
                     assert!(tree.sum_accept_prob >= 0.0 && tree.sum_accept_prob <= 2.0);
@@ -1003,9 +1086,9 @@ mod tests {
             &mass,
             h0,
             8,
-            2,
             &mut rng,
             &mut scratch,
+            &mut PointPool::new(2),
         );
 
         assert!(stats.diverging);

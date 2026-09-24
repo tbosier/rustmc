@@ -187,6 +187,13 @@ pub(crate) fn run_chain_with_evaluator(
     let mut h_bar = 0.0f64;
     let mut adapt_count = 0u64;
 
+    // The density and gradient at the current position are cached across
+    // iterations: a rejected proposal leaves them unchanged and an accepted
+    // one already evaluated them at its endpoint.
+    evaluator.compute(graph, &q);
+    let mut logp_current = evaluator.log_density();
+    let mut grad_current = evaluator.gradient().to_vec();
+
     'iterations: for iter in 0..total_iters {
         if evaluator.has_failed() {
             break;
@@ -194,20 +201,13 @@ pub(crate) fn run_chain_with_evaluator(
         let is_warmup = iter < config.num_warmup;
         let step_size_used = step_size;
 
-        evaluator.compute(graph, &q);
-        if evaluator.has_failed() {
-            break;
-        }
-        let logp_current = evaluator.log_density();
-        grad.copy_from_slice(evaluator.gradient());
-
         mass.sample_momentum_into(rng, &mut p, &mut scratch);
 
         q_prop.copy_from_slice(&q);
         p_prop.copy_from_slice(&p);
 
         for i in 0..dim {
-            p_prop[i] += 0.5 * step_size * grad[i];
+            p_prop[i] += 0.5 * step_size * grad_current[i];
         }
 
         for step in 0..config.num_leapfrog_steps {
@@ -250,6 +250,8 @@ pub(crate) fn run_chain_with_evaluator(
         let mut accepted_transition = false;
         if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
+            grad_current.copy_from_slice(&grad);
+            logp_current = logp_prop;
             accepted_transition = true;
         }
 
