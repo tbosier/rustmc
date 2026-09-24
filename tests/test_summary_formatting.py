@@ -106,3 +106,24 @@ def test_summary_columns_are_sized_to_their_contents(rustmc_module):
             + [cell.rjust(width) for cell, width in zip(row[1:], widths[1:])]
         )
         assert source == rendered, f"row is not laid out as expected:\n{source!r}\n{rendered!r}"
+
+
+def test_graph_diagnostics_report_unavailable_values_as_none(rustmc_module):
+    # One chain of three draws has no R-hat, ESS or MCSE. Graph fits export
+    # those as None, as the forecasting fits do, rather than as NaN.
+    rmc = rustmc_module
+    builder = rmc.ModelBuilder(data={"y": np.array([1.0, 2.0])})
+    m = builder.normal_prior("m", 0.0, 1.0)
+    builder.normal_likelihood("obs", m, 1.0, "y")
+    fit = rmc.sample(builder.build(), chains=1, draws=3, warmup=5, show_progress=False)
+    cell = builder.compile().sample_batch(
+        [{"y": np.array([1.0, 2.0])}], chains=1, draws=3, warmup=5, show_progress=False
+    )[0]
+    for rows in (fit.diagnostics(), cell.diagnostics()):
+        (row,) = rows
+        assert row["name"] == "m"
+        assert np.isfinite(row["mean"]) and np.isfinite(row["std"])
+        for key in ("ess_bulk", "ess_tail", "r_hat", "mcse_mean"):
+            assert row[key] is None, (key, row[key])
+    # The table still renders the unavailable values.
+    assert "NaN" in fit.summary()

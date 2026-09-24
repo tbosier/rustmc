@@ -56,30 +56,16 @@ pub(crate) fn samples_by_chain<'py>(
     Ok(dict)
 }
 
+/// Per-parameter diagnostics, one dict per parameter.
+///
+/// A value the draws cannot support (R-hat or ESS from too few draws, say)
+/// is `None`, through the same conversion the forecasting fits use, so
+/// every fit reports unavailable diagnostics alike.
 pub(crate) fn diagnostics<'py>(
     sample: &SampleResult,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyList>> {
-    let report = sample.diagnostics();
-    let items: Vec<Bound<'py, PyDict>> = report
-        .params
-        .iter()
-        .map(|p| {
-            let d = PyDict::new(py);
-            d.set_item("name", &p.name).unwrap();
-            d.set_item("mean", p.mean).unwrap();
-            d.set_item("std", p.std).unwrap();
-            d.set_item("hdi_3%", p.hdi_3).unwrap();
-            d.set_item("hdi_97%", p.hdi_97).unwrap();
-            d.set_item("ess_bulk", p.ess_bulk).unwrap();
-            d.set_item("ess_tail", p.ess_tail).unwrap();
-            d.set_item("r_hat", p.r_hat).unwrap();
-            d.set_item("mcse_mean", p.mcse_mean).unwrap();
-            d
-        })
-        .collect();
-    let list = PyList::new(py, &items)?;
-    Ok(list)
+    crate::forecast_diagnostics::diagnostics_list(py, &sample.diagnostics())
 }
 
 pub(crate) fn transition_diagnostics<'py>(
