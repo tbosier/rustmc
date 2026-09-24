@@ -43,11 +43,13 @@ jobs:
       - name: Read rust-version
         id: msrv
         run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' rust_core/Cargo.toml)" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master branch, 2026-09-24
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build -p rustmc_core --locked
+      # --all-targets so the tests, examples and benches rustmc_core ships are held
+      # to the same toolchain as the library.
+      - run: cargo check -p rustmc_core --all-targets --locked
 
   python-source-install:
     name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
@@ -237,28 +239,31 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  # crates.io first, then PyPI, from the same tag. Nothing technical forces the
-  # order (the wheels and sdist carry rustmc_core's source), but publishing one
-  # registry by hand and the other from CI is how a version ends up on only one
-  # of them. The crate goes first because `cargo publish` builds the packaged crate
-  # once more before uploading, so a failure there stops the release before
-  # anything is public.
-  # If the PyPI job fails after the crate published, re-run that failed job
-  # alone; re-running publish-crate fails, since the version already exists.
+  # crates.io first, then PyPI, then the documentation site, from the same tag.
+  # Nothing technical forces the order (the wheels and sdist carry rustmc_core's
+  # source), but publishing one registry by hand and the other from CI is how a
+  # version ends up on only one of them. The crate goes first because packaging
+  # it builds it once more, so a failure there stops the release before anything
+  # is public. If a later job fails, re-run that job alone: re-running
+  # publish-crate fails, since the version already exists on crates.io.
   publish-crate:
     name: Publish rustmc_core to crates.io
     needs: [build, sdist, msrv]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Configure required reviewers on this environment in the repository
-    # settings; CARGO_REGISTRY_TOKEN is an environment secret (docs/releasing.md).
+    # The release's one approval gate: required reviewers on this environment
+    # hold every publish job below. CARGO_REGISTRY_TOKEN is an environment
+    # secret (docs/releasing.md).
     environment: crates-io
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable branch, 2026-09-24
       - name: Verify the tag matches the manifests
         run: python3 scripts/verify_version.py
-      - run: cargo publish -p rustmc_core --locked
+      # Verify (which runs dependency build scripts) without the token in the
+      # environment, then upload the already-verified crate with it.
+      - run: cargo package -p rustmc_core --locked
+      - run: cargo publish -p rustmc_core --locked --no-verify
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -267,8 +272,10 @@ jobs:
     needs: [build, sdist, publish-crate]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    # Required reviewers on this environment gate every upload; PyPI's trusted
-    # publisher entry can also be restricted to it (docs/releasing.md).
+    # PyPI's trusted-publisher entry is restricted to this environment. It
+    # carries no required reviewers of its own: publish-crate's approval already
+    # gates this job, and a second approval declined after the crate uploaded
+    # would leave the version on crates.io only (docs/releasing.md).
     environment: pypi
     permissions:
       id-token: write
@@ -280,3 +287,16 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
+          # A re-run after a partial upload re-sends identical files from this
+          # run's artifacts; skip those instead of failing on them.
+          skip-existing: true
+
+  docs:
+    name: Deploy documentation
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    uses: ./.github/workflows/docs.yml
+    with:
+      deploy: true

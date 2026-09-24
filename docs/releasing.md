@@ -36,18 +36,23 @@ The source archive is likewise installed and tested before upload. Pull requests
 these same native artifact checks before merge. Publishing remains restricted to
 matching release tags.
 
-Once every check passes, two jobs publish, in this order:
+Once every check passes, three jobs run, in this order, each only if the one before
+it succeeded:
 
-1. `publish-crate` runs `cargo publish -p rustmc_core --locked`, which packages and
-   builds the crate once more before uploading it to crates.io.
-2. `publish` uploads the verified wheels and source archive to PyPI. It runs only
-   after `publish-crate` succeeded, so a Python release never goes out without its
-   Rust crate.
+1. `publish-crate` packages and builds `rustmc_core` once more with
+   `cargo package`, then uploads that crate to crates.io with
+   `cargo publish --no-verify`, so dependency build scripts never run with the
+   registry token in their environment.
+2. `publish` uploads the verified wheels and source archive to PyPI, so a Python
+   release never goes out without its Rust crate.
+3. `docs` deploys the documentation site from the tag (`.github/workflows/docs.yml`),
+   so the site describes the version that was just released.
 
 Registry releases are immutable, so inspect package contents and test the final
-revision before tagging. If `publish` fails after `publish-crate` succeeded, fix the
-cause and re-run only the failed job; re-running `publish-crate` fails because the
-version already exists on crates.io. See
+revision before tagging. If a later job fails after `publish-crate` succeeded, fix
+the cause and re-run only that job; re-running `publish-crate` fails because the
+version already exists on crates.io. `publish` skips files PyPI already holds, so it
+can be re-run after a partial upload. See
 [Cargo's publishing guide](https://doc.rust-lang.org/cargo/reference/publishing.html).
 
 Release builds use CPython 3.11 and retain the `cp39-abi3` compatibility tag. Native
@@ -70,23 +75,25 @@ a missing environment creates it without protection:
 - `crates-io`: add required reviewers, restrict deployments to `v*` tags, and add a
   `CARGO_REGISTRY_TOKEN` environment secret holding a crates.io API token scoped to
   `publish-update` for `rustmc_core` only. `publish-crate` reads nothing else.
-- `pypi`: add required reviewers and restrict deployments to `v*` tags. `publish`
-  uses PyPI trusted publishing through `pypa/gh-action-pypi-publish`, with
-  job-scoped `id-token: write` and no API token. Add `pypi` as the environment in
-  the project's trusted-publisher entry on PyPI so uploads are accepted only from
-  this job; see
+- `pypi`: restrict deployments to `v*` tags. `publish` uses PyPI trusted publishing
+  through `pypa/gh-action-pypi-publish`, with job-scoped `id-token: write` and no API
+  token. Add `pypi` as the environment in the project's trusted-publisher entry on
+  PyPI so uploads are accepted only from this job; see
   [PyPI's trusted publishing guide](https://docs.pypi.org/trusted-publishers/using-a-publisher/).
 
-With required reviewers in place, each publish job waits for approval, so pushing a
-tag alone does not publish anything. The third-party actions on the release path
+The required reviewers on `crates-io` are the release's single approval: `publish`
+and `docs` run only after `publish-crate`, so pushing a tag publishes nothing, the
+site included, until a reviewer approves. Do not also add required reviewers to
+`pypi`. A second approval that is declined or times out after the crate uploaded
+leaves the version on crates.io only, which is the split this workflow exists to
+prevent. The third-party actions on the release path
 (`PyO3/maturin-action`, `pypa/gh-action-pypi-publish`, and `dtolnay/rust-toolchain`
 in the source-archive and crate jobs) are pinned to full commit SHAs; update a pin by
 resolving the new tag to its commit, not by editing the version comment alone.
 
-The same tag deploys the documentation site (`.github/workflows/docs.yml`), so the
-site describes the version that was just released. Pushes to `main` and pull requests
-build the site without deploying it; to redeploy, run that workflow by hand on the
-release tag.
+Pushes to `main` and pull requests build the documentation site without deploying
+it. To redeploy the site, run the Docs workflow by hand and choose the release tag;
+it refuses to deploy from any ref that is not a `v*` tag.
 
 A green build is not itself evidence that publishing succeeded: verify both registry
 versions and install the published distribution before reporting the release complete.
