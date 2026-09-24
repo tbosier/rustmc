@@ -118,9 +118,9 @@ def test_large_sparse_totals_and_oversized_calendar_are_safe():
         [10**10, 10**10], draws=10, chains=1,
     )
     assert (fit.ultimate_samples == 10**10).all()
-    with pytest.raises(ValueError, match="allocation"):
+    with pytest.raises(ValueError, match="safety limit"):
         fit.calendar_samples(2**61)
-    with pytest.raises(ValueError, match="allocation"):
+    with pytest.raises(ValueError, match="safety limit"):
         rustmc.DirichletMultinomialRunoff([1, 1]).fit(
             np.array([[0., np.nan]]), [0], 0, [1], draws=10**9,
         )
