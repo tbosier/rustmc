@@ -509,7 +509,6 @@ pub fn fit(
                 q: priors.iter().map(|p| p.initial()).collect(),
                 r: config.observation_variance.initial(),
                 lambda: vec![1.0; y.len()],
-                iteration: 0,
             })
         },
         |ChainState {
@@ -517,10 +516,9 @@ pub fn fit(
              q,
              r,
              lambda,
-             iteration,
          },
          rng,
-         _retain| {
+         retain| {
             with_variances(model, q, *r);
             if config.student_df.is_some() {
                 model.set_observation_variances(lambda.iter().map(|l| *r / l).collect())?;
@@ -561,10 +559,6 @@ pub fn fit(
                     }
                 }
             }
-            let this = *iteration;
-            *iteration += 1;
-            let retain = this >= sampling.warmup
-                && (this - sampling.warmup).is_multiple_of(sampling.thinning);
             Ok(retain.then(|| StructuralDraw {
                 variances: q.clone(),
                 observation_variance: *r,
@@ -603,7 +597,6 @@ struct ChainState {
     q: Vec<f64>,
     r: f64,
     lambda: Vec<f64>,
-    iteration: usize,
 }
 
 impl StructuralPosterior {
@@ -947,6 +940,35 @@ mod tests {
     }
     fn covariance(a: &[f64], b: &[f64]) -> f64 {
         a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>() / a.len() as f64 - mean(a) * mean(b)
+    }
+    #[test]
+    fn thinning_keeps_the_last_sweep_of_each_block_like_every_other_sampler() {
+        // With warmup w and thinning k, every Gibbs sampler in the crate keeps
+        // sweeps w + k - 1, w + 2k - 1, ..., ending on the final sweep. A
+        // thinned fit is therefore every k-th draw of the unthinned fit with
+        // the same seed, starting from the (k-1)-th.
+        let mut c = level(0.1, 0.5);
+        c.components[0].innovations[0] = VarianceParameter::InverseGamma {
+            shape: 3.0,
+            scale: 0.2,
+        };
+        let y = [0.3, -0.1, 0.4, f64::NAN, 0.8, 0.5];
+        let mut every = settings(12);
+        every.warmup = 2;
+        every.chains = 2;
+        let mut thinned = every.clone();
+        thinned.draws = 4;
+        thinned.thinning = 3;
+        let all = fit(&y, None, &c, &every).unwrap();
+        let kept = fit(&y, None, &c, &thinned).unwrap();
+        for (all, kept) in all.chains.iter().zip(&kept.chains) {
+            let expected: Vec<_> = [2, 5, 8, 11]
+                .iter()
+                .map(|&index| all[index].variances.clone())
+                .collect();
+            let actual: Vec<_> = kept.iter().map(|draw| draw.variances.clone()).collect();
+            assert_eq!(actual, expected);
+        }
     }
     #[test]
     fn gaussian_posterior_and_joint_forecast_match_independent_kalman_moments() {
