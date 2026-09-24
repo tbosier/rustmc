@@ -1083,8 +1083,9 @@ fn pointwise_log_likelihood_for_draw(
     raw_draw: &[f64],
     heads: &[rustmc_core::graph::ObservationHead],
 ) -> PyResult<Vec<Vec<f64>>> {
-    let mut evaluator = Evaluator::new(graph);
-    evaluator.compute(graph, raw_draw);
+    let mut evaluator =
+        Evaluator::try_new(graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
+    evaluator.forward(graph, raw_draw);
 
     heads
         .iter()
@@ -1276,7 +1277,8 @@ impl FitResult {
         expected: bool,
         rng: &mut ChaCha8Rng,
     ) -> PyResult<Vec<Vec<f64>>> {
-        let mut evaluator = Evaluator::new(graph);
+        let mut evaluator =
+            Evaluator::try_new(graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
         let mut preds: Vec<Vec<f64>> = heads
             .iter()
             .map(|head| Vec::with_capacity(coordinates.len() * head.n_obs))
@@ -1284,7 +1286,7 @@ impl FitResult {
 
         for &(chain_idx, draw_idx) in coordinates {
             let position = posterior_position(&self.raw_result, graph, chain_idx, draw_idx);
-            evaluator.compute(graph, &position);
+            evaluator.forward(graph, &position);
             for (li, head) in heads.iter().enumerate() {
                 for i in 0..head.n_obs {
                     let eta = evaluator.vec_elem(head.linpred, i, graph);
@@ -1494,7 +1496,8 @@ impl FitResult {
         sizes: Option<HashMap<String, usize>>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let graph = prediction_graph(&self.graph, data, sizes)?;
-        let mut evaluator = Evaluator::new(&graph);
+        let mut evaluator =
+            Evaluator::try_new(&graph).map_err(|error| PyValueError::new_err(error.to_string()))?;
         let chains = self.raw_result.samples.len();
         let draws = self.raw_result.samples.first().map_or(0, Vec::len);
         let result = PyDict::new(py);
@@ -1505,7 +1508,7 @@ impl FitResult {
                 for draw_idx in 0..chain.len() {
                     let position =
                         posterior_position(&self.raw_result, &graph, chain_idx, draw_idx);
-                    evaluator.compute(&graph, &position);
+                    evaluator.forward(&graph, &position);
                     // Same standard the prior predictive holds deterministics
                     // to, and the same one `sampler` holds the parameters to:
                     // a nonfinite value is a failed computation, not a result.
@@ -1825,7 +1828,7 @@ impl FitResult {
 }
 
 #[pyfunction]
-#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None))]
+#[pyo3(signature = (model_spec, data=None, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None, metric="auto"))]
 #[allow(clippy::too_many_arguments)]
 fn sample(
     py: Python<'_>,
@@ -1843,7 +1846,9 @@ fn sample(
     num_leapfrog_steps: usize,
     show_progress: bool,
     init: Option<Vec<Vec<f64>>>,
+    metric: &str,
 ) -> PyResult<FitResult> {
+    let metric = parse_metric(metric)?;
     validate_sample_config(
         chains,
         draws,
@@ -1897,6 +1902,7 @@ fn sample(
         seed,
         num_threads: threads,
         show_progress,
+        metric,
     };
 
     let graph_for_predict = compiled.graph.clone();
@@ -2011,7 +2017,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None))]
+    #[pyo3(signature = (data, chains=4, draws=1000, warmup=500, seed=42, threads=0, step_size=0.0, target_accept=0.8, sampler="nuts", max_tree_depth=10, num_leapfrog_steps=15, show_progress=true, init=None, metric="auto"))]
     #[allow(clippy::too_many_arguments)]
     fn sample(
         &self,
@@ -2029,7 +2035,9 @@ impl PyCompiledModel {
         num_leapfrog_steps: usize,
         show_progress: bool,
         init: Option<Vec<Vec<f64>>>,
+        metric: &str,
     ) -> PyResult<FitResult> {
+        let metric = parse_metric(metric)?;
         validate_sample_config(
             chains,
             draws,
@@ -2053,6 +2061,7 @@ impl PyCompiledModel {
             seed,
             num_threads: threads,
             show_progress,
+            metric,
         };
         let hydrated_graph = self.structure.with_binding(&binding);
         let result = py
@@ -2071,7 +2080,7 @@ impl PyCompiledModel {
         })
     }
 
-    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, threads=1, chunk_size=64, errors="raise", seed_policy="cell_id_v1", init=None))]
+    #[pyo3(signature = (datasets, ids=None, shared=None, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, threads=1, chunk_size=64, errors="raise", seed_policy="cell_id_v1", init=None, metric="auto"))]
     #[allow(clippy::too_many_arguments)]
     fn sample_batch(
         &self,
@@ -2094,7 +2103,9 @@ impl PyCompiledModel {
         errors: &str,
         seed_policy: &str,
         init: Option<&Bound<'_, PyDict>>,
+        metric: &str,
     ) -> PyResult<PyBatchFit> {
+        let metric = parse_metric(metric)?;
         validate_sample_config(
             chains,
             draws,
@@ -2226,6 +2237,7 @@ impl PyCompiledModel {
             max_tree_depth,
             seed,
             show_progress,
+            metric,
         };
         let raw = py
             .allow_threads(|| {
@@ -2287,6 +2299,10 @@ impl PyCompiledModel {
             self.required_keys()
         )
     }
+}
+
+fn parse_metric(metric: &str) -> PyResult<sampler::MetricKind> {
+    sampler::MetricKind::parse(metric).map_err(PyValueError::new_err)
 }
 
 fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
@@ -2573,7 +2589,7 @@ impl PyBatchFit {
 /// 1 NUTS chain for throughput, but the batch runner can be configured to use
 /// multiple chains or fixed-step HMC when reliability matters more.
 #[pyfunction]
-#[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true))]
+#[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, metric="auto"))]
 // The Python API intentionally exposes each sampler option as a named argument.
 #[allow(clippy::too_many_arguments)]
 fn batch_sample(
@@ -2589,7 +2605,9 @@ fn batch_sample(
     max_tree_depth: usize,
     num_leapfrog_steps: usize,
     show_progress: bool,
+    metric: &str,
 ) -> PyResult<Vec<BatchResult>> {
+    let metric = parse_metric(metric)?;
     validate_sample_config(
         chains,
         draws,
@@ -2639,6 +2657,7 @@ fn batch_sample(
         max_tree_depth,
         seed,
         show_progress,
+        metric,
     };
 
     let graphs: Vec<Graph> = compiled_models

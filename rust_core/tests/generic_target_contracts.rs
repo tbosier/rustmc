@@ -61,19 +61,27 @@ fn batch_initial_positions_follow_ids_and_collect_invalid_cells() {
         collect_errors: true,
         ..Default::default()
     };
+    // `log(x)` is -inf at and below zero. "a" starts where told, "b" at a
+    // point outside the support, and "c", given nothing, from random starts
+    // the search keeps inside it.
     let result = sample_batch_bound_with_initial(
         Arc::clone(&graph),
         vec![
             ("a".into(), Ok(binding.clone())),
             ("b".into(), Ok(binding.clone())),
+            ("c".into(), Ok(binding.clone())),
         ],
         config.clone(),
         options.clone(),
-        HashMap::from([("a".into(), vec![vec![1.0], vec![2.0]])]),
+        HashMap::from([
+            ("a".into(), vec![vec![1.0], vec![2.0]]),
+            ("b".into(), vec![vec![-1.0], vec![2.0]]),
+        ]),
     )
     .unwrap();
     assert!(result[0].is_ok());
     assert!(result[1].as_ref().unwrap_err().contains("initial"));
+    assert!(result[2].is_ok());
     assert!(sample_batch_bound_with_initial(
         graph,
         vec![("a".into(), Ok(binding))],

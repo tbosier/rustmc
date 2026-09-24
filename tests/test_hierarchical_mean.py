@@ -114,7 +114,10 @@ def test_diagnostics_warn_when_seeded_chains_do_not_converge(rustmc_module):
         chains=4,
         draws=250,
         warmup=100,
-        seed=101,
+        # A seeded run, not a property of every run: with 250 draws about half
+        # of seeds 90-119 trip the warning. 101 stopped doing so when
+        # chain_seed stopped being additive; 91 does.
+        seed=91,
     )
     diagnostics = fit.diagnostics()
     assert any(

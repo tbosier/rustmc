@@ -137,11 +137,114 @@ pub(crate) fn validate_slot_coverage(
     Ok(())
 }
 
+/// Check the references a graph's nodes make before anything indexes by them.
+///
+/// `Graph::nodes` is public and a `NodeId` is an unchecked index, so a
+/// hand-built graph can name a node that comes later (or does not exist), a
+/// parameter past `param_count`, or a node whose id disagrees with its
+/// position. Every pass below indexes per-node buffers by those ids in
+/// declaration order, so each of these is an out-of-bounds read or a value read
+/// before it is computed.
+fn validate_topology(graph: &Graph) -> Result<(), GraphShapeError> {
+    for (position, node) in graph.nodes.iter().enumerate() {
+        if node.id.0 != position {
+            return Err(GraphShapeError::new(format!(
+                "node at position {position} carries id {}",
+                node.id.0
+            )));
+        }
+        let mut later_node = None;
+        let mut bad_span = None;
+        node.op.visit_dependencies(
+            &mut |operand| {
+                if operand.0 >= position {
+                    later_node.get_or_insert(operand.0);
+                }
+            },
+            &mut |start, len| {
+                if start
+                    .checked_add(len)
+                    .is_none_or(|end| end > graph.param_count)
+                {
+                    bad_span.get_or_insert((start, len));
+                }
+            },
+        );
+        if let Some(operand) = later_node {
+            return Err(GraphShapeError::new(format!(
+                "node {position} reads node {operand}, which is not an earlier node"
+            )));
+        }
+        if let Some((start, len)) = bad_span {
+            return Err(GraphShapeError::new(format!(
+                "node {position} reads parameters {start}..{} of {}",
+                start.saturating_add(len),
+                graph.param_count
+            )));
+        }
+    }
+    for id in graph
+        .logp_terms
+        .iter()
+        .chain(graph.deterministics.iter().map(|(_, id)| id))
+    {
+        if id.0 >= graph.nodes.len() {
+            return Err(GraphShapeError::new(format!(
+                "graph output refers to node {}, past the last node",
+                id.0
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The operands `op` reads as scalars (through `scalars[id]`), which must
+/// therefore not be vector-valued nodes.
+fn scalar_operands(op: &Op) -> Vec<NodeId> {
+    match op {
+        Op::Add(a, b) | Op::Mul(a, b) => vec![*a, *b],
+        Op::Exp(a) | Op::Sigmoid(a) => vec![*a],
+        Op::BoundedSigmoid { raw, .. } => vec![*raw],
+        Op::ScalarMulData(scalar, _)
+        | Op::ScalarBroadcastAdd(scalar, _)
+        | Op::ScalarBroadcast(scalar)
+        | Op::BroadcastObservation { scalar, .. } => vec![*scalar],
+        Op::NormalLogP { x, mu, sigma } => vec![*x, *mu, *sigma],
+        Op::LogHalfNormalLogP { x, sigma } => vec![*x, *sigma],
+        Op::StudentTLogP { x, nu, mu, sigma } => vec![*x, *nu, *mu, *sigma],
+        Op::PositiveSupport { x } => vec![*x],
+        Op::BernoulliLogP { x, p } => vec![*x, *p],
+        Op::PoissonLogP { x, lam } => vec![*x, *lam],
+        Op::LogGammaLogP { x, alpha, beta } => vec![*x, *alpha, *beta],
+        Op::ObsLogP { aux, .. } => aux.iter().copied().collect(),
+        Op::FusedLinearMu {
+            param_nodes,
+            intercept,
+            ..
+        } => param_nodes.iter().chain(intercept).copied().collect(),
+        Op::MatVecMul { intercept, .. } => intercept.iter().copied().collect(),
+        Op::Elementwise { .. }
+        | Op::Gather { .. }
+        | Op::Sum(_)
+        | Op::Param(_)
+        | Op::Constant(_)
+        | Op::Data(_)
+        | Op::VectorAdd(_, _)
+        | Op::VectorNormalLogP { .. }
+        | Op::VectorHalfNormalLogP { .. }
+        | Op::VectorStudentTLogP { .. }
+        | Op::VectorGammaLogP { .. }
+        | Op::VectorBetaLogP { .. }
+        | Op::VectorUniformLogP { .. } => Vec::new(),
+    }
+}
+
 /// Derive every vector length from its inputs; scalars have length zero.
 pub(crate) fn validate_node_lengths(
     graph: &Graph,
     binding: &DataBinding,
 ) -> Result<Vec<usize>, GraphShapeError> {
+    validate_topology(graph)?;
     let mut output_names: std::collections::HashSet<&str> =
         graph.param_names.iter().map(String::as_str).collect();
     for name in graph
@@ -361,8 +464,44 @@ pub(crate) fn validate_node_lengths(
             | Op::VectorBetaLogP { .. }
             | Op::VectorUniformLogP { .. } => None,
         };
+        // A vector-producing op with no elements would be stored as a scalar
+        // and reach the evaluator's unreachable vector arms.
+        let produces_vector = matches!(
+            node.op,
+            Op::Gather { .. }
+                | Op::BroadcastObservation { .. }
+                | Op::ScalarMulData(_, _)
+                | Op::VectorAdd(_, _)
+                | Op::ScalarBroadcastAdd(_, _)
+                | Op::ScalarBroadcast(_)
+                | Op::FusedLinearMu { .. }
+                | Op::MatVecMul { .. }
+        );
+        if produces_vector && len == 0 {
+            return Err(GraphShapeError::new(format!(
+                "vector operation at node {} has no elements",
+                node.id.0
+            )));
+        }
+        if let Some(operand) = scalar_operands(&node.op)
+            .into_iter()
+            .find(|operand| lengths[operand.0] != 0)
+        {
+            return Err(GraphShapeError::new(format!(
+                "node {} reads node {} as a scalar, but it is a vector of length {}",
+                node.id.0, operand.0, lengths[operand.0]
+            )));
+        }
         dimensions.push(dimension);
         lengths.push(len);
+    }
+    // The total log density sums node scalars, so a vector-valued term would
+    // silently contribute nothing.
+    if let Some(term) = graph.logp_terms.iter().find(|term| lengths[term.0] != 0) {
+        return Err(GraphShapeError::new(format!(
+            "log-density term node {} is a vector of length {}; sum it first",
+            term.0, lengths[term.0]
+        )));
     }
     Ok(lengths)
 }
@@ -425,10 +564,20 @@ impl Evaluator {
         })
     }
 
+    /// [`Self::try_new`] for graphs already known to be valid.
+    ///
+    /// # Panics
+    ///
+    /// If the graph fails shape validation; library code uses `try_new`.
     pub fn new(graph: &Graph) -> Self {
         Self::try_new(graph).expect("graph shape validation failed")
     }
 
+    /// [`Self::try_with_binding`] for bindings already known to match.
+    ///
+    /// # Panics
+    ///
+    /// If the binding does not match the structure.
     pub fn with_binding(graph: &Graph, binding: DataBinding) -> Self {
         Self::try_with_binding(graph, binding).expect("validated binding does not match structure")
     }
@@ -448,7 +597,7 @@ impl Evaluator {
     /// Read a vector element from either a Data node (graph reference) or
     /// a computed-vector node (vec_buf).
     #[inline(always)]
-    fn read_vec(&self, node_id: usize, i: usize, _graph: &Graph) -> f64 {
+    fn read_vec(&self, node_id: usize, i: usize) -> f64 {
         match self.node_kind[node_id] {
             NodeKind::DataRef(di) => self.binding.vectors[di][i],
             NodeKind::ComputedVec(off) => self.vec_buf[off + i],
@@ -473,14 +622,25 @@ impl Evaluator {
     }
 
     /// Read the i-th element of a vector node after `compute()`.
-    pub fn vec_elem(&self, node: NodeId, i: usize, graph: &Graph) -> f64 {
-        self.read_vec(node.0, i, graph)
+    ///
+    /// The evaluator owns every value it reads, so `_graph` is unused; it is
+    /// kept so existing callers need not change.
+    pub fn vec_elem(&self, node: NodeId, i: usize, _graph: &Graph) -> f64 {
+        self.read_vec(node.0, i)
     }
 
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
-        // === Forward pass ===
+        self.forward(graph, params);
+        self.backward(graph, params);
+    }
+
+    /// Evaluate node values and `self.total_logp` without the reverse pass.
+    ///
+    /// For callers that only read forward values (prediction, deterministic
+    /// outputs); `self.grad` is left as it was.
+    pub fn forward(&mut self, graph: &Graph, params: &[f64]) {
         for node in &graph.nodes {
             let idx = node.id.0;
             // The one match over `Op` here that keeps its catch-all. Unlike the
@@ -497,8 +657,8 @@ impl Evaluator {
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
-                        let av = self.read_vec(a.0, i, graph);
-                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let av = self.read_vec(a.0, i);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
                         let value = operator.value(av, bv);
                         match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.vec_buf[off + i] = value,
@@ -515,13 +675,13 @@ impl Evaluator {
                         unreachable!()
                     };
                     for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        let k = *param_start + self.read_vec(indices.0, i) as usize;
                         self.vec_buf[off + i] = graph.param_transforms[k].apply(params[k]);
                     }
                 }
                 Op::Sum(a) => {
                     self.scalars[idx] = (0..self.node_lengths[a.0].max(1))
-                        .map(|i| self.read_vec(a.0, i, graph))
+                        .map(|i| self.read_vec(a.0, i))
                         .sum()
                 }
                 Op::BroadcastObservation { scalar, .. } => {
@@ -547,7 +707,7 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let d = self.read_vec(data.0, i, graph);
+                        let d = self.read_vec(data.0, i);
                         self.vec_buf[out_off + i] = s * d;
                     }
                 }
@@ -557,8 +717,8 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let va = self.read_vec(a.0, i, graph);
-                        let vb = self.read_vec(b.0, i, graph);
+                        let va = self.read_vec(a.0, i);
+                        let vb = self.read_vec(b.0, i);
                         self.vec_buf[out_off + i] = va + vb;
                     }
                 }
@@ -569,7 +729,7 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let v = self.read_vec(vec.0, i, graph);
+                        let v = self.read_vec(vec.0, i);
                         self.vec_buf[out_off + i] = s + v;
                     }
                 }
@@ -633,12 +793,18 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            // As `normal_logp_scalar`: outside the scale's
+                            // support the density is zero, not NaN.
+                            if !scale_is_valid(sv) {
+                                self.scalars[idx] = f64::NEG_INFINITY;
+                                continue;
+                            }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let n = obs.len() as f64;
                             let mut sum_sq = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let d = (y - m) / sv;
                                 sum_sq += d * d;
                             }
@@ -647,7 +813,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::BernoulliLogit => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += bernoulli_logit_logp(y, eta);
                             }
                             self.scalars[idx] = sum;
@@ -655,7 +821,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::PoissonLog => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += crate::count_sampling::log_mass_from_log_rate(y, eta);
                             }
                             self.scalars[idx] = sum;
@@ -663,7 +829,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::ExponentialLog => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += eta - y * eta.exp();
                             }
                             self.scalars[idx] = sum;
@@ -671,12 +837,16 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                self.scalars[idx] = f64::NEG_INFINITY;
+                                continue;
+                            }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let mut sum = 0.0f64;
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
                                 let y = observation;
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let ly = y.ln();
                                 let d = (ly - m) / sv;
                                 sum += log_norm - ly - 0.5 * d * d;
@@ -688,7 +858,7 @@ impl Evaluator {
                             let av = self.scalars[alpha_node.0];
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += crate::negative_binomial::log_mass(y, eta, av);
                             }
                             self.scalars[idx] = sum;
@@ -868,8 +1038,10 @@ impl Evaluator {
 
         // Total log-probability
         self.total_logp = graph.logp_terms.iter().map(|id| self.scalars[id.0]).sum();
+    }
 
-        // === Backward pass ===
+    /// Reverse pass over the values the last [`Self::forward`] left behind.
+    fn backward(&mut self, graph: &Graph, params: &[f64]) {
         // Zero adjoint buffers and gradient
         self.adj_scalars.iter_mut().for_each(|x| *x = 0.0);
         self.adj_vec_buf.iter_mut().for_each(|x| *x = 0.0);
@@ -909,8 +1081,8 @@ impl Evaluator {
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
-                        let av = self.read_vec(a.0, i, graph);
-                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let av = self.read_vec(a.0, i);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
                         let upstream = match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i],
                             _ => a_s,
@@ -939,7 +1111,7 @@ impl Evaluator {
                         unreachable!()
                     };
                     for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        let k = *param_start + self.read_vec(indices.0, i) as usize;
                         self.grad[k] += self.adj_vec_buf[off + i]
                             * graph.param_transforms[k].derivative(params[k]);
                     }
@@ -991,7 +1163,7 @@ impl Evaluator {
                     let mut ds = 0.0f64;
                     for i in 0..vl {
                         let upstream = self.adj_vec_buf[out_off + i];
-                        let d_val = self.read_vec(data.0, i, graph);
+                        let d_val = self.read_vec(data.0, i);
                         ds += upstream * d_val;
                         // Propagate to data's adjoint (only if it's a computed vec)
                         if let NodeKind::ComputedVec(d_off) = self.node_kind[data.0] {
@@ -1043,6 +1215,9 @@ impl Evaluator {
                     let xv = self.scalars[x.0];
                     let mv = self.scalars[mu.0];
                     let sv = self.scalars[sigma.0];
+                    if !scale_is_valid(sv) {
+                        continue;
+                    }
                     let z = (xv - mv) / sv;
                     self.adj_scalars[x.0] += a_s * (-z / sv);
                     self.adj_scalars[mu.0] += a_s * (z / sv);
@@ -1101,6 +1276,9 @@ impl Evaluator {
                         crate::graph::ObsFamily::Normal => {
                             let sigma_node = aux.expect("Normal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                continue;
+                            }
 
                             let mut dsigma = 0.0f64;
 
@@ -1110,7 +1288,7 @@ impl Evaluator {
                             };
 
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let diff = (y - m) / sv;
                                 if let Some(off) = mu_off {
                                     self.adj_vec_buf[off + i] += a_s * (diff / sv);
@@ -1125,7 +1303,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = bernoulli_logit_grad(y, eta);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1138,7 +1316,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = y - eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1151,7 +1329,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = 1.0 - y * eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1161,6 +1339,9 @@ impl Evaluator {
                         crate::graph::ObsFamily::LogNormal => {
                             let sigma_node = aux.expect("LogNormal obs logp requires sigma");
                             let sv = self.scalars[sigma_node.0];
+                            if !scale_is_valid(sv) {
+                                continue;
+                            }
 
                             let mu_off = match self.node_kind[linpred_vec.0] {
                                 NodeKind::ComputedVec(o) => Some(o),
@@ -1170,7 +1351,7 @@ impl Evaluator {
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
                                 let y = observation;
                                 let ly = y.ln();
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let d = (ly - m) / sv;
                                 if let Some(off) = mu_off {
                                     self.adj_vec_buf[off + i] += a_s * (d / sv);
@@ -1188,7 +1369,7 @@ impl Evaluator {
                             };
                             let mut dalpha = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let (deta, da) = crate::negative_binomial::gradients(y, eta, av);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * deta;
@@ -1393,8 +1574,14 @@ mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
+/// Whether `sigma` is a usable scale: finite and strictly positive.
+#[inline]
+fn scale_is_valid(sigma: f64) -> bool {
+    sigma.is_finite() && sigma > 0.0
+}
+
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0 {
+    if !scale_is_valid(sigma) {
         return f64::NEG_INFINITY;
     }
     let z = (x - mu) / sigma;
@@ -1407,6 +1594,9 @@ fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
 mod obs_logp_sums {
 
     pub(super) fn normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        if !super::scale_is_valid(sigma) {
+            return f64::NEG_INFINITY;
+        }
         let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
         let n = obs.len() as f64;
         let sum_sq: f64 = mu
@@ -1442,6 +1632,9 @@ mod obs_logp_sums {
     }
 
     pub(super) fn log_normal_obs_logp_sum(mu: &[f64], sigma: f64, obs: &[f64]) -> f64 {
+        if !super::scale_is_valid(sigma) {
+            return f64::NEG_INFINITY;
+        }
         let log_norm = -0.5 * std::f64::consts::TAU.ln() - sigma.ln();
         mu.iter()
             .zip(obs.iter())
@@ -1694,6 +1887,23 @@ pub fn ln_gamma(x: f64) -> f64 {
 
 /// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
 fn digamma(mut x: f64) -> f64 {
+    // The recurrence below steps x up by one until it reaches 8, which never
+    // terminates for -inf or for x <= -2^53 (where x + 1 == x) and takes |x|
+    // steps for any large negative x. Poles and non-finite arguments have no
+    // value; other negative arguments go through the reflection formula
+    // psi(x) = psi(1 - x) - pi / tan(pi x).
+    if x.is_nan() || x == f64::NEG_INFINITY {
+        return f64::NAN;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    if x <= 0.0 {
+        if x == x.floor() {
+            return f64::NAN;
+        }
+        return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
+    }
     let mut result = 0.0;
     while x < 8.0 {
         result -= 1.0 / x;
@@ -1741,6 +1951,47 @@ mod tests {
     }
 
     #[test]
+    fn digamma_terminates_and_reflects_for_negative_arguments() {
+        let euler = 0.577_215_664_901_532_9;
+        assert!((digamma(1.0) + euler).abs() < 1e-9);
+        // psi(-2.5) = psi(3.5) - pi / tan(-2.5 pi) = psi(3.5), since
+        // tan(-2.5 pi) is infinite: 1.1031566406452432.
+        assert!((digamma(-2.5) - 1.103_156_640_645_243).abs() < 1e-9);
+        // psi(-0.5) = 0.03648997397857652.
+        assert!((digamma(-0.5) - 0.036_489_973_978_576_5).abs() < 1e-9);
+        // These used to loop forever: x + 1 == x below -2^53, and -inf + 1
+        // is -inf.
+        for pole in [0.0, -1.0, -1e300, f64::MIN, f64::NEG_INFINITY, f64::NAN] {
+            assert!(digamma(pole).is_nan(), "{pole}");
+        }
+        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn observation_scales_outside_their_support_give_zero_density() {
+        for (lognormal, sigma) in [(false, 0.0), (false, -1.0), (true, 0.0), (true, -2.0)] {
+            let mut g = Graph::new();
+            let s = g.add_param("s");
+            let mu = g.add_constant(1.0);
+            let x = g.add_data("x", vec![1.0, 1.0]);
+            let linpred = g.scalar_mul_data(mu, x);
+            let obs = g.add_obs_data(vec![0.5, 2.0]);
+            if lognormal {
+                g.obs_logp_lognormal(linpred, s, obs);
+            } else {
+                g.obs_logp_normal(linpred, s, obs);
+            }
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &[sigma]);
+            // Previously ln(sigma) made this NaN, where the scalar Normal
+            // density already returned -inf for the same scale.
+            assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
+            assert!(evaluator.grad.iter().all(|g| g.is_finite()));
+            assert_eq!(eval_logp(&g, &[sigma]), f64::NEG_INFINITY);
+        }
+    }
+
+    #[test]
     fn ln_gamma_matches_known_values() {
         let cases = [
             (0.5, 0.5 * std::f64::consts::PI.ln()),
@@ -1770,6 +2021,31 @@ mod tests {
         let (logp, grad) = grad_logp(&g, &params);
         assert!((logp - (-0.5 * 1.5_f64.powi(2) - 0.5 * std::f64::consts::TAU.ln())).abs() < 1e-10);
         assert!((grad[0] - (-1.5)).abs() < 1e-10);
+    }
+
+    #[test]
+    fn forward_only_evaluation_matches_the_values_of_a_full_pass() {
+        let mut g = Graph::new();
+        let beta = g.add_param("beta");
+        let zero = g.add_constant(0.0);
+        let one = g.add_constant(1.0);
+        g.normal_logp(beta, zero, one);
+        let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
+        let mu = g.scalar_mul_data(beta, x_data);
+        let obs = g.add_obs_data(vec![2.5, 5.0, 7.5]);
+        g.normal_obs_logp(mu, one, obs);
+
+        let mut full = Evaluator::new(&g);
+        full.compute(&g, &[0.7]);
+        let mut forward = Evaluator::new(&g);
+        forward.forward(&g, &[0.7]);
+        assert_eq!(forward.total_logp, full.total_logp);
+        for i in 0..3 {
+            assert_eq!(forward.vec_elem(mu, i, &g), full.vec_elem(mu, i, &g));
+        }
+        // No reverse pass ran, so the gradient buffer is untouched.
+        assert_eq!(forward.grad, vec![0.0]);
+        assert_ne!(full.grad, vec![0.0]);
     }
 
     #[test]

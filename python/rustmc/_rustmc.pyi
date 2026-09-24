@@ -909,6 +909,7 @@ class CompiledModel:
         num_leapfrog_steps: int = 15,
         show_progress: bool = True,
         init: ArrayLike | None = None,
+        metric: Literal["auto", "diag", "dense"] = "auto",
     ) -> FitResult: ...
     def sample_batch(
         self,
@@ -930,6 +931,7 @@ class CompiledModel:
         errors: Literal["raise", "collect"] = "raise",
         seed_policy: Literal["cell_id_v1", "position_v0"] = "cell_id_v1",
         init: dict[str, ArrayLike] | None = None,
+        metric: Literal["auto", "diag", "dense"] = "auto",
     ) -> BatchFit: ...
     def __enter__(self) -> CompiledModel: ...
     def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> bool: ...
@@ -1530,6 +1532,7 @@ def sample(
     num_leapfrog_steps: int = 15,
     show_progress: bool = True,
     init: ArrayLike | None = None,
+    metric: Literal["auto", "diag", "dense"] = "auto",
 ) -> FitResult: ...
 
 def batch_sample(
@@ -1544,6 +1547,7 @@ def batch_sample(
     max_tree_depth: int = 8,
     num_leapfrog_steps: int = 15,
     show_progress: bool = True,
+    metric: Literal["auto", "diag", "dense"] = "auto",
 ) -> list[BatchResult]: ...
 
 def sample_prior_predictive(
