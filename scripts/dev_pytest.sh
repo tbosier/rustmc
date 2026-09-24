@@ -3,9 +3,29 @@
 # against it, without disturbing the shared .venv used by other worktrees.
 #
 #   ./scripts/dev_pytest.sh [pytest args...]
+#
+# The virtualenv (which must provide maturin, numpy and pytest) is, in order:
+# $RUSTMC_VENV; the .venv of the main checkout, so every linked worktree
+# shares one; this checkout's own .venv.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VENV=/home/taylo/projects/rustmc/.venv
+if [[ -n "${RUSTMC_VENV:-}" ]]; then
+  VENV="$RUSTMC_VENV"
+else
+  VENV="$ROOT/.venv"
+  common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ -n "$common" && -x "$(dirname "$common")/.venv/bin/python" ]]; then
+    VENV="$(dirname "$common")/.venv"
+  fi
+fi
+for tool in python maturin; do
+  if [[ ! -x "$VENV/bin/$tool" ]]; then
+    echo "FATAL: $VENV/bin/$tool not found. Create the virtualenv (for example" \
+      "'python -m venv .venv && .venv/bin/pip install maturin numpy pytest' in the" \
+      "main checkout, as CONTRIBUTING.md describes) or point RUSTMC_VENV at one." >&2
+    exit 1
+  fi
+done
 SCRATCH="${TMPDIR:-/tmp}"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/.target}"
 export UV_CACHE_DIR="${UV_CACHE_DIR:-$SCRATCH/uvcache}"
