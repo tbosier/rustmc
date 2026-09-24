@@ -40,6 +40,30 @@ def test_quantiles_and_crps_handle_opposite_extreme_draws():
     )
 
 
+def test_quantiles_are_bitwise_numpy_linear_quantiles():
+    from rustmc.evaluation import _quantiles
+
+    rng = np.random.default_rng(20260924)
+    probabilities = np.concatenate([
+        [0.0, 0.025, 0.1, 0.25, 0.5, 0.69, 0.75, 0.9, 0.975, 1.0],
+        rng.uniform(size=40),
+    ])
+    for trial in range(300):
+        n = int(rng.integers(1, 60))
+        scale = 10.0 ** rng.uniform(-300, 300)
+        draws = rng.normal(size=(n, 3)) * scale
+        if trial % 3 == 0:
+            # Many ties, and large draws either side of values near zero.
+            draws = np.round(draws / scale) * scale
+            draws[: n // 2, 1] = rng.choice([-1e16, 1e16 + 2, 1e-12, 0.0], size=n // 2)
+        # Adding zero merges -0.0 into 0.0: NumPy's partition leaves equal
+        # signed zeros in no particular order, so only their sign may differ.
+        expected = np.quantile(draws, probabilities, axis=0, method="linear") + 0.0
+        actual = _quantiles(draws, probabilities) + 0.0
+        assert actual.tobytes() == expected.tobytes(), (trial, np.flatnonzero(actual != expected))
+    assert _quantiles(np.array([-1e16, 1e16 + 2]), 0.5) == 2.0
+
+
 @pytest.mark.parametrize("baseline", [False, True])
 def test_summary_preserves_infinite_losses_and_omits_only_missing_outcomes(baseline):
     scores = [
