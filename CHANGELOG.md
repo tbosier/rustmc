@@ -6,11 +6,11 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
-Nothing since 0.12.0 has been published. The manifests already say 0.13.0, and the
-changes below will ship under that number. An earlier revision of this file dated
-0.13.0 to 2026-09-18, but no tag, PyPI upload or crates.io upload was made for it.
-The changes came out of three repository-wide reviews and are grouped by review,
-newest first.
+## [0.13.0] - 2026-09-24
+
+An earlier revision of this file dated 0.13.0 to 2026-09-18, but nothing was tagged
+or uploaded then; this is the first published 0.13.0. It collects the changes from
+three repository-wide reviews since 0.12.0, grouped by review, newest first.
 
 ### Third review (2026-09-24)
 
@@ -683,7 +683,8 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/tbosier/rustmc/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tbosier/rustmc/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tbosier/rustmc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tbosier/rustmc/compare/v0.9.0...v0.10.0

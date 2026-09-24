@@ -42,7 +42,10 @@ it succeeded:
 1. `publish-crate` packages and builds `rustmc_core` once more with
    `cargo package`, then uploads that crate to crates.io with
    `cargo publish --no-verify`, so dependency build scripts never run with the
-   registry token in their environment.
+   registry token in their environment. If that version is already on crates.io —
+   because a maintainer ran `cargo publish -p rustmc_core --locked` by hand from the
+   tagged revision — the job skips the upload and succeeds, so the PyPI upload still
+   follows.
 2. `publish` uploads the verified wheels and source archive to PyPI, so a Python
    release never goes out without its Rust crate.
 3. `docs` deploys the documentation site from the tag (`.github/workflows/docs.yml`),
