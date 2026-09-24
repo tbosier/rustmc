@@ -683,17 +683,26 @@ explicitly as `sigma * z[key]`.
 
 ## Exceptions
 
-`rustmc.StateSpaceError` reports invalid model structure or a numerical failure inside
-a native kernel. `rustmc.ParameterError` reports an invalid parameter or expression,
-including mixing references from two builders. `rustmc.InferenceError` reports invalid
-inputs or a numerical failure in a fitted Bayesian model; the hierarchical entry points
-raise it. All three subclass `ValueError`.
+All three rustmc exception classes subclass `ValueError`, so `except ValueError`
+catches any of them.
 
-The forecasting models do not agree on one exception class. The local-level, trend,
-seasonal and AR models raise `StateSpaceError`, as does structural fitting; runoff
-raises plain `ValueError`. Because every one of these subclasses `ValueError`,
-`except ValueError` catches them all, and that — not `except InferenceError` — is the
-form to write if you want to catch a forecasting failure.
+- `rustmc.InferenceError`: a Bayesian model refused its priors, configuration or
+  data, or failed numerically. This covers every forecasting model (local level,
+  seasonal, trend, AR, hierarchical mean, hurdle, regression, structural fitting,
+  dynamic GLM and runoff), their priors, their `fit`, `forecast` and `fit_batch`
+  cells, and the accessors of the fits and forecasts they return.
+- `rustmc.StateSpaceError`: the fixed-parameter `LinearGaussianStateSpace` layer and
+  structural model specifications (`VarianceParameter`, `StructuralComponent`,
+  `StructuralModel` and its JSON).
+- `rustmc.ParameterError`: an invalid parameter or expression in `ModelBuilder`,
+  including mixing references from two builders.
+- Plain `ValueError`: argument checks every model shares, such as array conversion,
+  interval levels, quantile probabilities, batch options and `fourier_design`.
+
+Forecasting models accept any real numeric array-like for observations, `exog` and
+priors: float or integer NumPy arrays in any memory layout, or lists. Boolean,
+complex, string and object arrays, ragged lists and the wrong number of dimensions
+raise a `ValueError` naming the argument.
 
 ## Result types
 
