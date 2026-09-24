@@ -7,7 +7,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::{DataBinding, DataInputs};
 use crate::graph::{Graph, ObservationHead, ParamTransform};
-use crate::sampler::SampleResult;
+use crate::sampler::{check_request_size, SampleResult, MAX_RETAINED_VALUES};
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -103,6 +103,10 @@ impl ModelFit {
         self.raw.samples.len()
     }
 
+    fn total_draws(&self) -> usize {
+        self.num_chains().saturating_mul(self.num_draws())
+    }
+
     pub fn num_draws(&self) -> usize {
         self.raw.samples.first().map_or(0, Vec::len)
     }
@@ -135,6 +139,14 @@ impl ModelFit {
         sizes: Option<HashMap<String, usize>>,
     ) -> ModelResult<Graph> {
         let graph = self.graph();
+        if let Some(sizes) = &sizes {
+            // Every prediction holds one value per posterior draw and
+            // observation, so refuse a size that could never be simulated
+            // before its placeholder response is allocated.
+            for &size in sizes.values() {
+                check_draw_values("prediction", self.total_draws().max(1), &[size])?;
+            }
+        }
         if inputs.is_none() && sizes.is_none() {
             graph
                 .validate_shapes()
@@ -243,6 +255,8 @@ impl ModelFit {
         rng: &mut R,
     ) -> ModelResult<PredictiveDraws> {
         let heads = graph.observation_heads();
+        let n_obs: Vec<usize> = heads.iter().map(|head| head.n_obs).collect();
+        check_draw_values("posterior prediction", coordinates.len(), &n_obs)?;
         let mut evaluator =
             Evaluator::try_new(graph).map_err(|error| ModelError::invalid(error.to_string()))?;
         let mut values: Vec<Vec<f64>> = heads
@@ -280,6 +294,8 @@ impl ModelFit {
     pub fn log_likelihood(&self) -> ModelResult<Vec<Vec<f64>>> {
         let graph = self.prediction_graph(None, None)?;
         let heads = graph.observation_heads();
+        let n_obs: Vec<usize> = heads.iter().map(|head| head.n_obs).collect();
+        check_draw_values("log-likelihood", self.total_draws(), &n_obs)?;
         self.evaluate_chunks(&graph, heads.len(), |evaluator, blocks| {
             for (block, head) in blocks.iter_mut().zip(&heads) {
                 pointwise_log_likelihood(evaluator, &graph, head, block)?;
@@ -301,6 +317,8 @@ impl ModelFit {
             .iter()
             .map(|(_, node)| evaluator.node_len(*node))
             .collect();
+        let widths: Vec<usize> = lens.iter().map(|len| (*len).max(1)).collect();
+        check_draw_values("deterministics", self.total_draws(), &widths)?;
         let values = self.evaluate_chunks(graph, lens.len(), |evaluator, blocks| {
             for ((block, (_, node)), len) in blocks.iter_mut().zip(&graph.deterministics).zip(&lens)
             {
@@ -372,6 +390,23 @@ impl ModelFit {
         }
         Ok(blocks)
     }
+}
+
+/// Refuse outputs of `per_draw` values (summed over blocks) at each of
+/// `draws` posterior draws above [`MAX_RETAINED_VALUES`].
+fn check_draw_values(what: &'static str, draws: usize, per_draw: &[usize]) -> ModelResult<()> {
+    let per_draw = per_draw
+        .iter()
+        .try_fold(0usize, |total, &n| total.checked_add(n))
+        .unwrap_or(usize::MAX);
+    check_request_size(
+        what,
+        &[draws, per_draw],
+        MAX_RETAINED_VALUES,
+        "reduce the draws used, the number of observations or the prediction sizes",
+    )
+    .map(|_| ())
+    .map_err(ModelError::invalid)
 }
 
 fn pointwise_log_likelihood(
