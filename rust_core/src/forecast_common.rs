@@ -495,28 +495,39 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
 
 /// The `probability` quantile of the non-empty ascending `ordered`,
 /// interpolated linearly between the order statistics either side of
-/// position `probability * (n - 1)` (NumPy's default `linear` rule).
+/// position `(n - 1) * probability`.
 ///
 /// This is the one empirical-quantile rule behind every forecast interval
-/// and quantile, native or in `rustmc.evaluation`. The step is taken from the
-/// lower neighbour, `lower + (upper - lower) * weight`, so a whole-number
-/// position or two equal neighbours return an order statistic exactly: the
-/// interval of a constant forecast is that constant. The convex form
-/// `lower * (1 - weight) + upper * weight` rounds both terms and can miss it.
-/// Only a gap too wide to represent, between draws of opposite sign near the
-/// top of the range, falls back to the convex form, which cannot overflow.
+/// and quantile, native or in `rustmc.evaluation`. On finite draws it
+/// reproduces NumPy's default `linear` method bit for bit (up to the sign of
+/// a zero, as NumPy's partition leaves `-0.0` and `0.0` unordered), including
+/// its interpolation `_lerp`: the step is taken from the nearer neighbour, `lower + span * w`
+/// below the midpoint and `upper - span * (1 - w)` from it on, so each end
+/// of a gap is reproduced exactly and a small value between large draws is
+/// not rounded against the far one. A whole-number position or two equal
+/// neighbours therefore return an order statistic exactly: the interval of
+/// a constant forecast is that constant.
+///
+/// The one departure is a gap too wide to represent, between draws of
+/// opposite sign near the top of the range, where NumPy returns an infinity
+/// or NaN. The convex form `lower * (1 - w) + upper * w` cannot overflow and
+/// is used instead.
 pub fn sorted_quantile(ordered: &[f64], probability: f64) -> f64 {
     let last = ordered.len() - 1;
-    let index = probability * last as f64;
-    let lower = (index.floor() as usize).min(last);
-    let upper = (index.ceil() as usize).min(last);
+    let index = last as f64 * probability;
+    if index >= last as f64 {
+        return ordered[last];
+    }
+    let lower = index.floor() as usize;
     let weight = index - lower as f64;
-    let (below, above) = (ordered[lower], ordered[upper]);
+    let (below, above) = (ordered[lower], ordered[lower + 1]);
     let span = above - below;
-    if span.is_finite() {
-        below + span * weight
-    } else {
+    if !span.is_finite() {
         below * (1.0 - weight) + above * weight
+    } else if weight >= 0.5 {
+        above - span * (1.0 - weight)
+    } else {
+        below + span * weight
     }
 }
 
@@ -726,6 +737,38 @@ mod tests {
         let extremes = [-f64::MAX, f64::MAX];
         assert_eq!(sorted_quantile(&extremes, 0.5), 0.0);
         assert!(sorted_quantile(&extremes, 0.25).is_finite());
+    }
+
+    #[test]
+    fn sorted_quantile_reproduces_numpy_linear_interpolation() {
+        // Expected values are np.quantile(x, p) (method="linear") from
+        // NumPy 2.4.2, printed with repr.
+        // From the midpoint on NumPy steps back from the upper draw, so a
+        // value near zero between large draws keeps its low bits.
+        assert_eq!(sorted_quantile(&[-1e16, 1e16 + 2.0], 0.5), 2.0);
+        assert_eq!(sorted_quantile(&[-1e16, 1e16 + 2.0], 0.25), -5e15);
+        let ordered = [-3.0, -1.0 / 3.0, 0.1, 0.7, 2.5];
+        for (probability, expected) in [
+            (0.125, -1.6666666666666665),
+            (0.13, -1.613333333333333),
+            (0.69, 0.5559999999999998),
+            (0.3, -0.24666666666666665),
+            (0.99, 2.428),
+        ] {
+            assert_eq!(
+                sorted_quantile(&ordered, probability),
+                expected,
+                "{probability}"
+            );
+        }
+        // Monotone in the probability, including across the midpoint switch.
+        let draws = [-1e16, -0.1, 1e-300, 3.0, 1e16 + 2.0];
+        let mut previous = f64::NEG_INFINITY;
+        for step in 0..=4000 {
+            let value = sorted_quantile(&draws, step as f64 / 4000.0);
+            assert!(value >= previous, "{step}: {value} < {previous}");
+            previous = value;
+        }
     }
 
     #[test]

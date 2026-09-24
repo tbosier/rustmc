@@ -278,7 +278,7 @@ impl PyBayesianRegressionForecast {
     #[getter]
     fn seasonal_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
         if !self.seasonal {
-            return Err(PyValueError::new_err(
+            return Err(InferenceError::new_err(
                 "model has no stochastic seasonal component",
             ));
         }
@@ -287,7 +287,7 @@ impl PyBayesianRegressionForecast {
     #[getter]
     fn slope_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
         if self.seasonal || self.dimension != 2 {
-            return Err(PyValueError::new_err("model has no slope component"));
+            return Err(InferenceError::new_err("model has no slope component"));
         }
         Ok(path_array(py, &self.inner.secondary_paths))
     }

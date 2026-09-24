@@ -251,9 +251,10 @@ impl PyDynamicGLMFit {
         component: usize,
     ) -> PyResult<Bound<'py, PyArray4<f64>>> {
         if component >= self.posterior.chains[0][0].states.len() {
-            return Err(pyo3::exceptions::PyValueError::new_err(
-                "invalid component index",
-            ));
+            return Err(crate::InferenceError::new_err(format!(
+                "invalid component index {component}; this model has {} state component(s)",
+                self.posterior.chains[0][0].states.len()
+            )));
         }
         let paths = self
             .posterior

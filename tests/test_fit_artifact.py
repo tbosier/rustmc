@@ -202,10 +202,46 @@ def test_python_and_rust_write_the_same_bytes():
     assert rustmc.FitResult.from_json(text).to_json() == text
 
 
-def test_saving_is_deterministic(saved_fit):
-    fit, _ = saved_fit
-    assert fit.to_json() == fit.to_json()
-    assert rustmc.FitResult.from_json(fit.to_json()).to_json() == fit.to_json()
+_SAVE_IN_FRESH_PROCESS = """
+import sys
+import numpy as np
+import rustmc
+data = {'group': np.array([0, 1, 0]), 'x': np.array([1., 2., 3.]),
+        'y': np.array([1., 2., 3.]), 'occurred': np.array([0., 1., 0., 1.])}
+dims = {'group': 'severity', 'x': 'severity', 'y': 'severity', 'occurred': 'occurrence'}
+m = rustmc.ModelBuilder(data, dims=dims)
+mu = m.normal_prior('mu', 0., 1.)
+tau = m.half_normal_prior('tau', 1.)
+z = m.vector_normal_prior('z', 2, 0., 1.)
+beta = m.normal_prior('beta', mu, tau)
+predictor = mu + tau * z['group'] + beta * m.data('x')
+m.normal_likelihood('response', predictor, 0.8, 'y')
+m.bernoulli_logit_likelihood('occurs', mu, 'occurred')
+m.potential('smooth', -0.1 * beta**4)
+m.deterministic('mu_response', predictor)
+fit = m.compile().sample(data, chains=2, draws=12, warmup=15, seed=810, show_progress=False)
+text = fit.to_json()
+assert rustmc.FitResult.from_json(text).to_json() == text
+sys.stdout.write(text)
+"""
+
+
+def test_saving_is_deterministic_across_processes():
+    # Hash-map iteration order is randomized per process (Rust's RandomState,
+    # and Python's string hashing under PYTHONHASHSEED), so an artifact that
+    # followed it differed between runs while matching within one.
+    import os
+    import subprocess
+    import sys
+
+    saved = []
+    for hash_seed in ('1', '2'):
+        env = dict(os.environ, PYTHONHASHSEED=hash_seed)
+        saved.append(subprocess.run(
+            [sys.executable, '-c', _SAVE_IN_FRESH_PROCESS],
+            env=env, check=True, capture_output=True,
+        ).stdout)
+    assert saved[0] and saved[0] == saved[1]
 
 
 def test_restored_fixture_log_likelihood_matches_the_normal_density():

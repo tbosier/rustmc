@@ -16,10 +16,10 @@
 //! - plain `ValueError`: argument checks every model shares - array
 //!   conversion, interval levels, quantile probabilities, batch options such
 //!   as `errors=` and `threads=`, and `fourier_design` arguments.
+use crate::data_input::real_numbers;
 use crate::{arviz_from_groups, forecast_diagnostics, InferenceError, StateSpaceError};
 use ndarray::{Array2, Array3, ArrayD, IxDyn};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
-use numpy::{PyArrayDyn, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -48,39 +48,19 @@ pub(crate) fn bayesian_forecast_error(error: CoreBayesianForecastError) -> PyErr
     inference_error(error)
 }
 
-/// Real numbers with exactly `ndim` axes from any numeric array-like: a
-/// float or integer NumPy array of any width, order or strides, a (nested)
-/// list, or anything else `numpy.asarray` accepts.
+/// Real numbers with exactly `ndim` axes from any numeric array-like, by the
+/// same exact conversion as model data ([`real_numbers`]).
 ///
 /// `NaN` passes through for the models that read it as missing; each model
-/// still rejects the values it cannot use. Booleans, complex numbers,
-/// strings, objects, ragged nesting and the wrong number of axes raise a
-/// `ValueError` naming `name`, where PyO3's own conversion would only say
-/// "cannot be converted to 'PyArray<T, D>'". An empty sequence is accepted as
-/// an empty array of any dimension.
+/// still rejects the values it cannot use. Values float64 would not hold
+/// exactly, ragged nesting and the wrong number of axes raise a `ValueError`
+/// naming `name`, where PyO3's own conversion would only say "cannot be
+/// converted to 'PyArray<T, D>'". An empty sequence is accepted as an empty
+/// array of any dimension.
 fn real_array(value: &Bound<'_, PyAny>, name: &str, ndim: usize) -> PyResult<ArrayD<f64>> {
-    if let Ok(array) = value.downcast::<PyArrayDyn<f64>>() {
-        if array.ndim() == ndim {
-            return Ok(array.readonly().as_array().to_owned());
-        }
-    }
-    let array = value
-        .py()
-        .import("numpy")?
-        .call_method1("asarray", (value,))
-        .map_err(|error| {
-            PyValueError::new_err(format!("{name} must be a real numeric array: {error}"))
-        })?;
-    let dtype = array.getattr("dtype")?;
-    let kind: String = dtype.getattr("kind")?.extract()?;
-    if !matches!(kind.as_str(), "f" | "i" | "u") {
-        return Err(PyValueError::new_err(format!(
-            "{name} must hold real numbers (float or integer); got dtype {dtype}"
-        )));
-    }
-    let actual: usize = array.getattr("ndim")?.extract()?;
-    let size: usize = array.getattr("size")?.extract()?;
-    if actual != ndim && !(actual == 1 && size == 0) {
+    let (values, shape) = real_numbers(value, name)?;
+    let actual = shape.len();
+    if actual != ndim && !(actual == 1 && values.is_empty()) {
         let expected = match ndim {
             1 => "one-dimensional",
             2 => "two-dimensional",
@@ -93,9 +73,8 @@ fn real_array(value: &Bound<'_, PyAny>, name: &str, ndim: usize) -> PyResult<Arr
     if actual != ndim {
         return Ok(ArrayD::zeros(IxDyn(&vec![0; ndim])));
     }
-    let floats = array.call_method1("astype", ("float64",))?;
-    let floats = floats.downcast::<PyArrayDyn<f64>>()?;
-    Ok(floats.readonly().as_array().to_owned())
+    ArrayD::from_shape_vec(IxDyn(&shape), values)
+        .map_err(|error| PyValueError::new_err(format!("{name}: {error}")))
 }
 
 /// A real one-dimensional array; see [`real_array`].
@@ -369,6 +348,10 @@ fn empirical_quantiles<'py>(
     let columns = real_array(draws, "draws", 2)?;
     if columns.shape()[0] == 0 {
         return Err(PyValueError::new_err("draws must hold at least one sample"));
+    }
+    // The shared rule orders draws, which NaN does not allow.
+    if columns.iter().any(|value| !value.is_finite()) {
+        return Err(PyValueError::new_err("draws must be finite"));
     }
     for &probability in &probabilities {
         validate_probability(probability)?;
