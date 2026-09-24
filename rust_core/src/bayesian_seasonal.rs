@@ -11,8 +11,9 @@ use rand_distr::{Distribution, StandardNormal};
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
 use crate::forecast_common::{
-    check_forecast_size, path_means, path_quantiles, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
+    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
+    split_paths, GibbsSchedule,
 };
 use crate::state_space::LinearGaussianStateSpace;
 
@@ -254,13 +255,13 @@ pub fn fit_bayesian_seasonal_local_level(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
             Ok::<_, BayesianForecastError>((
                 template.clone(),
                 [
-                    config.level_variance_prior.mode(),
-                    config.seasonal_variance_prior.mode(),
-                    config.observation_variance_prior.mode(),
+                    overdispersed_positive(config.level_variance_prior.mode(), rng),
+                    overdispersed_positive(config.seasonal_variance_prior.mode(), rng),
+                    overdispersed_positive(config.observation_variance_prior.mode(), rng),
                 ],
             ))
         },

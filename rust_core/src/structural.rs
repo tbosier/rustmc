@@ -3,8 +3,8 @@
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
 use crate::forecast_common::{
-    checked_value_count, run_gibbs_chains, sample_inverse_gamma, simulate_draws, GibbsSchedule,
-    MAX_MATERIALIZED_VALUES,
+    checked_value_count, overdispersed_positive, run_gibbs_chains, sample_inverse_gamma,
+    simulate_draws, GibbsSchedule, MAX_MATERIALIZED_VALUES,
 };
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
@@ -42,6 +42,14 @@ impl VarianceParameter {
         match *self {
             Self::Fixed(v) => v,
             Self::InverseGamma { shape, scale } => scale / (shape + 1.0),
+        }
+    }
+    /// A chain's starting value: the fixed value, or the prior mode spread
+    /// over a log-uniform window so that chains start apart.
+    fn start<R: Rng + ?Sized>(&self, rng: &mut R) -> f64 {
+        match *self {
+            Self::Fixed(v) => v,
+            Self::InverseGamma { .. } => overdispersed_positive(self.initial(), rng),
         }
     }
     fn sample<R: Rng + ?Sized>(&self, n: usize, ss: f64, rng: &mut R) -> Result<f64> {
@@ -378,7 +386,7 @@ impl StructuralConfig {
         }
         LinearGaussianStateSpace::new(d, t, h, q, noise, m, p)
     }
-    /// The assembled model with every variance at its starting value.
+    /// The assembled model with every variance at its fixed value or prior mode.
     ///
     /// `build` validates the configuration and factors every covariance, which
     /// is O(d^3) work that depends only on the configuration. Samplers build
@@ -503,11 +511,11 @@ pub fn fit(
         &schedule,
         sampling.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
             Ok::<_, StateSpaceError>(ChainState {
                 model: template.clone(),
-                q: priors.iter().map(|p| p.initial()).collect(),
-                r: config.observation_variance.initial(),
+                q: priors.iter().map(|p| p.start(rng)).collect(),
+                r: config.observation_variance.start(rng),
                 lambda: vec![1.0; y.len()],
             })
         },

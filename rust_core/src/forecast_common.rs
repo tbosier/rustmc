@@ -185,8 +185,32 @@ pub(crate) fn sample_inverse_gamma<R: Rng + ?Sized>(
     Ok(variance)
 }
 
+/// Half-width, on the log scale for a positive parameter and in units of a
+/// scale for a location, of the window chain starting points are drawn from.
+/// `exp(2)` is about 7.4, so a positive start lies anywhere from about a
+/// seventh to seven times its reference value.
+const START_HALF_WIDTH: f64 = 2.0;
+
 /// Separates a chain's starting-point stream from its sampling stream.
 const START_SEED_DOMAIN: u64 = 0x5354_4152_545F_5054;
+
+/// An overdispersed starting value for a positive parameter: `reference`
+/// scaled by `exp(U(-2, 2))`.
+///
+/// Every chain starting from the same point - the prior mode - leaves the
+/// between-chain half of split R-hat blind to a sampler that has not left the
+/// neighbourhood of its start. A bounded log-uniform factor is used rather than
+/// a draw from the prior itself, because an inverse-gamma prior with shape at
+/// most 2 has no variance and can put a chain's start many orders of magnitude
+/// from anything the data support.
+pub(crate) fn overdispersed_positive<R: Rng + ?Sized>(reference: f64, rng: &mut R) -> f64 {
+    reference * rng.gen_range(-START_HALF_WIDTH..START_HALF_WIDTH).exp()
+}
+
+/// An overdispersed starting value for a location: `center + scale U(-2, 2)`.
+pub(crate) fn overdispersed_location<R: Rng + ?Sized>(center: f64, scale: f64, rng: &mut R) -> f64 {
+    center + scale * rng.gen_range(-START_HALF_WIDTH..START_HALF_WIDTH)
+}
 
 /// Warmup, retention and thinning for one Gibbs fit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,8 +285,10 @@ where
 
 /// Run a seeded Gibbs sampler under `schedule`.
 ///
-/// `start` builds a chain's initial state from a stream of its own, so the
-/// starting point can be randomised without shifting the sampling stream.
+/// `start` builds a chain's initial state from a stream of its own, keyed by
+/// the chain's sampling key, so every chain - chain 0 included - starts from
+/// its own overdispersed point, deterministically given the seed and
+/// independently of the Rayon pool.
 /// `step` performs one full sweep and, when its `retain` argument is true,
 /// returns the draw to keep.
 pub(crate) fn run_gibbs_chains<S, T, E, Start, Step>(
@@ -530,6 +556,56 @@ mod tests {
         assert!(GibbsSchedule::new(1, 1, 0, 1).is_err());
         assert!(GibbsSchedule::new(1, 1, 1, 0).is_err());
         assert!(GibbsSchedule::new(1, 1, usize::MAX, 2).is_err());
+    }
+
+    #[test]
+    fn overdispersed_starts_stay_inside_their_window_and_use_it() {
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let starts: Vec<f64> = (0..2000)
+            .map(|_| overdispersed_positive(0.5, &mut rng))
+            .collect();
+        let (lowest, highest) = starts
+            .iter()
+            .fold((f64::MAX, 0.0f64), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+        assert!(lowest >= 0.5 * (-2.0f64).exp() && highest <= 0.5 * 2.0f64.exp());
+        assert!(lowest < 0.1 && highest > 2.5, "{lowest} {highest}");
+        let locations: Vec<f64> = (0..2000)
+            .map(|_| overdispersed_location(10.0, 0.5, &mut rng))
+            .collect();
+        assert!(locations.iter().all(|x| (9.0..=11.0).contains(x)));
+        assert!(locations.iter().any(|x| *x < 9.2) && locations.iter().any(|x| *x > 10.8));
+    }
+
+    #[test]
+    fn every_chain_starts_from_its_own_seeded_point() {
+        let schedule = GibbsSchedule::new(4, 0, 1, 1).unwrap();
+        let starts = |seed: u64, threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    run_gibbs_chains(
+                        &schedule,
+                        seed,
+                        0x1234,
+                        |rng| Ok::<_, ()>(overdispersed_positive(1.0, rng)),
+                        |start: &mut f64, _, retain| Ok(retain.then_some(*start)),
+                    )
+                    .unwrap()
+                })
+        };
+        let first: Vec<f64> = starts(7, 1).into_iter().flatten().collect();
+        assert_eq!(first.len(), 4);
+        for (i, a) in first.iter().enumerate() {
+            for b in &first[i + 1..] {
+                assert_ne!(a, b, "two chains share a starting point");
+            }
+        }
+        let again: Vec<f64> = starts(7, 3).into_iter().flatten().collect();
+        assert_eq!(first, again, "starts must depend only on the seed");
+        let other: Vec<f64> = starts(8, 1).into_iter().flatten().collect();
+        assert_ne!(first[0], other[0], "chain 0's start must follow the seed");
     }
 
     #[test]

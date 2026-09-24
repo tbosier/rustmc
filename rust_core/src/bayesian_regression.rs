@@ -5,8 +5,8 @@
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::bayesian_forecast::InverseGammaPrior;
 use crate::forecast_common::{
-    check_forecast_size, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
-    GibbsSchedule,
+    check_forecast_size, overdispersed_positive, run_gibbs_chains, sample_inverse_gamma,
+    simulate_draws, split_paths, GibbsSchedule,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand_chacha::ChaCha8Rng;
@@ -231,13 +231,14 @@ pub fn fit_regression(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
             let variances: Vec<f64> = config
                 .variance_priors
                 .iter()
-                .map(|prior| prior.mode())
+                .map(|prior| overdispersed_positive(prior.mode(), rng))
                 .collect();
-            let observation_variance = config.observation_variance_prior.mode();
+            let observation_variance =
+                overdispersed_positive(config.observation_variance_prior.mode(), rng);
             Ok::<_, StateSpaceError>((template.clone(), variances, observation_variance))
         },
         |(model, variances, observation_variance), rng, retain| {

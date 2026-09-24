@@ -18,8 +18,9 @@
 //! while indexed collection preserves deterministic chain ordering.
 
 use crate::forecast_common::{
-    check_forecast_size, path_means, path_quantiles, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
+    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
+    split_paths, GibbsSchedule,
 };
 #[cfg(test)]
 use crate::seeding::chain_seed;
@@ -254,10 +255,10 @@ pub fn fit_bayesian_local_level(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
             Ok::<_, BayesianForecastError>((
-                config.process_variance_prior.mode(),
-                config.observation_variance_prior.mode(),
+                overdispersed_positive(config.process_variance_prior.mode(), rng),
+                overdispersed_positive(config.observation_variance_prior.mode(), rng),
             ))
         },
         |(process_variance, observation_variance), rng, retain| {

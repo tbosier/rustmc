@@ -19,8 +19,9 @@
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
 use crate::forecast_common::{
-    check_forecast_size, cholesky_into, path_means, path_quantiles, require_finite_observations,
-    run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    check_forecast_size, cholesky_into, overdispersed_positive, path_means, path_quantiles,
+    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
+    split_paths, GibbsSchedule,
 };
 #[cfg(test)]
 use crate::seeding::chain_seed;
@@ -208,11 +209,11 @@ pub fn fit_bayesian_local_linear_trend(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
             Ok::<_, BayesianForecastError>([
-                config.level_variance_prior.mode(),
-                config.slope_variance_prior.mode(),
-                config.observation_variance_prior.mode(),
+                overdispersed_positive(config.level_variance_prior.mode(), rng),
+                overdispersed_positive(config.slope_variance_prior.mode(), rng),
+                overdispersed_positive(config.observation_variance_prior.mode(), rng),
             ])
         },
         |[level_variance, slope_variance, observation_variance], rng, retain| {

@@ -18,8 +18,8 @@
 use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    checked_value_count, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
-    GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    checked_value_count, overdispersed_location, overdispersed_positive, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule, MAX_MATERIALIZED_VALUES,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
@@ -261,7 +261,16 @@ pub fn fit_hierarchical_mean(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
-        |_| {
+        |rng| {
+            // Variances start around their prior modes, and every mean
+            // around its data average by up to two of the starting
+            // between-group or between-program standard deviations, so that
+            // chains begin apart in every coordinate.
+            let group_variance = overdispersed_positive(config.group_variance_prior.mode(), rng);
+            let program_variance =
+                overdispersed_positive(config.program_variance_prior.mode(), rng);
+            let observation_variance =
+                overdispersed_positive(config.observation_variance_prior.mode(), rng);
             let group_means = validated
                 .group_members
                 .iter()
@@ -274,21 +283,27 @@ pub fn fit_hierarchical_mean(
                         .iter()
                         .map(|&program| validated.observed_counts[program])
                         .sum::<usize>();
-                    group_sum / group_observed as f64
+                    overdispersed_location(
+                        group_sum / group_observed as f64,
+                        group_variance.sqrt(),
+                        rng,
+                    )
                 })
                 .collect::<Vec<_>>();
             let program_means = validated
                 .observation_sums
                 .iter()
                 .zip(&validated.observed_counts)
-                .map(|(&sum, &count)| sum / count as f64)
+                .map(|(&sum, &count)| {
+                    overdispersed_location(sum / count as f64, program_variance.sqrt(), rng)
+                })
                 .collect::<Vec<_>>();
             Ok::<_, BayesianForecastError>(ChainState {
                 group_means,
                 program_means,
-                group_variance: config.group_variance_prior.mode(),
-                program_variance: config.program_variance_prior.mode(),
-                observation_variance: config.observation_variance_prior.mode(),
+                group_variance,
+                program_variance,
+                observation_variance,
             })
         },
         |state, rng, retain| {

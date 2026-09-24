@@ -15,9 +15,9 @@ use crate::bayesian_forecast::{
 };
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, inverse_gamma_conditional, path_means,
-    path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths, GibbsSchedule,
-    MAX_MATERIALIZED_VALUES,
+    check_forecast_size, checked_value_count, inverse_gamma_conditional, overdispersed_positive,
+    path_means, path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths,
+    GibbsSchedule, MAX_MATERIALIZED_VALUES,
 };
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -255,12 +255,17 @@ pub fn fit_hurdle_lognormal(
             config.seed,
             FIT_SEED_DOMAIN,
             // These are starting values, not clipped draws from either prior.
-            |_| {
+            |rng| {
                 Ok::<_, BayesianForecastError>((
-                    initial_variance(config.process_variance_prior, config.process_variance_upper)?,
+                    initial_variance(
+                        config.process_variance_prior,
+                        config.process_variance_upper,
+                        rng,
+                    )?,
                     initial_variance(
                         config.observation_variance_prior,
                         config.observation_variance_upper,
+                        rng,
                     )?,
                 ))
             },
@@ -464,8 +469,14 @@ fn inverse_gamma(
     }
     Err(numerical(format!("upper-truncated inverse-gamma rejection exhausted {MAX_TRUNCATION_ATTEMPTS} attempts (shape={}, scale={}, upper={upper}); the fixed cap retains too little conditional mass; review the prior cap and data scale", prior.shape, prior.scale)))
 }
-fn initial_variance(prior: InverseGammaPrior, upper: f64) -> Result<f64, BayesianForecastError> {
-    let value = (prior.scale / (prior.shape + 1.0)).min(upper / 2.0);
+/// The prior mode, kept inside the cap, spread over the shared log-uniform
+/// start window and clipped back to the cap so the start is in support.
+fn initial_variance(
+    prior: InverseGammaPrior,
+    upper: f64,
+    rng: &mut ChaCha8Rng,
+) -> Result<f64, BayesianForecastError> {
+    let value = overdispersed_positive(prior.mode().min(upper / 2.0), rng).min(upper);
     if !value.is_finite() || value <= 0.0 {
         return Err(numerical(
             "initial log variance inside its cap is unrepresentable",
