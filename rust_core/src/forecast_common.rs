@@ -39,7 +39,7 @@ pub struct AllocationLimitError {
 
 impl fmt::Display for AllocationLimitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let limit = if self.limit % 1_000_000 == 0 {
+        let limit = if self.limit.is_multiple_of(1_000_000) {
             format!("{} million", self.limit / 1_000_000)
         } else {
             self.limit.to_string()
