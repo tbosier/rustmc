@@ -113,8 +113,11 @@ fall behind the API between releases. It does not follow the protocol above, and
 it prints may be quoted as a performance claim. `bench_common.py` beside it records the
 environment and phase-separated timings.
 
-The single-model linear-regression comparisons that used to live in `examples/`
+Three single-model comparisons that used to live in `examples/`
 (`compare_with_pymc.py`, `benchmark_vs_pymc.py` and `benchmark_multivariate.py`) were
-removed: they were Gaussian regressions with known noise at 1, 500 and 10 coefficients,
-which `benchmarks/run.py` covers under the protocol above by changing `observations`,
-`parameters` and `chains` in a config.
+removed rather than kept unverified. They were Gaussian regressions with known noise at
+1, 500 and 10 coefficients, which `benchmarks/run.py` measures under the protocol above
+when `observations`, `parameters` and `chains` are changed in a config. They are not
+identical workloads: `run.py` declares the coefficients as one vector parameter, while
+two of the removed scripts used separate scalar priors and one added an intercept. The
+removed scripts remain in the repository history.

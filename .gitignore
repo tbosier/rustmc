@@ -1,4 +1,5 @@
 .venv*
+/target
 target*/
 .env*
 .codex*
