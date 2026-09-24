@@ -83,23 +83,67 @@ def test_default_metric_handles_an_isotropic_vector_parameter():
     assert leapfrog_steps_per_iteration(fit) < 40
 
 
+def correlated_vector_model(n, rho=0.95):
+    # Equicorrelated columns give coefficients whose posterior correlation a
+    # diagonal metric cannot remove; a dense one whitens it away.
+    rng = np.random.default_rng(0)
+    shared = rng.normal(size=(300, 1))
+    X = np.sqrt(rho) * shared + np.sqrt(1 - rho) * rng.normal(size=(300, n))
+    data = {"X": X, "y": X @ np.linspace(-1, 1, n) + rng.normal(size=300)}
+    b = r.ModelBuilder()
+    beta = b.vector_normal_prior("b", n, 0.0, 1.0)
+    b.normal_likelihood("y", beta @ "X", 1.0, "y")
+    return b, data
+
+
+def isotropic_builder(n):
+    b = r.ModelBuilder()
+    beta = b.vector_normal_prior("b", n, 0.0, 1.0)
+    b.normal_likelihood("y", beta @ "X", 1.0, "y")
+    return b, {"X": np.eye(n), "y": np.random.default_rng(0).normal(size=n)}
+
+
+def sampling_paths(builder, data, options):
+    """Leapfrog steps per iteration of each fit, for every sampling entry point."""
+    model, compiled = builder.build(), builder.compile()
+
+    def steps(fits):
+        return [leapfrog_steps_per_iteration(fit) for fit in fits]
+
+    return {
+        "sample": lambda metric: steps([r.sample(model, data=data, metric=metric, **options)]),
+        "compiled": lambda metric: steps([compiled.sample(data, metric=metric, **options)]),
+        "sample_batch": lambda metric: steps(
+            compiled.sample_batch([data, data], metric=metric, **options)),
+        "batch_sample": lambda metric: steps(
+            r.batch_sample([(model, data), (model, data)], metric=metric, **options)),
+    }
+
+
 def test_metric_option_is_validated_and_forwarded():
-    model, data = isotropic_vector_model(20)
-    options = dict(chains=1, draws=50, warmup=200, seed=2, show_progress=False)
-    for metric in ("auto", "diag", "dense"):
-        r.sample(model, data=data, metric=metric, **options)
-    with pytest.raises(ValueError, match="metric"):
-        r.sample(model, data=data, metric="unit", **options)
-    compiled = r.ModelBuilder()
-    beta = compiled.vector_normal_prior("b", 20, 0.0, 1.0)
-    compiled.normal_likelihood("y", beta @ "X", 1.0, "y")
-    compiled = compiled.compile()
-    compiled.sample(data, metric="diag", **options)
-    batch = compiled.sample_batch([data], metric="dense", chains=1, draws=20, warmup=50,
-                                  show_progress=False)
-    assert len(batch) == 1
-    with pytest.raises(ValueError, match="metric"):
-        compiled.sample_batch([data], metric="bogus", show_progress=False)
-    results = r.batch_sample([(model, data)], metric="diag", chains=1, draws=20, warmup=50,
-                             show_progress=False)
-    assert len(results) == 1
+    # Every entry point must pass the option through to warmup. On a
+    # correlated target a dense metric needs several times fewer leapfrog
+    # steps than a diagonal one, so a dropped "diag" shows up there; the
+    # default goes dense on it too, so a dropped "dense" shows up instead on
+    # an isotropic target, where the default stays diagonal and an explicit
+    # dense metric follows a different trajectory.
+    options = dict(chains=1, draws=200, warmup=300, seed=2, show_progress=False)
+    builder, data = correlated_vector_model(8)
+    for name, run in sampling_paths(builder, data, options).items():
+        diag, dense = run("diag"), run("dense")
+        assert max(dense) * 2.5 < min(diag), (name, diag, dense)
+        assert max(run("auto")) * 2.5 < min(diag), name
+    for name, run in sampling_paths(*isotropic_builder(20), options).items():
+        assert run("dense") != run("auto"), name
+        assert run("diag") == run("auto"), name
+
+    builder, data = correlated_vector_model(8)
+    model, compiled = builder.build(), builder.compile()
+    for call in (
+        lambda: r.sample(model, data=data, metric="unit", **options),
+        lambda: compiled.sample(data, metric="unit", **options),
+        lambda: compiled.sample_batch([data], metric="bogus", **options),
+        lambda: r.batch_sample([(model, data)], metric="bogus", **options),
+    ):
+        with pytest.raises(ValueError, match="metric"):
+            call()

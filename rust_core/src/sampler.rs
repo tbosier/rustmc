@@ -1,6 +1,7 @@
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
+use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
 use crate::graph::{Graph, Op, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 pub use crate::mass_matrix::MetricKind;
@@ -11,6 +12,51 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 use std::sync::Arc;
+
+/// Most `f64` values one generic-model request may hold: a fit's retained
+/// draws, counted once although constrained and unconstrained copies may
+/// both be kept, or one set of prior-predictive, posterior-predictive,
+/// log-likelihood or deterministic draws. At eight bytes each this is 8 GB.
+///
+/// It exists to turn a request that could never be allocated, such as
+/// `draws=10**12`, into an error instead of a process abort; it is not a
+/// bound on peak memory, and it is set well above what ordinary fits need
+/// (4 chains of 1000 draws of a 30,000-observation log-likelihood hold 120
+/// million values). A request below it can still exhaust a smaller machine.
+pub const MAX_RETAINED_VALUES: usize = 1_000_000_000;
+
+/// Refuse a request whose `factors` multiply to more than `limit` values, or
+/// overflow, naming what to reduce in `hint`.
+pub(crate) fn check_request_size(
+    what: &str,
+    factors: &[usize],
+    limit: usize,
+    hint: &str,
+) -> Result<usize, String> {
+    checked_value_count("request", factors, limit).map_err(|error| match error.requested {
+        Some(count) => {
+            format!("{what} would hold {count} values, above the safety limit of {limit}; {hint}")
+        }
+        None => format!("{what} size overflows the safety limit of {limit} values; {hint}"),
+    })
+}
+
+/// Refuse a fit whose retained draws would exceed [`MAX_RETAINED_VALUES`].
+///
+/// Each draw is its own vector, whose header costs as much as three values,
+/// so a fit of many tiny draws is counted by what it really holds.
+pub(crate) fn check_retained_draws(
+    num_chains: usize,
+    num_draws: usize,
+    param_count: usize,
+) -> Result<usize, String> {
+    check_request_size(
+        "sampling",
+        &[num_chains, num_draws, param_count.saturating_add(3)],
+        MAX_RETAINED_VALUES,
+        "reduce chains or draws, or the number of parameters",
+    )
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SamplerType {
@@ -111,11 +157,19 @@ impl SamplerConfig {
         if self.num_leapfrog_steps == 0 {
             return Err("num_leapfrog_steps must be positive".into());
         }
-        self.num_warmup
-            .checked_add(self.num_draws)
-            .and_then(|n| n.checked_mul(self.num_chains))
-            .filter(|n| *n <= isize::MAX as usize / std::mem::size_of::<TransitionStats>())
-            .ok_or_else(|| "sampling allocation size overflow".to_string())?;
+        // Every iteration keeps a transition record; refuse a run whose
+        // records alone could not be allocated before any chain starts.
+        check_request_size(
+            "sampling's transition records",
+            &[
+                self.num_chains,
+                self.num_warmup.saturating_add(self.num_draws),
+            ],
+            MAX_MATERIALIZED_VALUES,
+            "reduce chains, warmup or draws",
+        )?;
+        // The draws themselves: at least one value each, whatever the model.
+        check_retained_draws(self.num_chains, self.num_draws, 1)?;
         Ok(())
     }
 }
@@ -559,6 +613,7 @@ fn checked_initial(
     initial: Option<Vec<Vec<f64>>>,
 ) -> Result<Option<Vec<Vec<f64>>>, String> {
     reject_discrete_latent_parameters(graph)?;
+    check_retained_draws(config.num_chains, config.num_draws, graph.param_count)?;
     let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
     binding.validate_for(graph).map_err(|e| e.to_string())?;
     if let Some(positions) = &initial {
@@ -936,6 +991,7 @@ pub fn batch_sample_graphs(
     for graph in &models {
         graph.validate_shapes().map_err(|e| e.to_string())?;
         reject_discrete_latent_parameters(graph)?;
+        check_retained_draws(config.num_chains, config.num_draws, graph.param_count)?;
         bindings.push(DataBinding::from_graph(graph).map_err(|e| e.to_string())?);
     }
 
@@ -996,6 +1052,27 @@ fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), Strin
 mod tests {
     use super::*;
     use rayon::current_num_threads;
+
+    #[test]
+    fn size_limits_admit_ordinary_large_requests() {
+        // 4 chains of 1000 draws of a 30,000-parameter model, or of a
+        // 30,000-observation log-likelihood, are ordinary fits.
+        assert!(check_retained_draws(4, 1000, 30_000).is_ok());
+        assert!(check_request_size("x", &[4000, 30_000], MAX_RETAINED_VALUES, "").is_ok());
+        let config = SamplerConfig {
+            num_chains: 4,
+            num_warmup: 100_000,
+            num_draws: 1_000_000,
+            ..Default::default()
+        };
+        assert!(config.validate().is_ok());
+        let error = check_retained_draws(4, 1000, 300_000).unwrap_err();
+        assert!(
+            error.contains("safety limit") && error.contains("parameters"),
+            "{error}"
+        );
+        assert!(check_retained_draws(usize::MAX, 2, 1).is_err());
+    }
 
     #[test]
     fn transformed_results_retain_exact_raw_tail_positions() {

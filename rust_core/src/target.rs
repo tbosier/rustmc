@@ -10,8 +10,8 @@ use crate::graph::Graph;
 use crate::hmc::{self, HmcConfig};
 use crate::nuts::{self, NutsConfig};
 use crate::sampler::{
-    chain_rng, random_initial_position, validate_initial_values, with_thread_pool, SampleResult,
-    SamplerConfig, SamplerType,
+    chain_rng, check_retained_draws, random_initial_position, validate_initial_values,
+    with_thread_pool, SampleResult, SamplerConfig, SamplerType,
 };
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -119,6 +119,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
             "custom target needs a positive dimension and unique nonempty parameter names".into(),
         );
     }
+    check_retained_draws(config.num_chains, config.num_draws, dimension)?;
     let positions = validate_initial_values(initial, config.num_chains, dimension)?;
     let mut graph = Graph::new();
     for name in &names {

@@ -1,8 +1,8 @@
 //! Warmup adaptation shared by the HMC and NUTS kernels.
 //!
-//! Both kernels adapt the same way: Stan's windowed schedule decides when
-//! the metric is re-estimated, Nesterov dual averaging tunes the step size
-//! throughout warmup, and every metric update is followed by a fresh
+//! Both kernels adapt the same way: a windowed schedule after Stan's decides
+//! when the metric is re-estimated, Nesterov dual averaging tunes the step
+//! size throughout warmup, and every metric update is followed by a fresh
 //! step-size search under the new geometry. Keeping one implementation means
 //! the two kernels cannot drift apart.
 
@@ -17,10 +17,23 @@ const INIT_BUFFER: usize = 75;
 const TERM_BUFFER: usize = 50;
 /// Stan's default first slow-adaptation window.
 const BASE_WINDOW: usize = 25;
-/// Below this many warmup iterations Stan adapts only the step size.
-const MIN_ADAPTATION_WARMUP: usize = 20;
+/// Fewest step-size adaptation iterations that follow the last metric update.
+///
+/// Dual averaging restarts after every update, centred ten times above the
+/// step the search found, and its average needs a couple of dozen updates to
+/// come back down. With the 15% / 10% split, a 20- or 25-iteration warmup
+/// used to install a metric two iterations before the end: the fixed step
+/// size came out near 1.4, twice what the same 3-parameter regression settles
+/// at after a full warmup, and 10-13% of its draws diverged
+/// (`benchmarks/metric_adaptation.py` on the previous build). Twenty-five is
+/// the base window, the settling time the sampler had before those buffers
+/// were introduced.
+const MIN_TERMINAL_ADAPTATION: usize = 25;
+/// Fewest draws a metric window may hold; a shorter slow phase keeps the
+/// initial metric and adapts only the step size.
+const MIN_WINDOW_DRAWS: usize = 10;
 
-/// Stan's windowed warmup schedule: an initial buffer, a run of doubling
+/// Windowed warmup schedule: an initial buffer, a run of doubling
 /// metric-estimation windows, and a terminal buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WarmupSchedule {
@@ -30,45 +43,69 @@ pub(crate) struct WarmupSchedule {
 }
 
 impl WarmupSchedule {
-    /// The schedule Stan's `windowed_adaptation` produces for `num_warmup`.
+    /// The schedule for `num_warmup` iterations.
     ///
-    /// When the default buffers and base window do not fit, Stan falls back to
-    /// 15% / 75% / 10%. A window whose successor could not reach twice its own
-    /// size before the terminal buffer is extended to the terminal buffer
-    /// instead, so the last estimate uses the longest window available rather
-    /// than a truncated one.
-    pub(crate) fn stan(num_warmup: usize) -> Self {
-        if num_warmup < MIN_ADAPTATION_WARMUP {
+    /// The initial buffer is `min(75, 15%)` of warmup and the terminal buffer
+    /// `min(50, 10%)`, but never fewer than [`MIN_TERMINAL_ADAPTATION`]
+    /// iterations; with fewer than [`MIN_WINDOW_DRAWS`] iterations left
+    /// between them (warmup below 41) only the step size is adapted. The
+    /// first window holds 25 draws, or all the room there is when that is
+    /// less. Each later window doubles, and a window whose successor could not
+    /// fit at twice its size is extended to the terminal buffer instead. The
+    /// first window is the exception: it is extended only when fewer than 25
+    /// draws would remain after it, and otherwise the second window takes
+    /// whatever room is left. So after the first, no window is shorter than
+    /// 25 draws or than the one before it.
+    ///
+    /// From 500 iterations up this is Stan's schedule. Below that it differs
+    /// from Stan's `windowed_adaptation` on purpose:
+    ///
+    /// - Stan keeps its 75/25/50 defaults down to 150 iterations and, below
+    ///   150, estimates no metric at all (its fallback returns before
+    ///   `restart()`, so no window ever ends). Scaling the buffers leaves room
+    ///   for two windows from 100 iterations, which a badly scaled target
+    ///   needs: on the regression in `benchmarks/metric_adaptation.py` whose
+    ///   coefficients differ in scale a thousandfold, one window from the unit
+    ///   metric cost about 40 leapfrog steps per draw at 149 iterations
+    ///   against 16 with two, and no metric at all about 25 times as many.
+    /// - Stan applies the extension test from the second window only, and
+    ///   stretching to the terminal buffer can shorten a window: at 151
+    ///   iterations its last window holds one draw.
+    /// - The 25-iteration floor on the terminal buffer; Stan's is 50, or 10%
+    ///   in the fallback where it installs no metric.
+    pub(crate) fn new(num_warmup: usize) -> Self {
+        let init_buffer = INIT_BUFFER.min(num_warmup * 15 / 100);
+        let term_buffer = TERM_BUFFER
+            .min(num_warmup / 10)
+            .max(MIN_TERMINAL_ADAPTATION);
+        let slow_end = num_warmup.saturating_sub(term_buffer);
+        if slow_end < init_buffer + MIN_WINDOW_DRAWS {
             return Self {
                 windows: Vec::new(),
             };
         }
-        let (init_buffer, term_buffer, base_window) =
-            if INIT_BUFFER + BASE_WINDOW + TERM_BUFFER > num_warmup {
-                let init = num_warmup * 15 / 100;
-                let term = num_warmup / 10;
-                (init, term, num_warmup - init - term)
-            } else {
-                (INIT_BUFFER, TERM_BUFFER, BASE_WINDOW)
-            };
-        let slow_end = num_warmup - term_buffer;
         let mut windows = Vec::new();
         let mut start = init_buffer;
-        let mut size = base_window;
-        let mut end = start + size;
+        let mut size = BASE_WINDOW.min(slow_end - init_buffer);
         loop {
+            let mut end = start + size;
+            let extend = if windows.is_empty() {
+                slow_end - end < BASE_WINDOW
+            } else {
+                // Compared with the next window, of twice this size. Only
+                // the second window can end before `start + size`, and then
+                // after the at least 25 draws the first one left for it.
+                end + 2 * size > slow_end
+            };
+            if extend {
+                end = slow_end;
+            }
             windows.push((start, end));
-            if end >= slow_end {
+            if end == slow_end {
                 break;
             }
             start = end;
             size *= 2;
-            end = start + size;
-            // Stan compares inclusive window ends: `next_end_incl + 2 * size
-            // >= slow_end` is `end + 2 * size > slow_end` here.
-            if end + 2 * size > slow_end {
-                end = slow_end;
-            }
         }
         Self { windows }
     }
@@ -149,7 +186,7 @@ impl WarmupAdapter {
         initial_step_size: f64,
         metric: MetricKind,
     ) -> Self {
-        let windows = WarmupSchedule::stan(num_warmup).windows;
+        let windows = WarmupSchedule::new(num_warmup).windows;
         let first_len = windows.first().map_or(0, |(start, end)| end - start);
         Self {
             num_warmup,
@@ -207,12 +244,22 @@ impl WarmupAdapter {
                 self.accumulator.update(q);
             }
             if iter + 1 == end {
-                *mass = self.accumulator.finalize();
+                // The schedule never asks for it, but a window too short to
+                // estimate a variance, or too late for dual averaging to
+                // settle afterwards, keeps the metric the chain already has
+                // rather than install a guess.
+                let usable = self.accumulator.draws() >= MIN_WINDOW_DRAWS
+                    && self.num_warmup - end >= MIN_TERMINAL_ADAPTATION;
+                let estimate = usable.then(|| self.accumulator.finalize());
                 self.next_window += 1;
                 if let Some(&(start, end)) = self.windows.get(self.next_window) {
                     self.accumulator =
                         MassMatrixAccumulator::for_window(graph, self.metric, end - start);
                 }
+                let Some(estimate) = estimate else {
+                    return self.finish(iter, step_size);
+                };
+                *mass = estimate;
                 // A new metric changes both the momentum scale and the
                 // velocity, so the old step size is no longer calibrated.
                 // Search again under the new geometry, from the current step
@@ -230,10 +277,15 @@ impl WarmupAdapter {
                 self.dual.restart(step_size);
             }
         }
+        self.finish(iter, step_size)
+    }
+
+    fn finish(&self, iter: usize, step_size: f64) -> f64 {
         if iter + 1 == self.num_warmup {
-            step_size = self.dual.adapted_step_size();
+            self.dual.adapted_step_size()
+        } else {
+            step_size
         }
-        step_size
     }
 }
 
@@ -368,53 +420,36 @@ mod tests {
     use crate::autodiff::Evaluator;
     use rand::SeedableRng;
 
-    /// Stan's `windowed_adaptation`, transcribed from the C++ with its
-    /// inclusive window ends and per-iteration counter, returning the
-    /// half-open ranges whose draws each metric estimate uses.
-    fn stan_reference(num_warmup: usize) -> Vec<(usize, usize)> {
-        if num_warmup < 20 {
-            return Vec::new();
-        }
-        let (mut init, mut term, mut base) = (75usize, 50usize, 25usize);
-        if init + base + term > num_warmup {
-            init = (0.15 * num_warmup as f64) as usize;
-            term = (0.1 * num_warmup as f64) as usize;
-            base = num_warmup - (init + term);
-        }
-        let mut window_size = base;
-        let mut next_window = init + window_size - 1;
-        let mut windows = Vec::new();
-        let mut window_start = None;
-        for counter in 0..num_warmup {
-            let in_window = counter >= init && counter < num_warmup - term;
-            if in_window && window_start.is_none() {
-                window_start = Some(counter);
-            }
-            if counter == next_window {
-                windows.push((window_start.take().unwrap(), counter + 1));
-                // compute_next_window()
-                if next_window == num_warmup - term - 1 {
-                    continue;
-                }
-                window_size *= 2;
-                next_window = counter + window_size;
-                if next_window != num_warmup - term - 1 {
-                    let boundary = next_window + 2 * window_size;
-                    if boundary >= num_warmup - term {
-                        next_window = num_warmup - term - 1;
-                    }
-                }
-            }
-        }
-        windows
-    }
-
     #[test]
-    fn warmup_windows_match_stan() {
-        let expected: [(usize, &[(usize, usize)]); 5] = [
-            (150, &[(75, 100)]),
+    fn warmup_schedules_for_representative_lengths() {
+        // Written out rather than computed by the test, so a change to the
+        // schedule has to change this table too.
+        let expected: &[(usize, &[(usize, usize)])] = &[
+            (0, &[]),
+            (20, &[]),
+            (25, &[]),
+            (40, &[]),
+            (41, &[(6, 16)]),
+            (50, &[(7, 25)]),
+            (57, &[(8, 32)]),
+            (99, &[(14, 39), (39, 74)]),
+            (100, &[(15, 40), (40, 75)]),
+            (116, &[(17, 42), (42, 91)]),
+            (149, &[(22, 47), (47, 124)]),
+            (150, &[(22, 47), (47, 125)]),
+            (151, &[(22, 47), (47, 126)]),
+            (155, &[(23, 48), (48, 130)]),
+            (160, &[(24, 49), (49, 135)]),
+            (250, &[(37, 62), (62, 112), (112, 225)]),
+            (300, &[(45, 70), (70, 120), (120, 270)]),
+            (499, &[(74, 99), (99, 149), (149, 249), (249, 450)]),
+            // From 500 iterations on, Stan's schedule.
             (500, &[(75, 100), (100, 150), (150, 250), (250, 450)]),
             (750, &[(75, 100), (100, 150), (150, 250), (250, 700)]),
+            (
+                999,
+                &[(75, 100), (100, 150), (150, 250), (250, 450), (450, 949)],
+            ),
             (
                 1000,
                 &[(75, 100), (100, 150), (150, 250), (250, 450), (450, 950)],
@@ -431,21 +466,139 @@ mod tests {
                 ],
             ),
         ];
-        for (num_warmup, windows) in expected {
+        for &(num_warmup, windows) in expected {
             assert_eq!(
-                WarmupSchedule::stan(num_warmup).windows,
+                WarmupSchedule::new(num_warmup).windows,
                 windows,
                 "warmup {num_warmup}"
             );
-            assert_eq!(stan_reference(num_warmup), windows, "warmup {num_warmup}");
         }
-        for num_warmup in 0..3000 {
+    }
+
+    /// Stan's `windowed_adaptation` (stan-dev/stan,
+    /// src/stan/mcmc/windowed_adaptation.hpp), stepped one iteration at a
+    /// time as the C++ does, with its inclusive window ends. It is written
+    /// from Stan's code, not from `WarmupSchedule`, so the two can disagree.
+    fn stan_windows(num_warmup: usize) -> Vec<(usize, usize)> {
+        let (init, term, base) = (75, 50, 25);
+        // Below 20 iterations, and in the fallback below 150, Stan returns
+        // before `restart()`: `adapt_next_window_` keeps its constructor
+        // value `0 + 0 - 1`, which no counter reaches.
+        if num_warmup < 20 || init + base + term > num_warmup {
+            return Vec::new();
+        }
+        let last = num_warmup - term - 1;
+        let mut window_size = base;
+        let mut next_window = init + window_size - 1;
+        let mut windows = Vec::new();
+        let mut window_start = None;
+        for counter in 0..num_warmup {
+            if counter >= init && counter < num_warmup - term && window_start.is_none() {
+                window_start = Some(counter);
+            }
+            if counter == next_window {
+                windows.push((window_start.take().unwrap(), counter + 1));
+                // compute_next_window()
+                if next_window == last {
+                    continue;
+                }
+                window_size *= 2;
+                next_window = counter + window_size;
+                if next_window != last && next_window + 2 * window_size >= num_warmup - term {
+                    next_window = last;
+                }
+            }
+        }
+        windows
+    }
+
+    #[test]
+    fn warmup_schedules_are_stans_from_500_iterations() {
+        for num_warmup in 500..6000 {
             assert_eq!(
-                WarmupSchedule::stan(num_warmup).windows,
-                stan_reference(num_warmup),
+                WarmupSchedule::new(num_warmup).windows,
+                stan_windows(num_warmup),
                 "warmup {num_warmup}"
             );
         }
+        // Below that they differ, as documented: Stan estimates no metric
+        // under 150 iterations and ends 151 on a one-draw window.
+        assert_eq!(stan_windows(149), []);
+        assert_eq!(stan_windows(151), [(75, 100), (100, 101)]);
+        assert_eq!(WarmupSchedule::new(151).windows, [(22, 47), (47, 126)]);
+    }
+
+    #[test]
+    fn warmup_schedules_leave_room_to_estimate_and_to_settle() {
+        for num_warmup in 0..5000 {
+            let windows = WarmupSchedule::new(num_warmup).windows;
+            let Some(&(first_start, first_end)) = windows.first() else {
+                continue;
+            };
+            let &(_, last_end) = windows.last().unwrap();
+            assert!(first_end - first_start >= MIN_WINDOW_DRAWS, "{num_warmup}");
+            assert_eq!(first_start, (num_warmup * 15 / 100).min(INIT_BUFFER));
+            // Every metric is followed by enough step-size adaptation, and
+            // the last window runs up to the terminal buffer.
+            assert!(
+                num_warmup - last_end >= MIN_TERMINAL_ADAPTATION,
+                "{num_warmup}: {windows:?}"
+            );
+            assert_eq!(
+                num_warmup - last_end,
+                (num_warmup / 10).clamp(MIN_TERMINAL_ADAPTATION, TERM_BUFFER),
+                "{num_warmup}"
+            );
+            for pair in windows.windows(2) {
+                let ((start, end), (next_start, next_end)) = (pair[0], pair[1]);
+                assert_eq!(end, next_start, "{num_warmup}: {windows:?}");
+                // No window is shorter than the base window or than the one
+                // before it.
+                assert!(end - start >= BASE_WINDOW, "{num_warmup}: {windows:?}");
+                assert!(next_end - next_start >= end - start, "{num_warmup}");
+            }
+            if num_warmup >= 500 {
+                assert_eq!(first_start, INIT_BUFFER);
+                assert_eq!(first_end, INIT_BUFFER + BASE_WINDOW);
+                assert_eq!(last_end, num_warmup - TERM_BUFFER);
+            }
+        }
+    }
+
+    fn run_adapter(windows: Vec<(usize, usize)>, num_warmup: usize) -> MassMatrix {
+        let (graph, _) = standard_normal();
+        let mut evaluator = Evaluator::new(&graph);
+        let mut adapter = WarmupAdapter::new(&graph, num_warmup, 0.8, 0.5, MetricKind::Auto);
+        adapter.windows = windows;
+        adapter.accumulator = MassMatrixAccumulator::for_window(&graph, MetricKind::Auto, 1);
+        let mut mass = MassMatrix::from_graph(&graph);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        for iter in 0..num_warmup {
+            // Positions far from the unit variance, so any estimate shows.
+            let q = [if iter % 2 == 0 { 30.0 } else { -30.0 }];
+            adapter.after_transition(
+                iter,
+                0.8,
+                &q,
+                &graph,
+                &mut evaluator,
+                &mut mass,
+                &mut rng,
+                &mut [0.0],
+            );
+        }
+        mass
+    }
+
+    #[test]
+    fn unusable_windows_keep_the_current_metric() {
+        let unit = format!("{:?}", MassMatrix::from_graph(&standard_normal().0));
+        // A one-draw window, and a full window with too little warmup left
+        // after it for the step size to settle.
+        assert_eq!(format!("{:?}", run_adapter(vec![(5, 6)], 100)), unit);
+        assert_eq!(format!("{:?}", run_adapter(vec![(5, 90)], 100)), unit);
+        // The same window with room after it does replace the metric.
+        assert_ne!(format!("{:?}", run_adapter(vec![(5, 75)], 100)), unit);
     }
 
     #[test]

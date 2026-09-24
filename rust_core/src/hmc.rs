@@ -77,9 +77,10 @@ pub struct ChainResult {
 
 /// Run a single HMC chain with block-structured mass matrix adaptation.
 ///
-/// Warmup follows Stan's windowed schedule, shared with NUTS: step-size
-/// adaptation only in the initial and terminal buffers, and doubling
-/// metric-estimation windows between them (see `adaptation::WarmupSchedule`).
+/// Warmup uses the windowed schedule shared with NUTS, Stan's from 500
+/// warmup iterations: the step size adapts throughout warmup, and the metric
+/// is re-estimated at the end of each doubling window between an initial and
+/// a terminal buffer (see `adaptation::WarmupSchedule`).
 ///
 /// Integrator buffers are allocated once per chain. After warmup a
 /// transition allocates only the retained draw; during warmup the end of each
@@ -345,11 +346,11 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
             .expect("continuous test model must run");
-        // Warmup 100 is too short for Stan's default buffers, so the schedule
-        // falls back to 15% / 75% / 10%: one window [15, 90), with the metric
-        // replaced after transition 89.
-        let first_after_reset = &chain.transitions[90];
-        let second_after_reset = &chain.transitions[91];
+        // Warmup 100 has a 15-iteration initial buffer, a 25-iteration
+        // terminal buffer and windows [15, 40) and [40, 75) between them, so
+        // the last metric update follows transition 74.
+        let first_after_reset = &chain.transitions[75];
+        let second_after_reset = &chain.transitions[76];
         assert!((first_after_reset.step_size - config.step_size).abs() > 1e-3);
         // The first update of the new adaptation phase is centered on the
         // initial step found with the new metric, not the pre-warmup step.
