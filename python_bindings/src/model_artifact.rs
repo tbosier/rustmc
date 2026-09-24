@@ -1,5 +1,7 @@
 //! Python adapter for the native graph-model artifact.
-use super::{model_error, ModelSpec, PyCompiledModel};
+use crate::builder::{reject_discrete_priors_for_gradient_sampling, ModelSpec};
+use crate::compiled::PyCompiledModel;
+use crate::model_error;
 use pyo3::prelude::*;
 use rustmc_core::model::GraphModel;
 use std::collections::HashMap;
@@ -29,7 +31,7 @@ pub(super) fn decode(text: &str) -> PyResult<PyCompiledModel> {
 /// Rust caller loads an artifact to simulate its prior predictive as well as to
 /// fit it. The restriction is this crate's, not the format's, so it lives here.
 fn from_core(model: GraphModel) -> PyResult<PyCompiledModel> {
-    super::reject_discrete_priors_for_gradient_sampling(&model.definition.priors)?;
+    reject_discrete_priors_for_gradient_sampling(&model.definition.priors)?;
     Ok(PyCompiledModel {
         definition: ModelSpec(model.definition),
         structure: model.structure,

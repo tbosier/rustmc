@@ -1,5 +1,6 @@
 //! Shared generic-result storage and Python diagnostics conversion.
-use super::{FitResult, ModelSpec};
+use crate::builder::ModelSpec;
+use crate::fit_result::FitResult;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::{data::DataBinding, graph::Graph, sampler::SampleResult};

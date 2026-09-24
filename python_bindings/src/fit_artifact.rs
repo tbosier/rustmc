@@ -8,10 +8,11 @@ use rustmc_core::graph::ParamTransform;
 use rustmc_core::hmc::TransitionStats;
 use rustmc_core::sampler::SampleResult;
 
-use super::{
-    compile_python_model, constrained_draw_to_raw, core_binding_from_maps, display_sample_result,
-    model_artifact, Data1d, Data2d, FitResult, PyCompiledModel,
-};
+use crate::builder::compile_python_model;
+use crate::compiled::PyCompiledModel;
+use crate::data_input::{core_binding_from_maps, Data1d, Data2d};
+use crate::fit_result::{constrained_draw_to_raw, display_sample_result, FitResult};
+use crate::model_artifact;
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -285,7 +286,7 @@ pub(super) fn decode(text: &str) -> PyResult<FitResult> {
     artifact
         .model
         .validate_parameter_limit(artifact.posterior.param_names.len())
-        .map_err(super::model_error)?;
+        .map_err(crate::model_error)?;
     let compiled = model_artifact::reconstruct(artifact.model)?;
     let binding = core_binding_from_maps(
         &compiled.structure.schema,

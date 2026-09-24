@@ -1,5 +1,6 @@
 //! Python input adapter for the shared native prediction binder.
-use super::{data_inputs_from_maps, model_error, parse_data_dict};
+use crate::data_input::{data_inputs_from_maps, parse_data_dict};
+use crate::model_error;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rustmc_core::graph::Graph;

@@ -1,6 +1,7 @@
 use rustmc_core::model::MuExpr;
 // Python expression construction; compilation and evaluation live outside this module.
-use super::{validate_finite, ParameterError};
+use crate::builder::validate_finite;
+use crate::ParameterError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
