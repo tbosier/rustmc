@@ -98,6 +98,10 @@ pub(crate) struct PyBayesianAutoRegression {
 #[pymethods]
 impl PyBayesianAutoRegression {
     /// Fit independent ragged cells on one bounded native worker pool.
+    ///
+    /// AR posterior draws are exact and independent, so `warmup` and `thin`
+    /// only reach Gibbs-sampled cells named in `models`; a batch with no such
+    /// cell refuses values other than the defaults instead of ignoring them.
     #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
@@ -124,7 +128,7 @@ impl PyBayesianAutoRegression {
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
+            self.batch_config(chains, draws),
             chains,
             draws,
             warmup,
@@ -420,15 +424,9 @@ impl PyBayesianArForecast {
 }
 
 impl PyBayesianAutoRegression {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
+    /// AR draws are exact and independent, so there is no warmup or thinning.
+    pub(crate) fn batch_config(&self, chains: usize, draws: usize) -> forecast_batch::Config {
         let seed = 0;
-        let _ = (warmup, thin);
         forecast_batch::Config::Ar(CoreBayesianArConfig {
             order: self.order,
             prior: self.prior.clone(),

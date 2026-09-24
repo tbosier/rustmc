@@ -380,6 +380,40 @@ fn run_cells<T: Sync, R: Send>(
     }
 }
 
+/// A cell's converted observations and model, or why it could not be built.
+type CellInput = Result<(Vec<f64>, Config), String>;
+
+/// The `fit_batch` defaults for the Gibbs schedule.
+const DEFAULT_WARMUP: usize = 500;
+const DEFAULT_THIN: usize = 1;
+
+/// Refuse a non-default `warmup` or `thin` that no cell would use.
+///
+/// AR draws are exact and independent, so an all-AR batch has no warmup or
+/// thinning; silently dropping the settings would let a caller believe they
+/// had changed the fit.
+fn reject_unused_schedule(
+    cells: &[(String, CellInput)],
+    warmup: usize,
+    thin: usize,
+) -> PyResult<()> {
+    if (warmup, thin) == (DEFAULT_WARMUP, DEFAULT_THIN) {
+        return Ok(());
+    }
+    let mut configs = cells
+        .iter()
+        .filter_map(|(_, input)| input.as_ref().ok())
+        .map(|(_, config)| config)
+        .peekable();
+    if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
+        return Err(PyValueError::new_err(format!(
+            "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
+             draws are exact and independent; leave them at {DEFAULT_WARMUP} and {DEFAULT_THIN}"
+        )));
+    }
+    Ok(())
+}
+
 /// A cell's input conversion error as the message stored for that cell.
 fn cell_input<T>(py: Python<'_>, input: PyResult<T>) -> Result<T, String> {
     input.map_err(|error| error.value(py).to_string())
@@ -472,7 +506,7 @@ pub(crate) fn fit_batch(
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLinearTrend>>() {
                     model.batch_config(chains, draws, warmup, thin)
                 } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianAutoRegression>>() {
-                    model.batch_config(chains, draws, warmup, thin)
+                    model.batch_config(chains, draws)
                 } else {
                     return Err(
                         "invalid configuration: models entries must be forecasting models or None"
@@ -515,6 +549,7 @@ pub(crate) fn fit_batch(
         })();
         cells.push((ids[index].clone(), input));
     }
+    reject_unused_schedule(&cells, warmup, thin)?;
     check_total_retention(
         cells
             .iter()

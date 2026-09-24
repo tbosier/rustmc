@@ -155,7 +155,14 @@ class BayesianAutoRegression:
         threads: int = 1,
         chunk_size: int = 64,
         errors: Literal["raise", "collect"] = "raise",
-    ) -> ForecastBatchFit: ...
+    ) -> ForecastBatchFit:
+        """Fit independent cells; AR posterior draws are exact and independent.
+
+        ``warmup`` and ``thin`` reach only the Gibbs-sampled cells named in
+        ``models``. A batch whose cells are all autoregressions raises
+        ``ValueError`` for values other than the defaults rather than
+        ignoring them.
+        """
     def __init__(self, order: int, prior: NormalInverseGammaPrior) -> None: ...
     @property
     def order(self) -> int: ...
