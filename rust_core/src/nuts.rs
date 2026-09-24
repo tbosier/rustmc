@@ -85,16 +85,20 @@ struct TreeResult {
 
 /// Run a single NUTS chain with windowed block-structured mass matrix adaptation.
 ///
-/// Warmup follows Stan's windowed schedule (see `adaptation::WarmupSchedule`):
-///   Init buffer (75 draws; 15% of warmup when warmup < 150):
+/// Warmup uses a windowed schedule after Stan's, identical to it from 500
+/// warmup iterations (see `adaptation::WarmupSchedule` for where and why the
+/// two differ below that):
+///   Init buffer (75 draws; 15% of warmup when that is fewer):
 ///       step-size dual-averaging only, identity mass matrix.
-///   Mass-matrix windows (doubling: 25 → 50 → 100 → …; the last one is
-///   extended to the terminal buffer rather than truncated):
+///   Mass-matrix windows (doubling: 25 → 50 → 100 → …; a window whose
+///   successor would not fit is extended to the terminal buffer):
 ///       At the end of each window the block-structured mass matrix is updated
 ///       from Welford estimates collected in that window, the step size is
 ///       searched again under the new metric and dual averaging restarts.
-///   Terminal buffer (50 draws; 10% of warmup when warmup < 150):
+///   Terminal buffer (50 draws; 10% of warmup when that is fewer, but never
+///   fewer than 25):
 ///       step-size dual-averaging only, final fixed mass matrix.
+/// Warmups too short for a 10-draw window adapt only the step size.
 ///
 /// # Errors
 ///
@@ -183,7 +187,7 @@ pub(crate) fn run_chain_with_evaluator(
     let mut scratch = vec![0.0f64; dim];
     let mut pool = PointPool::new(dim);
 
-    // Stan's windowed warmup: step-size-only buffers around doubling
+    // Windowed warmup: step-size-only buffers around doubling
     // metric-estimation windows; see `adaptation::WarmupSchedule`.
     let mut adapter = WarmupAdapter::new(
         graph,
@@ -695,6 +699,82 @@ mod tests {
     use super::*;
     use crate::graph::Graph;
     use rand::SeedableRng;
+
+    /// `y = a + s x + noise` with an unknown noise scale when `sigma` is
+    /// `None`; `x_scale` sets how far apart the posterior scales of `a` and
+    /// `s` are.
+    fn regression(n: usize, x_scale: f64, sigma: Option<f64>, prior_a: f64) -> Graph {
+        use rand_distr::{Distribution, StandardNormal};
+        let mut rng = ChaCha8Rng::seed_from_u64(0);
+        let mut normal = || -> f64 { StandardNormal.sample(&mut rng) };
+        let x: Vec<f64> = (0..n).map(|_| x_scale * normal()).collect();
+        let noise = sigma.unwrap_or(1.0);
+        let y: Vec<f64> = x.iter().map(|x| 1.0 + 0.5 * x + noise * normal()).collect();
+        let mut graph = Graph::new();
+        let a = crate::distributions::Normal::prior(&mut graph, "a", 0.0, prior_a);
+        let s = crate::distributions::Normal::prior(&mut graph, "s", 0.0, 10.0);
+        let scale = match sigma {
+            Some(sigma) => graph.add_constant(sigma),
+            None => crate::distributions::HalfNormal::prior(&mut graph, "sigma", 5.0),
+        };
+        let x = graph.add_data("x", x);
+        let slope = graph.scalar_mul_data(s, x);
+        let mu = graph.scalar_broadcast_add(a, slope);
+        let obs = graph.add_obs_data(y);
+        graph.normal_obs_logp(mu, scale, obs);
+        graph
+    }
+
+    #[test]
+    fn very_short_warmups_do_not_end_on_an_unsettled_step_size() {
+        // A 10% terminal buffer is two iterations at a 20-iteration warmup.
+        // Installing a metric before it left dual averaging two updates after
+        // its restart, centred ten times above the searched step: step sizes
+        // near 1.4 where this model settles near 0.7, and about one draw in
+        // ten divergent. Up to 40 iterations no metric is installed now; from
+        // 41 one is, with 25 iterations to settle after it.
+        let graph = regression(30, 1.0, None, 10.0);
+        for num_warmup in [20, 25, 30, 41, 50, 60] {
+            for seed in 0..4 {
+                let config = NutsConfig {
+                    num_warmup,
+                    num_draws: 500,
+                    ..NutsConfig::default()
+                };
+                let mut rng = ChaCha8Rng::seed_from_u64(seed);
+                let chain = run_chain(&graph, &config, &mut rng, None, None).unwrap();
+                assert_eq!(chain.divergences, 0, "warmup {num_warmup} seed {seed}");
+                assert!(
+                    chain.step_size < 1.1,
+                    "warmup {num_warmup} seed {seed}: {}",
+                    chain.step_size
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn warmups_just_past_the_default_buffers_keep_their_metric() {
+        // Intercept and slope posterior sds of about 7 and 0.007. At warmup
+        // 151 to 153 the last window used to hold one to three draws, whose
+        // estimate (for one draw, the regularized unit variance) replaced the
+        // 25-draw one before it, costing hundreds of leapfrog steps per draw
+        // instead of about 16.
+        let graph = regression(200, 1000.0, Some(100.0), 1000.0);
+        for num_warmup in [150, 151, 152, 153, 155] {
+            let config = NutsConfig {
+                num_warmup,
+                num_draws: 300,
+                ..NutsConfig::default()
+            };
+            let mut rng = ChaCha8Rng::seed_from_u64(1);
+            let chain = run_chain(&graph, &config, &mut rng, None, None).unwrap();
+            let draws = &chain.transitions[num_warmup..];
+            let steps = draws.iter().map(|t| t.num_leapfrog_steps).sum::<usize>() as f64
+                / draws.len() as f64;
+            assert!(steps < 60.0, "warmup {num_warmup}: {steps} steps per draw");
+        }
+    }
 
     #[test]
     fn output_only_deterministic_preserves_sampling_from_zero() {

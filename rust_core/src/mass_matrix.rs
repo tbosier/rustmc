@@ -246,6 +246,11 @@ impl MassMatrixAccumulator {
         Self { blocks }
     }
 
+    /// Draws accumulated so far.
+    pub fn draws(&self) -> usize {
+        self.blocks.first().map_or(0, AccumulatorBlock::count)
+    }
+
     pub fn update(&mut self, q: &[f64]) {
         for block in &mut self.blocks {
             block.update(q);
@@ -407,6 +412,14 @@ impl AccumulatorBlock {
                 mean: vec![0.0; len],
                 m2: vec![0.0; len],
             }
+        }
+    }
+
+    fn count(&self) -> usize {
+        match self {
+            Self::Scalar { count, .. }
+            | Self::Diagonal { count, .. }
+            | Self::Dense { count, .. } => *count,
         }
     }
 
