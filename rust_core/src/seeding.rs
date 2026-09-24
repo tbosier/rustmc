@@ -18,7 +18,12 @@
 /// a stream. The previous form added all three before a single round, so
 /// chain `c` of seed `s` was chain 0 of seed `s + c * 0x9E37_79B9_7F4A_7C15`,
 /// and two domains met at seeds offset by their difference; mixing each input
-/// before the next is combined leaves no such offset.
+/// before the next is combined leaves no such offset. Different seeds can
+/// still share a chain: for a fixed chain index and domain the map from seed
+/// to stream is a bijection onto all of `u64`, so chain `c > 0` of a seed is
+/// chain 0 of exactly one other seed (chain 1 of seed 14758518203450600995 is
+/// chain 0 of seed 42), found only by inverting the mixing rounds rather than
+/// by any simple relation between the seeds.
 pub fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
     let keyed = splitmix64_finalize(splitmix64_finalize(seed) ^ domain);
     splitmix64_finalize(keyed.wrapping_add((chain_index as u64).wrapping_mul(GOLDEN_GAMMA)))
@@ -110,6 +115,15 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn some_other_seed_always_shares_a_chain() {
+        // The documented counterexample: seeds are not a partition of streams.
+        assert_eq!(
+            chain_seed(14758518203450600995, 1, SAMPLER_FIT_SEED_DOMAIN),
+            chain_seed(42, 0, SAMPLER_FIT_SEED_DOMAIN)
+        );
     }
 
     #[test]
