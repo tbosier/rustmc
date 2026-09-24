@@ -2,6 +2,10 @@
 name = "rustmc_core"
 version = "0.13.0"
 edition = "2021"
+# Set by the standard library, not by a dependency: `is_multiple_of` on unsigned
+# integers is stable from 1.87. Built with exactly this toolchain in CI (the `msrv`
+# job), so a newer API cannot slip in unnoticed.
+rust-version = "1.87"
 description = "Structure-aware Bayesian inference engine"
 license = "MIT"
 repository = "https://github.com/tbosier/rustmc"

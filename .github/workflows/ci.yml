@@ -19,15 +19,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Verify synchronized package/dependency/lock versions
         run: python3 scripts/verify_version.py
       - run: cargo fmt --all -- --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       # Statistical recovery tests exercise thousands of gradient evaluations;
       # run them with production arithmetic/code generation.
       - run: cargo test --workspace --release
+      # Ignored by default because it fits 4 x 2000 draws; with the release
+      # build above already in place it adds well under a minute.
+      - name: Run the ignored realistic-settings prediction test
+        run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
       - name: Verify publishable Rust crate archive
         run: cargo package -p rustmc_core --locked
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust_core/Cargo.toml is the single source of truth for the MSRV.
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' rust_core/Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo build -p rustmc_core --locked
 
   python-source-install:
     name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
@@ -36,13 +56,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # Add macos-latest / windows-latest here once someone has verified
         # the steps below on those platforms (see CONTRIBUTING.md).
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
@@ -72,6 +95,12 @@ jobs:
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
+      # Deselected from the default run by pyproject.toml because it needs the
+      # network: builds a wheel with maturin, installs it into a fresh venv with
+      # pip, and imports it from outside the checkout.
+      - name: Install the built wheel into a clean venv (network-marked test)
+        if: matrix.python-version == '3.11'
+        run: ${{ runner.temp }}/source-env/bin/python -m pytest -q -m network tests/test_packaging.py
       # Nothing ran the examples before, so two of them grew to ~57 and ~42
       # minutes and drifted out of examples/README.md unnoticed. The README
       # tables are the manifest; a script in neither a table nor an excluded
@@ -107,13 +136,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # Add macos-latest / windows-latest here once someone has verified
         # the steps below on those platforms (see CONTRIBUTING.md).
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
