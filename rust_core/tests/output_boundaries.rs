@@ -260,3 +260,114 @@ fn raw_kernels_return_errors_for_bad_inputs() {
     assert!(nuts::run_chain(&empty, &nuts_config, &mut rng, None, None).is_err());
     assert!(hmc::run_chain(&empty, &hmc_config, &mut rng, None, None).is_err());
 }
+
+/// Counts heap allocations made by the current thread while enabled, so the
+/// hot-path claims below are checked rather than asserted in comments.
+mod allocation_counter {
+    use std::alloc::{GlobalAlloc, Layout, System};
+    use std::cell::Cell;
+
+    pub struct Counting;
+
+    thread_local! {
+        static COUNT: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    fn record() {
+        COUNT.with(|count| {
+            if let Some(n) = count.get() {
+                count.set(Some(n + 1));
+            }
+        });
+    }
+
+    unsafe impl GlobalAlloc for Counting {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            record();
+            unsafe { System.alloc(layout) }
+        }
+        unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+            unsafe { System.dealloc(ptr, layout) }
+        }
+        unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+            record();
+            unsafe { System.realloc(ptr, layout, new_size) }
+        }
+    }
+
+    /// Allocations `f` makes on this thread.
+    pub fn count<T>(f: impl FnOnce() -> T) -> (usize, T) {
+        COUNT.with(|count| count.set(Some(0)));
+        let value = f();
+        let n = COUNT.with(|count| count.replace(None)).unwrap_or(0);
+        (n, value)
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: allocation_counter::Counting = allocation_counter::Counting;
+
+fn regression_graph() -> Graph {
+    let mut graph = Graph::new();
+    let intercept = Normal::prior(&mut graph, "intercept", 0.0, 1.0);
+    let start = graph.add_vector_params("beta", 3);
+    graph.vector_normal_logp(start, 3, 0.0, 1.0);
+    let rows = 12;
+    let x: Vec<f64> = (0..rows * 3).map(|i| (i as f64 * 0.37).sin()).collect();
+    let matrix = graph.store_matrix(x, rows, 3);
+    let mu = graph.mat_vec_mul(matrix, start, 3, Some(intercept));
+    let one = graph.add_constant(1.0);
+    let y: Vec<f64> = (0..rows).map(|i| (i as f64 * 0.11).cos()).collect();
+    let obs = graph.add_obs_data(y);
+    graph.normal_obs_logp(mu, one, obs);
+    graph
+}
+
+#[test]
+fn evaluator_passes_do_not_allocate() {
+    let graph = regression_graph();
+    let mut evaluator = Evaluator::new(&graph);
+    let position = [0.1, -0.2, 0.3, 0.05];
+    evaluator.compute(&graph, &position);
+    let (allocations, ()) = allocation_counter::count(|| {
+        for _ in 0..50 {
+            evaluator.compute(&graph, &position);
+            evaluator.forward(&graph, &position);
+        }
+    });
+    assert_eq!(allocations, 0);
+}
+
+#[test]
+fn nuts_transitions_allocate_only_the_retained_draw() {
+    use rand::SeedableRng;
+    use rustmc_core::nuts::{self, NutsConfig};
+    let graph = regression_graph();
+    let run = |draws: usize| {
+        let config = NutsConfig {
+            num_warmup: 100,
+            num_draws: draws,
+            ..Default::default()
+        };
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(5);
+        allocation_counter::count(|| {
+            nuts::run_chain(&graph, &config, &mut rng, None, None).unwrap()
+        })
+    };
+    let (short, short_chain) = run(200);
+    let (long, long_chain) = run(400);
+    // The two runs share their first 300 transitions exactly.
+    assert_eq!(short_chain.samples[..], long_chain.samples[..200]);
+    let extra_steps: usize = long_chain.transitions[300..]
+        .iter()
+        .map(|t| t.num_leapfrog_steps)
+        .sum();
+    // Each extra draw clones its position once; the tree's phase points come
+    // from a pool that has already grown to size. Before the pool, every
+    // leapfrog step allocated nine vectors.
+    let extra = long - short;
+    assert!(
+        extra <= 200 + 16,
+        "{extra} allocations for 200 draws and {extra_steps} leapfrog steps"
+    );
+}
