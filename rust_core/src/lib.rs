@@ -33,8 +33,3 @@ pub mod structural;
 pub mod target;
 
 pub use data::{BindError, DataBinding, DataInputs, DataSchema, DataSlot, MatrixBinding, SlotKind};
-
-// Future: GPU-accelerated log-probability evaluation via wgpu.
-//
-// Future: Large hierarchical model optimizations — richer block structures
-// for very large correlated groups and sparse graph evaluation.

@@ -1,12 +1,5 @@
 use crate::graph::{Graph, NodeId, ParamTransform};
 
-#[deprecated(
-    note = "unused abstraction; use graph log-probability terms or the native LogDensity interface"
-)]
-pub trait Distribution {
-    fn logp(&self, graph: &mut Graph) -> NodeId;
-}
-
 // ── Normal (unconstrained) ──────────────────────────────────────────
 
 pub struct Normal;
@@ -31,12 +24,6 @@ impl Normal {
         let param = graph.add_param(name);
         graph.normal_logp(param, mu_node, sigma_node);
         param
-    }
-
-    pub fn observed(graph: &mut Graph, mu_vec: NodeId, sigma: f64, obs: Vec<f64>) -> NodeId {
-        let sigma_node = graph.add_constant(sigma);
-        let obs_idx = graph.add_obs_data(obs);
-        graph.normal_obs_logp(mu_vec, sigma_node, obs_idx)
     }
 }
 

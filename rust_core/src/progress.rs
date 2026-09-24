@@ -219,7 +219,7 @@ fn render_plain(state: &ProgressState, err: &mut impl Write) {
 
 /// Spawn a background thread that renders the progress bar at ~10 Hz (TTY)
 /// or every ~10 s / 10% milestone (non-TTY).
-pub fn spawn_progress_thread(state: Arc<ProgressState>) -> std::thread::JoinHandle<()> {
+pub(crate) fn spawn_progress_thread(state: Arc<ProgressState>) -> std::thread::JoinHandle<()> {
     let is_tty = std::io::stderr().is_terminal();
     std::thread::spawn(move || {
         let mut last_plain_pct = 0usize;

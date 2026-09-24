@@ -597,7 +597,7 @@ impl Evaluator {
     /// Read a vector element from either a Data node (graph reference) or
     /// a computed-vector node (vec_buf).
     #[inline(always)]
-    fn read_vec(&self, node_id: usize, i: usize, _graph: &Graph) -> f64 {
+    fn read_vec(&self, node_id: usize, i: usize) -> f64 {
         match self.node_kind[node_id] {
             NodeKind::DataRef(di) => self.binding.vectors[di][i],
             NodeKind::ComputedVec(off) => self.vec_buf[off + i],
@@ -622,8 +622,11 @@ impl Evaluator {
     }
 
     /// Read the i-th element of a vector node after `compute()`.
-    pub fn vec_elem(&self, node: NodeId, i: usize, graph: &Graph) -> f64 {
-        self.read_vec(node.0, i, graph)
+    ///
+    /// The evaluator owns every value it reads, so `_graph` is unused; it is
+    /// kept so existing callers need not change.
+    pub fn vec_elem(&self, node: NodeId, i: usize, _graph: &Graph) -> f64 {
+        self.read_vec(node.0, i)
     }
 
     /// Compute log-probability and its gradient. Results are stored in
@@ -654,8 +657,8 @@ impl Evaluator {
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
-                        let av = self.read_vec(a.0, i, graph);
-                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let av = self.read_vec(a.0, i);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
                         let value = operator.value(av, bv);
                         match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.vec_buf[off + i] = value,
@@ -672,13 +675,13 @@ impl Evaluator {
                         unreachable!()
                     };
                     for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        let k = *param_start + self.read_vec(indices.0, i) as usize;
                         self.vec_buf[off + i] = graph.param_transforms[k].apply(params[k]);
                     }
                 }
                 Op::Sum(a) => {
                     self.scalars[idx] = (0..self.node_lengths[a.0].max(1))
-                        .map(|i| self.read_vec(a.0, i, graph))
+                        .map(|i| self.read_vec(a.0, i))
                         .sum()
                 }
                 Op::BroadcastObservation { scalar, .. } => {
@@ -704,7 +707,7 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let d = self.read_vec(data.0, i, graph);
+                        let d = self.read_vec(data.0, i);
                         self.vec_buf[out_off + i] = s * d;
                     }
                 }
@@ -714,8 +717,8 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let va = self.read_vec(a.0, i, graph);
-                        let vb = self.read_vec(b.0, i, graph);
+                        let va = self.read_vec(a.0, i);
+                        let vb = self.read_vec(b.0, i);
                         self.vec_buf[out_off + i] = va + vb;
                     }
                 }
@@ -726,7 +729,7 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     for i in 0..vl {
-                        let v = self.read_vec(vec.0, i, graph);
+                        let v = self.read_vec(vec.0, i);
                         self.vec_buf[out_off + i] = s + v;
                     }
                 }
@@ -801,7 +804,7 @@ impl Evaluator {
                             let n = obs.len() as f64;
                             let mut sum_sq = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let d = (y - m) / sv;
                                 sum_sq += d * d;
                             }
@@ -810,7 +813,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::BernoulliLogit => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += bernoulli_logit_logp(y, eta);
                             }
                             self.scalars[idx] = sum;
@@ -818,7 +821,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::PoissonLog => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += crate::count_sampling::log_mass_from_log_rate(y, eta);
                             }
                             self.scalars[idx] = sum;
@@ -826,7 +829,7 @@ impl Evaluator {
                         crate::graph::ObsFamily::ExponentialLog => {
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += eta - y * eta.exp();
                             }
                             self.scalars[idx] = sum;
@@ -843,7 +846,7 @@ impl Evaluator {
                             let mut sum = 0.0f64;
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
                                 let y = observation;
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let ly = y.ln();
                                 let d = (ly - m) / sv;
                                 sum += log_norm - ly - 0.5 * d * d;
@@ -855,7 +858,7 @@ impl Evaluator {
                             let av = self.scalars[alpha_node.0];
                             let mut sum = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 sum += crate::negative_binomial::log_mass(y, eta, av);
                             }
                             self.scalars[idx] = sum;
@@ -1078,8 +1081,8 @@ impl Evaluator {
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
                     for i in 0..vl.max(1) {
-                        let av = self.read_vec(a.0, i, graph);
-                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i, graph));
+                        let av = self.read_vec(a.0, i);
+                        let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
                         let upstream = match self.node_kind[idx] {
                             NodeKind::ComputedVec(off) => self.adj_vec_buf[off + i],
                             _ => a_s,
@@ -1108,7 +1111,7 @@ impl Evaluator {
                         unreachable!()
                     };
                     for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i, graph) as usize;
+                        let k = *param_start + self.read_vec(indices.0, i) as usize;
                         self.grad[k] += self.adj_vec_buf[off + i]
                             * graph.param_transforms[k].derivative(params[k]);
                     }
@@ -1160,7 +1163,7 @@ impl Evaluator {
                     let mut ds = 0.0f64;
                     for i in 0..vl {
                         let upstream = self.adj_vec_buf[out_off + i];
-                        let d_val = self.read_vec(data.0, i, graph);
+                        let d_val = self.read_vec(data.0, i);
                         ds += upstream * d_val;
                         // Propagate to data's adjoint (only if it's a computed vec)
                         if let NodeKind::ComputedVec(d_off) = self.node_kind[data.0] {
@@ -1285,7 +1288,7 @@ impl Evaluator {
                             };
 
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let diff = (y - m) / sv;
                                 if let Some(off) = mu_off {
                                     self.adj_vec_buf[off + i] += a_s * (diff / sv);
@@ -1300,7 +1303,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = bernoulli_logit_grad(y, eta);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1313,7 +1316,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = y - eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1326,7 +1329,7 @@ impl Evaluator {
                                 _ => None,
                             };
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = 1.0 - y * eta.exp();
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
@@ -1348,7 +1351,7 @@ impl Evaluator {
                             for (i, &observation) in obs.iter().take(vl).enumerate() {
                                 let y = observation;
                                 let ly = y.ln();
-                                let m = self.read_vec(linpred_vec.0, i, graph);
+                                let m = self.read_vec(linpred_vec.0, i);
                                 let d = (ly - m) / sv;
                                 if let Some(off) = mu_off {
                                     self.adj_vec_buf[off + i] += a_s * (d / sv);
@@ -1366,7 +1369,7 @@ impl Evaluator {
                             };
                             let mut dalpha = 0.0f64;
                             for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i, graph);
+                                let eta = self.read_vec(linpred_vec.0, i);
                                 let (deta, da) = crate::negative_binomial::gradients(y, eta, av);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * deta;

@@ -1676,24 +1676,12 @@ impl ModelFit {
         for (chain_index, chain) in self.raw.samples.iter().enumerate() {
             let mut values = vec![Vec::with_capacity(chain.len()); heads.len()];
             for (draw_index, draw) in chain.iter().enumerate() {
-                let reconstructed;
-                let position = if let Some(raw) = &self.raw.unconstrained_samples {
-                    &raw[chain_index][draw_index]
-                } else {
-                    reconstructed = draw
-                        .iter()
-                        .zip(&prediction_graph.param_transforms)
-                        .map(|(&v, t)| match t {
-                            ParamTransform::Identity => v,
-                            ParamTransform::Exp => v.ln(),
-                            ParamTransform::Sigmoid => v.ln() - (-v).ln_1p(),
-                            ParamTransform::BoundedSigmoid { lower, upper } => {
-                                let p = (v - lower) / (upper - lower);
-                                p.ln() - (-p).ln_1p()
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    &reconstructed
+                // `sampler` keeps the raw positions whenever any parameter is
+                // transformed, so without them every transform is the
+                // identity and the reported draw is the position.
+                let position = match &self.raw.unconstrained_samples {
+                    Some(raw) => &raw[chain_index][draw_index],
+                    None => draw,
                 };
                 evaluator.forward(&prediction_graph, position);
                 for (i, head) in heads.iter().enumerate() {
