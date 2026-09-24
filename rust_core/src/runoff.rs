@@ -9,17 +9,50 @@
 use rand::{distributions::Open01, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Binomial, Distribution, Gamma};
+use rayon::prelude::*;
 
 use crate::count_sampling::MAX_EXACT_COUNT;
+use crate::seeding::chain_seed;
+
+const FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46; // "RUNOFF_F"
 const MAX_RETAINED_VALUES: usize = 25_000_000;
 
-fn validate_allocation(factors: &[usize]) -> Result<(), String> {
+/// Why a runoff fit or query failed. The message is the whole explanation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunoffError {
+    /// The triangle, prior, sampler settings or request are invalid; nothing
+    /// was sampled.
+    InvalidInput(String),
+    /// A draw left the range the sampler represents exactly; no draw was
+    /// clipped or removed.
+    NumericalFailure(String),
+}
+
+impl std::fmt::Display for RunoffError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(message) | Self::NumericalFailure(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for RunoffError {}
+
+fn invalid(message: impl Into<String>) -> RunoffError {
+    RunoffError::InvalidInput(message.into())
+}
+
+fn numerical(message: impl Into<String>) -> RunoffError {
+    RunoffError::NumericalFailure(message.into())
+}
+
+fn validate_allocation(factors: &[usize]) -> Result<(), RunoffError> {
     if factors
         .iter()
         .try_fold(1_usize, |n, factor| n.checked_mul(*factor))
         .is_none_or(|n| n > MAX_RETAINED_VALUES)
     {
-        return Err("requested runoff allocation exceeds 25 million values; reduce cohorts, lags, chains, draws, or horizon".into());
+        return Err(invalid("requested runoff allocation exceeds 25 million values; reduce cohorts, lags, chains, draws, or horizon"));
     }
     Ok(())
 }
@@ -67,57 +100,61 @@ pub struct RunoffPosterior {
 }
 
 impl PaymentTriangle {
-    pub fn validate(&self, categories: usize) -> Result<(), String> {
+    pub fn validate(&self, categories: usize) -> Result<(), RunoffError> {
         if categories < 2 {
-            return Err("alpha needs at least one regular lag and a final tail category".into());
+            return Err(invalid(
+                "alpha needs at least one regular lag and a final tail category",
+            ));
         }
         if self.counts.is_empty()
             || self.origins.len() != self.counts.len()
             || self.known_totals.len() != self.counts.len()
         {
-            return Err(
-                "counts, origins, and totals must have the same nonzero cohort count".into(),
-            );
+            return Err(invalid(
+                "counts, origins, and totals must have the same nonzero cohort count",
+            ));
         }
         for (i, row) in self.counts.iter().enumerate() {
             if row.len() != categories {
-                return Err(format!(
+                return Err(invalid(format!(
                     "cohort {i}: count columns must match alpha including tail"
-                ));
+                )));
             }
             let mut sum = 0_u64;
             for (lag, count) in row.iter().enumerate() {
                 let date = self.origins[i]
                     .checked_add(lag as i64)
-                    .ok_or("origin plus development overflows calendar")?;
+                    .ok_or_else(|| invalid("origin plus development overflows calendar"))?;
                 if lag + 1 < categories && count.is_some() != (date <= self.valuation) {
-                    return Err(format!("cohort {i}, lag {lag}: elapsed regular cells must be observed and future cells unobserved"));
+                    return Err(invalid(format!("cohort {i}, lag {lag}: elapsed regular cells must be observed and future cells unobserved")));
                 }
                 if lag + 1 == categories && count.is_some() && date > self.valuation {
-                    return Err(format!(
+                    return Err(invalid(format!(
                         "cohort {i}: tail cannot close before its first possible period"
-                    ));
+                    )));
                 }
                 if let Some(n) = count {
                     if *n > MAX_EXACT_COUNT {
-                        return Err("counts must not exceed 2**53 - 1".into());
+                        return Err(invalid("counts must not exceed 2**53 - 1"));
                     }
-                    sum = sum.checked_add(*n).ok_or("observed count sum overflow")?;
+                    sum = sum
+                        .checked_add(*n)
+                        .ok_or_else(|| invalid("observed count sum overflow"))?;
                 }
             }
             if sum > MAX_EXACT_COUNT {
-                return Err("cohort observed total must not exceed 2**53 - 1".into());
+                return Err(invalid("cohort observed total must not exceed 2**53 - 1"));
             }
             if let Some(total) = self.known_totals[i] {
                 if total > MAX_EXACT_COUNT || sum > total {
-                    return Err(format!(
+                    return Err(invalid(format!(
                         "cohort {i}: known total must cover observed counts and be <= 2**53 - 1"
-                    ));
+                    )));
                 }
                 if row.iter().all(Option::is_some) && sum != total {
-                    return Err(format!(
+                    return Err(invalid(format!(
                         "cohort {i}: closed row must sum to its known total"
-                    ));
+                    )));
                 }
             }
         }
@@ -125,39 +162,47 @@ impl PaymentTriangle {
     }
 }
 
-fn validate_config(config: &RunoffConfig) -> Result<(), String> {
+fn validate_config(config: &RunoffConfig) -> Result<(), RunoffError> {
     if config.alpha.len() < 2
         || config.alpha.iter().any(|a| !a.is_finite() || *a <= 0.0)
         || !config.alpha.iter().sum::<f64>().is_finite()
     {
-        return Err("alpha must contain at least two finite positive concentrations".into());
+        return Err(invalid(
+            "alpha must contain at least two finite positive concentrations",
+        ));
     }
     if !config.total_shape.is_finite()
         || config.total_shape <= 0.0
         || !config.total_rate.is_finite()
         || config.total_rate <= 0.0
     {
-        return Err("total_shape and total_rate must be finite and positive".into());
+        return Err(invalid(
+            "total_shape and total_rate must be finite and positive",
+        ));
     }
     if config.draws == 0 || config.chains == 0 || config.draws.checked_add(config.warmup).is_none()
     {
-        return Err(
-            "draws and chains must be positive and draws + warmup must not overflow".into(),
-        );
+        return Err(invalid(
+            "draws and chains must be positive and draws + warmup must not overflow",
+        ));
     }
     validate_allocation(&[config.draws, config.chains])?;
     Ok(())
 }
 
-fn beta_draw(a: f64, b: f64, rng: &mut ChaCha8Rng) -> Result<f64, String> {
-    let q = Beta::new(a, b).map_err(|e| e.to_string())?.sample(rng);
+fn beta_draw(a: f64, b: f64, rng: &mut ChaCha8Rng) -> Result<f64, RunoffError> {
+    let q = Beta::new(a, b)
+        .map_err(|e| numerical(e.to_string()))?
+        .sample(rng);
     if !q.is_finite() {
-        return Err("nonfinite Beta draw; rescale extreme prior or counts".into());
+        return Err(numerical(
+            "nonfinite Beta draw; rescale extreme prior or counts",
+        ));
     }
     Ok(q)
 }
 
-fn dirichlet(alpha: &[f64], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, String> {
+fn dirichlet(alpha: &[f64], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, RunoffError> {
     let mut remaining = 1.0;
     let mut p = Vec::with_capacity(alpha.len());
     for lag in 0..alpha.len() - 1 {
@@ -169,7 +214,7 @@ fn dirichlet(alpha: &[f64], rng: &mut ChaCha8Rng) -> Result<Vec<f64>, String> {
     Ok(p)
 }
 
-fn binomial(n: u64, probability: f64, rng: &mut ChaCha8Rng) -> Result<u64, String> {
+fn binomial(n: u64, probability: f64, rng: &mut ChaCha8Rng) -> Result<u64, RunoffError> {
     let probability = probability.clamp(0.0, 1.0);
     let p = probability.min(1.0 - probability);
     // rand_distr 0.4's BINV uses powi(i32), so it incorrectly dispatches sparse
@@ -195,30 +240,33 @@ fn binomial(n: u64, probability: f64, rng: &mut ChaCha8Rng) -> Result<u64, Strin
         });
     }
     Ok(Binomial::new(n, probability)
-        .map_err(|e| e.to_string())?
+        .map_err(|e| numerical(e.to_string()))?
         .sample(rng))
 }
 
-fn poisson(mean: f64, rng: &mut ChaCha8Rng) -> Result<u64, String> {
-    crate::count_sampling::poisson(mean, rng).map(|value| value as u64)
+fn poisson(mean: f64, rng: &mut ChaCha8Rng) -> Result<u64, RunoffError> {
+    crate::count_sampling::poisson(mean, rng)
+        .map(|value| value as u64)
+        .map_err(|e| numerical(e.to_string()))
 }
 
 /// Independent posterior stick-breaking hazards under known-total prefix censoring.
 /// A cohort contributes successes x_l and failures N - sum_{j<=l} x_j only at
 /// elapsed lags. The prior hazards are independent Beta(alpha_l, sum_{j>l} alpha_j).
-pub fn known_total_hazard_posterior(
+fn known_total_hazard_posterior(
     triangle: &PaymentTriangle,
     alpha: &[f64],
-) -> Result<Vec<(f64, f64)>, String> {
+) -> Result<Vec<(f64, f64)>, RunoffError> {
     triangle.validate(alpha.len())?;
     if alpha.iter().any(|a| !a.is_finite() || *a <= 0.0) || !alpha.iter().sum::<f64>().is_finite() {
-        return Err("alpha must be finite and positive".into());
+        return Err(invalid("alpha must be finite and positive"));
     }
     let mut params = (0..alpha.len() - 1)
         .map(|l| (alpha[l], alpha[l + 1..].iter().sum::<f64>()))
         .collect::<Vec<_>>();
     for (cohort, row) in triangle.counts.iter().enumerate() {
-        let mut remaining = triangle.known_totals[cohort].ok_or("all totals must be known")?;
+        let mut remaining =
+            triangle.known_totals[cohort].ok_or_else(|| invalid("all totals must be known"))?;
         for (lag, cell) in row.iter().take(alpha.len() - 1).enumerate() {
             if let Some(n) = cell {
                 remaining -= n;
@@ -235,7 +283,7 @@ pub fn known_total_hazard_posterior(
 pub fn fit_runoff(
     triangle: &PaymentTriangle,
     config: &RunoffConfig,
-) -> Result<RunoffPosterior, String> {
+) -> Result<RunoffPosterior, RunoffError> {
     validate_config(config)?;
     triangle.validate(config.alpha.len())?;
     validate_allocation(&[
@@ -245,12 +293,12 @@ pub fn fit_runoff(
             .counts
             .len()
             .checked_add(1)
-            .ok_or("cohort count overflow")?,
+            .ok_or_else(|| invalid("cohort count overflow"))?,
         config
             .alpha
             .len()
             .checked_add(3)
-            .ok_or("lag count overflow")?,
+            .ok_or_else(|| invalid("lag count overflow"))?,
     ])?;
     let exact = triangle.known_totals.iter().all(Option::is_some);
     let hazards = if exact {
@@ -264,13 +312,12 @@ pub fn fit_runoff(
         .iter()
         .map(|r| r.iter().flatten().sum::<u64>())
         .collect::<Vec<_>>();
-    let mut chains = Vec::with_capacity(config.chains);
-    for chain in 0..config.chains {
-        let mut rng = ChaCha8Rng::seed_from_u64(
-            config
-                .seed
-                .wrapping_add((chain as u64).wrapping_mul(0x9e3779b97f4a7c15)),
-        );
+    // Each chain owns its stream, so how rayon schedules chains cannot change
+    // a draw, and the first failing chain in chain order is the one reported.
+    let chains = (0..config.chains)
+        .into_par_iter()
+        .map(|chain| -> Result<Vec<RunoffDraw>, RunoffError> {
+        let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, FIT_SEED_DOMAIN));
         let mut p = dirichlet(&config.alpha, &mut rng)?;
         let warmup = if exact { 0 } else { config.warmup };
         let mut retained = Vec::with_capacity(config.draws);
@@ -303,7 +350,7 @@ pub fn fit_runoff(
                                 } else {
                                     let mass: f64 = p[lag..].iter().sum();
                                     if mass == 0.0 && remaining > 0 {
-                                        return Err("unobserved lag probability underflow; use less extreme priors".into());
+                                        return Err(numerical("unobserved lag probability underflow; use less extreme priors"));
                                     }
                                     if mass == 0.0 {
                                         0.0
@@ -326,10 +373,10 @@ pub fn fit_runoff(
                         config.total_shape + observed_sums[i] as f64,
                         1.0 / (config.total_rate + exposure),
                     )
-                    .map_err(|e| e.to_string())?
+                    .map_err(|e| numerical(e.to_string()))?
                     .sample(&mut rng);
                     if !intensity.is_finite() {
-                        return Err("nonfinite ultimate intensity draw".into());
+                        return Err(numerical("nonfinite ultimate intensity draw"));
                     }
                     for lag in 0..categories {
                         if row[lag].is_none() {
@@ -341,9 +388,9 @@ pub fn fit_runoff(
                 let total = full
                     .iter()
                     .try_fold(0_u64, |sum, n| sum.checked_add(*n))
-                    .ok_or("ultimate count overflow")?;
+                    .ok_or_else(|| numerical("ultimate count overflow"))?;
                 if total > MAX_EXACT_COUNT {
-                    return Err("ultimate count exceeds 2**53 - 1".into());
+                    return Err(numerical("ultimate count exceeds 2**53 - 1"));
                 }
                 totals.push(total);
                 counts.push(full);
@@ -366,8 +413,11 @@ pub fn fit_runoff(
                 });
             }
         }
-        chains.push(retained);
-    }
+        Ok(retained)
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(RunoffPosterior {
         triangle: triangle.clone(),
         chains,
@@ -412,12 +462,14 @@ impl RunoffPosterior {
 
     /// Future calendar counts for valuation+1,...,valuation+steps. This excludes
     /// tail and regular cells beyond the requested horizon; no tail timing is assumed.
-    pub fn calendar_samples(&self, steps: usize) -> Result<Vec<Vec<Vec<u64>>>, String> {
+    pub fn calendar_samples(&self, steps: usize) -> Result<Vec<Vec<Vec<u64>>>, RunoffError> {
         if steps == 0
             || steps > i64::MAX as usize
             || self.triangle.valuation.checked_add(steps as i64).is_none()
         {
-            return Err("steps must be positive and fit the integer calendar".into());
+            return Err(invalid(
+                "steps must be positive and fit the integer calendar",
+            ));
         }
         validate_allocation(&[
             self.chains.len(),
@@ -438,7 +490,7 @@ impl RunoffPosterior {
                                 if offset >= 0 && offset < steps as i128 {
                                     calendar[offset as usize] = calendar[offset as usize]
                                         .checked_add(*n)
-                                        .ok_or("calendar count overflow")?;
+                                        .ok_or_else(|| numerical("calendar count overflow"))?;
                                 }
                             }
                         }
@@ -564,6 +616,98 @@ mod tests {
             .sum::<f64>()
             / 10000.0;
         assert!((p0 - 0.1).abs() < 0.003);
+    }
+
+    fn immature_triangle() -> PaymentTriangle {
+        PaymentTriangle {
+            counts: vec![vec![Some(4), None, None], vec![None, None, None]],
+            origins: vec![0, 1],
+            valuation: 0,
+            known_totals: vec![Some(9), None],
+        }
+    }
+
+    /// The first exact draw of a chain whose generator was seeded with `seed`.
+    fn first_exact_draw(triangle: &PaymentTriangle, alpha: &[f64], seed: u64) -> Vec<f64> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        dirichlet(alpha, &mut rng).unwrap();
+        let mut rest = 1.0;
+        let mut p = Vec::new();
+        for (a, b) in known_total_hazard_posterior(triangle, alpha).unwrap() {
+            let q = beta_draw(a, b, &mut rng).unwrap();
+            p.push(rest * q);
+            rest *= 1.0 - q;
+        }
+        p.push(rest);
+        p
+    }
+
+    /// Chain zero used to run on the caller's raw seed, the stream any other
+    /// stage seeded with the same integer also gets.
+    #[test]
+    fn chains_run_on_domain_separated_streams() {
+        let triangle = PaymentTriangle {
+            counts: vec![vec![Some(4), Some(3), None]],
+            origins: vec![0],
+            valuation: 1,
+            known_totals: vec![Some(9)],
+        };
+        let mut cfg = config(vec![3.0, 2.0, 1.0]);
+        cfg.draws = 1;
+        let fit = fit_runoff(&triangle, &cfg).unwrap();
+        for (chain, draws) in fit.chains.iter().enumerate() {
+            let seed = chain_seed(cfg.seed, chain, FIT_SEED_DOMAIN);
+            assert_eq!(
+                draws[0].lag_probabilities,
+                first_exact_draw(&triangle, &cfg.alpha, seed)
+            );
+        }
+        assert_ne!(
+            fit.chains[0][0].lag_probabilities,
+            first_exact_draw(&triangle, &cfg.alpha, cfg.seed)
+        );
+    }
+
+    #[test]
+    fn chains_are_thread_invariant() {
+        let mut cfg = config(vec![3.0, 2.0, 1.0]);
+        cfg.chains = 4;
+        cfg.draws = 30;
+        let run = |threads| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| fit_runoff(&immature_triangle(), &cfg).unwrap())
+        };
+        let (one, many) = (run(1), run(4));
+        for (a, b) in one
+            .chains
+            .iter()
+            .flatten()
+            .zip(many.chains.iter().flatten())
+        {
+            assert_eq!(a.lag_probabilities, b.lag_probabilities);
+            assert_eq!(a.counts, b.counts);
+            assert_eq!(a.intensities, b.intensities);
+        }
+    }
+
+    #[test]
+    fn errors_are_typed_and_keep_their_messages() {
+        let mut cfg = config(vec![3.0, 2.0, 1.0]);
+        cfg.chains = 0;
+        assert_eq!(
+            fit_runoff(&immature_triangle(), &cfg).unwrap_err(),
+            RunoffError::InvalidInput(
+                "draws and chains must be positive and draws + warmup must not overflow".into()
+            )
+        );
+        let fit = fit_runoff(&immature_triangle(), &config(vec![3.0, 2.0, 1.0])).unwrap();
+        assert_eq!(
+            fit.calendar_samples(0).unwrap_err().to_string(),
+            "steps must be positive and fit the integer calendar"
+        );
     }
 
     #[test]
