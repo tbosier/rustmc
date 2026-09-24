@@ -348,6 +348,37 @@ fn nb_intercept_matches_grid_and_chains_are_thread_invariant() {
     assert!((mean(&samples) - first / norm).abs() < 0.04);
 }
 
+/// Forecasts and prior simulations run their chains in parallel; each chain
+/// owns a stream, so the pool size must not change a single value.
+#[test]
+fn forecast_and_prior_predictive_are_thread_invariant() {
+    let mut config = cfg(Family::HurdleLogNormal);
+    config.chains = 4;
+    config.draws = 50;
+    config.warmup = 20;
+    config.process_sd = 0.1;
+    let y = vec![vec![0., 1.5, 0., 2.5, 3.], vec![1., 0., 0., 4., 0.5]];
+    let fit = fit_dynamic_glm(&y, None, None, &config).unwrap();
+    let run = |threads| {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap()
+            .install(|| {
+                (
+                    fit.forecast(3, None, None, 17).unwrap(),
+                    prior_predictive(&config, 2, 3, None, None).unwrap(),
+                )
+            })
+    };
+    let (forecast, prior) = run(1);
+    assert_eq!(forecast, run(4).0);
+    assert_eq!(prior, run(4).1);
+    // Chains draw from distinct streams.
+    assert_ne!(forecast.observation_paths[0], forecast.observation_paths[1]);
+    assert_ne!(prior.mean_paths[0], prior.mean_paths[1]);
+}
+
 #[test]
 fn all_zero_severity_retains_gaussian_prior_and_prior_predictive_timing() {
     let mut config = cfg(Family::HurdleLogNormal);

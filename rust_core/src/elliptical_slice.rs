@@ -3,6 +3,12 @@
 //! The callback is the log likelihood (or all non-Gaussian factors), excluding
 //! the standard-normal prior. Other coordinates are held fixed. Bracket
 //! exhaustion returns an error; it never silently discards a transition.
+//!
+//! Because the other coordinates are fixed, the callback may return only the
+//! terms the block can change: the slice test compares two values of the same
+//! function, so a constant offset cancels. When `update` succeeds, the last
+//! call to the callback was at the returned state, so a callback may cache
+//! what it computed there.
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
@@ -10,7 +16,7 @@ pub fn update<R: Rng + ?Sized>(
     state: &mut [f64],
     block: std::ops::Range<usize>,
     current_log_likelihood: f64,
-    log_likelihood: impl Fn(&[f64]) -> f64,
+    mut log_likelihood: impl FnMut(&[f64]) -> f64,
     rng: &mut R,
 ) -> Result<(f64, usize), String> {
     if block.is_empty()
