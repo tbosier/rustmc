@@ -441,6 +441,11 @@ pub fn fourier_design(
     start: i64,
 ) -> Result<Vec<Vec<f64>>, StateSpaceError> {
     let width = fourier_width(period, harmonics)?;
+    crate::forecast_common::checked_value_count(
+        "Fourier design",
+        &[count, width],
+        crate::forecast_common::MAX_MATERIALIZED_VALUES,
+    )?;
     let mut rows = Vec::with_capacity(count);
     for offset in 0..count {
         let time = i128::from(start) + offset as i128;
@@ -762,6 +767,10 @@ mod tests {
         assert_eq!(fourier_design(12, 12, 6, 18).unwrap(), all[18..]);
         assert_eq!(all[0], all[12]);
         assert!(fourier_design(1, 12, 7, 0).is_err());
+        for (count, period, harmonics) in [(1 << 40, 12, 3), (2, 1 << 40, 1 << 39)] {
+            let error = fourier_design(count, period, harmonics, 0).unwrap_err();
+            assert!(error.to_string().contains("safety limit"), "{error}");
+        }
         assert!(fourier_design(1, 1, 1, 0).is_err());
         assert_eq!(
             fourier_design(1, 12, 2, -1).unwrap(),

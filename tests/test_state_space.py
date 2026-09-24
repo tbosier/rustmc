@@ -228,3 +228,17 @@ def test_observation_infinity_is_rejected_but_empty_series_is_supported(rustmc_m
     assert forecast.observation_covariance.shape == (0, 0)
     assert forecast.cumulative_observation_means.shape == (0,)
     assert forecast.cumulative_observation_variances.shape == (0,)
+
+
+def test_oversized_forecasts_and_designs_raise_instead_of_aborting(rustmc_module):
+    # Each request used to reach a Rust allocation that failed and aborted
+    # the interpreter ("memory allocation failed").
+    model = rustmc_module.LinearGaussianStateSpace.local_level(1.0, 1.0)
+    for steps in (10**12, 2**63):
+        with pytest.raises(rustmc_module.StateSpaceError, match="safety limit"):
+            model.forecast(np.array([1.0]), steps)
+    with pytest.raises(ValueError, match="safety limit"):
+        rustmc_module.fourier_design(10**12, 12, 3)
+    with pytest.raises(ValueError, match="safety limit"):
+        rustmc_module.fourier_design(2, 10**12, 10**11)
+    assert model.forecast(np.array([1.0]), 1000).observation_means.shape == (1000,)

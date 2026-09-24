@@ -324,9 +324,11 @@ impl LinearGaussianStateSpace {
         }
 
         let dimension = period;
-        let square = dimension.checked_mul(dimension).ok_or_else(|| {
-            StateSpaceError::InvalidDimension("seasonal period is too large".into())
-        })?;
+        let square = crate::forecast_common::checked_value_count(
+            "seasonal state-space matrices",
+            &[dimension, dimension],
+            crate::forecast_common::MAX_MATERIALIZED_VALUES,
+        )?;
         let mut transition = vec![0.0; square];
         transition[0] = 1.0;
         for column in 1..dimension {
@@ -708,7 +710,26 @@ impl LinearGaussianStateSpace {
                 "future observation rows are required for a time-varying design".into(),
             ));
         }
+        self.check_forecast_size(steps)?;
         self.forecast_with_observation_rows(observations, &vec![self.observation.clone(); steps])
+    }
+
+    /// Refuse a horizon whose joint covariance (`steps^2` values) or state
+    /// covariances (`steps * d^2`) could not be allocated without aborting.
+    fn check_forecast_size(&self, steps: usize) -> Result<(), StateSpaceError> {
+        use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
+        let d = self.dimension;
+        checked_value_count(
+            "state-space forecast joint covariance",
+            &[steps, steps],
+            MAX_MATERIALIZED_VALUES,
+        )?;
+        checked_value_count(
+            "state-space forecast state covariances",
+            &[steps, d, d],
+            MAX_MATERIALIZED_VALUES,
+        )?;
+        Ok(())
     }
 
     /// Forecast with a row for each future step, continuing after the final
@@ -719,6 +740,7 @@ impl LinearGaussianStateSpace {
         future_rows: &[Vec<f64>],
     ) -> Result<ForecastResult, StateSpaceError> {
         let steps = future_rows.len();
+        self.check_forecast_size(steps)?;
         self.validate_rows(future_rows, steps)?;
         let filter = self.filter(observations)?;
         let (mut previous_mean, mut previous_covariance) = match (
@@ -762,10 +784,7 @@ impl LinearGaussianStateSpace {
             previous_covariance = covariance;
         }
 
-        let square = steps.checked_mul(steps).ok_or_else(|| {
-            StateSpaceError::InvalidDimension("forecast horizon is too large".into())
-        })?;
-        let mut observation_covariance = vec![0.0; square];
+        let mut observation_covariance = vec![0.0; steps * steps];
         for first in 0..steps {
             let mut cross_covariance = state_covariances[first].clone();
             for second in first..steps {
@@ -2348,6 +2367,36 @@ mod tests {
             model.filter(&[f64::INFINITY]),
             Err(StateSpaceError::NonFinite(_))
         ));
+    }
+
+    #[test]
+    fn oversized_forecast_horizons_are_refused_before_allocating() {
+        let model = LinearGaussianStateSpace::local_level(1.0, 1.0, 0.0, 1.0).unwrap();
+        for steps in [1 << 40, usize::MAX] {
+            let error = model.forecast(&[1.0], steps).unwrap_err();
+            assert!(error.to_string().contains("safety limit"), "{error}");
+        }
+        assert_eq!(
+            model
+                .forecast(&[1.0], 5000)
+                .unwrap()
+                .observation_means
+                .len(),
+            5000
+        );
+        let rows = vec![vec![1.0]; 5001];
+        assert!(model.forecast_with_observation_rows(&[1.0], &rows).is_err());
+        let seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            10_000,
+            1.0,
+            1.0,
+            1.0,
+            0.0,
+            vec![0.0; 10_000],
+            1.0,
+            1.0,
+        );
+        assert!(seasonal.unwrap_err().to_string().contains("safety limit"));
     }
 
     #[test]
