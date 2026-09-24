@@ -480,7 +480,6 @@ impl ModelBuilder {
         });
         Ok(VectorParamRef {
             name: name.to_string(),
-            _n: n,
             owner: self.id,
         })
     }
