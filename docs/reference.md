@@ -356,6 +356,11 @@ Constructs a model. Data can be bound at build time or passed later to `rmc.samp
 `rmc.batch_sample()`, or `rmc.sample_prior_predictive()`. `dims` maps a data key to a
 named population dimension; keys left out use the compatibility dimension `"obs"`.
 
+Data values must be 1-D or 2-D arrays (or lists) of real numbers. Integer arrays are
+accepted when every value is exactly representable as a float64. Scalars, arrays
+with more than two dimensions, and boolean, string, bytes, object or complex arrays
+are rejected with an error naming the key rather than converted.
+
 The builder also has `data(name, dim=None)`, `potential(name, expression)` for a bare
 log-density term (the expression must be scalar), and `deterministic(name, expression)`
 for a named quantity recorded alongside the draws. See
@@ -585,7 +590,7 @@ than absolute batch throughput.
 | `std()` | `dict[str, float]` | Posterior std per parameter |
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
-| `diagnostics()` | `list[dict]` | Per-parameter diagnostics |
+| `diagnostics()` | `list[dict]` | Per-parameter diagnostics; a value that cannot be computed is `None` |
 | `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |

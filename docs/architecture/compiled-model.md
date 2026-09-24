@@ -37,8 +37,9 @@ data binding, cleanup, or thread-local state.
 uses the same structure for every dataset. It shares the forecasting batch executor,
 uses stable ID seeds by default, controls native worker count, and can collect failures.
 See [execution options](../forecasting-workflows.md#custom-models-and-independent-batches).
-Legacy `sample()` and `batch_sample()` remain available; the latter retains positional
-seeds. Generic fits can predict on a new binding without response placeholders.
+Legacy `sample()` and `batch_sample()` remain available. `batch_sample()` runs on the
+same native batch path as `sample_batch()`, with positional cell seeds and
+stop-at-first-failure behaviour. Generic fits can predict on a new binding without response placeholders.
 
 The earlier data-owning JSON `CompiledModelArtifact`, and the
 `rustmc_core::compiled_model` module that defined it, have been removed. It was never
