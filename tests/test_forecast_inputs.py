@@ -66,6 +66,39 @@ def test_non_real_or_misshaped_observations_are_refused_by_name(name, fit, bad, 
     assert "PyArray" not in str(error.value)
 
 
+@pytest.mark.parametrize("bad, reason", [
+    ([True, 1, 2, 1, 3, 2, 3, 4], "bool"),
+    ([True, 0.5, 2, 1, 3, 2, 3, 4], "bool"),
+    (np.ma.masked_array([1.0, 1e6, 2, 1, 3, 2, 3, 4], mask=[0, 1, 0, 0, 0, 0, 0, 0]), "masked"),
+    (np.arange(1, 9, dtype=np.longdouble) / 3, "long double"),
+    (np.array([2**53 + 1, 2, 1, 3, 2, 3, 3, 4], dtype=np.int64), "2\\*\\*53"),
+    ([0.5, 2**53 + 1, 1, 3, 2, 3, 3, 4], "2\\*\\*53"),
+    (np.arange(8.0).astype(object), "astype\\(float\\)"),
+])
+def test_values_float64_would_change_are_refused_as_for_model_data(bad, reason):
+    # Forecasting arrays and ModelBuilder data share one exact conversion.
+    local_level = rmc.LinearGaussianStateSpace(np.eye(1), [1.0], np.eye(1), 1.0, [0.0], [[1.0]])
+    with pytest.raises(ValueError, match=f"observations .*{reason}"):
+        local_level.filter(bad)
+    with pytest.raises(ValueError, match=f"observations .*{reason}"):
+        rmc.BayesianLocalLevel(_prior(), _prior()).fit(bad, **SAMPLING)
+    with pytest.raises(ValueError, match=f"'y'.*{reason}"):
+        rmc.ModelBuilder(data={"y": bad})
+
+
+def test_values_float64_holds_exactly_are_accepted_in_any_container():
+    local_level = rmc.LinearGaussianStateSpace(np.eye(1), [1.0], np.eye(1), 1.0, [0.0], [[1.0]])
+    reference = local_level.filter(np.array([1.0, np.nan, 3.0])).filtered_means
+    for same in (
+        np.ma.masked_array([1.0, np.nan, 3.0], mask=False),
+        np.array([1.0, np.nan, 3.0], dtype=np.longdouble),
+        (1, np.nan, np.int8(3)),
+    ):
+        np.testing.assert_array_equal(local_level.filter(same).filtered_means, reference)
+    big = local_level.filter(np.array([2**53, 2**60], dtype=np.int64)).filtered_means
+    np.testing.assert_array_equal(big, local_level.filter([2.0**53, 2.0**60]).filtered_means)
+
+
 def test_missing_values_survive_conversion():
     prior = _prior()
     observations = [1.0, np.nan, 2.0, 3.0, np.nan, 4.0]
