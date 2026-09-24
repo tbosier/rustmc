@@ -1,9 +1,8 @@
 //! Bayesian seasonal local-level bindings.
 use crate::forecast_support::*;
 use crate::StateSpaceError;
-use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics, regression};
-use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
+use crate::{forecast_batch, regression};
+use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
@@ -11,26 +10,9 @@ use rustmc_core::bayesian_seasonal::{
     fit_bayesian_seasonal_local_level,
     BayesianSeasonalLocalLevelConfig as CoreBayesianSeasonalLocalLevelConfig,
     SeasonalLocalLevelPosterior as CoreSeasonalLocalLevelPosterior,
-    SeasonalLocalLevelPosteriorDraw as CoreSeasonalLocalLevelPosteriorDraw,
     SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
 };
 use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
-
-pub(crate) fn seasonal_parameter_array<'py, F>(
-    py: Python<'py>,
-    posterior: &CoreSeasonalLocalLevelPosterior,
-    value: F,
-) -> Bound<'py, PyArray2<f64>>
-where
-    F: Fn(&CoreSeasonalLocalLevelPosteriorDraw) -> f64,
-{
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
-        value(&posterior.chains[chain][draw])
-    })
-    .into_pyarray(py)
-}
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
 #[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
@@ -220,31 +202,85 @@ pub(crate) struct PyBayesianSeasonalLocalLevelFit {
     pub(crate) config: CoreBayesianSeasonalLocalLevelConfig,
 }
 
+impl ForecastFit for PyBayesianSeasonalLocalLevelFit {
+    fn sampler(&self) -> &'static str {
+        "conjugate Gibbs/FFBS"
+    }
+    fn coverage(&self) -> &'static str {
+        "variance parameters and all terminal seasonal state coordinates; historical states are not retained"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let chains = &self.posterior.chains;
+        let samples = PyDict::new(py);
+        for (name, values) in [
+            (
+                "level_variance",
+                draw_array(py, chains, |draw| draw.level_variance),
+            ),
+            (
+                "seasonal_variance",
+                draw_array(py, chains, |draw| draw.seasonal_variance),
+            ),
+            (
+                "observation_variance",
+                draw_array(py, chains, |draw| draw.observation_variance),
+            ),
+            (
+                "level_sd",
+                draw_array(py, chains, |draw| draw.level_variance.sqrt()),
+            ),
+            (
+                "seasonal_sd",
+                draw_array(py, chains, |draw| draw.seasonal_variance.sqrt()),
+            ),
+            (
+                "observation_sd",
+                draw_array(py, chains, |draw| draw.observation_variance.sqrt()),
+            ),
+            (
+                "terminal_level",
+                draw_array(py, chains, |draw| draw.terminal_state[0]),
+            ),
+            (
+                "terminal_seasonal",
+                draw_array(py, chains, |draw| draw.terminal_state[1]),
+            ),
+        ] {
+            samples.set_item(name, values)?;
+        }
+        Ok(samples)
+    }
+}
+
 #[pymethods]
 impl PyBayesianSeasonalLocalLevelFit {
     /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table_with_sampler(Some(
-            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
-        ))
+        fit_summary(self)
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+        fit_diagnostics(py, self)
     }
 
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        forecast_diagnostics::sampler_stats(py, "conjugate Gibbs/FFBS", self.chains(), self.draws(), "variance parameters and all terminal seasonal state coordinates; historical states are not retained")
+        fit_sampler_stats(py, self)
     }
 
     #[getter]
-    pub(crate) fn chains(&self) -> usize {
-        self.posterior.chains.len()
+    fn chains(&self) -> usize {
+        self.shape().0
     }
     #[getter]
-    pub(crate) fn draws(&self) -> usize {
-        self.posterior.chains.first().map_or(0, Vec::len)
+    fn draws(&self) -> usize {
+        self.shape().1
     }
     #[getter]
     fn period(&self) -> usize {
@@ -256,10 +292,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
     #[getter]
     fn observed_count(&self) -> usize {
-        self.observations
-            .iter()
-            .filter(|value| !value.is_nan())
-            .count()
+        observed_count(&self.observations)
     }
     #[getter]
     fn warmup(&self) -> usize {
@@ -271,46 +304,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        for (name, values) in [
-            (
-                "level_variance",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.level_variance),
-            ),
-            (
-                "seasonal_variance",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.seasonal_variance),
-            ),
-            (
-                "observation_variance",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.observation_variance),
-            ),
-            (
-                "level_sd",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.level_variance.sqrt()),
-            ),
-            (
-                "seasonal_sd",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.seasonal_variance.sqrt()),
-            ),
-            (
-                "observation_sd",
-                seasonal_parameter_array(py, &self.posterior, |draw| {
-                    draw.observation_variance.sqrt()
-                }),
-            ),
-            (
-                "terminal_level",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.terminal_state[0]),
-            ),
-            (
-                "terminal_seasonal",
-                seasonal_parameter_array(py, &self.posterior, |draw| draw.terminal_state[1]),
-            ),
-        ] {
-            samples.set_item(name, values)?;
-        }
-        Ok(samples)
+        self.posterior(py)
     }
 
     #[pyo3(signature = (steps, seed=43))]
@@ -327,13 +321,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let az = py.import("arviz")?;
-        let groups = PyDict::new(py);
-        groups.set_item("posterior", self.get_samples_2d(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
-        groups.set_item("observed_data", observed)?;
-        arviz_from_groups(&az, groups)
+        fit_to_arviz(py, self, &self.observations)
     }
 
     fn __repr__(&self) -> String {
@@ -353,11 +341,11 @@ pub(crate) struct PyBayesianSeasonalForecast {
 impl PyBayesianSeasonalForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observation_paths.len()
+        chain_shape(&self.inner.observation_paths).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observation_paths.first().map_or(0, Vec::len)
+        chain_shape(&self.inner.observation_paths).1
     }
     #[getter]
     fn steps(&self) -> usize {
@@ -381,38 +369,22 @@ impl PyBayesianSeasonalForecast {
     }
     #[getter]
     fn level_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .level_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.level_means())
     }
     #[getter]
     fn seasonal_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .seasonal_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.seasonal_means())
     }
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.observation_means())
     }
     #[getter]
     fn cumulative_observation_mean<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .cumulative_observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.cumulative_observation_means())
     }
 
     fn level_quantile<'py>(
@@ -420,59 +392,35 @@ impl PyBayesianSeasonalForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .level_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?[0]
-            .values
-            .clone()
-            .into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.level_quantiles(p))
     }
     fn seasonal_quantile<'py>(
         &self,
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .seasonal_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?[0]
-            .values
-            .clone()
-            .into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.seasonal_quantiles(p))
     }
     fn observation_quantile<'py>(
         &self,
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .observation_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?[0]
-            .values
-            .clone()
-            .into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.observation_quantiles(p))
     }
     fn cumulative_observation_quantile<'py>(
         &self,
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .cumulative_observation_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?[0]
-            .values
-            .clone()
-            .into_pyarray(py))
+        quantile_array(py, probability, |p| {
+            self.inner.cumulative_observation_quantiles(p)
+        })
     }
 
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        seasonal_interval(py, level, |probabilities| {
-            self.inner.observation_quantiles(probabilities)
-        })
+        quantile_interval(py, level, |p| self.inner.observation_quantiles(p))
     }
     #[pyo3(signature = (level=0.95))]
     fn cumulative_interval<'py>(
@@ -480,8 +428,8 @@ impl PyBayesianSeasonalForecast {
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalArrays<'py>> {
-        seasonal_interval(py, level, |probabilities| {
-            self.inner.cumulative_observation_quantiles(probabilities)
+        quantile_interval(py, level, |p| {
+            self.inner.cumulative_observation_quantiles(p)
         })
     }
     #[getter]
@@ -500,28 +448,6 @@ impl PyBayesianSeasonalForecast {
             self.steps()
         )
     }
-}
-
-pub(crate) fn seasonal_interval<'py, F>(
-    py: Python<'py>,
-    level: f64,
-    quantiles: F,
-) -> PyResult<PyIntervalArrays<'py>>
-where
-    F: FnOnce(
-        &[f64],
-    ) -> Result<
-        Vec<rustmc_core::bayesian_forecast::ForecastQuantile>,
-        rustmc_core::bayesian_forecast::BayesianForecastError,
-    >,
-{
-    validate_interval_level(level)?;
-    let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-    let values = quantiles(&probabilities).map_err(bayesian_forecast_error)?;
-    Ok((
-        values[0].values.clone().into_pyarray(py),
-        values[1].values.clone().into_pyarray(py),
-    ))
 }
 
 impl PyBayesianSeasonalLocalLevel {

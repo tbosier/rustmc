@@ -1,5 +1,4 @@
 //! Hierarchical partial-pooling mean bindings.
-use crate::forecast_diagnostics;
 use crate::forecast_support::*;
 use crate::InferenceError;
 use ndarray::{Array2, Array4};
@@ -253,16 +252,83 @@ pub(crate) struct PyBayesianHierarchicalMeanFit {
     pub(crate) config: CoreHierarchicalMeanConfig,
 }
 
+impl ForecastFit for PyBayesianHierarchicalMeanFit {
+    fn sampler(&self) -> &'static str {
+        "conjugate Gibbs"
+    }
+    fn summary_line(&self) -> String {
+        "Sampler: conjugate Gibbs (acceptance and divergences unavailable)".into()
+    }
+    fn coverage(&self) -> &'static str {
+        "all retained hierarchical parameters"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let chains = &self.posterior.chains;
+        let samples = PyDict::new(py);
+        for (name, values) in [
+            (
+                "population_mean",
+                draw_array(py, chains, |draw| draw.population_mean),
+            ),
+            (
+                "group_variance",
+                draw_array(py, chains, |draw| draw.group_variance),
+            ),
+            (
+                "program_variance",
+                draw_array(py, chains, |draw| draw.program_variance),
+            ),
+            (
+                "observation_variance",
+                draw_array(py, chains, |draw| draw.observation_variance),
+            ),
+            (
+                "group_sd",
+                draw_array(py, chains, |draw| draw.group_variance.sqrt()),
+            ),
+            (
+                "program_sd",
+                draw_array(py, chains, |draw| draw.program_variance.sqrt()),
+            ),
+            (
+                "observation_sd",
+                draw_array(py, chains, |draw| draw.observation_variance.sqrt()),
+            ),
+        ] {
+            samples.set_item(name, values)?;
+        }
+        samples.set_item(
+            "group_mean",
+            draw_vector_array(py, chains, self.posterior.group_count, |draw, index| {
+                draw.group_means[index]
+            }),
+        )?;
+        samples.set_item(
+            "program_mean",
+            draw_vector_array(py, chains, self.posterior.program_count(), |draw, index| {
+                draw.program_means[index]
+            }),
+        )?;
+        Ok(samples)
+    }
+}
+
 #[pymethods]
 impl PyBayesianHierarchicalMeanFit {
     #[getter]
     fn chains(&self) -> usize {
-        self.posterior.chains.len()
+        self.shape().0
     }
 
     #[getter]
     fn draws(&self) -> usize {
-        self.posterior.chains.first().map_or(0, Vec::len)
+        self.shape().1
     }
 
     #[getter]
@@ -321,82 +387,21 @@ impl PyBayesianHierarchicalMeanFit {
     }
 
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        samples.set_item(
-            "population_mean",
-            draw_array(py, &self.posterior.chains, |draw| draw.population_mean),
-        )?;
-        samples.set_item(
-            "group_variance",
-            draw_array(py, &self.posterior.chains, |draw| draw.group_variance),
-        )?;
-        samples.set_item(
-            "program_variance",
-            draw_array(py, &self.posterior.chains, |draw| draw.program_variance),
-        )?;
-        samples.set_item(
-            "observation_variance",
-            draw_array(py, &self.posterior.chains, |draw| draw.observation_variance),
-        )?;
-        samples.set_item(
-            "group_sd",
-            draw_array(py, &self.posterior.chains, |draw| {
-                draw.group_variance.sqrt()
-            }),
-        )?;
-        samples.set_item(
-            "program_sd",
-            draw_array(py, &self.posterior.chains, |draw| {
-                draw.program_variance.sqrt()
-            }),
-        )?;
-        samples.set_item(
-            "observation_sd",
-            draw_array(py, &self.posterior.chains, |draw| {
-                draw.observation_variance.sqrt()
-            }),
-        )?;
-        samples.set_item(
-            "group_mean",
-            draw_vector_array(
-                py,
-                &self.posterior.chains,
-                self.group_count(),
-                |draw, index| draw.group_means[index],
-            ),
-        )?;
-        samples.set_item(
-            "program_mean",
-            draw_vector_array(
-                py,
-                &self.posterior.chains,
-                self.program_count(),
-                |draw, index| draw.program_means[index],
-            ),
-        )?;
-        Ok(samples)
+        self.posterior(py)
     }
 
     /// Formatted rank-normalized R-hat, ESS, MCSE, and HDI diagnostics.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table_with_sampler(Some(
-            "Sampler: conjugate Gibbs (acceptance and divergences unavailable)",
-        ))
+        fit_summary(self)
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+        fit_diagnostics(py, self)
     }
 
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        forecast_diagnostics::sampler_stats(
-            py,
-            "conjugate Gibbs",
-            self.chains(),
-            self.draws(),
-            "all retained hierarchical parameters",
-        )
+        fit_sampler_stats(py, self)
     }
 
     #[pyo3(signature = (steps, seed=43))]

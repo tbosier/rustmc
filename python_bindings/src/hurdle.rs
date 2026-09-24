@@ -1,8 +1,7 @@
 //! Python bindings for sparse nonnegative amount forecasting.
+use crate::forecast_batch;
 use crate::forecast_support::*;
-use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics};
-use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1};
+use numpy::{PyArray1, PyArray3, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
@@ -162,9 +161,41 @@ pub(crate) struct PyHurdleFit {
     pub(crate) config: HurdleLogNormalConfig,
 }
 
-impl PyHurdleFit {
-    pub(crate) fn report(&self) -> rustmc_core::diagnostics::DiagnosticsReport {
+impl ForecastFit for PyHurdleFit {
+    fn sampler(&self) -> &'static str {
+        if self.posterior.positive_count == 0 {
+            "independent_prior_and_beta"
+        } else {
+            "gibbs_ffbs_hurdle_lognormal"
+        }
+    }
+    fn summary_line(&self) -> String {
+        if self.posterior.positive_count == 0 {
+            "Sampler: independent Beta and truncated-prior severity draws (no positive observations)"
+        } else {
+            "Sampler: Beta occurrence and conjugate truncated-variance Gibbs/FFBS severity"
+        }
+        .into()
+    }
+    fn coverage(&self) -> &'static str {
+        "payment probability, variance parameters, and terminal log level"
+    }
+    fn report(&self) -> DiagnosticsReport {
         self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let samples = PyDict::new(py);
+        let values = self.posterior.parameter_samples();
+        for (index, name) in HurdleLogNormalPosterior::parameter_names()
+            .iter()
+            .enumerate()
+        {
+            samples.set_item(name, draw_array(py, &values, |draw| draw[index]))?;
+        }
+        Ok(samples)
     }
 }
 
@@ -172,11 +203,11 @@ impl PyHurdleFit {
 impl PyHurdleFit {
     #[getter]
     fn chains(&self) -> usize {
-        self.posterior.chains.len()
+        self.shape().0
     }
     #[getter]
     fn draws(&self) -> usize {
-        chain_shape(&self.posterior.chains).1
+        self.shape().1
     }
     #[getter]
     fn time_count(&self) -> usize {
@@ -204,43 +235,17 @@ impl PyHurdleFit {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        let values = self.posterior.parameter_samples();
-        for (i, name) in HurdleLogNormalPosterior::parameter_names()
-            .iter()
-            .enumerate()
-        {
-            let array =
-                Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| values[c][d][i]);
-            samples.set_item(name, array.into_pyarray(py))?;
-        }
-        Ok(samples)
+        self.posterior(py)
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.report())
+        fit_diagnostics(py, self)
     }
     fn summary(&self) -> String {
-        let sampler = if self.positive_count() == 0 {
-            "Sampler: independent Beta and truncated-prior severity draws (no positive observations)"
-        } else {
-            "Sampler: Beta occurrence and conjugate truncated-variance Gibbs/FFBS severity"
-        };
-        self.report().to_table_with_sampler(Some(sampler))
+        fit_summary(self)
     }
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let name = if self.positive_count() == 0 {
-            "independent_prior_and_beta"
-        } else {
-            "gibbs_ffbs_hurdle_lognormal"
-        };
-        let stats = forecast_diagnostics::sampler_stats(
-            py,
-            name,
-            self.chains(),
-            self.draws(),
-            "payment probability, variance parameters, and terminal log level",
-        )?;
+        let stats = fit_sampler_stats(py, self)?;
         stats.set_item(
             "severity_informed_by_data",
             self.severity_informed_by_data(),
@@ -260,12 +265,7 @@ impl PyHurdleFit {
         Ok(PyHurdleForecast { inner })
     }
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("posterior", self.get_samples_2d(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", self.observations.clone().into_pyarray(py))?;
-        kwargs.set_item("observed_data", observed)?;
-        arviz_from_groups(&py.import("arviz")?, kwargs)
+        fit_to_arviz(py, self, &self.observations)
     }
 }
 

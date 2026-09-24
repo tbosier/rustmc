@@ -225,9 +225,9 @@ def test_bayesian_ar_data_sampling_and_forecast_validation(rustmc_module):
         with pytest.raises(ValueError, match="strictly between"):
             forecast.conditional_mean_interval(level)
     for probability in (-0.1, 1.1, np.nan):
-        with pytest.raises(rmc.StateSpaceError, match="probabilities"):
+        with pytest.raises(ValueError, match="probability"):
             forecast.observation_quantile(probability)
-        with pytest.raises(rmc.StateSpaceError, match="probabilities"):
+        with pytest.raises(ValueError, match="probability"):
             forecast.conditional_mean_quantile(probability)
 
 

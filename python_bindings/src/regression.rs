@@ -1,6 +1,6 @@
 use crate::forecast_support::*;
-use crate::{arviz_from_groups, forecast_diagnostics, StateSpaceError};
-use ndarray::{Array2, Array3};
+use crate::StateSpaceError;
+use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -128,28 +128,71 @@ pub(crate) struct PyBayesianRegressionFit {
     pub(crate) posterior: RegressionPosterior,
     pub(crate) observations: Vec<f64>,
 }
+impl ForecastFit for PyBayesianRegressionFit {
+    fn sampler(&self) -> &'static str {
+        "joint conjugate Gibbs/FFBS"
+    }
+    fn coverage(&self) -> &'static str {
+        "all variance parameters, regression coefficients and terminal structural states; historical states are not retained"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let chains = &self.posterior.chains;
+        let config = &self.posterior.config;
+        let result = PyDict::new(py);
+        for (index, name) in config.variance_names.iter().enumerate() {
+            result.set_item(name, draw_array(py, chains, |draw| draw.variances[index]))?;
+        }
+        result.set_item(
+            "observation_variance",
+            draw_array(py, chains, |draw| draw.observation_variance),
+        )?;
+        result.set_item(
+            "coefficients",
+            draw_vector_array(
+                py,
+                chains,
+                config.coefficient_prior.mean.len(),
+                |draw, index| draw.coefficients[index],
+            ),
+        )?;
+        result.set_item(
+            "terminal_state",
+            draw_vector_array(
+                py,
+                chains,
+                config.structural_model.dimension(),
+                |draw, index| draw.terminal_state[index],
+            ),
+        )?;
+        Ok(result)
+    }
+}
+
 #[pymethods]
 impl PyBayesianRegressionFit {
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table_with_sampler(Some(
-            "Sampler: joint conjugate Gibbs/FFBS; acceptance and divergences unavailable",
-        ))
+        fit_summary(self)
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+        fit_diagnostics(py, self)
     }
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        forecast_diagnostics::sampler_stats(py, "joint conjugate Gibbs/FFBS", self.chains(), self.draws(),
-            "all variance parameters, regression coefficients and terminal structural states; historical states are not retained")
+        fit_sampler_stats(py, self)
     }
     #[getter]
     fn chains(&self) -> usize {
-        self.posterior.chains.len()
+        self.shape().0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.posterior.chains[0].len()
+        self.shape().1
     }
     #[getter]
     fn time_count(&self) -> usize {
@@ -157,7 +200,7 @@ impl PyBayesianRegressionFit {
     }
     #[getter]
     fn observed_count(&self) -> usize {
-        self.observations.iter().filter(|v| v.is_finite()).count()
+        observed_count(&self.observations)
     }
     #[getter]
     fn warmup(&self) -> usize {
@@ -168,40 +211,7 @@ impl PyBayesianRegressionFit {
         self.posterior.config.thinning
     }
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let result = PyDict::new(py);
-        for (i, name) in self.posterior.config.variance_names.iter().enumerate() {
-            result.set_item(
-                name,
-                Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| {
-                    self.posterior.chains[c][d].variances[i]
-                })
-                .into_pyarray(py),
-            )?;
-        }
-        result.set_item(
-            "observation_variance",
-            Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| {
-                self.posterior.chains[c][d].observation_variance
-            })
-            .into_pyarray(py),
-        )?;
-        let p = self.posterior.config.coefficient_prior.mean.len();
-        result.set_item(
-            "coefficients",
-            Array3::from_shape_fn((self.chains(), self.draws(), p), |(c, d, p)| {
-                self.posterior.chains[c][d].coefficients[p]
-            })
-            .into_pyarray(py),
-        )?;
-        let n = self.posterior.config.structural_model.dimension();
-        result.set_item(
-            "terminal_state",
-            Array3::from_shape_fn((self.chains(), self.draws(), n), |(c, d, p)| {
-                self.posterior.chains[c][d].terminal_state[p]
-            })
-            .into_pyarray(py),
-        )?;
-        Ok(result)
+        self.posterior(py)
     }
     #[pyo3(signature=(steps, seed=43, *, exog=None))]
     fn forecast(
@@ -229,13 +239,7 @@ impl PyBayesianRegressionFit {
         })
     }
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let az = py.import("arviz")?;
-        let groups = PyDict::new(py);
-        groups.set_item("posterior", self.get_samples_2d(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", self.observations.clone().into_pyarray(py))?;
-        groups.set_item("observed_data", observed)?;
-        arviz_from_groups(&az, groups)
+        fit_to_arviz(py, self, &self.observations)
     }
 }
 
@@ -249,15 +253,19 @@ pub(crate) struct PyBayesianRegressionForecast {
 impl PyBayesianRegressionForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observation_paths.len()
+        chain_shape(&self.inner.observation_paths).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observation_paths[0].len()
+        chain_shape(&self.inner.observation_paths).1
     }
     #[getter]
     fn steps(&self) -> usize {
-        self.inner.observation_paths[0][0].len()
+        self.inner
+            .observation_paths
+            .first()
+            .and_then(|chain| chain.first())
+            .map_or(0, Vec::len)
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {

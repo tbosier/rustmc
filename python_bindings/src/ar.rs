@@ -1,47 +1,16 @@
 //! Bayesian autoregression bindings.
+use crate::forecast_batch;
 use crate::forecast_support::*;
 use crate::StateSpaceError;
-use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics};
-use ndarray::{Array2, Array3};
+use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_ar::{
     fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
     BayesianArForecast as CoreBayesianArForecast, BayesianArPosterior as CoreBayesianArPosterior,
-    BayesianArPosteriorDraw as CoreBayesianArPosteriorDraw,
     NormalInverseGammaPrior as CoreNormalInverseGammaPrior,
 };
-
-pub(crate) fn ar_parameter_array<'py, F>(
-    py: Python<'py>,
-    posterior: &CoreBayesianArPosterior,
-    value: F,
-) -> Bound<'py, PyArray2<f64>>
-where
-    F: Fn(&CoreBayesianArPosteriorDraw) -> f64,
-{
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
-        value(&posterior.chains[chain][draw])
-    })
-    .into_pyarray(py)
-}
-
-pub(crate) fn ar_coefficient_array<'py>(
-    py: Python<'py>,
-    posterior: &CoreBayesianArPosterior,
-) -> Bound<'py, PyArray3<f64>> {
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    let coefficient_count = posterior.order + 1;
-    Array3::from_shape_fn(
-        (chains, draws, coefficient_count),
-        |(chain, draw, coefficient)| posterior.chains[chain][draw].coefficients[coefficient],
-    )
-    .into_pyarray(py)
-}
 
 /// Conjugate prior for a Gaussian autoregression.
 ///
@@ -250,28 +219,54 @@ pub(crate) struct PyBayesianArFit {
     pub(crate) config: CoreBayesianArConfig,
 }
 
+impl ForecastFit for PyBayesianArFit {
+    fn sampler(&self) -> &'static str {
+        "exact conjugate independent draws"
+    }
+    fn coverage(&self) -> &'static str {
+        "coefficients and innovation variance"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let chains = &self.posterior.chains;
+        let samples = PyDict::new(py);
+        samples.set_item(
+            "coefficient",
+            draw_vector_array(py, chains, self.posterior.order + 1, |draw, index| {
+                draw.coefficients[index]
+            }),
+        )?;
+        samples.set_item(
+            "innovation_variance",
+            draw_array(py, chains, |draw| draw.innovation_variance),
+        )?;
+        samples.set_item(
+            "innovation_sd",
+            draw_array(py, chains, |draw| draw.innovation_variance.sqrt()),
+        )?;
+        Ok(samples)
+    }
+}
+
 #[pymethods]
 impl PyBayesianArFit {
     /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table_with_sampler(Some(
-            "Sampler: exact conjugate independent draws; acceptance and divergences unavailable",
-        ))
+        fit_summary(self)
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+        fit_diagnostics(py, self)
     }
 
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        forecast_diagnostics::sampler_stats(
-            py,
-            "exact conjugate independent draws",
-            self.chains(),
-            self.draws(),
-            "coefficients and innovation variance",
-        )
+        fit_sampler_stats(py, self)
     }
 
     #[getter]
@@ -280,13 +275,13 @@ impl PyBayesianArFit {
     }
 
     #[getter]
-    pub(crate) fn chains(&self) -> usize {
-        self.posterior.chains.len()
+    fn chains(&self) -> usize {
+        self.shape().0
     }
 
     #[getter]
-    pub(crate) fn draws(&self) -> usize {
-        self.posterior.chains.first().map_or(0, Vec::len)
+    fn draws(&self) -> usize {
+        self.shape().1
     }
 
     #[getter]
@@ -305,17 +300,7 @@ impl PyBayesianArFit {
     }
 
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        samples.set_item("coefficient", ar_coefficient_array(py, &self.posterior))?;
-        samples.set_item(
-            "innovation_variance",
-            ar_parameter_array(py, &self.posterior, |draw| draw.innovation_variance),
-        )?;
-        samples.set_item(
-            "innovation_sd",
-            ar_parameter_array(py, &self.posterior, |draw| draw.innovation_variance.sqrt()),
-        )?;
-        Ok(samples)
+        self.posterior(py)
     }
 
     #[pyo3(signature = (steps, seed=43))]
@@ -328,13 +313,7 @@ impl PyBayesianArFit {
 
     /// Export coefficient and innovation-variance draws to ArviZ.
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let az = py.import("arviz")?;
-        let groups = PyDict::new(py);
-        groups.set_item("posterior", self.get_samples(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
-        groups.set_item("observed_data", observed)?;
-        arviz_from_groups(&az, groups)
+        fit_to_arviz(py, self, &self.observations)
     }
 
     fn __repr__(&self) -> String {
@@ -357,12 +336,12 @@ pub(crate) struct PyBayesianArForecast {
 impl PyBayesianArForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observation_paths.len()
+        chain_shape(&self.inner.observation_paths).0
     }
 
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observation_paths.first().map_or(0, Vec::len)
+        chain_shape(&self.inner.observation_paths).1
     }
 
     #[getter]
@@ -382,20 +361,12 @@ impl PyBayesianArForecast {
 
     #[getter]
     fn conditional_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .conditional_mean_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.conditional_mean_means())
     }
 
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.observation_means())
     }
 
     fn conditional_mean_quantile<'py>(
@@ -403,11 +374,9 @@ impl PyBayesianArForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let quantiles = self
-            .inner
-            .conditional_mean_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?;
-        Ok(quantiles[0].values.clone().into_pyarray(py))
+        quantile_array(py, probability, |p| {
+            self.inner.conditional_mean_quantiles(p)
+        })
     }
 
     fn observation_quantile<'py>(
@@ -415,11 +384,7 @@ impl PyBayesianArForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let quantiles = self
-            .inner
-            .observation_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?;
-        Ok(quantiles[0].values.clone().into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.observation_quantiles(p))
     }
 
     /// Pointwise equal-tailed interval for the recursive conditional mean.
@@ -429,31 +394,13 @@ impl PyBayesianArForecast {
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let quantiles = self
-            .inner
-            .conditional_mean_quantiles(&probabilities)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            quantiles[0].values.clone().into_pyarray(py),
-            quantiles[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.conditional_mean_quantiles(p))
     }
 
     /// Pointwise equal-tailed posterior-predictive interval for future observations.
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let quantiles = self
-            .inner
-            .observation_quantiles(&probabilities)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            quantiles[0].values.clone().into_pyarray(py),
-            quantiles[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.observation_quantiles(p))
     }
 
     #[getter]

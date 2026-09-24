@@ -1,6 +1,6 @@
 use crate::forecast_support::*;
 use crate::{forecast_diagnostics, StateSpaceError};
-use ndarray::{Array2, Array3, Array4};
+use ndarray::Array4;
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -252,11 +252,11 @@ pub(crate) struct PyStructuralFit {
 impl PyStructuralFit {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.chains.len()
+        chain_shape(&self.inner.chains).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.chains[0].len()
+        chain_shape(&self.inner.chains).1
     }
     #[getter]
     fn param_names(&self) -> Vec<String> {
@@ -266,11 +266,7 @@ impl PyStructuralFit {
         let output = PyDict::new(py);
         let samples = self.inner.parameter_samples();
         for (j, name) in self.param_names().iter().enumerate() {
-            output.set_item(
-                name,
-                Array2::from_shape_fn((self.chains(), self.draws()), |(c, d)| samples[c][d][j])
-                    .into_pyarray(py),
-            )?;
+            output.set_item(name, draw_array(py, &samples, |draw| draw[j]))?;
         }
         Ok(output)
     }
@@ -330,27 +326,19 @@ impl PyStructuralFit {
     /// Variance draws, shape (chain, draw, state_dimension+1).
     #[getter]
     fn variance_draws<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        let c = self.inner.chains.len();
-        let n = self.inner.chains[0].len();
         let d = self.inner.config.dimension();
-        Array3::from_shape_fn((c, n, d + 1), |(i, j, k)| {
+        draw_vector_array(py, &self.inner.chains, d + 1, |draw, k| {
             if k == d {
-                self.inner.chains[i][j].observation_variance
+                draw.observation_variance
             } else {
-                self.inner.chains[i][j].variances[k]
+                draw.variances[k]
             }
         })
-        .into_pyarray(py)
     }
     #[getter]
     fn terminal_states<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        let c = self.inner.chains.len();
-        let n = self.inner.chains[0].len();
         let d = self.inner.config.dimension();
-        Array3::from_shape_fn((c, n, d), |(i, j, k)| {
-            self.inner.chains[i][j].terminal_state[k]
-        })
-        .into_pyarray(py)
+        draw_vector_array(py, &self.inner.chains, d, |draw, k| draw.terminal_state[k])
     }
     /// Historical states include x[-1] at index zero.
     #[getter]
@@ -407,15 +395,13 @@ impl PyStructuralFit {
         })
     }
 }
-fn array3<'py>(py: Python<'py>, v: &[Vec<Vec<f64>>]) -> Bound<'py, PyArray3<f64>> {
-    Array3::from_shape_fn((v.len(), v[0].len(), v[0][0].len()), |(i, j, k)| v[i][j][k])
-        .into_pyarray(py)
-}
+/// Per-draw `[time][coordinate]` values, shaped `(chain, draw, time, coordinate)`.
 fn array4<'py>(py: Python<'py>, v: &[Vec<Vec<Vec<f64>>>]) -> Bound<'py, PyArray4<f64>> {
-    let h = v[0][0].len();
-    let d = v[0][0].first().map_or(0, Vec::len);
-    Array4::from_shape_fn((v.len(), v[0].len(), h, d), |(i, j, k, l)| v[i][j][k][l])
-        .into_pyarray(py)
+    let (chains, draws) = chain_shape(v);
+    let first = v.first().and_then(|chain| chain.first());
+    let h = first.map_or(0, Vec::len);
+    let d = first.and_then(|times| times.first()).map_or(0, Vec::len);
+    Array4::from_shape_fn((chains, draws, h, d), |(i, j, k, l)| v[i][j][k][l]).into_pyarray(py)
 }
 #[pyclass(name = "StructuralForecast", frozen, module = "rustmc")]
 pub(crate) struct PyStructuralForecast {
@@ -426,15 +412,19 @@ pub(crate) struct PyStructuralForecast {
 impl PyStructuralForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observations.len()
+        chain_shape(&self.inner.observations).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observations[0].len()
+        chain_shape(&self.inner.observations).1
     }
     #[getter]
     fn steps(&self) -> usize {
-        self.inner.observations[0][0].len()
+        self.inner
+            .observations
+            .first()
+            .and_then(|chain| chain.first())
+            .map_or(0, Vec::len)
     }
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
@@ -462,15 +452,15 @@ impl PyStructuralForecast {
     }
     #[getter]
     fn mean_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.means)
+        path_array(py, &self.inner.means)
     }
     #[getter]
     fn observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.observations)
+        path_array(py, &self.inner.observations)
     }
     #[getter]
     fn cumulative_observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        array3(py, &self.inner.cumulative)
+        path_array(py, &self.inner.cumulative)
     }
 }
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

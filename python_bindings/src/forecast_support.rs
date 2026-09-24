@@ -1,14 +1,16 @@
 //! Helpers shared by the Gaussian forecasting bindings.
-use crate::{InferenceError, StateSpaceError};
+use crate::{arviz_from_groups, forecast_diagnostics, InferenceError, StateSpaceError};
 use ndarray::{Array2, Array3};
 use numpy::PyUntypedArrayMethods;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::{
     BayesianForecastError as CoreBayesianForecastError, ForecastQuantile,
     InverseGammaPrior as CoreInverseGammaPrior,
 };
+pub(crate) use rustmc_core::diagnostics::DiagnosticsReport;
 use rustmc_core::state_space::StateSpaceError as CoreStateSpaceError;
 
 pub(crate) type PyIntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
@@ -190,6 +192,70 @@ pub(crate) fn summary_array<'py>(
     summary: Result<Vec<f64>, CoreBayesianForecastError>,
 ) -> PyResult<Bound<'py, PyArray1<f64>>> {
     Ok(summary.map_err(bayesian_forecast_error)?.into_pyarray(py))
+}
+
+/// What the `summary`, `diagnostics`, `sampler_stats` and `to_arviz` methods
+/// every forecasting fit shares need to know about it. PyO3 cannot inherit
+/// methods between `#[pyclass]`es, so each class keeps one-line wrappers
+/// around the `fit_*` functions below.
+pub(crate) trait ForecastFit {
+    /// The sampler named in `sampler_stats`, e.g. `"conjugate Gibbs/FFBS"`.
+    fn sampler(&self) -> &'static str;
+    /// Which retained quantities the diagnostics cover.
+    fn coverage(&self) -> &'static str;
+    fn report(&self) -> DiagnosticsReport;
+    /// `(chains, draws)` of the retained posterior.
+    fn shape(&self) -> (usize, usize);
+    /// Parameter draws keyed by name, each with leading `(chain, draw)` axes.
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>>;
+
+    /// The sampler line printed under the summary table.
+    fn summary_line(&self) -> String {
+        format!(
+            "Sampler: {}; acceptance and divergences unavailable",
+            self.sampler()
+        )
+    }
+}
+
+pub(crate) fn fit_summary(fit: &impl ForecastFit) -> String {
+    fit.report()
+        .to_table_with_sampler(Some(&fit.summary_line()))
+}
+
+pub(crate) fn fit_diagnostics<'py>(
+    py: Python<'py>,
+    fit: &impl ForecastFit,
+) -> PyResult<Bound<'py, PyList>> {
+    forecast_diagnostics::diagnostics_list(py, &fit.report())
+}
+
+pub(crate) fn fit_sampler_stats<'py>(
+    py: Python<'py>,
+    fit: &impl ForecastFit,
+) -> PyResult<Bound<'py, PyDict>> {
+    let (chains, draws) = fit.shape();
+    forecast_diagnostics::sampler_stats(py, fit.sampler(), chains, draws, fit.coverage())
+}
+
+/// Export the parameter draws and the fitted series to ArviZ.
+pub(crate) fn fit_to_arviz<'py>(
+    py: Python<'py>,
+    fit: &impl ForecastFit,
+    observations: &[f64],
+) -> PyResult<Bound<'py, PyAny>> {
+    let az = py.import("arviz")?;
+    let groups = PyDict::new(py);
+    groups.set_item("posterior", fit.posterior(py)?)?;
+    let observed = PyDict::new(py);
+    observed.set_item("y", PyArray1::from_slice(py, observations))?;
+    groups.set_item("observed_data", observed)?;
+    arviz_from_groups(&az, groups)
+}
+
+/// Count of non-missing observations.
+pub(crate) fn observed_count(observations: &[f64]) -> usize {
+    observations.iter().filter(|value| !value.is_nan()).count()
 }
 
 /// Lower and upper bounds as a pair of NumPy arrays.

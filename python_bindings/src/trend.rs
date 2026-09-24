@@ -1,7 +1,7 @@
 //! Bayesian local-linear-trend bindings.
 use crate::forecast_support::*;
 use crate::StateSpaceError;
-use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics, regression};
+use crate::{forecast_batch, regression};
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
 use pyo3::prelude::*;
@@ -11,26 +11,9 @@ use rustmc_core::bayesian_trend::{
     fit_bayesian_local_linear_trend,
     BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
     LocalLinearTrendPosterior as CoreLocalLinearTrendPosterior,
-    LocalLinearTrendPosteriorDraw as CoreLocalLinearTrendPosteriorDraw,
     TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
 use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
-
-pub(crate) fn trend_parameter_array<'py, F>(
-    py: Python<'py>,
-    posterior: &CoreLocalLinearTrendPosterior,
-    value: F,
-) -> Bound<'py, PyArray2<f64>>
-where
-    F: Fn(&CoreLocalLinearTrendPosteriorDraw) -> f64,
-{
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
-        value(&posterior.chains[chain][draw])
-    })
-    .into_pyarray(py)
-}
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
 #[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
@@ -262,38 +245,86 @@ pub(crate) struct PyBayesianLocalLinearTrendFit {
     pub(crate) config: CoreBayesianLocalLinearTrendConfig,
 }
 
+impl ForecastFit for PyBayesianLocalLinearTrendFit {
+    fn sampler(&self) -> &'static str {
+        "conjugate Gibbs/FFBS"
+    }
+    fn coverage(&self) -> &'static str {
+        "variance parameters, terminal level and slope; historical states are not retained"
+    }
+    fn report(&self) -> DiagnosticsReport {
+        self.posterior.diagnostics()
+    }
+    fn shape(&self) -> (usize, usize) {
+        chain_shape(&self.posterior.chains)
+    }
+    fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let chains = &self.posterior.chains;
+        let samples = PyDict::new(py);
+        for (name, values) in [
+            (
+                "level_variance",
+                draw_array(py, chains, |draw| draw.level_variance),
+            ),
+            (
+                "slope_variance",
+                draw_array(py, chains, |draw| draw.slope_variance),
+            ),
+            (
+                "observation_variance",
+                draw_array(py, chains, |draw| draw.observation_variance),
+            ),
+            (
+                "level_sd",
+                draw_array(py, chains, |draw| draw.level_variance.sqrt()),
+            ),
+            (
+                "slope_sd",
+                draw_array(py, chains, |draw| draw.slope_variance.sqrt()),
+            ),
+            (
+                "observation_sd",
+                draw_array(py, chains, |draw| draw.observation_variance.sqrt()),
+            ),
+            (
+                "terminal_level",
+                draw_array(py, chains, |draw| draw.terminal_level),
+            ),
+            (
+                "terminal_slope",
+                draw_array(py, chains, |draw| draw.terminal_slope),
+            ),
+        ] {
+            samples.set_item(name, values)?;
+        }
+        Ok(samples)
+    }
+}
+
 #[pymethods]
 impl PyBayesianLocalLinearTrendFit {
     /// Rank-normalized folded split R-hat, bulk/tail ESS, MCSE and HDIs.
     fn summary(&self) -> String {
-        self.posterior.diagnostics().to_table_with_sampler(Some(
-            "Sampler: conjugate Gibbs/FFBS; acceptance and divergences unavailable",
-        ))
+        fit_summary(self)
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
+        fit_diagnostics(py, self)
     }
 
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        forecast_diagnostics::sampler_stats(
-            py,
-            "conjugate Gibbs/FFBS",
-            self.chains(),
-            self.draws(),
-            "variance parameters, terminal level and slope; historical states are not retained",
-        )
+        fit_sampler_stats(py, self)
     }
 
     #[getter]
-    pub(crate) fn chains(&self) -> usize {
-        self.posterior.chains.len()
+    fn chains(&self) -> usize {
+        self.shape().0
     }
 
     #[getter]
-    pub(crate) fn draws(&self) -> usize {
-        self.posterior.chains.first().map_or(0, Vec::len)
+    fn draws(&self) -> usize {
+        self.shape().1
     }
 
     #[getter]
@@ -303,10 +334,7 @@ impl PyBayesianLocalLinearTrendFit {
 
     #[getter]
     fn observed_count(&self) -> usize {
-        self.observations
-            .iter()
-            .filter(|value| !value.is_nan())
-            .count()
+        observed_count(&self.observations)
     }
 
     #[getter]
@@ -320,44 +348,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let samples = PyDict::new(py);
-        for (name, values) in [
-            (
-                "level_variance",
-                trend_parameter_array(py, &self.posterior, |draw| draw.level_variance),
-            ),
-            (
-                "slope_variance",
-                trend_parameter_array(py, &self.posterior, |draw| draw.slope_variance),
-            ),
-            (
-                "observation_variance",
-                trend_parameter_array(py, &self.posterior, |draw| draw.observation_variance),
-            ),
-            (
-                "level_sd",
-                trend_parameter_array(py, &self.posterior, |draw| draw.level_variance.sqrt()),
-            ),
-            (
-                "slope_sd",
-                trend_parameter_array(py, &self.posterior, |draw| draw.slope_variance.sqrt()),
-            ),
-            (
-                "observation_sd",
-                trend_parameter_array(py, &self.posterior, |draw| draw.observation_variance.sqrt()),
-            ),
-            (
-                "terminal_level",
-                trend_parameter_array(py, &self.posterior, |draw| draw.terminal_level),
-            ),
-            (
-                "terminal_slope",
-                trend_parameter_array(py, &self.posterior, |draw| draw.terminal_slope),
-            ),
-        ] {
-            samples.set_item(name, values)?;
-        }
-        Ok(samples)
+        self.posterior(py)
     }
 
     #[pyo3(signature = (steps, seed=43))]
@@ -374,13 +365,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let az = py.import("arviz")?;
-        let groups = PyDict::new(py);
-        groups.set_item("posterior", self.get_samples_2d(py)?)?;
-        let observed = PyDict::new(py);
-        observed.set_item("y", PyArray1::from_vec(py, self.observations.clone()))?;
-        groups.set_item("observed_data", observed)?;
-        arviz_from_groups(&az, groups)
+        fit_to_arviz(py, self, &self.observations)
     }
 
     fn __repr__(&self) -> String {
@@ -403,12 +388,12 @@ pub(crate) struct PyBayesianTrendForecast {
 impl PyBayesianTrendForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.observation_paths.len()
+        chain_shape(&self.inner.observation_paths).0
     }
 
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.observation_paths.first().map_or(0, Vec::len)
+        chain_shape(&self.inner.observation_paths).1
     }
 
     #[getter]
@@ -433,29 +418,17 @@ impl PyBayesianTrendForecast {
 
     #[getter]
     fn level_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .level_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.level_means())
     }
 
     #[getter]
     fn slope_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .slope_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.slope_means())
     }
 
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.observation_means())
     }
 
     fn level_quantile<'py>(
@@ -463,11 +436,7 @@ impl PyBayesianTrendForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let quantiles = self
-            .inner
-            .level_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?;
-        Ok(quantiles[0].values.clone().into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.level_quantiles(p))
     }
 
     fn slope_quantile<'py>(
@@ -475,11 +444,7 @@ impl PyBayesianTrendForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let quantiles = self
-            .inner
-            .slope_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?;
-        Ok(quantiles[0].values.clone().into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.slope_quantiles(p))
     }
 
     fn observation_quantile<'py>(
@@ -487,53 +452,22 @@ impl PyBayesianTrendForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        let quantiles = self
-            .inner
-            .observation_quantiles(&[probability])
-            .map_err(bayesian_forecast_error)?;
-        Ok(quantiles[0].values.clone().into_pyarray(py))
+        quantile_array(py, probability, |p| self.inner.observation_quantiles(p))
     }
 
     #[pyo3(signature = (level=0.95))]
     fn level_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let quantiles = self
-            .inner
-            .level_quantiles(&probabilities)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            quantiles[0].values.clone().into_pyarray(py),
-            quantiles[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.level_quantiles(p))
     }
 
     #[pyo3(signature = (level=0.95))]
     fn slope_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let quantiles = self
-            .inner
-            .slope_quantiles(&probabilities)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            quantiles[0].values.clone().into_pyarray(py),
-            quantiles[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.slope_quantiles(p))
     }
 
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probabilities = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let quantiles = self
-            .inner
-            .observation_quantiles(&probabilities)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            quantiles[0].values.clone().into_pyarray(py),
-            quantiles[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.observation_quantiles(p))
     }
 
     #[getter]

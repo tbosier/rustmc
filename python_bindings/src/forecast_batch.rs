@@ -11,6 +11,7 @@ use super::seasonal::{
 use super::trend::{
     PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
 };
+use crate::forecast_support::{DiagnosticsReport, ForecastFit};
 use crate::{forecast_diagnostics, StateSpaceError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -36,7 +37,6 @@ use rustmc_core::bayesian_trend::{
     BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
     TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
-use rustmc_core::diagnostics::DiagnosticsReport;
 use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
@@ -217,23 +217,23 @@ impl Config {
     }
 }
 impl CellFit {
+    fn as_fit(&self) -> &dyn ForecastFit {
+        match self {
+            Self::Local(fit) => fit,
+            Self::Seasonal(fit) => fit,
+            Self::Trend(fit) => fit,
+            Self::Ar(fit) => fit,
+            Self::Hurdle(fit) => fit,
+            Self::Regression(fit) => &**fit,
+        }
+    }
     fn forecast_allocation_size(&self, steps: usize) -> Result<usize, String> {
-        let (chains, draws, components) = match self {
-            Self::Hurdle(fit) => (
-                fit.posterior.chains.len(),
-                fit.posterior.chains.first().map_or(0, Vec::len),
-                3,
-            ),
-            Self::Local(fit) => (fit.chains(), fit.draws(), 3),
-            Self::Seasonal(fit) => (fit.chains(), fit.draws(), 4),
-            Self::Trend(fit) => (fit.chains(), fit.draws(), 4),
-            Self::Ar(fit) => (fit.chains(), fit.draws(), 3),
-            Self::Regression(fit) => (
-                fit.posterior.chains.len(),
-                fit.posterior.chains.first().map_or(0, Vec::len),
-                6,
-            ),
+        let components = match self {
+            Self::Local(_) | Self::Ar(_) | Self::Hurdle(_) => 3,
+            Self::Seasonal(_) | Self::Trend(_) => 4,
+            Self::Regression(_) => 6,
         };
+        let (chains, draws) = self.as_fit().shape();
         allocation_product(&[chains, draws, steps, components])
     }
     fn to_python(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -247,14 +247,7 @@ impl CellFit {
         }
     }
     fn report(&self) -> DiagnosticsReport {
-        match self {
-            Self::Regression(fit) => fit.posterior.diagnostics(),
-            Self::Hurdle(fit) => fit.report(),
-            Self::Local(fit) => fit.posterior.diagnostics(),
-            Self::Seasonal(fit) => fit.posterior.diagnostics(),
-            Self::Trend(fit) => fit.posterior.diagnostics(),
-            Self::Ar(fit) => fit.posterior.diagnostics(),
-        }
+        self.as_fit().report()
     }
     fn forecast(
         &self,
