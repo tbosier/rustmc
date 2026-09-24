@@ -26,9 +26,9 @@ and a working example before it is complete.
 |---|---|---|
 | Statistical release gates | Add fixed-data posterior references, repeated-simulation checks, and stricter positive recovery cases. Keep difficult negative controls separate. | Release checks fail on poor convergence, inaccurate posteriors, or silent diagnostic failures. |
 | Repeated-inference benchmarks | Measure single and ragged repeated regressions, including setup, fitting, prediction, and memory. Reuse compiled models in competing engines. | Raw runs retain every failure and report useful throughput only when statistical quality passes. |
-| Native model artifacts | Move the current model definition, validation, and compilation into the Rust core. Keep Python as an adapter. | The same artifact can be loaded, bound, fitted, and evaluated from Python and Rust. |
+| Native model artifacts | Move the current model definition, validation, and compilation into the Rust core. Keep Python as an adapter. | The same artifact can be loaded, bound, fitted, and evaluated from Python and Rust. Met for graph models and graph fits as of the third review; the forecasting models' artifacts are still defined per model. |
 | Bounded batches | Stream inputs and results, choose retained outputs, and rerun jobs by stable ID. | Memory stays bounded as job count grows, and one failed job can be collected without losing completed work. |
-| Results and diagnostics | Share a result protocol with named dimensions and joint draw identity. Record energy, BFMI, termination reasons, and the actual algorithm. | Users can inspect generic and specialized fits consistently; inapplicable diagnostics remain unavailable. |
+| Results and diagnostics | Share a result protocol with named dimensions and joint draw identity. Record energy, BFMI, termination reasons, and the actual algorithm. | Users can inspect generic and specialized fits consistently; inapplicable diagnostics remain unavailable. Known gaps: `get_samples()` is flat for graph, structural and dynamic GLM fits but `(chain, draw[, k])` for AR and the hierarchical mean; mean draws go by three names; `StructuralForecast` exposes both `*_samples` and `*_paths`. |
 
 ## Next mathematical work
 
@@ -42,6 +42,13 @@ Gibbs and noncentered sampling before extending the approach.
 
 Learned scales for dynamic count and hurdle models can follow once the Gaussian path
 is dependable. Their current scales and pooling strengths are fixed inputs.
+
+The local-linear-trend Gibbs sampler mixes slowly on its level and slope variances:
+on a synthetic series with 4 chains, 300 warmup and 500 draws, their R-hat ranged
+from 1.05 to 1.9, with prior-mode and overdispersed starts alike. Dispersed starts
+exposed this rather than caused it. A non-centred or interweaving (ASIS) update of
+the state variances is the likely fix and should come with a recovery test that
+fails today.
 
 ## Scope
 

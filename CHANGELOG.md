@@ -40,6 +40,19 @@ streams and start from different points than in 0.12.0.
 - CI publishes `rustmc_core` to crates.io before the PyPI upload on release tags,
   behind a `crates-io` environment, and runs the ignored prediction-stream test and
   the network packaging test. See `docs/releasing.md` for the one-time setup.
+- A fit saved from Python loads in Rust, and the reverse. The `rustmc.graph-fit`
+  format, its validation and prediction now live in `rustmc_core::model`:
+  `ModelFit::{to_json, from_json, training_data, log_likelihood, deterministics,
+  posterior_predictive}` and `GraphModel::sample_batch`. The format is unchanged
+  except that keys are written in a fixed order, so one fit always saves to the same
+  bytes; older files still load.
+- `forecast_common::{sorted_quantile, cumulative_paths}` and public path summaries,
+  observation intervals on `state_space::ForecastResult`, hierarchical forecast
+  summaries and roll-ups, `GaussianCoefficientPrior::new` and
+  `bayesian_regression::fourier_width`, replacing statistics the Python bindings
+  computed themselves.
+- Hierarchical forecast `interval()` and `state_interval()` default to
+  `level=0.95`, like every other forecast.
 
 #### Changed
 
@@ -87,6 +100,29 @@ streams and start from different points than in 0.12.0.
   in a `pypi` environment, and CI caches Rust builds.
 - `scripts/dev_pytest.sh` honours `RUSTMC_VENV` and finds the main checkout's
   virtual environment instead of a hard-coded home directory.
+- **Forecasting exceptions follow one rule.** Local-level, seasonal, trend, AR,
+  hurdle, regression, dynamic GLM and structural *fit* errors, the forecasting
+  priors, and `fit_batch` cell failures raise `InferenceError` where several raised
+  `StateSpaceError`. `StateSpaceError` is kept for `LinearGaussianStateSpace` and
+  structural specifications; shared argument checks raise plain `ValueError`. All
+  three still subclass `ValueError`. Code catching `StateSpaceError` from a fit must
+  catch `InferenceError` or `ValueError`.
+- Forecasting models accept integer arrays and lists as well as float arrays, and
+  report a bad input by argument name instead of PyO3's conversion message. A 1-D
+  `y` for a dynamic GLM raises `ValueError` rather than `TypeError`.
+- Forecast quantiles and intervals use one interpolation rule, defined once in Rust.
+  Values move by at most a few ulps; ties are now exact and a constant forecast's
+  interval is that constant. `ForecastDraws.interval` and the evaluation scores use
+  the same rule.
+- Graph-fit `diagnostics()` reports an unavailable value as `None`, as the
+  forecasting fits do, instead of NaN.
+- `log_likelihood`, `predict`, `posterior_predictive`, `deterministics`,
+  `to_arviz`, `sample_prior_predictive`, `to_json` and `from_json` release the GIL,
+  and `log_likelihood` no longer builds an evaluator per draw.
+- `batch_sample` runs on the same native path as `sample_batch`, with positional
+  cell seeds; its errors name the failing `dataset '<i>'`.
+  `sample_batch(show_progress=True)` now shows progress instead of ignoring the flag.
+- The Python extension's 6,271-line `lib.rs` is split into one module per surface.
 
 #### Fixed
 
@@ -112,6 +148,16 @@ streams and start from different points than in 0.12.0.
 - State simulation errors name the covariance that failed.
 - `hierarchical.rs` no longer claims the conjugate Gibbs sampler avoids funnel
   geometry; with weak data it can stick near a group variance of zero.
+- Data dictionaries silently coerced what they could not represent: a scalar
+  became a length-1 vector, booleans became 0/1, the string `'1.5'` became a number,
+  complex values lost their imaginary part, and integers above 2⁵³ were rounded.
+  These, and arrays with more than two dimensions, now raise an error naming the
+  key.
+- Under `errors="collect"`, a batch cell whose binding or reported draws failed
+  aborted the whole `sample_batch` call instead of recording that cell's error.
+- A `fit_batch` of only AR models silently ignored `warmup` and `thin`; it now
+  refuses non-default values, since exact AR draws have neither.
+- Runoff result accessors could panic on inconsistent shapes; they raise instead.
 
 #### Removed
 
