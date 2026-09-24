@@ -546,14 +546,17 @@ Notes:
   another fit's chains.
 - `metric` sets how warmup adapts the metric of vector parameters. `"diag"` is Stan's
   default diagonal metric. `"dense"` estimates a full covariance for each vector
-  parameter of at most 512 elements. `"auto"` (the default) stays diagonal unless a
+  parameter of at most 512 elements, shrinking its correlations when a window has
+  fewer than two draws per element. `"auto"` (the default) stays diagonal unless a
   vector parameter's warmup draws show correlation well beyond their own sampling
   noise, which suits strongly correlated regression coefficients. Scalar parameters
   are always diagonal.
-- Warmup follows Stan's windowed schedule: a 75-draw initial buffer, doubling
-  metric windows starting at 25 draws, and a 50-draw terminal buffer, shrinking to
-  15%, 75% and 10% of warmup when warmup is too short for those. The last window is
-  stretched to meet the terminal buffer rather than cut short.
+- Warmup uses a windowed schedule, Stan's from 500 iterations: an initial buffer of
+  `min(75, 15%)` of warmup, doubling metric windows from 25 draws, and a terminal
+  buffer of `min(50, 10%)` but at least 25 iterations. A window whose successor could
+  not fit at twice its size is stretched to the terminal buffer, so no window after
+  the first is shorter than 25 draws. Below 41 warmup iterations only the step size
+  adapts.
 - `threads=0` uses Rayon defaults.
 - `max_tree_depth` applies to NUTS.
 - `num_leapfrog_steps` applies to HMC.

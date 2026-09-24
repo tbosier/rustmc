@@ -30,7 +30,11 @@ streams and start from different points than in 0.12.0.
   copied: the Gibbs schedule and chain driver, forecast path orchestration and
   summaries, the inverse-gamma draw, Cholesky, and the size guard
   `checked_value_count` / `AllocationLimitError` / `MAX_MATERIALIZED_VALUES`.
-- `Evaluator::forward`, a forward-only evaluation used by prediction.
+- `Evaluator::forward`, a forward-only evaluation used by prediction, and
+  `sampler::MAX_RETAINED_VALUES`, the bound on draws a graph fit or prediction may
+  hold.
+- `benchmarks/metric_adaptation.py`, which reproduces the metric and warmup
+  measurements quoted below and prints the configuration and seeds it used.
 - `HurdleLogNormalPosterior::diagnostics()` and
   `HurdleLogNormalForecast::expected_value_{paths,means,quantiles}`.
 - `rust-version = "1.87"` for `rustmc_core`, checked by a CI job.
@@ -56,16 +60,26 @@ streams and start from different points than in 0.12.0.
 
 - **Vector parameters no longer always get a dense metric.** Every vector
   parameter of 2 to 512 elements used to get a dense metric block estimated from at
-  most 200 warmup draws, which is noisy at 50 dimensions and singular above 200. An
-  isotropic 300-element posterior took 431 leapfrog steps per iteration and 31
-  seconds; it now takes 15 steps and 0.26 seconds, the same as scalar parameters.
-  The default `"auto"` goes dense only when a window's correlation clearly exceeds
-  its own sampling noise, which keeps the gain on correlated regression coefficients
-  (ESS per second on a 20-coefficient ρ=0.9 regression rose from about 32k to 60k).
-- **The last warmup window is stretched, not cut short**, following Stan. At
-  `warmup=1000` the final metric came from 100 draws (850–950) and discarded the
-  400-draw estimate; it now comes from draws 450–950. The default `warmup=500` was
-  unaffected. HMC now uses the same windowed schedule instead of one 15–90% window.
+  most 200 warmup draws, which is noisy at 50 dimensions and singular above 200. On an
+  isotropic 300-element regression 0.12 took about 500 leapfrog steps per draw; the
+  default now takes 15, the same as scalar parameters. The default `"auto"` goes
+  dense only when a window's correlation clearly exceeds its own sampling noise, which
+  keeps the gain on correlated coefficients: on a 20-coefficient ρ = 0.9 regression it
+  takes 11.8 steps per draw against 56.3 for `"diag"`. An explicit `"dense"` shrinks
+  correlations toward zero when a window has fewer than two draws per element, so it
+  stays well conditioned (22.7 steps at 300 isotropic elements). Figures are from
+  `benchmarks/metric_adaptation.py`, which prints its configuration and seeds.
+- **The warmup schedule is Stan's from 500 iterations, and no metric window is cut
+  short.** At `warmup=1000` the final metric came from 100 draws (850–950) and
+  discarded the 400-draw estimate; it now comes from draws 450–950. The default
+  `warmup=500` was unaffected. Below 500 iterations the schedule deliberately differs
+  from Stan: buffers scale down (initial `min(75, 15%)`, terminal `min(50, 10%)` but at
+  least 25), every metric update is followed by at least 25 step-size iterations, no
+  window after the first is shorter than 25 draws, and below 41 iterations only the
+  step size adapts, as Stan does below 150. On a badly scaled regression this keeps
+  warmups of 100–155 at about 16 steps per draw; warmups of 40 or fewer, which adapt
+  no metric, take about 420, and 41–45 cost 22–78 against about 15 in 0.12. HMC now
+  uses the same windowed schedule instead of one 15–90% window.
 - **Chains are seeded independently.** The graph sampler seeded chain `c` with
   `seed + c`, so seed 42's second chain was seed 43's first. Every sampler now keys
   chains through `seeding::chain_seed`, which mixes seed, domain and chain index in
@@ -159,16 +173,23 @@ streams and start from different points than in 0.12.0.
   node, a vector used as a log-density term or a scale, a wrong-length `init`, and
   the raw `nuts::run_chain` / `hmc::run_chain` entry points. The Python API was
   already guarded.
-- Oversized forecasts or draw counts for the local-level, trend, seasonal and AR
-  models aborted the process; they now raise, like the other models.
+- Requests too large to hold in memory aborted the Python interpreter instead of
+  raising: forecasts and draw counts for the local-level, trend, seasonal and AR
+  models, `sample()` draws, warmup or chains, prior-predictive `n_samples`,
+  prediction `sizes`, `LinearGaussianStateSpace.forecast` horizons, seasonal periods
+  and `fourier_design`. They now raise `ValueError` (or the model's error class)
+  before allocating. State-space forecast horizons have no fixed cap; the rest are
+  bounded by `forecast_common::MAX_MATERIALIZED_VALUES` or the new
+  `sampler::MAX_RETAINED_VALUES`.
 - `digamma` never returned for arguments at or below −2⁵³ or −∞.
 - Normal and log-normal observation terms returned NaN rather than −∞ for a scale
   at or below zero.
 - The step-size search could return a non-finite step, repeated its first probe and
   reused one momentum draw for every probe.
 - Runoff chain 0 ran on the raw seed.
-- The NUTS leapfrog step allocated about five times per step despite being
-  documented as allocation-free; a counting-allocator test now holds it to that.
+- The NUTS leapfrog step allocated nine vectors per step, plus nine per
+  transition, despite being documented as allocation-free; a counting-allocator test
+  now holds it to that.
 - An AR forecast overflowing on an explosive draw names the chain, draw and step.
 - State simulation errors name the covariance that failed.
 - `hierarchical.rs` no longer claims the conjugate Gibbs sampler avoids funnel
