@@ -9,16 +9,27 @@
 ///
 /// `domain` keeps distinct stages (fitting, forecasting, posterior prediction)
 /// on disjoint streams when a caller reuses one seed across them, which is the
-/// common case because the stages share a default seed. The combination is
-/// additive, so seeds deliberately offset by exactly a domain difference still
-/// meet; ordinary seeds do not.
+/// common case because the stages share a default seed.
 ///
-/// The body is the SplitMix64 finalizer, which spreads nearby inputs across
-/// the whole 64-bit range.
+/// The three inputs enter in separate SplitMix64 finalizer rounds: the seed is
+/// mixed, the domain is folded into the mixed value and mixed again, and the
+/// chain's golden-ratio offset is added to that and mixed once more. Each
+/// round is a bijection, so distinct chains of one seed and domain never share
+/// a stream. The previous form added all three before a single round, so
+/// chain `c` of seed `s` was chain 0 of seed `s + c * 0x9E37_79B9_7F4A_7C15`,
+/// and two domains met at seeds offset by their difference; mixing each input
+/// before the next is combined leaves no such offset.
 pub fn chain_seed(seed: u64, chain_index: usize, domain: u64) -> u64 {
-    let mut value = seed
-        .wrapping_add(domain)
-        .wrapping_add((chain_index as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+    let keyed = splitmix64_finalize(splitmix64_finalize(seed) ^ domain);
+    splitmix64_finalize(keyed.wrapping_add((chain_index as u64).wrapping_mul(GOLDEN_GAMMA)))
+}
+
+/// SplitMix64's increment, the odd integer nearest `2^64 / phi`.
+const GOLDEN_GAMMA: u64 = 0x9E37_79B9_7F4A_7C15;
+
+/// The SplitMix64 output function: a bijection on `u64` that spreads nearby
+/// inputs across the whole range.
+fn splitmix64_finalize(mut value: u64) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
@@ -98,6 +109,30 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn no_seed_offset_reproduces_another_chain_or_domain() {
+        // Under the additive form each of these pairs was the same stream.
+        for seed in [0u64, 1, 42, 1 << 40, u64::MAX] {
+            for chain in 1..64usize {
+                let offset = (chain as u64).wrapping_mul(GOLDEN_GAMMA);
+                assert_ne!(
+                    chain_seed(seed, chain, SAMPLER_FIT_SEED_DOMAIN),
+                    chain_seed(seed.wrapping_add(offset), 0, SAMPLER_FIT_SEED_DOMAIN)
+                );
+            }
+            let shift = POSTERIOR_PREDICT_SEED_DOMAIN.wrapping_sub(PRIOR_PREDICT_SEED_DOMAIN);
+            assert_ne!(
+                chain_seed(seed.wrapping_add(shift), 0, PRIOR_PREDICT_SEED_DOMAIN),
+                chain_seed(seed, 0, POSTERIOR_PREDICT_SEED_DOMAIN)
+            );
+            let flip = POSTERIOR_PREDICT_SEED_DOMAIN ^ PRIOR_PREDICT_SEED_DOMAIN;
+            assert_ne!(
+                chain_seed(seed ^ flip, 0, PRIOR_PREDICT_SEED_DOMAIN),
+                chain_seed(seed, 0, POSTERIOR_PREDICT_SEED_DOMAIN)
+            );
         }
     }
 
