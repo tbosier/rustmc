@@ -100,16 +100,16 @@ for j in range(J):
 ```
 
 ```text
-  mu_global   prior: mean=0.08, std=9.65
-  sigma_group prior: mean=3.75, std=2.71
-  Group 0 prior y range: [-32.9, 31.3]
-  Group 1 prior y range: [-25.0, 33.9]
-  Group 2 prior y range: [-30.8, 40.2]
-  Group 3 prior y range: [-32.4, 37.7]
-  Group 4 prior y range: [-29.8, 29.1]
-  Group 5 prior y range: [-25.0, 40.7]
-  Group 6 prior y range: [-30.0, 35.9]
-  Group 7 prior y range: [-33.8, 31.6]
+  mu_global   prior: mean=0.20, std=9.17
+  sigma_group prior: mean=4.05, std=2.91
+  Group 0 prior y range: [-35.2, 30.4]
+  Group 1 prior y range: [-35.9, 38.7]
+  Group 2 prior y range: [-27.4, 42.6]
+  Group 3 prior y range: [-44.9, 38.0]
+  Group 4 prior y range: [-46.8, 37.4]
+  Group 5 prior y range: [-33.2, 34.6]
+  Group 6 prior y range: [-36.9, 31.6]
+  Group 7 prior y range: [-35.7, 33.6]
 ```
 
 ## Sample
@@ -130,18 +130,18 @@ print(fit.summary())
 
 Parameter        mean      std     hdi_3%    hdi_97%   ess_bulk   ess_tail    r_hat  mcse_mean
 ──────────────────────────────────────────────────────────────────────────────────────────────
-mu_global      1.3659   1.2779    -1.1927     3.7548        849       1048   1.0064   0.044246
-sigma_group    3.5117   1.0477     1.8198     5.3398        948       1258   1.0031   0.034012
-mu_0           3.6641   0.3667     2.9980     4.3654       9779       6290   1.0007   0.003707
-mu_1          -0.4894   0.3708    -1.1702     0.2118       9978       6487   0.9998   0.003709
-mu_2           4.1903   0.3652     3.5295     4.9056      10961       6901   1.0000   0.003486
-mu_3           5.2383   0.3687     4.5246     5.9063      10158       6653   1.0004   0.003652
-mu_4          -3.4909   0.3666    -4.1602    -2.7827      10789       6883   1.0002   0.003530
-mu_5          -1.3004   0.3643    -1.9784    -0.6124      10075       6809   1.0001   0.003629
-mu_6           2.8542   0.3587     2.1913     3.5307       9040       6880   1.0003   0.003773
-mu_7           1.1104   0.3639     0.3894     1.7570       8793       5458   1.0000   0.003882
+mu_global      1.3507   1.3124    -0.8568     4.0559        896       1124   1.0044   0.044351
+sigma_group    3.5300   1.0647     1.8405     5.4506        696       1149   1.0051   0.040945
+mu_0           3.6672   0.3569     3.0189     4.3508      10167       6401   1.0005   0.003539
+mu_1          -0.4870   0.3610    -1.1705     0.1866      10421       6715   1.0003   0.003538
+mu_2           4.1951   0.3649     3.5170     4.8808       9743       6749   1.0002   0.003699
+mu_3           5.2365   0.3651     4.5668     5.9224      11182       7228   1.0005   0.003450
+mu_4          -3.4856   0.3605    -4.1611    -2.8083      10306       7084   0.9998   0.003552
+mu_5          -1.3029   0.3613    -1.9706    -0.6305      10077       5793   1.0005   0.003597
+mu_6           2.8564   0.3634     2.1738     3.5527      10481       5961   1.0007   0.003551
+mu_7           1.1118   0.3627     0.4668     1.8277       9655       6049   1.0002   0.003690
 ──────────────────────────────────────────────────────────────────────────────────────────────
-Mean accept rate: 0.93  │  Divergences: 0
+Mean accept rate: 0.91  │  Divergences: 0
 ```
 
 ## Recover the parameters
@@ -166,18 +166,18 @@ print("Divergences:", fit.divergences())
 ```text
 Parameter           True   Estimate      Std
 ---------------------------------------------
-mu_global           2.50     1.3659   1.2779
-sigma_group         3.00     3.5117   1.0477
-  mu_0              3.41     3.6641   0.3667
-  mu_1             -0.62    -0.4894   0.3708
-  mu_2              4.75     4.1903   0.3652
-  mu_3              5.32     5.2383   0.3687
-  mu_4             -3.35    -3.4909   0.3666
-  mu_5             -1.41    -1.3004   0.3643
-  mu_6              2.88     2.8542   0.3587
-  mu_7              1.55     1.1104   0.3639
+mu_global           2.50     1.3507   1.3124
+sigma_group         3.00     3.5300   1.0647
+  mu_0              3.41     3.6672   0.3569
+  mu_1             -0.62    -0.4870   0.3610
+  mu_2              4.75     4.1951   0.3649
+  mu_3              5.32     5.2365   0.3651
+  mu_4             -3.35    -3.4856   0.3605
+  mu_5             -1.41    -1.3029   0.3613
+  mu_6              2.88     2.8564   0.3634
+  mu_7              1.55     1.1118   0.3627
 
-Step sizes: [0.10174, 0.10207, 0.11168, 0.11188]
+Step sizes: [0.1072, 0.10161, 0.07235, 0.10609]
 Divergences: [0, 0, 0, 0]
 ```
 
@@ -218,14 +218,14 @@ print("sample size falls; examples/site_effects.py shows it with unequal counts.
 
 ```text
 Partial pooling effect (shrinkage toward the global mean):
-  Global mean estimate: 1.37
-  Group 0: raw=+3.69  pooled=+3.66  true=+3.41
+  Global mean estimate: 1.35
+  Group 0: raw=+3.69  pooled=+3.67  true=+3.41
   Group 1: raw=-0.51  pooled=-0.49  true=-0.62
-  Group 2: raw=+4.23  pooled=+4.19  true=+4.75
+  Group 2: raw=+4.23  pooled=+4.20  true=+4.75
   Group 3: raw=+5.29  pooled=+5.24  true=+5.32
   Group 4: raw=-3.56  pooled=-3.49  true=-3.35
   Group 5: raw=-1.34  pooled=-1.30  true=-1.41
-  Group 6: raw=+2.87  pooled=+2.85  true=+2.88
+  Group 6: raw=+2.87  pooled=+2.86  true=+2.88
   Group 7: raw=+1.11  pooled=+1.11  true=+1.55
 
 Each group has 30 observations and known noise, so the data pins mu_j down
@@ -251,12 +251,12 @@ for j in range(J):
 
 ```text
   Likelihood keys in PPC: ['obs_0', 'obs_1', 'obs_2', 'obs_3', 'obs_4', 'obs_5', 'obs_6', 'obs_7']
-  Group 0: obs mean=3.69  ppc mean=3.66  within +/-2 sd=100.00%
-  Group 1: obs mean=-0.51  ppc mean=-0.49  within +/-2 sd=100.00%
-  Group 2: obs mean=4.23  ppc mean=4.22  within +/-2 sd=100.00%
-  Group 3: obs mean=5.29  ppc mean=5.25  within +/-2 sd=100.00%
-  Group 4: obs mean=-3.56  ppc mean=-3.49  within +/-2 sd=96.67%
-  Group 5: obs mean=-1.34  ppc mean=-1.32  within +/-2 sd=96.67%
-  Group 6: obs mean=2.87  ppc mean=2.85  within +/-2 sd=100.00%
-  Group 7: obs mean=1.11  ppc mean=1.10  within +/-2 sd=86.67%
+  Group 0: obs mean=3.69  ppc mean=3.67  within +/-2 sd=96.67%
+  Group 1: obs mean=-0.51  ppc mean=-0.47  within +/-2 sd=100.00%
+  Group 2: obs mean=4.23  ppc mean=4.14  within +/-2 sd=100.00%
+  Group 3: obs mean=5.29  ppc mean=5.27  within +/-2 sd=100.00%
+  Group 4: obs mean=-3.56  ppc mean=-3.50  within +/-2 sd=90.00%
+  Group 5: obs mean=-1.34  ppc mean=-1.30  within +/-2 sd=100.00%
+  Group 6: obs mean=2.87  ppc mean=2.84  within +/-2 sd=96.67%
+  Group 7: obs mean=1.11  ppc mean=1.12  within +/-2 sd=93.33%
 ```
