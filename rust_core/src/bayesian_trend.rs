@@ -18,14 +18,16 @@
 //! while indexed collection preserves deterministic chain ordering.
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::forecast_common::{
+    check_forecast_size, cholesky_into, path_means, path_quantiles, require_finite_observations,
+    run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+};
+#[cfg(test)]
 use crate::seeding::chain_seed;
-use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
+use rand_distr::{Distribution, StandardNormal};
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
-type TrendChainPaths = (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>);
 
 /// Configuration for a fitted Bayesian local-linear-trend model.
 #[derive(Debug, Clone)]
@@ -45,35 +47,23 @@ pub struct BayesianLocalLinearTrendConfig {
 }
 
 impl BayesianLocalLinearTrendConfig {
-    fn validate(&self) -> Result<(), BayesianForecastError> {
+    fn validate(&self) -> Result<GibbsSchedule, BayesianForecastError> {
         if self.initial_mean.iter().any(|value| !value.is_finite()) {
             return Err(invalid_config(
                 "initial mean must contain only finite values",
             ));
         }
         validate_covariance(self.initial_covariance)?;
-        validate_prior("level-variance prior", self.level_variance_prior)?;
-        validate_prior("slope-variance prior", self.slope_variance_prior)?;
-        validate_prior(
-            "observation-variance prior",
-            self.observation_variance_prior,
-        )?;
-        if self.num_chains == 0 {
-            return Err(invalid_config("number of chains must be positive"));
-        }
-        if self.num_draws == 0 {
-            return Err(invalid_config("number of posterior draws must be positive"));
-        }
-        if self.thinning == 0 {
-            return Err(invalid_config("thinning must be positive"));
-        }
-        self.num_draws
-            .checked_mul(self.thinning)
-            .and_then(|saved| self.num_warmup.checked_add(saved))
-            .ok_or_else(|| {
-                invalid_config("warmup, draws, and thinning imply too many iterations")
-            })?;
-        Ok(())
+        self.level_variance_prior.validate("level-variance prior")?;
+        self.slope_variance_prior.validate("slope-variance prior")?;
+        self.observation_variance_prior
+            .validate("observation-variance prior")?;
+        GibbsSchedule::new(
+            self.num_chains,
+            self.num_warmup,
+            self.num_draws,
+            self.thinning,
+        )
     }
 }
 
@@ -109,60 +99,44 @@ impl LocalLinearTrendPosterior {
             ));
         }
 
-        let chain_paths: Vec<TrendChainPaths> = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain_index, posterior_chain)| {
-                let mut rng =
-                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain_index, FORECAST_SEED_DOMAIN));
-                let mut chain_levels = Vec::with_capacity(posterior_chain.len());
-                let mut chain_slopes = Vec::with_capacity(posterior_chain.len());
-                let mut chain_observations = Vec::with_capacity(posterior_chain.len());
-                for draw in posterior_chain {
-                    validate_positive("level", draw.level_variance)?;
-                    validate_positive("slope", draw.slope_variance)?;
-                    validate_positive("observation", draw.observation_variance)?;
-                    if !draw.terminal_level.is_finite() || !draw.terminal_slope.is_finite() {
-                        return Err(numerical("posterior terminal state is not finite"));
-                    }
+        check_forecast_size("local-linear-trend forecast", &self.chains, horizon, 3)?;
 
-                    let level_sd = draw.level_variance.sqrt();
-                    let slope_sd = draw.slope_variance.sqrt();
-                    let observation_sd = draw.observation_variance.sqrt();
-                    let mut level = draw.terminal_level;
-                    let mut slope = draw.terminal_slope;
-                    let mut levels = Vec::with_capacity(horizon);
-                    let mut slopes = Vec::with_capacity(horizon);
-                    let mut observations = Vec::with_capacity(horizon);
-                    for _ in 0..horizon {
-                        // Both innovations are applied to F x[t - 1], independently.
-                        level += slope + standard_normal(&mut rng) * level_sd;
-                        slope += standard_normal(&mut rng) * slope_sd;
-                        let observation = level + standard_normal(&mut rng) * observation_sd;
-                        if !level.is_finite() || !slope.is_finite() || !observation.is_finite() {
-                            return Err(numerical("posterior predictive simulation overflowed"));
-                        }
-                        levels.push(level);
-                        slopes.push(slope);
-                        observations.push(observation);
-                    }
-                    chain_levels.push(levels);
-                    chain_slopes.push(slopes);
-                    chain_observations.push(observations);
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &LocalLinearTrendPosteriorDraw, rng| {
+                validate_positive("level", draw.level_variance)?;
+                validate_positive("slope", draw.slope_variance)?;
+                validate_positive("observation", draw.observation_variance)?;
+                if !draw.terminal_level.is_finite() || !draw.terminal_slope.is_finite() {
+                    return Err(numerical("posterior terminal state is not finite"));
                 }
-                Ok((chain_levels, chain_slopes, chain_observations))
-            })
-            .collect::<Result<_, BayesianForecastError>>()?;
 
-        let mut level_paths = Vec::with_capacity(chain_paths.len());
-        let mut slope_paths = Vec::with_capacity(chain_paths.len());
-        let mut observation_paths = Vec::with_capacity(chain_paths.len());
-        for (chain_levels, chain_slopes, chain_observations) in chain_paths {
-            level_paths.push(chain_levels);
-            slope_paths.push(chain_slopes);
-            observation_paths.push(chain_observations);
-        }
+                let level_sd = draw.level_variance.sqrt();
+                let slope_sd = draw.slope_variance.sqrt();
+                let observation_sd = draw.observation_variance.sqrt();
+                let mut level = draw.terminal_level;
+                let mut slope = draw.terminal_slope;
+                let mut levels = Vec::with_capacity(horizon);
+                let mut slopes = Vec::with_capacity(horizon);
+                let mut observations = Vec::with_capacity(horizon);
+                for _ in 0..horizon {
+                    // Both innovations are applied to F x[t - 1], independently.
+                    level += slope + standard_normal(rng) * level_sd;
+                    slope += standard_normal(rng) * slope_sd;
+                    let observation = level + standard_normal(rng) * observation_sd;
+                    if !level.is_finite() || !slope.is_finite() || !observation.is_finite() {
+                        return Err(numerical("posterior predictive simulation overflowed"));
+                    }
+                    levels.push(level);
+                    slopes.push(slope);
+                    observations.push(observation);
+                }
+                Ok([levels, slopes, observations])
+            },
+        )?;
+        let [level_paths, slope_paths, observation_paths] = split_paths(per_draw);
 
         Ok(TrendPosteriorPredictiveForecast {
             level_paths,
@@ -227,85 +201,78 @@ pub fn fit_bayesian_local_linear_trend(
     observations: &[f64],
     config: &BayesianLocalLinearTrendConfig,
 ) -> Result<LocalLinearTrendPosterior, BayesianForecastError> {
-    config.validate()?;
-    validate_observations(observations)?;
-
-    let total_iterations = config.num_warmup + config.num_draws * config.thinning;
-    let observed_count = observations.iter().filter(|value| !value.is_nan()).count();
+    let schedule = config.validate()?;
+    let observed_count = validate_observations(observations)?;
     let transition_count = observations.len() as f64;
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain_index| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index, FIT_SEED_DOMAIN));
-            let mut level_variance = prior_mode(config.level_variance_prior);
-            let mut slope_variance = prior_mode(config.slope_variance_prior);
-            let mut observation_variance = prior_mode(config.observation_variance_prior);
-            let mut posterior_draws = Vec::with_capacity(config.num_draws);
+    let chains = run_gibbs_chains(
+        &schedule,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |_| {
+            Ok::<_, BayesianForecastError>([
+                config.level_variance_prior.mode(),
+                config.slope_variance_prior.mode(),
+                config.observation_variance_prior.mode(),
+            ])
+        },
+        |[level_variance, slope_variance, observation_variance], rng, retain| {
+            // Index zero is x[-1], followed by x[0] through x[T - 1].
+            let states = sample_states_ffbs(
+                observations,
+                config.initial_mean,
+                config.initial_covariance,
+                *level_variance,
+                *slope_variance,
+                *observation_variance,
+                rng,
+            )?;
 
-            for iteration in 0..total_iterations {
-                // Index zero is x[-1], followed by x[0] through x[T - 1].
-                let states = sample_states_ffbs(
-                    observations,
-                    config.initial_mean,
-                    config.initial_covariance,
-                    level_variance,
-                    slope_variance,
-                    observation_variance,
-                    &mut rng,
-                )?;
-
-                let mut level_sum_sq = 0.0;
-                let mut slope_sum_sq = 0.0;
-                for pair in states.windows(2) {
-                    let level_residual = pair[1][0] - pair[0][0] - pair[0][1];
-                    let slope_residual = pair[1][1] - pair[0][1];
-                    level_sum_sq += level_residual * level_residual;
-                    slope_sum_sq += slope_residual * slope_residual;
-                }
-                level_variance = sample_inverse_gamma(
-                    config.level_variance_prior.shape + transition_count / 2.0,
-                    config.level_variance_prior.scale + level_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-                slope_variance = sample_inverse_gamma(
-                    config.slope_variance_prior.shape + transition_count / 2.0,
-                    config.slope_variance_prior.scale + slope_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-
-                let observation_sum_sq: f64 = observations
-                    .iter()
-                    .zip(&states[1..])
-                    .filter(|(observation, _)| !observation.is_nan())
-                    .map(|(observation, state)| {
-                        let residual = observation - state[0];
-                        residual * residual
-                    })
-                    .sum();
-                observation_variance = sample_inverse_gamma(
-                    config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                    config.observation_variance_prior.scale + observation_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-
-                if iteration >= config.num_warmup
-                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-                {
-                    let terminal = states.last().expect("observations are non-empty");
-                    posterior_draws.push(LocalLinearTrendPosteriorDraw {
-                        level_variance,
-                        slope_variance,
-                        observation_variance,
-                        terminal_level: terminal[0],
-                        terminal_slope: terminal[1],
-                    });
-                }
+            let mut level_sum_sq = 0.0;
+            let mut slope_sum_sq = 0.0;
+            for pair in states.windows(2) {
+                let level_residual = pair[1][0] - pair[0][0] - pair[0][1];
+                let slope_residual = pair[1][1] - pair[0][1];
+                level_sum_sq += level_residual * level_residual;
+                slope_sum_sq += slope_residual * slope_residual;
             }
-            debug_assert_eq!(posterior_draws.len(), config.num_draws);
-            Ok(posterior_draws)
-        })
-        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
+            *level_variance = sample_inverse_gamma(
+                config.level_variance_prior.shape + transition_count / 2.0,
+                config.level_variance_prior.scale + level_sum_sq / 2.0,
+                rng,
+            )?;
+            *slope_variance = sample_inverse_gamma(
+                config.slope_variance_prior.shape + transition_count / 2.0,
+                config.slope_variance_prior.scale + slope_sum_sq / 2.0,
+                rng,
+            )?;
+
+            let observation_sum_sq: f64 = observations
+                .iter()
+                .zip(&states[1..])
+                .filter(|(observation, _)| !observation.is_nan())
+                .map(|(observation, state)| {
+                    let residual = observation - state[0];
+                    residual * residual
+                })
+                .sum();
+            *observation_variance = sample_inverse_gamma(
+                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
+                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+                rng,
+            )?;
+
+            Ok(retain.then(|| {
+                let terminal = states.last().expect("observations are non-empty");
+                LocalLinearTrendPosteriorDraw {
+                    level_variance: *level_variance,
+                    slope_variance: *slope_variance,
+                    observation_variance: *observation_variance,
+                    terminal_level: terminal[0],
+                    terminal_slope: terminal[1],
+                }
+            }))
+        },
+    )?;
     Ok(LocalLinearTrendPosterior { chains })
 }
 
@@ -427,37 +394,13 @@ fn sample_states_ffbs(
     Ok(states)
 }
 
-fn validate_observations(observations: &[f64]) -> Result<(), BayesianForecastError> {
-    if observations.is_empty() {
-        return Err(BayesianForecastError::InvalidObservations(
-            "at least one observation is required".into(),
-        ));
-    }
+fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
     if observations.iter().any(|value| value.is_infinite()) {
         return Err(BayesianForecastError::InvalidObservations(
             "observations may be finite or NaN, but not infinite".into(),
         ));
     }
-    if observations.iter().filter(|value| !value.is_nan()).count() < 3 {
-        return Err(BayesianForecastError::InvalidObservations(
-            "at least three finite observations are required for a local linear trend".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_prior(name: &str, prior: InverseGammaPrior) -> Result<(), BayesianForecastError> {
-    if !prior.shape.is_finite() || prior.shape <= 0.0 {
-        return Err(invalid_config(&format!(
-            "{name} shape must be finite and strictly positive"
-        )));
-    }
-    if !prior.scale.is_finite() || prior.scale <= 0.0 {
-        return Err(invalid_config(&format!(
-            "{name} scale must be finite and strictly positive"
-        )));
-    }
-    Ok(())
+    require_finite_observations(observations, 3, "local-linear-trend")
 }
 
 fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError> {
@@ -502,21 +445,6 @@ fn validate_computed_state(
     Ok(())
 }
 
-fn sample_inverse_gamma(
-    shape: f64,
-    scale: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, BayesianForecastError> {
-    if !shape.is_finite() || shape <= 0.0 || !scale.is_finite() || scale <= 0.0 {
-        return Err(numerical("invalid inverse-gamma posterior parameters"));
-    }
-    let gamma = Gamma::new(shape, 1.0 / scale)
-        .map_err(|error| numerical(&format!("could not construct gamma distribution: {error}")))?;
-    let variance = 1.0 / gamma.sample(rng);
-    validate_positive("sampled", variance)?;
-    Ok(variance)
-}
-
 fn sample_bivariate_normal(
     mean: [f64; 2],
     covariance: [f64; 4],
@@ -537,16 +465,9 @@ fn sample_bivariate_normal(
 }
 
 fn cholesky_2x2(matrix: [f64; 4]) -> Result<[f64; 4], ()> {
-    if !matrix[0].is_finite() || matrix[0] <= 0.0 {
-        return Err(());
-    }
-    let l00 = matrix[0].sqrt();
-    let l10 = matrix[2] / l00;
-    let remainder = matrix[3] - l10 * l10;
-    if !remainder.is_finite() || remainder <= 0.0 {
-        return Err(());
-    }
-    Ok([l00, 0.0, l10, remainder.sqrt()])
+    let mut factor = [0.0; 4];
+    cholesky_into(&matrix, 2, &mut factor)?;
+    Ok(factor)
 }
 
 fn solve_cholesky_2x2(factor: [f64; 4], right_hand_side: [f64; 2]) -> [f64; 2] {
@@ -591,10 +512,6 @@ fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
     [matrix[0], off_diagonal, off_diagonal, matrix[3]]
 }
 
-fn prior_mode(prior: InverseGammaPrior) -> f64 {
-    prior.scale / (prior.shape + 1.0)
-}
-
 fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
 }
@@ -611,98 +528,6 @@ fn validate_positive(name: &str, variance: f64) -> Result<(), BayesianForecastEr
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
 
-/// Posterior-predictive mean at each horizon, from the scale-aware
-/// implementation the sampler's `mean()` accessors already use.
-///
-/// Accumulating the paths and dividing by their count at the end overflows on
-/// input that is entirely finite: two paths holding `1e308` sum to infinity,
-/// and the infinity survives the division. See
-/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
-/// horizon on the first of them and divides by the largest deviation from it
-/// before summing, so no partial sum can leave the representable range.
-///
-/// `validate_paths` has already rejected an empty, ragged or non-finite
-/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
-/// reach a caller from here.
-fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    let means: Vec<f64> = (0..horizon)
-        .map(|step| {
-            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
-        })
-        .collect();
-    Ok(means)
-}
-
-fn path_quantiles(
-    paths: &[Vec<Vec<f64>>],
-    probabilities: &[f64],
-) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    for &probability in probabilities {
-        if !probability.is_finite() || !(0.0..=1.0).contains(&probability) {
-            return Err(invalid_config(
-                "quantile probabilities must be finite and between zero and one",
-            ));
-        }
-    }
-    let ordered_by_step: Vec<Vec<f64>> = (0..horizon)
-        .map(|step| {
-            let mut values: Vec<f64> = paths.iter().flatten().map(|path| path[step]).collect();
-            values.sort_by(f64::total_cmp);
-            values
-        })
-        .collect();
-    Ok(probabilities
-        .iter()
-        .map(|&probability| ForecastQuantile {
-            probability,
-            values: ordered_by_step
-                .iter()
-                .map(|ordered| interpolated_quantile(ordered, probability))
-                .collect(),
-        })
-        .collect())
-}
-
-fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecastError> {
-    let horizon = paths
-        .first()
-        .and_then(|chain| chain.first())
-        .map_or(0, Vec::len);
-    if paths.is_empty() || paths.iter().any(Vec::is_empty) || horizon == 0 {
-        return Err(invalid_config(
-            "forecast must contain at least one non-empty path per chain",
-        ));
-    }
-    if paths.iter().flatten().any(|path| path.len() != horizon) {
-        return Err(invalid_config(
-            "forecast paths must all have the same horizon",
-        ));
-    }
-    if paths
-        .iter()
-        .flatten()
-        .flatten()
-        .any(|value| !value.is_finite())
-    {
-        return Err(numerical("forecast contains a non-finite value"));
-    }
-    Ok(horizon)
-}
-
-fn interpolated_quantile(ordered: &[f64], probability: f64) -> f64 {
-    let index = probability * (ordered.len() - 1) as f64;
-    let lower = index.floor() as usize;
-    let upper = index.ceil() as usize;
-    if lower == upper {
-        ordered[lower]
-    } else {
-        let weight = index - lower as f64;
-        ordered[lower] * (1.0 - weight) + ordered[upper] * weight
-    }
-}
-
 fn invalid_config(message: &str) -> BayesianForecastError {
     BayesianForecastError::InvalidConfiguration(message.into())
 }
@@ -714,6 +539,7 @@ fn numerical(message: &str) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
 
     #[test]
     fn initial_covariance_symmetry_is_independent_of_state_units() {

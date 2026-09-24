@@ -2,28 +2,22 @@
 //! updates. Student-t observations use Gamma precision mixtures with fixed df.
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
+use crate::forecast_common::{
+    checked_value_count, run_gibbs_chains, sample_inverse_gamma, simulate_draws, GibbsSchedule,
+    MAX_MATERIALIZED_VALUES,
+};
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 type Result<T> = std::result::Result<T, StateSpaceError>;
-const MAX_VALUES: usize = 25_000_000;
 fn invalid(s: &str) -> StateSpaceError {
     StateSpaceError::InvalidParameter(s.into())
 }
-fn allocation(factors: &[usize]) -> Result<()> {
-    let count = factors
-        .iter()
-        .try_fold(1usize, |a, b| a.checked_mul(*b))
-        .ok_or_else(|| invalid("structural allocation size overflow"))?;
-    if count > MAX_VALUES {
-        return Err(invalid(
-            "structural request exceeds 25 million working or retained values",
-        ));
-    }
+fn allocation(what: &'static str, factors: &[usize]) -> Result<()> {
+    checked_value_count(what, factors, MAX_MATERIALIZED_VALUES)?;
     Ok(())
 }
 
@@ -51,19 +45,14 @@ impl VarianceParameter {
         }
     }
     fn sample<R: Rng + ?Sized>(&self, n: usize, ss: f64, rng: &mut R) -> Result<f64> {
-        let value = match *self {
-            Self::Fixed(v) => v,
-            Self::InverseGamma { shape, scale } => {
-                let g = Gamma::new(shape + n as f64 / 2.0, 1.0 / (scale + ss / 2.0))
-                    .map_err(|_| invalid("invalid variance conditional"))?;
-                1.0 / g.sample(rng)
-            }
-        };
-        if !value.is_finite() || value < 0.0 || (value == 0.0 && !matches!(self, Self::Fixed(0.0)))
-        {
-            return Err(invalid("variance draw overflowed or underflowed"));
+        match *self {
+            Self::Fixed(v) => Ok(v),
+            Self::InverseGamma { shape, scale } => Ok(sample_inverse_gamma(
+                shape + n as f64 / 2.0,
+                scale + ss / 2.0,
+                rng,
+            )?),
         }
-        Ok(value)
     }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -132,7 +121,7 @@ impl Component {
         let square = d
             .checked_mul(d)
             .ok_or_else(|| invalid("too many harmonics"))?;
-        allocation(&[square, 3])?;
+        allocation("seasonal component", &[square, 3])?;
         let mut t = vec![0.0; square];
         let mut h = vec![0.0; d];
         let mut p = vec![0.0; square];
@@ -192,7 +181,7 @@ impl Component {
         if d == 0 || coefficients.iter().any(|v| !v.is_finite()) {
             return Err(invalid("AR coefficients must be finite and nonempty"));
         }
-        allocation(&[d, d, 3])?;
+        allocation("AR component", &[d, d, 3])?;
         let mut reduced = coefficients.clone();
         while !reduced.is_empty() {
             let k = *reduced.last().unwrap();
@@ -296,7 +285,7 @@ impl StructuralConfig {
             if c.name.is_empty() || !names.insert(&c.name) || d == 0 || c.innovations.len() != d {
                 return Err(invalid("components require unique nonempty names, positive dimensions and one variance per coordinate"));
             }
-            allocation(&[d, d, 4])?;
+            allocation("structural component", &[d, d, 4])?;
             for q in &c.innovations {
                 q.validate()?;
             }
@@ -314,7 +303,7 @@ impl StructuralConfig {
                 c.initial_covariance.clone(),
             )?;
         }
-        allocation(&[self.dimension(), self.dimension(), 4])?;
+        allocation("structural state", &[self.dimension(), self.dimension(), 4])?;
         self.observation_variance.validate()?;
         if self.observation_variance.initial() <= 0.0 {
             return Err(invalid("observation variance must be positive"));
@@ -406,8 +395,11 @@ impl StructuralConfig {
         if draws == 0 || steps == 0 {
             return Err(invalid("draws and steps must be positive"));
         }
-        allocation(&[draws, self.dimension(), 3])?;
-        allocation(&[draws, steps, self.dimension() + self.components.len() + 3])?;
+        allocation("structural prior draws", &[draws, self.dimension(), 3])?;
+        allocation(
+            "structural prior predictive",
+            &[draws, steps, self.dimension() + self.components.len() + 3],
+        )?;
         let prior_seed = chain_seed(seed, 0, STRUCTURAL_PRIOR_SEED_DOMAIN);
         let mut rng = ChaCha8Rng::seed_from_u64(prior_seed);
         let mut chain = vec![];
@@ -455,110 +447,142 @@ pub fn fit(
     sampling: &SamplingConfig,
 ) -> Result<StructuralPosterior> {
     config.validate()?;
-    if y.is_empty()
-        || y.iter().any(|v| v.is_infinite())
-        || sampling.chains == 0
-        || sampling.draws == 0
-        || sampling.thinning == 0
-    {
+    if y.is_empty() || y.iter().any(|v| v.is_infinite()) {
         return Err(invalid(
             "nonempty finite/NaN data and positive chains, draws and thinning required",
         ));
     }
-    let iterations = sampling
-        .draws
-        .checked_mul(sampling.thinning)
-        .and_then(|n| n.checked_add(sampling.warmup))
-        .ok_or_else(|| invalid("iteration count overflow"))?;
-    let d = config.dimension();
-    allocation(&[sampling.chains, y.len() + 1, d, d, 6])?;
-    allocation(&[
+    let schedule = GibbsSchedule::new(
         sampling.chains,
+        sampling.warmup,
         sampling.draws,
-        d,
-        if sampling.store_states {
-            y.len() + 3
-        } else {
-            3
-        },
-    ])?;
+        sampling.thinning,
+    )?;
+    let d = config.dimension();
+    allocation(
+        "structural FFBS working state",
+        &[sampling.chains, y.len() + 1, d, d, 6],
+    )?;
+    allocation(
+        "structural posterior",
+        &[
+            sampling.chains,
+            sampling.draws,
+            d,
+            if sampling.store_states {
+                y.len() + 3
+            } else {
+                3
+            },
+        ],
+    )?;
     let rows = config.observation_rows(y.len(), design)?;
     let priors = config.priors();
     let observed = y.iter().filter(|v| v.is_finite()).count();
-    let chains = (0..sampling.chains)
-        .into_par_iter()
-        .map(|chain| -> Result<Vec<StructuralDraw>> {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(sampling.seed, chain, FIT_SEED_DOMAIN));
-            let mut q = priors.iter().map(|p| p.initial()).collect::<Vec<_>>();
-            let mut r = config.observation_variance.initial();
-            let mut lambda = vec![1.0; y.len()];
-            let mut draws = vec![];
-            for iteration in 0..iterations {
-                let model = config
-                    .build(&q, r)?
-                    .with_observation_rows(rows.clone())?
-                    .with_observation_variances(lambda.iter().map(|l| r / l).collect())?;
-                let states = model.sample_states_ffbs(y, &mut rng)?;
-                for i in 0..d {
-                    if matches!(priors[i], VarianceParameter::Fixed(_)) {
-                        continue;
-                    }
-                    let ss = states
-                        .windows(2)
-                        .map(|w| {
-                            let e = w[1][i] - dot(&model.transition()[i * d..(i + 1) * d], &w[0]);
-                            e * e
-                        })
-                        .sum();
-                    q[i] = priors[i].sample(y.len(), ss, &mut rng)?;
+    let chains = run_gibbs_chains(
+        &schedule,
+        sampling.seed,
+        FIT_SEED_DOMAIN,
+        |_| {
+            Ok::<_, StateSpaceError>(ChainState {
+                q: priors.iter().map(|p| p.initial()).collect(),
+                r: config.observation_variance.initial(),
+                lambda: vec![1.0; y.len()],
+                iteration: 0,
+            })
+        },
+        |ChainState {
+             q,
+             r,
+             lambda,
+             iteration,
+         },
+         rng,
+         _retain| {
+            let model = config
+                .build(q, *r)?
+                .with_observation_rows(rows.clone())?
+                .with_observation_variances(lambda.iter().map(|l| *r / l).collect())?;
+            let states = model.sample_states_ffbs(y, rng)?;
+            for i in 0..d {
+                if matches!(priors[i], VarianceParameter::Fixed(_)) {
+                    continue;
                 }
-                let ss = y
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, v)| v.is_finite())
-                    .map(|(t, v)| lambda[t] * (v - dot(&rows[t], &states[t + 1])).powi(2))
+                let ss = states
+                    .windows(2)
+                    .map(|w| {
+                        let e = w[1][i] - dot(&model.transition()[i * d..(i + 1) * d], &w[0]);
+                        e * e
+                    })
                     .sum();
-                r = config.observation_variance.sample(observed, ss, &mut rng)?;
-                if let Some(df) = config.student_df {
-                    for (t, v) in y.iter().enumerate() {
-                        if v.is_finite() {
-                            let e = v - dot(&rows[t], &states[t + 1]);
-                            lambda[t] = Gamma::new((df + 1.0) / 2.0, 2.0 / (df + e * e / r))
-                                .map_err(|_| invalid("invalid Student-t conditional"))?
-                                .sample(&mut rng);
-                            if !lambda[t].is_finite() || lambda[t] <= 0.0 {
-                                return Err(invalid(
-                                    "Student-t precision draw overflowed or underflowed",
-                                ));
-                            }
+                q[i] = priors[i].sample(y.len(), ss, rng)?;
+            }
+            let ss = y
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| v.is_finite())
+                .map(|(t, v)| lambda[t] * (v - dot(&rows[t], &states[t + 1])).powi(2))
+                .sum();
+            *r = config.observation_variance.sample(observed, ss, rng)?;
+            if let Some(df) = config.student_df {
+                for (t, v) in y.iter().enumerate() {
+                    if v.is_finite() {
+                        let e = v - dot(&rows[t], &states[t + 1]);
+                        lambda[t] = Gamma::new((df + 1.0) / 2.0, 2.0 / (df + e * e / *r))
+                            .map_err(|_| invalid("invalid Student-t conditional"))?
+                            .sample(rng);
+                        if !lambda[t].is_finite() || lambda[t] <= 0.0 {
+                            return Err(invalid(
+                                "Student-t precision draw overflowed or underflowed",
+                            ));
                         }
                     }
                 }
-                if iteration >= sampling.warmup
-                    && (iteration - sampling.warmup).is_multiple_of(sampling.thinning)
-                {
-                    draws.push(StructuralDraw {
-                        variances: q.clone(),
-                        observation_variance: r,
-                        terminal_state: states[y.len()].clone(),
-                        states: if sampling.store_states {
-                            Some(states)
-                        } else {
-                            None
-                        },
-                    });
-                }
             }
-            Ok(draws)
-        })
-        .collect::<Result<Vec<_>>>()?;
+            let this = *iteration;
+            *iteration += 1;
+            let retain = this >= sampling.warmup
+                && (this - sampling.warmup).is_multiple_of(sampling.thinning);
+            Ok(retain.then(|| StructuralDraw {
+                variances: q.clone(),
+                observation_variance: *r,
+                terminal_state: states[y.len()].clone(),
+                states: if sampling.store_states {
+                    Some(states)
+                } else {
+                    None
+                },
+            }))
+        },
+    )?;
     Ok(StructuralPosterior {
         config: config.clone(),
         chains,
         training_rows: rows,
     })
 }
+
+/// One draw's forecast, indexed `[step]` (and then `[state]` or
+/// `[component]`).
+#[derive(Default)]
+struct DrawPath {
+    states: Vec<Vec<f64>>,
+    components: Vec<Vec<f64>>,
+    means: Vec<f64>,
+    observations: Vec<f64>,
+    cumulative: Vec<f64>,
+}
+
+/// The Gibbs state carried between sweeps: innovation variances, the
+/// observation variance and, for Student-t observations, the per-time
+/// precision multipliers.
+struct ChainState {
+    q: Vec<f64>,
+    r: f64,
+    lambda: Vec<f64>,
+    iteration: usize,
+}
+
 impl StructuralPosterior {
     pub fn parameter_names(&self) -> Vec<String> {
         let mut names = self.config.variance_names();
@@ -598,28 +622,29 @@ impl StructuralPosterior {
         if steps == 0 || self.chains.is_empty() || self.chains.iter().any(Vec::is_empty) {
             return Err(invalid("steps and posterior chains must be nonempty"));
         }
-        allocation(&[
-            self.chains.len(),
-            self.chains[0].len(),
-            steps,
-            self.config.dimension() + self.config.components.len() + 3,
-        ])?;
+        allocation(
+            "structural forecast",
+            &[
+                self.chains.len(),
+                self.chains[0].len(),
+                steps,
+                self.config.dimension() + self.config.components.len() + 3,
+            ],
+        )?;
         let rows = self.config.observation_rows(steps, design)?;
-        let mut out = StructuralPaths::default();
-        for (chain, draws) in self.chains.iter().enumerate() {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, chain, FORECAST_SEED_DOMAIN));
-            let (mut all_s, mut all_c, mut all_m, mut all_o, mut all_t) =
-                (vec![], vec![], vec![], vec![], vec![]);
-            for draw in draws {
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &StructuralDraw, rng| {
                 let model = self
                     .config
                     .build(&draw.variances, draw.observation_variance)?;
                 let mut state = draw.terminal_state.clone();
-                let (mut ss, mut cc, mut mm, mut oo, mut tt) =
-                    (vec![], vec![], vec![], vec![], vec![]);
+                let mut path = DrawPath::default();
                 let mut total = 0.0;
                 for row in &rows {
-                    state = model.simulate_transition(&state, &mut rng)?;
+                    state = model.simulate_transition(&state, rng)?;
                     let mut off = 0;
                     let comps = self
                         .config
@@ -636,7 +661,7 @@ impl StructuralPosterior {
                     let precision = if let Some(df) = self.config.student_df {
                         Gamma::new(df / 2.0, 2.0 / df)
                             .map_err(|_| invalid("invalid Student-t degrees of freedom"))?
-                            .sample(&mut rng)
+                            .sample(rng)
                     } else {
                         1.0
                     };
@@ -646,28 +671,36 @@ impl StructuralPosterior {
                         ));
                     }
                     let observation =
-                        mean + normal(&mut rng) * (draw.observation_variance / precision).sqrt();
+                        mean + normal(rng) * (draw.observation_variance / precision).sqrt();
                     total += observation;
                     if !total.is_finite() || !mean.is_finite() {
                         return Err(invalid("predictive simulation overflowed"));
                     }
-                    ss.push(state.clone());
-                    cc.push(comps);
-                    mm.push(mean);
-                    oo.push(observation);
-                    tt.push(total);
+                    path.states.push(state.clone());
+                    path.components.push(comps);
+                    path.means.push(mean);
+                    path.observations.push(observation);
+                    path.cumulative.push(total);
                 }
-                all_s.push(ss);
-                all_c.push(cc);
-                all_m.push(mm);
-                all_o.push(oo);
-                all_t.push(tt);
+                Ok(path)
+            },
+        )?;
+        let mut out = StructuralPaths::default();
+        for chain in per_draw {
+            let (mut states, mut components, mut means, mut observations, mut cumulative) =
+                (vec![], vec![], vec![], vec![], vec![]);
+            for path in chain {
+                states.push(path.states);
+                components.push(path.components);
+                means.push(path.means);
+                observations.push(path.observations);
+                cumulative.push(path.cumulative);
             }
-            out.states.push(all_s);
-            out.components.push(all_c);
-            out.means.push(all_m);
-            out.observations.push(all_o);
-            out.cumulative.push(all_t);
+            out.states.push(states);
+            out.components.push(components);
+            out.means.push(means);
+            out.observations.push(observations);
+            out.cumulative.push(cumulative);
         }
         Ok(out)
     }
@@ -733,9 +766,15 @@ impl StructuralPosterior {
                 "invalid posterior chain or training row dimensions",
             ));
         }
-        allocation(&[self.chains.len(), self.chains[0].len(), d, 3])?;
+        allocation(
+            "structural posterior",
+            &[self.chains.len(), self.chains[0].len(), d, 3],
+        )?;
         if self.chains.iter().flatten().any(|d| d.states.is_some()) {
-            allocation(&[self.chains.len(), self.chains[0].len(), d, n + 3])?;
+            allocation(
+                "structural state history",
+                &[self.chains.len(), self.chains[0].len(), d, n + 3],
+            )?;
         }
         for draw in self.chains.iter().flatten() {
             if draw.terminal_state.len() != d

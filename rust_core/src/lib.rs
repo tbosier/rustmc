@@ -11,6 +11,7 @@ pub mod distributions;
 pub mod dynamic_glm;
 pub mod elliptical_slice;
 pub mod forecast_batch;
+pub mod forecast_common;
 pub mod forecast_diagnostics;
 pub mod graph;
 pub mod hierarchical;

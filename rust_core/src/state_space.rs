@@ -14,6 +14,8 @@ use std::fmt;
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
+use crate::forecast_common::cholesky;
+
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 const LOG_2_PI: f64 = 1.8378770664093453;
 
@@ -49,6 +51,24 @@ impl fmt::Display for StateSpaceError {
 }
 
 impl Error for StateSpaceError {}
+
+impl From<crate::bayesian_forecast::BayesianForecastError> for StateSpaceError {
+    fn from(error: crate::bayesian_forecast::BayesianForecastError) -> Self {
+        use crate::bayesian_forecast::BayesianForecastError as Source;
+        match error {
+            Source::InvalidConfiguration(message) | Source::InvalidObservations(message) => {
+                Self::InvalidParameter(message)
+            }
+            Source::NumericalFailure(message) => Self::NumericalFailure(message),
+        }
+    }
+}
+
+impl From<crate::forecast_common::AllocationLimitError> for StateSpaceError {
+    fn from(error: crate::forecast_common::AllocationLimitError) -> Self {
+        Self::InvalidParameter(error.to_string())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct KalmanFilterResult {
@@ -1240,27 +1260,6 @@ fn symmetrize(matrix: &mut [f64], d: usize) {
             matrix[j * d + i] = average;
         }
     }
-}
-
-fn cholesky(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()> {
-    let mut factor = vec![0.0; d * d];
-    for i in 0..d {
-        for j in 0..=i {
-            let mut value = matrix[i * d + j];
-            for k in 0..j {
-                value -= factor[i * d + k] * factor[j * d + k];
-            }
-            if i == j {
-                if !value.is_finite() || value <= 0.0 {
-                    return Err(());
-                }
-                factor[i * d + j] = value.sqrt();
-            } else {
-                factor[i * d + j] = value / factor[j * d + j];
-            }
-        }
-    }
-    Ok(factor)
 }
 
 /// Factor a covariance after diagonal equilibration, so numerical rank is
