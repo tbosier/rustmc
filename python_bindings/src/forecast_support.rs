@@ -28,6 +28,7 @@ use rustmc_core::bayesian_forecast::{
     InverseGammaPrior as CoreInverseGammaPrior,
 };
 pub(crate) use rustmc_core::diagnostics::DiagnosticsReport;
+use rustmc_core::forecast_common::sorted_quantile;
 use rustmc_core::state_space::StateSpaceError as CoreStateSpaceError;
 
 pub(crate) type PyIntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
@@ -354,7 +355,38 @@ pub(crate) fn interval_arrays<'py>(
     (lower.into_pyarray(py), upper.into_pyarray(py))
 }
 
+/// Empirical quantiles of each column of `draws`, shaped `(sample, target)`,
+/// returned shaped `(probability, target)`.
+///
+/// `rustmc.evaluation` and `rustmc.forecasting` summarize arrays through this
+/// so that every interval, native or Python, uses the one core rule.
+#[pyfunction(name = "_empirical_quantiles")]
+fn empirical_quantiles<'py>(
+    py: Python<'py>,
+    draws: &Bound<'py, PyAny>,
+    probabilities: Vec<f64>,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let columns = real_array(draws, "draws", 2)?;
+    if columns.shape()[0] == 0 {
+        return Err(PyValueError::new_err("draws must hold at least one sample"));
+    }
+    for &probability in &probabilities {
+        validate_probability(probability)?;
+    }
+    let targets = columns.shape()[1];
+    let mut result = Array2::zeros((probabilities.len(), targets));
+    for (target, column) in columns.axis_iter(ndarray::Axis(1)).enumerate() {
+        let mut ordered: Vec<f64> = column.iter().copied().collect();
+        ordered.sort_by(f64::total_cmp);
+        for (row, &probability) in probabilities.iter().enumerate() {
+            result[(row, target)] = sorted_quantile(&ordered, probability);
+        }
+    }
+    Ok(result.into_pyarray(py))
+}
+
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(empirical_quantiles, m)?)?;
     m.add_class::<PyInverseGammaPrior>()?;
     Ok(())
 }

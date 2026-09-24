@@ -75,3 +75,39 @@ def test_session_retains_native_mean_draws():
     session = r.ForecastSession(model, np.arange(5.), fit_kwargs={"chains": 1, "draws": 10, "warmup": 5})
     np.testing.assert_array_equal(session.forecast(3, seed=17).mean_samples,
                                   session.fit.forecast(3, seed=17).state_samples)
+
+
+@pytest.mark.parametrize("family", ["local", "trend", "seasonal", "ar", "hierarchical", "structural"])
+def test_converted_intervals_equal_the_native_intervals_exactly(family):
+    result, _ = native_forecast(family)
+    wrapped = r.ForecastDraws.from_result(result)
+    if family == "structural":
+        # StructuralForecast has no interval(); compare with the evaluation rule.
+        pooled = result.observation_samples.reshape(-1, result.steps)
+        np.testing.assert_array_equal(
+            wrapped.interval(.8), r.evaluation._quantiles(pooled, ((1 - .8) / 2, (1 + .8) / 2)))
+        return
+    for level in (.5, .8, .95):
+        np.testing.assert_array_equal(wrapped.interval(level), result.interval(level))
+    if family == "seasonal":
+        np.testing.assert_array_equal(wrapped.interval(cumulative=True), result.cumulative_interval())
+
+
+def test_quantiles_of_a_constant_forecast_are_that_constant():
+    draws = np.full((41, 2), 0.1)
+    lower, upper = r.evaluation._quantiles(draws, (0.025, 0.975))
+    np.testing.assert_array_equal(lower, [0.1, 0.1])
+    np.testing.assert_array_equal(upper, [0.1, 0.1])
+    scores = r.score_forecast(draws, [0.1, 0.1], levels=(0.95,))
+    np.testing.assert_array_equal(scores["coverage_0.95"], [1.0, 1.0])
+    np.testing.assert_array_equal(r.ForecastDraws(np.full((1, 41, 2), 0.1)).interval(), ([0.1] * 2, [0.1] * 2))
+
+
+def test_native_quantile_helper_validates_its_arguments():
+    from rustmc._rustmc import _empirical_quantiles
+    with pytest.raises(ValueError, match="at least one sample"):
+        _empirical_quantiles(np.empty((0, 2)), [0.5])
+    with pytest.raises(ValueError, match="probability"):
+        _empirical_quantiles(np.ones((3, 2)), [1.5])
+    np.testing.assert_array_equal(_empirical_quantiles(np.arange(5.0)[:, None], [0.0, 0.25, 1.0]),
+                                  [[0.0], [1.0], [4.0]])
