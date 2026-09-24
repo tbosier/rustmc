@@ -250,6 +250,8 @@ pub fn fit_bayesian_local_level(
 ) -> Result<LocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
     let observed_count = validate_observations(observations)?;
+    // Three values per draw; the filter and the level path each hold T + 1.
+    schedule.check_fit_size("local-level fit", &[3], &[observations.len() + 1, 3])?;
 
     let chains = run_gibbs_chains(
         &schedule,

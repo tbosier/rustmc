@@ -5,8 +5,8 @@
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::bayesian_forecast::InverseGammaPrior;
 use crate::forecast_common::{
-    check_forecast_size, overdispersed_positive, run_gibbs_chains, sample_inverse_gamma,
-    simulate_draws, split_paths, GibbsSchedule,
+    check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand_chacha::ChaCha8Rng;
@@ -173,11 +173,15 @@ pub fn fit_regression(
     design: &[Vec<f64>],
     config: &RegressionConfig,
 ) -> Result<RegressionPosterior, StateSpaceError> {
-    if y.iter().any(|x| x.is_infinite()) || y.iter().filter(|x| x.is_finite()).count() < 2 {
+    if y.iter().any(|x| x.is_infinite()) {
         return Err(invalid(
-            "observations require at least two finite values and no infinities",
+            "observations may be finite or NaN, but not infinite",
         ));
     }
+    // One finite observation per inferred variance, the observation variance
+    // included.
+    let observed =
+        require_finite_observations(y, config.innovation_indices.len() + 1, "regression")?;
     if design.len() != y.len() {
         return Err(invalid(
             "exog must have one row per observation, including missing observations",
@@ -221,12 +225,17 @@ pub fn fit_regression(
     {
         prior.validate(&format!("{name} prior"))?;
     }
+    let augmented = d.saturating_add(config.coefficient_prior.mean.len());
+    schedule.check_fit_size(
+        "regression fit",
+        &[augmented.saturating_add(config.variance_priors.len() + 1)],
+        &[y.len() + 1, augmented, augmented, 3],
+    )?;
     let template = config.structural_model.with_static_regression(
         design,
         &config.coefficient_prior.mean,
         &config.coefficient_prior.covariance,
     )?;
-    let observed = y.iter().filter(|x| x.is_finite()).count();
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
@@ -436,7 +445,18 @@ pub fn fourier_design(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeding::chain_seed;
     use rand::SeedableRng;
+
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        for chain in 0..4 {
+            assert_ne!(
+                chain_seed(42, chain, FIT_SEED_DOMAIN),
+                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
+            );
+        }
+    }
     #[test]
     fn joint_static_regression_matches_analytic_posterior_and_future_covariance() {
         let y = vec![1.0, 2.0, f64::NAN, 4.0];

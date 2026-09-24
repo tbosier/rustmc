@@ -204,6 +204,12 @@ pub fn fit_bayesian_local_linear_trend(
 ) -> Result<LocalLinearTrendPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
     let observed_count = validate_observations(observations)?;
+    // Five values per draw; the two-state filter holds about 14 per time.
+    schedule.check_fit_size(
+        "local-linear-trend fit",
+        &[5],
+        &[observations.len() + 1, 14],
+    )?;
     let transition_count = observations.len() as f64;
     let chains = run_gibbs_chains(
         &schedule,

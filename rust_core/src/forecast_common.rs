@@ -252,6 +252,27 @@ impl GibbsSchedule {
         })
     }
 
+    /// Guard a fit's retained draws, `values_per_draw` multiplied together per
+    /// draw, and one chain's FFBS working state, `working_per_chain`
+    /// multiplied together, before either is allocated. The working state is
+    /// limited per chain: the retained-draw limit already bounds the chain
+    /// count, and a cap on the total would refuse, say, a period-52 seasonal
+    /// fit to a few years of weekly data.
+    pub(crate) fn check_fit_size(
+        &self,
+        what: &'static str,
+        values_per_draw: &[usize],
+        working_per_chain: &[usize],
+    ) -> Result<(), AllocationLimitError> {
+        let retained: Vec<usize> = [self.chains, self.draws]
+            .into_iter()
+            .chain(values_per_draw.iter().copied())
+            .collect();
+        checked_value_count(what, &retained, MAX_MATERIALIZED_VALUES)?;
+        checked_value_count(what, working_per_chain, MAX_MATERIALIZED_VALUES)?;
+        Ok(())
+    }
+
     /// Whether the state after `iteration` (zero-based) is retained: every
     /// `thinning`-th iteration after warmup, ending on the last one.
     fn retains(&self, iteration: usize) -> bool {

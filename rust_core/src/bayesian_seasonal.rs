@@ -237,6 +237,12 @@ pub fn fit_bayesian_seasonal_local_level(
 ) -> Result<SeasonalLocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
     let observed_count = validate_observations(observations)? as f64;
+    // Each backward conditional holds a d x d gain and a d x 2d root.
+    schedule.check_fit_size(
+        "seasonal fit",
+        &[config.period + 3],
+        &[observations.len() + 1, config.period, config.period, 3],
+    )?;
     let transitions = observations.len() as f64;
     // Built and validated once; each sweep overwrites only the level (0) and
     // seasonal (1) innovation variances and the observation variance.
@@ -329,7 +335,8 @@ fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecast
             "observations may be finite or NaN, but not infinite".into(),
         ));
     }
-    require_finite_observations(observations, 2, "seasonal local-level")
+    // Level, seasonal and observation variances.
+    require_finite_observations(observations, 3, "seasonal local-level")
 }
 
 fn validate_variance(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
@@ -428,7 +435,12 @@ mod tests {
 
     #[test]
     fn validation_requires_finite_data_and_sum_to_zero_effects() {
-        assert!(fit_bayesian_seasonal_local_level(&[0.0; 2], &config()).is_ok());
+        // One finite observation per inferred variance: three.
+        assert!(fit_bayesian_seasonal_local_level(&[0.0; 3], &config()).is_ok());
+        assert!(matches!(
+            fit_bayesian_seasonal_local_level(&[0.0, f64::NAN, 0.0, f64::NAN], &config()),
+            Err(BayesianForecastError::InvalidObservations(_))
+        ));
         let mut invalid_config = config();
         invalid_config.initial_seasonal_effects[0] += 1.0;
         assert!(matches!(

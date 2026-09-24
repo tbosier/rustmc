@@ -504,6 +504,17 @@ fn numerical(message: impl Into<String>) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeding::chain_seed;
+
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        for chain in 0..4 {
+            assert_ne!(
+                chain_seed(42, chain, FIT_SEED_DOMAIN),
+                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
+            );
+        }
+    }
     use rand::SeedableRng;
     use rand_distr::Gamma;
     /// `P(G >= t)` for `G ~ Gamma(k, 1)` at integer `k`, where the upper

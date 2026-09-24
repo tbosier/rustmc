@@ -3,8 +3,8 @@
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
 use crate::forecast_common::{
-    checked_value_count, overdispersed_positive, run_gibbs_chains, sample_inverse_gamma,
-    simulate_draws, GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    checked_value_count, overdispersed_positive, require_finite_observations, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, GibbsSchedule, MAX_MATERIALIZED_VALUES,
 };
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
@@ -111,6 +111,12 @@ impl Component {
     }
     /// Harmonic pairs rotate by 2*pi*k/period. Fractional periods are supported;
     /// Nyquist and aliased harmonics are rejected (2*harmonics must be < period).
+    ///
+    /// Each of the `2 * harmonics` state coordinates receives its own copy of
+    /// `innovation`, so an inverse-gamma innovation means `2 * harmonics`
+    /// separately inferred variances. That is not the usual trigonometric
+    /// seasonal (Harvey, 1989), which shares one variance across every
+    /// harmonic; it is more flexible and needs more data to pin down.
     pub fn seasonal(
         name: String,
         period: f64,
@@ -151,6 +157,8 @@ impl Component {
             observation: h,
             initial_mean: vec![0.0; d],
             initial_covariance: p,
+            // One independent variance per coordinate, not one shared by all
+            // harmonics; see the doc comment above.
             innovations: vec![innovation; d],
             regression: false,
         })
@@ -474,11 +482,20 @@ pub fn fit(
     sampling: &SamplingConfig,
 ) -> Result<StructuralPosterior> {
     config.validate()?;
-    if y.is_empty() || y.iter().any(|v| v.is_infinite()) {
+    if y.iter().any(|v| v.is_infinite()) {
         return Err(invalid(
-            "nonempty finite/NaN data and positive chains, draws and thinning required",
+            "observations may be finite or NaN, but not infinite",
         ));
     }
+    // One finite observation per inferred (inverse-gamma) variance, and at
+    // least one even when every variance is fixed.
+    let inferred = config
+        .priors()
+        .into_iter()
+        .chain(std::iter::once(&config.observation_variance))
+        .filter(|prior| matches!(prior, VarianceParameter::InverseGamma { .. }))
+        .count();
+    let observed = require_finite_observations(y, inferred, "structural")?;
     let schedule = GibbsSchedule::new(
         sampling.chains,
         sampling.warmup,
@@ -506,7 +523,6 @@ pub fn fit(
     let rows = config.observation_rows(y.len(), design)?;
     let template = config.template()?.with_observation_rows(rows.clone())?;
     let priors = config.priors();
-    let observed = y.iter().filter(|v| v.is_finite()).count();
     let chains = run_gibbs_chains(
         &schedule,
         sampling.seed,
