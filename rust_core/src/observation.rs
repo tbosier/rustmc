@@ -58,6 +58,12 @@ fn positive(value: f64, label: &str) -> Result<f64, ObservationError> {
         )))
     }
 }
+
+/// [`positive`] for a quantity derived from a finite linear predictor, which
+/// can fail only by overflowing or underflowing.
+fn representable(value: f64, label: &str) -> Result<f64, ObservationError> {
+    positive(value, label).map_err(|error| unrepresentable(error.to_string()))
+}
 /// Logistic function, evaluated so that neither tail overflows.
 pub(crate) fn sigmoid(x: f64) -> f64 {
     if x >= 0.0 {
@@ -176,21 +182,21 @@ pub fn sample<R: Rng + ?Sized>(
             }
         }
         ObsFamily::PoissonLog => {
-            crate::count_sampling::poisson(positive(eta.exp(), "Poisson rate")?, rng)?
+            crate::count_sampling::poisson(representable(eta.exp(), "Poisson rate")?, rng)?
         }
-        ObsFamily::ExponentialLog => Exp::new(positive(eta.exp(), "Exponential rate")?)
+        ObsFamily::ExponentialLog => Exp::new(representable(eta.exp(), "Exponential rate")?)
             .map_err(|e| invalid(e.to_string()))?
             .sample(rng),
         ObsFamily::NegativeBinomialLog => {
             let alpha = positive(required(aux, "alpha")?, "alpha")?;
-            let scale = positive(eta.exp() / alpha, "Gamma scale")?;
+            let scale = representable(eta.exp() / alpha, "Gamma scale")?;
             let lambda = Gamma::new(alpha, scale)
                 .map_err(|e| invalid(e.to_string()))?
                 .sample(rng);
             if lambda == 0.0 {
                 0.0
             } else {
-                crate::count_sampling::poisson(positive(lambda, "Poisson rate")?, rng)?
+                crate::count_sampling::poisson(representable(lambda, "Poisson rate")?, rng)?
             }
         }
     };
@@ -245,6 +251,12 @@ mod tests {
             )
         );
         assert_eq!(String::from(error.clone()), error.to_string());
+        assert_eq!(
+            sample(ObsFamily::PoissonLog, 1000.0, None, &mut rng),
+            Err(ObservationError::Unrepresentable(
+                "Poisson rate must be finite and positive; got inf".into()
+            ))
+        );
     }
 
     #[test]

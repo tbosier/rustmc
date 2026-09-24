@@ -322,6 +322,10 @@ pub fn fit_dynamic_glm(
             }
             Ok((samples, evaluations))
         })
+        // Collected in chain order first, so the error reported when several
+        // chains fail does not depend on scheduling.
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect::<Result<Vec<_>, Error>>()?;
     let (chains, likelihood_evaluations) = results.into_iter().unzip();
     let posterior = DynamicGlmPosterior {

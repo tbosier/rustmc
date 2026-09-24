@@ -681,6 +681,11 @@ mod tests {
                 .install(|| fit_runoff(&immature_triangle(), &cfg).unwrap())
         };
         let (one, many) = (run(1), run(4));
+        assert_eq!(one.chains.len(), 4);
+        assert_eq!(
+            one.chains.iter().map(Vec::len).collect::<Vec<_>>(),
+            many.chains.iter().map(Vec::len).collect::<Vec<_>>()
+        );
         for (a, b) in one
             .chains
             .iter()
