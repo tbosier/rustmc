@@ -9,11 +9,19 @@
 //! y[p, t] ~ Normal(program_mean[p], observation_variance)
 //! ```
 //!
-//! All three variances have inverse-gamma priors. A conjugate Gibbs
-//! sampler draws every full conditional directly, so this specialized model
-//! does not require Hamiltonian trajectories through the funnel geometry of a
-//! centered hierarchical parameterization. Series may have different lengths;
-//! `NaN` values are retained as missing positions and ignored by the likelihood.
+//! All three variances have inverse-gamma priors, and a conjugate Gibbs
+//! sampler draws every full conditional directly. That avoids tuning a
+//! Hamiltonian integrator, but it does not escape the geometry of this centred
+//! parameterization: the means and their variance are updated one given the
+//! other, and when the data say little about the between-group spread (few
+//! groups, or groups whose members are noisy) the chain can stick near
+//! `group_variance` = 0, where the group means are pinned to the population
+//! mean and in turn keep the variance small. Mixing there is slow rather than
+//! wrong, so check R-hat and ESS for `group_variance` and `program_variance`
+//! with [`HierarchicalMeanPosterior::diagnostics`]; overdispersed chain starts
+//! make a stuck chain show up in R-hat rather than hide. Series may have
+//! different lengths; `NaN` values are retained as missing positions and
+//! ignored by the likelihood.
 
 use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
