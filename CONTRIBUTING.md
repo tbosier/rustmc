@@ -13,13 +13,13 @@ maturin develop --manifest-path python_bindings/Cargo.toml --release
 ```
 
 `rustmc_core` supports Rust 1.87 and newer (`rust-version` in `rust_core/Cargo.toml`);
-CI builds it with exactly that toolchain, so raise the field in the same pull request
+CI checks it, with all its targets, on exactly that toolchain, so raise the field in the same pull request
 as code that needs a newer compiler.
 
 To test a linked git worktree without installing into the shared virtualenv,
 `./scripts/dev_pytest.sh -q` builds that worktree's extension into `.pybuild/` and runs
 pytest against it. It uses `$RUSTMC_VENV` if set, otherwise the main checkout's
-`.venv`.
+`.venv` when that has `python` and `maturin`, otherwise the worktree's own `.venv`.
 
 Before opening a pull request, run:
 

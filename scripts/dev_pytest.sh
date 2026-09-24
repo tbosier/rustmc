@@ -9,12 +9,16 @@
 # shares one; this checkout's own .venv.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+usable() { [[ -x "$1/bin/python" && -x "$1/bin/maturin" ]]; }
 if [[ -n "${RUSTMC_VENV:-}" ]]; then
-  VENV="$RUSTMC_VENV"
+  # Absolute, because the script changes directory before the final exec.
+  VENV="$(cd "$RUSTMC_VENV" 2>/dev/null && pwd || echo "$RUSTMC_VENV")"
 else
   VENV="$ROOT/.venv"
+  # The common dir is <main checkout>/.git for a normal repository; a bare
+  # repository has no main checkout, so its parent is not a candidate.
   common="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-  if [[ -n "$common" && -x "$(dirname "$common")/.venv/bin/python" ]]; then
+  if [[ "$(basename "$common")" == .git ]] && usable "$(dirname "$common")/.venv"; then
     VENV="$(dirname "$common")/.venv"
   fi
 fi
