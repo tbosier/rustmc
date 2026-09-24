@@ -444,7 +444,13 @@ impl LinearGaussianStateSpace {
             check_finite("simulated state", &draw)?;
             Ok(draw)
         } else {
-            sample_multivariate_normal(&mean, &self.process_covariance, self.dimension, rng)
+            sample_multivariate_normal(
+                "process covariance",
+                &mean,
+                &self.process_covariance,
+                self.dimension,
+                rng,
+            )
         }
     }
 
@@ -453,6 +459,7 @@ impl LinearGaussianStateSpace {
         rng: &mut R,
     ) -> Result<Vec<f64>, StateSpaceError> {
         sample_multivariate_normal(
+            "initial covariance",
             &self.initial_mean,
             &self.initial_covariance,
             self.dimension,
@@ -1431,16 +1438,17 @@ fn positive_semidefinite_factor(matrix: &[f64], d: usize) -> Result<Vec<f64>, ()
     Ok(factor)
 }
 
+/// Draw from `N(mean, covariance)`; `name` identifies the covariance in the
+/// error when it cannot be factored.
 fn sample_multivariate_normal<R: Rng + ?Sized>(
+    name: &str,
     mean: &[f64],
     covariance: &[f64],
     d: usize,
     rng: &mut R,
 ) -> Result<Vec<f64>, StateSpaceError> {
     let factor = positive_semidefinite_factor(covariance, d).map_err(|_| {
-        StateSpaceError::NumericalFailure(
-            "conditional smoothing covariance is not positive semidefinite".into(),
-        )
+        StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
     })?;
     let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
     let mut draw = mean.to_vec();
@@ -1450,9 +1458,9 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
         }
     }
     if draw.iter().any(|value| !value.is_finite()) {
-        return Err(StateSpaceError::NumericalFailure(
-            "FFBS produced a non-finite state draw".into(),
-        ));
+        return Err(StateSpaceError::NumericalFailure(format!(
+            "a draw from the {name} produced a non-finite state"
+        )));
     }
     Ok(draw)
 }
@@ -1588,6 +1596,30 @@ mod tests {
         let mean = sum / 8000.0;
         assert!((mean - 0.7 / 9.0).abs() < 0.012);
         assert!((square / 8000.0 - mean * mean - 1.0 / 9.0).abs() < 0.008);
+    }
+
+    #[test]
+    fn simulation_errors_name_the_covariance_that_failed() {
+        let mut model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1.0, 0.0],
+            vec![1.0, 0.5, 0.5, 1.0],
+            1.0,
+            vec![0.0; 2],
+            identity(2),
+        )
+        .unwrap();
+        // Shrinking one diagonal entry below the squared correlation makes the
+        // correlated process covariance indefinite.
+        model.set_variances(&[0], &[0.01], 1.0);
+        let mut rng = ChaCha8Rng::seed_from_u64(3);
+        let message = model
+            .simulate_transition(&[0.0, 0.0], &mut rng)
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("process covariance"), "{message}");
+        assert!(!message.contains("smoothing"), "{message}");
     }
 
     #[test]
