@@ -56,7 +56,11 @@ Y = np.array([0.5, -1.0, 2.0])
         ([0.5, np.int64(2**53 + 1), 1.0], "2**53"),
         # A masked array converts to its data, mask dropped.
         (np.ma.masked_array([1.0, 1e6, 3.0], mask=[False, True, False]), "masked"),
-        (np.array([1, 2, 3], dtype=np.longdouble) / 3, "long double"),
+        pytest.param(
+            np.array([1, 2, 3], dtype=np.longdouble) / 3, "long double",
+            marks=pytest.mark.skipif(
+                np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant,
+                reason="long double is float64 on this platform")),
         # Python integers beyond 64 bits can only be stored as objects.
         ([2**64, 0, 1], "object"),
         # Arrays and NumPy scalars inside a list are held to the same rule.

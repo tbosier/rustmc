@@ -70,7 +70,11 @@ def test_non_real_or_misshaped_observations_are_refused_by_name(name, fit, bad, 
     ([True, 1, 2, 1, 3, 2, 3, 4], "bool"),
     ([True, 0.5, 2, 1, 3, 2, 3, 4], "bool"),
     (np.ma.masked_array([1.0, 1e6, 2, 1, 3, 2, 3, 4], mask=[0, 1, 0, 0, 0, 0, 0, 0]), "masked"),
-    (np.arange(1, 9, dtype=np.longdouble) / 3, "long double"),
+    pytest.param(
+        np.arange(1, 9, dtype=np.longdouble) / 3, "long double",
+        marks=pytest.mark.skipif(
+            np.finfo(np.longdouble).nmant <= np.finfo(np.float64).nmant,
+            reason="long double is float64 on this platform")),
     (np.array([2**53 + 1, 2, 1, 3, 2, 3, 3, 4], dtype=np.int64), "2\\*\\*53"),
     ([0.5, 2**53 + 1, 1, 3, 2, 3, 3, 4], "2\\*\\*53"),
     (np.arange(8.0).astype(object), "astype\\(float\\)"),
