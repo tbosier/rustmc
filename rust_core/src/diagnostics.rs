@@ -680,6 +680,9 @@ fn hdi_interval_sorted(sorted: &[f64], probability: f64) -> (f64, f64) {
 }
 
 /// Rank-normalized, folded split R-hat (Vehtari et al. 2021).
+///
+/// A single chain is split and its halves compared, as Stan and the R
+/// `posterior` package do; ArviZ returns NaN for fewer than two chains.
 fn r_hat_chains(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
     if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 2) {
@@ -751,15 +754,36 @@ fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
 fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
     let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
     all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if all.first() == all.last() {
+        // A parameter that never moved has no tail, as it has no bulk.
+        return f64::NAN;
+    }
     let below = |q: f64| -> Vec<Vec<f64>> {
         chains
             .iter()
             .map(|c| c.iter().map(|&x| if x <= q { 1.0 } else { 0.0 }).collect())
             .collect()
     };
-    let ess_lo = ess_raw(&below(quantile_sorted(&all, 0.05)));
-    let ess_hi = ess_raw(&below(quantile_sorted(&all, 0.95)));
+    let ess_lo = indicator_ess(&below(quantile_sorted(&all, 0.05)));
+    let ess_hi = indicator_ess(&below(quantile_sorted(&all, 0.95)));
     ess_lo.min(ess_hi)
+}
+
+/// ESS of a tail indicator. When 5% of the draws share an extreme value, or
+/// the split drops the only draws past a quantile, the split indicator is
+/// constant although the parameter is not. ArviZ scores that as the split
+/// draw count; returning NaN instead would let `f64::min` silently report the
+/// other tail alone.
+fn indicator_ess(chains: &[Vec<f64>]) -> f64 {
+    let split = split_chains(chains);
+    if !has_enough_split_draws(&split) {
+        return f64::NAN;
+    }
+    let first = split[0][0];
+    if split.iter().flatten().all(|&value| value == first) {
+        return (split.len() * split[0].len()) as f64;
+    }
+    ess_split(&split)
 }
 
 /// Rank-normalize: replace values with their normal scores.
@@ -1440,7 +1464,76 @@ mod tests {
                 mcse_mean: 0.091_672_763_899_559_7,
                 ess_mean: 119.089_171_579_429_4,
             },
+            // 96% ones: the upper tail indicator is constant, which ArviZ
+            // scores as the split draw count rather than leaving undefined.
+            ArvizReference {
+                name: "binary",
+                chains: map_uniforms(10, 4, 100, |u| if u < 0.96 { 1.0 } else { 0.0 }),
+                ess_bulk: 462.871_325_767_627_75,
+                ess_tail: 400.0,
+                r_hat: 1.002_572_961_121_973_1,
+                mcse_mean: 0.009_899_031_493_877_32,
+                ess_mean: 462.871_325_767_630_37,
+            },
+            ArvizReference {
+                name: "three_level",
+                chains: map_uniforms(11, 4, 200, |u| (u * 3.0).floor() * 0.1),
+                ess_bulk: 809.935_378_075_364_4,
+                ess_tail: 800.0,
+                r_hat: 0.998_643_139_149_025,
+                mcse_mean: 0.002_848_290_958_784_644,
+                ess_mean: 809.905_811_128_926_8,
+            },
+            // Chain zero's minimum is its middle draw, which the split drops.
+            ArvizReference {
+                name: "odd_extreme",
+                chains: reference_ar1(12, 2, 9, 0.0, &[]),
+                ess_bulk: 19.265_919_722_494_797,
+                ess_tail: 19.265_919_722_494_797,
+                r_hat: 1.005_664_076_174_441_3,
+                mcse_mean: 0.197_505_329_496_225_6,
+                ess_mean: 19.265_919_722_494_797,
+            },
+            // ArviZ declines R-hat for one chain; see
+            // `single_chain_r_hat_splits_the_chain` for the value reported here.
+            ArvizReference {
+                name: "one_chain",
+                chains: reference_ar1(13, 1, 200, 0.5, &[]),
+                ess_bulk: 77.853_837_061_320_23,
+                ess_tail: 132.875_703_593_115_02,
+                r_hat: f64::NAN,
+                mcse_mean: 0.108_746_355_146_533_36,
+                ess_mean: 77.518_970_079_624_35,
+            },
         ]
+    }
+
+    fn map_uniforms(
+        seed: u64,
+        chains: usize,
+        draws: usize,
+        f: impl Fn(f64) -> f64,
+    ) -> Vec<Vec<f64>> {
+        let mut stream = ReferenceStream(seed);
+        (0..chains)
+            .map(|_| (0..draws).map(|_| f(stream.uniform())).collect())
+            .collect()
+    }
+
+    /// Stan and the R `posterior` package split a single chain and compare its
+    /// halves, which is what detects a trend within it; ArviZ returns NaN.
+    #[test]
+    fn single_chain_r_hat_splits_the_chain() {
+        let chain = reference_ar1(13, 1, 200, 0.5, &[]);
+        let halves = split_chains(&chain);
+        let expected = basic_r_hat(&rank_normalize(&halves));
+        let r_hat = r_hat_chains(&chain);
+        assert!(
+            r_hat.is_finite() && r_hat >= expected,
+            "{r_hat} vs {expected}"
+        );
+        let trending = vec![(0..200).map(|i| i as f64).collect::<Vec<_>>()];
+        assert!(r_hat_chains(&trending) > 1.5);
     }
 
     #[test]
@@ -1485,6 +1578,9 @@ mod tests {
                 ("r_hat", p.r_hat, case.r_hat),
                 ("mcse_mean", p.mcse_mean, case.mcse_mean),
             ] {
+                if label == "r_hat" && expected.is_nan() {
+                    continue;
+                }
                 assert!(
                     rel(actual, expected) < 1e-7,
                     "{}: {label} {actual} vs ArviZ {expected}",
