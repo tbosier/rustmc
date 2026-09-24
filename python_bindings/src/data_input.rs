@@ -158,50 +158,59 @@ pub(crate) fn real_numbers(
     Ok((values, shape))
 }
 
+/// Deepest list nesting accepted: NumPy's own dimension limit. It also stops
+/// the walk on a list that contains itself.
+const MAX_NESTING: usize = 64;
+
 /// Refuse list elements that `numpy.asarray` would silently turn into other
-/// numbers: booleans (read as 0 and 1) and integers that float64 would round
-/// when the list also holds floats.
+/// numbers: booleans (read as 0 and 1), integers that float64 would round
+/// when the list also holds floats, and arrays or NumPy scalars inside the
+/// list that [`real_numbers`] would refuse on their own (masked entries,
+/// booleans, inexact integers or long doubles).
 fn refuse_inexact_elements(
     numpy: &Bound<'_, PyModule>,
     value: &Bound<'_, PyAny>,
     subject: &str,
 ) -> PyResult<()> {
-    let bool_type = numpy.getattr("bool_")?;
     let integer_type = numpy.getattr("integer")?;
+    let generic = numpy.getattr("generic")?;
     let ndarray = numpy.getattr("ndarray")?;
-    let mut pending = vec![value.clone()];
-    while let Some(sequence) = pending.pop() {
+    let mut pending = vec![(value.clone(), 1)];
+    while let Some((sequence, depth)) = pending.pop() {
+        if depth > MAX_NESTING {
+            return Err(PyValueError::new_err(format!(
+                "{subject} is nested more than {MAX_NESTING} lists deep (or contains itself)"
+            )));
+        }
         for item in sequence.try_iter()? {
             let item = item?;
-            if item.is_exact_instance_of::<PyFloat>() {
+            // Python floats, including np.float64, are float64 already.
+            if item.is_instance_of::<PyFloat>() {
                 continue;
             }
             if item.is_instance_of::<PyList>() || item.is_instance_of::<PyTuple>() {
-                pending.push(item);
-            } else if item.is_instance_of::<PyBool>() || item.is_instance(&bool_type)? {
+                pending.push((item, depth + 1));
+            } else if item.is_instance_of::<PyBool>() {
                 return Err(PyValueError::new_err(format!(
                     "{subject} must hold real numbers (float or integer); got bool values \
                      ({item} in a list)"
                 )));
             } else if item.is_instance_of::<PyInt>() || item.is_instance(&integer_type)? {
-                let exact = match item.extract::<i64>() {
-                    Ok(integer) => (integer as f64) as i128 == i128::from(integer),
+                // `__index__` gives a NumPy integer's exact Python value.
+                let integer = item.call_method0("__index__")?;
+                let exact = match integer.extract::<i64>() {
+                    Ok(small) => (small as f64) as i128 == i128::from(small),
                     // Python compares an int with a float exactly.
-                    Err(_) => match item.call_method0("__float__") {
-                        Ok(float) => item.eq(float)?,
+                    Err(_) => match integer.call_method0("__float__") {
+                        Ok(float) => integer.eq(float)?,
                         Err(_) => false,
                     },
                 };
                 if !exact {
-                    return Err(inexact_integer(subject, &item.to_string(), None));
+                    return Err(inexact_integer(subject, &integer.to_string(), None));
                 }
-            } else if item.is_instance(&ndarray)? {
-                let kind: String = item.getattr("dtype")?.getattr("kind")?.extract()?;
-                if kind == "b" {
-                    return Err(PyValueError::new_err(format!(
-                        "{subject} must hold real numbers (float or integer); got bool values"
-                    )));
-                }
+            } else if item.is_instance(&ndarray)? || item.is_instance(&generic)? {
+                real_numbers(&item, subject)?;
             }
         }
     }

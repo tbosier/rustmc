@@ -59,6 +59,10 @@ Y = np.array([0.5, -1.0, 2.0])
         (np.array([1, 2, 3], dtype=np.longdouble) / 3, "long double"),
         # Python integers beyond 64 bits can only be stored as objects.
         ([2**64, 0, 1], "object"),
+        # Arrays and NumPy scalars inside a list are held to the same rule.
+        ([np.array(2**53 + 1), 0.5, 1.0], "2**53"),
+        ([0.5, np.uint64(2**64 - 1), 1.0], "2**53"),
+        ([np.bool_(True), 0.5, 1.0], "bool"),
     ],
 )
 def test_inexact_or_non_numeric_data_is_refused_naming_the_key(value, message):
@@ -98,6 +102,25 @@ def test_real_numeric_forms_bind_as_their_exact_values(x):
     value = compiled.log_density({"x": x, "y": Y}, [0.3, -0.2])
     assert value[0] == reference[0]
     np.testing.assert_array_equal(value[1], reference[1])
+
+
+@pytest.mark.parametrize(
+    "rows, message",
+    [
+        ([np.ma.masked_array([1.0, 1e6], mask=[0, 1]), [2.0, 3.0], [4.0, 5.0]], "masked"),
+        ([np.array([2**53 + 1, 1]), [0.5, 1.0], [1.0, 2.0]], "2**53"),
+    ],
+)
+def test_arrays_nested_in_lists_are_checked_like_top_level_arrays(rows, message):
+    with pytest.raises(ValueError, match=rf"'X'.*{re.escape(message)}"):
+        compiled_matrix().bind({"X": rows, "y": Y})
+
+
+def test_a_list_containing_itself_is_refused_instead_of_hanging():
+    looped = [1.0, 2.0]
+    looped.append(looped)
+    with pytest.raises(ValueError, match="'x'.*nested"):
+        compiled_regression().bind({"x": looped, "y": Y})
 
 
 def test_object_arrays_are_refused_with_the_conversion_to_use():
