@@ -10,13 +10,15 @@
 //! permits exact Beta occurrence draws and conjugate Gaussian severity FFBS/Gibbs.
 
 use crate::bayesian_forecast::{
-    BayesianForecastError, InverseGammaPrior, PosteriorPredictiveForecast,
+    sample_levels_ffbs, BayesianForecastError, ForecastQuantile, InverseGammaPrior,
+    PosteriorPredictiveForecast,
 };
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, inverse_gamma_conditional, run_chains,
-    run_gibbs_chains, simulate_draws, split_paths, GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    check_forecast_size, checked_value_count, inverse_gamma_conditional, path_means,
+    path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths, GibbsSchedule,
+    MAX_MATERIALIZED_VALUES,
 };
-use crate::state_space::LinearGaussianStateSpace;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Distribution, StandardNormal};
@@ -114,11 +116,39 @@ pub struct HurdleLogNormalPosterior {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HurdleLogNormalForecast {
-    /// `state_paths` are E[y | p, future log level, observation variance].
-    /// `observation_paths` include exact zeros and positive payment realizations.
+    /// `observation_paths` hold exact zeros and positive payment realizations.
+    ///
+    /// For this model `state_paths` are **not** latent states: they hold the
+    /// conditional expected amount `E[y | p, future log level, observation
+    /// variance]` along each path, so `paths.state_means()` and
+    /// `paths.state_quantiles()` summarise that expectation. Prefer the
+    /// [`expected_value_paths`](Self::expected_value_paths) family, which says
+    /// what it returns; the field keeps its shared type so batch and Python
+    /// code that reads it is unaffected.
     pub paths: PosteriorPredictiveForecast,
     /// E[y | y > 0, future log level, observation variance].
     pub positive_mean_paths: Vec<Vec<Vec<f64>>>,
+}
+
+impl HurdleLogNormalForecast {
+    /// Conditional expected amounts `E[y | p, log level, variance]`, indexed
+    /// `[chain][draw][step]`, including the probability of no payment.
+    pub fn expected_value_paths(&self) -> &[Vec<Vec<f64>>] {
+        &self.paths.state_paths
+    }
+
+    /// Posterior mean of the conditional expected amount at each step.
+    pub fn expected_value_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.paths.state_paths)
+    }
+
+    /// Empirical quantiles of the conditional expected amount at each step.
+    pub fn expected_value_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.paths.state_paths, probabilities)
+    }
 }
 
 /// Density with respect to a point mass at zero plus Lebesgue measure on positives.
@@ -235,19 +265,20 @@ pub fn fit_hurdle_lognormal(
                 ))
             },
             |(q, r), rng, retain| {
-                let model = LinearGaussianStateSpace::local_level(
-                    *q,
-                    *r,
+                // The severity is a scalar local level on log amounts, so it
+                // uses the scalar FFBS; the general d-dimensional one gives the
+                // same draws in distribution at about twenty times the cost.
+                let levels = sample_levels_ffbs(
+                    &log_observations,
                     config.initial_log_level,
                     config.initial_variance,
-                )
-                .map_err(|e| numerical(e.to_string()))?;
-                let states = model
-                    .sample_states_ffbs(&log_observations, rng)
-                    .map_err(|e| numerical(e.to_string()))?;
-                let process_ss: f64 = states
+                    *q,
+                    *r,
+                    rng,
+                )?;
+                let process_ss: f64 = levels
                     .windows(2)
-                    .map(|pair| (pair[1][0] - pair[0][0]).powi(2))
+                    .map(|pair| (pair[1] - pair[0]).powi(2))
                     .sum();
                 *q = inverse_gamma(
                     InverseGammaPrior {
@@ -260,9 +291,9 @@ pub fn fit_hurdle_lognormal(
                 )?;
                 let observation_ss: f64 = log_observations
                     .iter()
-                    .zip(&states[1..])
+                    .zip(&levels[1..])
                     .filter(|(y, _)| y.is_finite())
-                    .map(|(y, x)| (y - x[0]).powi(2))
+                    .map(|(y, x)| (y - x).powi(2))
                     .sum();
                 *r = inverse_gamma(
                     InverseGammaPrior {
@@ -280,7 +311,7 @@ pub fn fit_hurdle_lognormal(
                     payment_probability: probability_draw(&occurrence, rng)?,
                     process_variance: *q,
                     observation_variance: *r,
-                    terminal_log_level: states.last().expect("nonempty input")[0],
+                    terminal_log_level: *levels.last().expect("nonempty input"),
                 }))
             },
         )?
@@ -322,6 +353,15 @@ impl HurdleLogNormalPosterior {
                     .collect()
             })
             .collect()
+    }
+
+    /// Rank-normalized R-hat, bulk/tail ESS, MCSE and HDIs for the occurrence
+    /// probability, both variances and the terminal log level.
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        crate::forecast_diagnostics::parameter_diagnostics(
+            &self.parameter_samples(),
+            &Self::parameter_names(),
+        )
     }
 
     pub fn forecast(
@@ -585,6 +625,24 @@ mod tests {
         };
         assert_eq!(run(1), run(3));
     }
+
+    #[test]
+    fn diagnostics_cover_every_parameter_and_report_mixing() {
+        let mut cfg = config();
+        cfg.num_draws = 300;
+        cfg.num_warmup = 100;
+        let fit = fit_hurdle_lognormal(&[0., 2., 3., f64::NAN, 0., 2.5, 1.5, 0.], &cfg).unwrap();
+        let report = fit.diagnostics();
+        let names: Vec<_> = report.params.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, HurdleLogNormalPosterior::parameter_names());
+        for parameter in &report.params {
+            assert!(
+                parameter.r_hat.is_finite() && parameter.r_hat < 1.1,
+                "{parameter:?}"
+            );
+            assert!(parameter.ess_bulk > 50.0, "{parameter:?}");
+        }
+    }
     #[test]
     fn predictive_zero_mass_and_amount_moments_match_known_parameters() {
         let draw = HurdleLogNormalDraw {
@@ -600,6 +658,15 @@ mod tests {
             positive_count: 1,
         };
         let f = fit.forecast(1, 42).unwrap();
+        assert_eq!(f.expected_value_paths(), &f.paths.state_paths[..]);
+        assert_eq!(
+            f.expected_value_means().unwrap(),
+            f.paths.state_means().unwrap()
+        );
+        assert_eq!(
+            f.expected_value_quantiles(&[0.1, 0.9]).unwrap(),
+            f.paths.state_quantiles(&[0.1, 0.9]).unwrap()
+        );
         let y: Vec<f64> = f.paths.observation_paths[0].iter().map(|p| p[0]).collect();
         let zero = y.iter().filter(|v| **v == 0.).count() as f64 / y.len() as f64;
         assert!((zero - 0.7).abs() < 0.01);
