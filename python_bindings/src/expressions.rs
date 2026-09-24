@@ -116,7 +116,7 @@ fn is_dsl_operand(value: &Bound<'_, PyAny>) -> bool {
 }
 
 /// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
-pub(super) fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
+fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
     match (a, b) {
         (Some(x), Some(y)) if x != y => Err(ParameterError::new_err(format!(
             "expression mixes parameters from two different models \

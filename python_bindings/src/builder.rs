@@ -19,14 +19,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Monotonic id handed to each `ModelBuilder` so that a `ParamRef` produced by
 /// one model can never be silently consumed by another.
-pub(crate) static NEXT_MODEL_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_MODEL_ID: AtomicU64 = AtomicU64::new(1);
 
-pub(crate) fn next_model_id() -> u64 {
+fn next_model_id() -> u64 {
     NEXT_MODEL_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 /// Error for a `ParamRef`/`Expr` that belongs to a different `ModelBuilder`.
-pub(crate) fn foreign_param_error(name: &str, context: &str) -> PyErr {
+fn foreign_param_error(name: &str, context: &str) -> PyErr {
     ParameterError::new_err(format!(
         "parameter '{}' used in {} belongs to a different model. \
          A ParamRef returned by one ModelBuilder cannot be used in another.",
@@ -65,30 +65,27 @@ impl ModelSpec {
     }
 }
 
-pub(crate) fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
+fn template_data_for_spec(spec: &ModelSpec) -> PyResult<(Data1d, Data2d)> {
     rustmc_core::model::template_data_for_spec(&spec.0).map_err(model_error)
 }
 
 #[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(crate) struct ModelBuilder {
-    pub(crate) dimensions: HashMap<String, String>,
-    pub(crate) potentials: Vec<(String, MuExpr)>,
-    pub(crate) deterministics: Vec<(String, MuExpr)>,
-    pub(crate) id: u64,
-    pub(crate) priors: Vec<PriorSpec>,
-    pub(crate) likelihoods: Vec<LikelihoodSpec>,
-    pub(crate) bound_data_1d: HashMap<String, Vec<f64>>,
-    pub(crate) bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
+    dimensions: HashMap<String, String>,
+    potentials: Vec<(String, MuExpr)>,
+    deterministics: Vec<(String, MuExpr)>,
+    id: u64,
+    priors: Vec<PriorSpec>,
+    likelihoods: Vec<LikelihoodSpec>,
+    bound_data_1d: HashMap<String, Vec<f64>>,
+    bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
 }
 
 /// Validate every parameter reference in a model up front, before any graph is
 /// built. Fails loudly on unknown names, out-of-order hyperparameters and
 /// duplicate declarations.
-pub(crate) fn validate_model_references(
-    priors: &[PriorSpec],
-    likelihoods: &[LikelihoodSpec],
-) -> PyResult<()> {
+fn validate_model_references(priors: &[PriorSpec], likelihoods: &[LikelihoodSpec]) -> PyResult<()> {
     rustmc_core::model::validate_model_references(priors, likelihoods).map_err(model_error)
 }
 
@@ -683,12 +680,12 @@ pub(crate) fn validate_finite(name: &str, value: f64) -> PyResult<()> {
     rustmc_core::model::validate_finite(name, value).map_err(model_error)
 }
 
-pub(crate) fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
+fn validate_positive_finite(name: &str, value: f64) -> PyResult<()> {
     rustmc_core::model::validate_positive_finite(name, value).map_err(model_error)
 }
 
 /// Parse a Python value (float or ParamRef) into a HyperParam.
-pub(crate) fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam> {
+fn extract_hyper(obj: &Bound<'_, PyAny>, arg_name: &str) -> PyResult<HyperParam> {
     if let Ok(v) = obj.extract::<f64>() {
         Ok(HyperParam::Const(v))
     } else if let Ok(p) = obj.downcast::<ParamRef>() {

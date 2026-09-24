@@ -142,7 +142,7 @@ fn exact_integers(key: &str, values: impl Iterator<Item = i128>) -> PyResult<Vec
         .collect()
 }
 
-pub(crate) fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
+fn ensure_finite_data(key: &str, values: &[f64]) -> PyResult<()> {
     if values.is_empty() {
         return Err(PyValueError::new_err(format!(
             "data key '{}' must contain at least one value",
