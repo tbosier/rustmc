@@ -12,6 +12,10 @@ valued random effects are not compiled that way and must be written noncentered 
 hand. There is no template API in the builder; a template here is a plain Python
 function that makes the same builder calls you would make.
 
+It fits the same kind of eight-group hierarchy as `hierarchical_example.py`, but only to
+show what the builder accepts and what it compiles. Read that example for the full
+workflow, with checks against the values that generated the data.
+
 Run it with `python examples/partial_pooling_template.py` from the repository root. The blocks below are
 cells of that one file and share its state, so they assume the blocks above
 them have run.
