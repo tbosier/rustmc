@@ -190,3 +190,29 @@ def test_continuous_fit_artifacts_still_round_trip():
         restored.get_samples()["flag"], fit.get_samples()["flag"]
     )
     rustmc.CompiledModel.from_json(builder.compile().to_json())
+
+
+FIXTURES = __import__('pathlib').Path(__file__).parent / 'fixtures'
+
+
+def test_python_and_rust_write_the_same_bytes():
+    # rust_core/tests/fit_artifact.rs asserts the same of the same file: a fit
+    # saved from either language loads in the other and re-saves unchanged.
+    text = (FIXTURES / 'graph_fit_v2_regression.json').read_text()
+    assert rustmc.FitResult.from_json(text).to_json() == text
+
+
+def test_saving_is_deterministic(saved_fit):
+    fit, _ = saved_fit
+    assert fit.to_json() == fit.to_json()
+    assert rustmc.FitResult.from_json(fit.to_json()).to_json() == fit.to_json()
+
+
+def test_restored_fixture_log_likelihood_matches_the_normal_density():
+    fit = rustmc.FitResult.from_json((FIXTURES / 'graph_fit_v2_regression.json').read_text())
+    training = json.loads(fit.to_json())['training']['vectors']
+    x, y = np.array(training['x']), np.array(training['y'])
+    draws = fit.get_samples_2d()
+    a, beta, s = (draws[name][..., None] for name in ('a', 'beta', 's'))
+    expected = -0.5 * ((y - a - beta * x) / s) ** 2 - np.log(s) - 0.5 * np.log(2 * np.pi)
+    np.testing.assert_allclose(fit.log_likelihood()['y_obs'], expected, rtol=1e-12)

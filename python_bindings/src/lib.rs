@@ -6,7 +6,6 @@ mod compiled;
 mod data_input;
 mod errors;
 mod expressions;
-mod fit_artifact;
 mod fit_result;
 mod generic_results;
 mod model_artifact;

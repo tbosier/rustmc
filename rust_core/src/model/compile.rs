@@ -7,6 +7,7 @@ use crate::distributions::{
 use crate::graph::{Graph, NodeId, ParamTransform};
 use crate::sampler::SampleResult;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::*;
 
@@ -538,6 +539,41 @@ pub fn derive_display_sample_result(
         transitions: raw_result.transitions.clone(),
         param_names,
     })
+}
+
+/// True when the display layer is a pure pass-through of the raw draws: every
+/// parameter is reported as sampled, in the order it was sampled.
+fn display_specs_are_identity(raw_result: &SampleResult, specs: &[DisplayParamSpec]) -> bool {
+    specs.len() == raw_result.param_names.len()
+        && specs.iter().enumerate().all(|(index, spec)| match spec {
+            DisplayParamSpec::Raw { name, raw_index } => {
+                *raw_index == index && *name == raw_result.param_names[index]
+            }
+            DisplayParamSpec::DerivedNonCenteredNormal { .. } => false,
+        })
+}
+
+/// Display draws for a fit, sharing the raw posterior when nothing is derived.
+///
+/// `derive_display_sample_result` allocates a second copy of every draw. When
+/// no parameter is non-centred, that copy is bit-identical to the raw draws, so
+/// a retained batch cell paid for two posteriors to hold one. Sharing the `Arc`
+/// keeps the display and raw views distinguishable without duplicating them.
+pub fn display_sample_result(
+    raw_result: &Arc<SampleResult>,
+    specs: &[DisplayParamSpec],
+) -> ModelResult<Arc<SampleResult>> {
+    if display_specs_are_identity(raw_result, specs) {
+        // The copying path rejects nonfinite display values; run the same check
+        // so sharing can never accept a fit that copying would have refused.
+        for draw in raw_result.samples.iter().flatten() {
+            if draw.iter().any(|value| !value.is_finite()) {
+                derive_display_draw(draw, specs)?;
+            }
+        }
+        return Ok(Arc::clone(raw_result));
+    }
+    Ok(Arc::new(derive_display_sample_result(raw_result, specs)?))
 }
 
 /// A fused intercept retains its expression type independently of parameter names.

@@ -1,8 +1,8 @@
-//! The versioned model artifact and the Rust-native model and fit built on it.
+//! The versioned model artifact, the Rust-native model built on it, and batch fitting.
 use crate::autodiff::Evaluator;
 use crate::data::{DataBinding, DataInputs, DataSchema, SlotKind};
 use crate::graph::Graph;
-use crate::sampler::{self, SampleResult, SamplerConfig};
+use crate::sampler::{self, BatchSampleConfig, BoundBatchOptions, SamplerConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -141,13 +141,37 @@ impl GraphModel {
             initial,
         )
         .map_err(ModelError::invalid)?;
-        let samples = derive_display_sample_result(&raw, &self.display_params)?;
-        Ok(ModelFit {
-            model: self.clone(),
-            binding,
-            raw,
-            samples,
-        })
+        ModelFit::new(self.clone(), binding, raw)
+    }
+    /// Fit this model to many datasets on a bounded pool, as
+    /// [`sampler::sample_batch_bound_with_initial`] does, keeping each
+    /// successful cell as a [`ModelFit`]. `initial` is keyed by dataset ID.
+    pub fn sample_batch(
+        &self,
+        bindings: Vec<(String, Result<DataBinding, String>)>,
+        config: BatchSampleConfig,
+        options: BoundBatchOptions,
+        mut initial: HashMap<String, Vec<Vec<f64>>>,
+    ) -> ModelResult<Vec<Result<ModelFit, String>>> {
+        config.validate().map_err(ModelError::invalid)?;
+        if let Some(id) = initial
+            .keys()
+            .find(|id| !bindings.iter().any(|(known, _)| known == *id))
+        {
+            return Err(ModelError::invalid(format!(
+                "initialization supplied for unknown dataset ID '{id}'"
+            )));
+        }
+        let cells = bindings
+            .into_iter()
+            .map(|(id, binding)| ModelBatchCell {
+                initial: initial.remove(&id),
+                id,
+                model: self.clone(),
+                binding,
+            })
+            .collect();
+        sample_model_batch(cells, config, options)
     }
     /// Auto-promoted vector parameters, recovered from the stored schema.
     ///
@@ -211,78 +235,69 @@ impl GraphModel {
     }
 }
 
-/// Posterior predictions indexed by response, chain, draw, and observation.
-pub type Prediction = HashMap<String, Vec<Vec<Vec<f64>>>>;
-
-#[derive(Clone, Debug)]
-pub struct ModelFit {
-    model: GraphModel,
-    binding: DataBinding,
-    raw: SampleResult,
-    pub samples: SampleResult,
-}
-impl ModelFit {
-    /// Predict at new inputs. Response placeholders are constructed internally.
-    pub fn predict(
-        &self,
-        inputs: DataInputs,
-        sizes: HashMap<String, usize>,
-        seed: u64,
-        expected: bool,
-    ) -> ModelResult<Prediction> {
-        use rand::SeedableRng;
-        let graph = self.model.structure.with_binding(&self.binding);
-        let prediction_graph = bind_prediction(&graph, inputs, sizes)?;
-        let heads = prediction_graph.observation_heads();
-        let mut evaluator = Evaluator::try_new(&prediction_graph)
-            .map_err(|error| ModelError::invalid(error.to_string()))?;
-        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(crate::seeding::stream_seed(
-            seed,
-            crate::seeding::POSTERIOR_PREDICT_SEED_DOMAIN,
-        ));
-        let mut output: Prediction = self
-            .model
-            .likelihood_names
-            .iter()
-            .map(|name| (name.clone(), Vec::new()))
-            .collect();
-        for (chain_index, chain) in self.raw.samples.iter().enumerate() {
-            let mut values = vec![Vec::with_capacity(chain.len()); heads.len()];
-            for (draw_index, draw) in chain.iter().enumerate() {
-                // `sampler` keeps the raw positions whenever any parameter is
-                // transformed, so without them every transform is the
-                // identity and the reported draw is the position.
-                let position = match &self.raw.unconstrained_samples {
-                    Some(raw) => &raw[chain_index][draw_index],
-                    None => draw,
-                };
-                evaluator.forward(&prediction_graph, position);
-                for (i, head) in heads.iter().enumerate() {
-                    let aux = head.aux.map(|n| evaluator.scalar_at(n));
-                    let mut observations = Vec::with_capacity(head.n_obs);
-                    for j in 0..head.n_obs {
-                        let eta = evaluator.vec_elem(head.linpred, j, &prediction_graph);
-                        observations.push(
-                            if expected {
-                                crate::observation::mean(head.family, eta, aux)
-                            } else {
-                                crate::observation::sample(head.family, eta, aux, &mut rng)
-                            }
-                            .map_err(ModelError::invalid)?,
-                        );
-                    }
-                    values[i].push(observations);
-                }
-            }
-            for (name, values) in self.model.likelihood_names.iter().zip(values) {
-                output
-                    .get_mut(name)
-                    .expect("model response was initialized")
-                    .push(values);
-            }
+impl CompiledDefinition {
+    /// The immutable model this compilation describes, compiled from
+    /// `definition`; the definition's bound data is not kept.
+    pub fn into_model(self, definition: &ModelSpec) -> GraphModel {
+        GraphModel {
+            definition: definition.structure_definition(),
+            structure: Arc::new(self.graph.structure_only()),
+            likelihood_names: self.likelihood_names,
+            display_params: self.display_params,
         }
-        Ok(output)
     }
+}
+
+/// One dataset of a model batch: the model, its data (or why it could not be
+/// bound), and optionally one start per chain.
+#[derive(Clone, Debug)]
+pub struct ModelBatchCell {
+    pub id: String,
+    pub model: GraphModel,
+    pub binding: Result<DataBinding, String>,
+    pub initial: Option<Vec<Vec<f64>>>,
+}
+
+/// Fit independent models, which need not share a structure, through
+/// [`sampler::sample_batch_cells`], keeping each successful cell as a
+/// [`ModelFit`].
+///
+/// A cell whose reported draws cannot be derived fails like any other cell:
+/// it is that cell's error under `collect_errors`, and otherwise ends the
+/// batch as `"dataset '<id>': <error>"`.
+pub fn sample_model_batch(
+    cells: Vec<ModelBatchCell>,
+    config: BatchSampleConfig,
+    options: BoundBatchOptions,
+) -> ModelResult<Vec<Result<ModelFit, String>>> {
+    let collect_errors = options.collect_errors;
+    let sampler_cells = cells
+        .iter()
+        .map(|cell| sampler::BatchCell {
+            id: cell.id.clone(),
+            graph: Arc::clone(&cell.model.structure),
+            binding: cell.binding.clone(),
+            initial: cell.initial.clone(),
+        })
+        .collect();
+    let results =
+        sampler::sample_batch_cells(sampler_cells, config, options).map_err(ModelError::invalid)?;
+    let mut fits = Vec::with_capacity(results.len());
+    for (result, cell) in results.into_iter().zip(cells) {
+        let fit = result.and_then(|raw| {
+            ModelFit::new(cell.model, cell.binding?, raw).map_err(|error| error.to_string())
+        });
+        match fit {
+            Err(error) if !collect_errors => {
+                return Err(ModelError::invalid(format!(
+                    "dataset '{}': {error}",
+                    cell.id
+                )))
+            }
+            fit => fits.push(fit),
+        }
+    }
+    Ok(fits)
 }
 
 pub fn bind_prediction(

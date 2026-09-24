@@ -2,56 +2,51 @@
 use crate::builder::{
     compile_python_model, reject_discrete_priors_for_gradient_sampling, ModelSpec,
 };
-use crate::data_input::{merge_data_overrides, parse_data_dict, validate_matrix_storage};
-use crate::fit_result::{display_sample_result, FitResult};
-use crate::generic_results::{self, StoredBatchFit};
-use crate::sampling::{parse_metric, validate_sample_config};
-use ndarray::Array2;
-use numpy::{IntoPyArray, PyArray1};
+use crate::fit_result::FitResult;
+use crate::generic_results;
+use crate::model_error;
+use crate::sampling::SamplerOptions;
 use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::graph::Graph;
-use rustmc_core::sampler::{self, SampleResult, SamplerType};
+use rustmc_core::data::DataBinding as CoreDataBinding;
+use rustmc_core::model::{sample_model_batch, ModelBatchCell, ModelFit};
+use rustmc_core::sampler::{BatchSeedPolicy, BoundBatchOptions, SampleResult};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// One cell of a batch run.
-///
-/// Everything this exposes is read off the retained fit, which every cell
-/// has: both construction sites supply one, so the accessors are infallible.
-/// The fit used to be optional, and the `None` arm manufactured an error for
-/// a "legacy" cell that no code path could produce. It used to also hold a
-/// flattened `BatchModelResult` copy of the display draws, which made a third
-/// posterior per cell alongside the raw and display trees.
+/// One cell of a batch run: a fit whose posterior is shared, never copied,
+/// with the `FitResult` its `fit` property returns.
 #[pyclass(module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct BatchResult {
-    pub(crate) full_fit: StoredBatchFit,
+    fit: Arc<ModelFit>,
 }
 
 impl BatchResult {
+    pub(crate) fn new(fit: ModelFit) -> Self {
+        Self { fit: Arc::new(fit) }
+    }
+
     /// Display draws for this cell.
     fn display(&self) -> &SampleResult {
-        self.full_fit.display()
+        &self.fit.samples
     }
 }
+
 #[pymethods]
 impl BatchResult {
     /// Internal regression-test hook: compare immutable payload ownership without exposing addresses.
     fn _shares_data(&self, other: &BatchResult, key: &str) -> bool {
-        match (&self.full_fit, &other.full_fit) {
-            (StoredBatchFit::Bound(a), StoredBatchFit::Bound(b)) => {
-                a.binding.shares_payload_with(&b.binding, key)
-            }
-            _ => false,
-        }
+        self.fit
+            .binding()
+            .shares_payload_with(other.fit.binding(), key)
     }
     /// Internal regression-test hook: how many distinct posterior sample trees
     /// this cell retains. One when the display layer passes the raw draws
     /// through unchanged, two when a parameter is genuinely derived.
     fn _posterior_allocations(&self) -> usize {
-        if std::ptr::eq(self.full_fit.raw(), self.full_fit.display()) {
+        if Arc::ptr_eq(self.fit.raw_samples(), &self.fit.samples) {
             1
         } else {
             2
@@ -62,25 +57,27 @@ impl BatchResult {
     /// posterior rather than holding a copy of it. Compares ownership without
     /// exposing addresses.
     fn _shares_posterior_with(&self, fit: &FitResult) -> bool {
-        std::ptr::eq(self.full_fit.raw(), &*fit.raw_result)
-            && std::ptr::eq(self.full_fit.display(), &*fit.display_result)
+        Arc::ptr_eq(self.fit.raw_samples(), fit.fit.raw_samples())
+            && Arc::ptr_eq(&self.fit.samples, &fit.fit.samples)
     }
 
     #[getter]
     fn fit(&self) -> FitResult {
-        self.full_fit.materialize()
+        FitResult {
+            fit: Arc::clone(&self.fit),
+        }
     }
 
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        generic_results::diagnostics(self.full_fit.display(), py)
+        generic_results::diagnostics(self.display(), py)
     }
 
     fn summary(&self) -> String {
-        self.full_fit.display().diagnostics().to_table()
+        self.display().diagnostics().to_table()
     }
 
     fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        generic_results::transition_diagnostics(self.full_fit.raw(), py)
+        generic_results::transition_diagnostics(self.fit.raw_samples(), py)
     }
 
     #[pyo3(signature = (data=None, seed=42, expected=false, sizes=None))]
@@ -96,56 +93,21 @@ impl BatchResult {
     }
 
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display();
-        let dict = PyDict::new(py);
-        let n_chains = display.samples.len();
-        let n_draws = display.samples.first().map_or(0, Vec::len);
-        for (pidx, name) in display.param_names.iter().enumerate() {
-            let mut arr = Array2::<f64>::zeros((n_chains, n_draws));
-            for (chain_idx, chain) in display.samples.iter().enumerate() {
-                for (draw_idx, draw) in chain.iter().enumerate() {
-                    arr[[chain_idx, draw_idx]] = draw[pidx];
-                }
-            }
-            dict.set_item(name, arr.into_pyarray(py))?;
-        }
-        Ok(dict)
+        generic_results::samples_by_chain(self.display(), py)
     }
 
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let display = self.display();
-        let means = display.mean();
-        let dict = PyDict::new(py);
-        for (name, val) in display.param_names.iter().zip(means.iter()) {
-            dict.set_item(name, val)?;
-        }
-        Ok(dict)
+        generic_results::named_values(py, &display.param_names, display.mean())
     }
 
     fn std<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         let display = self.display();
-        let stds = display.std();
-        let dict = PyDict::new(py);
-        for (name, val) in display.param_names.iter().zip(stds.iter()) {
-            dict.set_item(name, val)?;
-        }
-        Ok(dict)
+        generic_results::named_values(py, &display.param_names, display.std())
     }
 
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
-        let display = self.display();
-        let dict = PyDict::new(py);
-        for (pidx, name) in display.param_names.iter().enumerate() {
-            let vals: Vec<f64> = display
-                .samples
-                .iter()
-                .flatten()
-                .map(|draw| draw[pidx])
-                .collect();
-            let arr = PyArray1::from_vec(py, vals);
-            dict.set_item(name, arr)?;
-        }
-        Ok(dict)
+        generic_results::samples_flat(self.display(), py)
     }
 
     #[getter]
@@ -285,9 +247,15 @@ impl PyBatchFit {
 
 /// Run thousands of independent models in parallel through Rayon.
 ///
-/// Each entry in `models` is a (ModelSpec, data_dict) pair. By default each gets
-/// 1 NUTS chain for throughput, but the batch runner can be configured to use
-/// multiple chains or fixed-step HMC when reliability matters more.
+/// Each entry in `models` is a (ModelSpec, data_dict) pair; the models need
+/// not share a structure. By default each gets 1 NUTS chain for throughput,
+/// but the batch runner can be configured to use multiple chains or
+/// fixed-step HMC when reliability matters more.
+///
+/// This runs the same batch path as `CompiledModel.sample_batch` with
+/// `seed_policy="position_v0"` and `errors="raise"`: model `i` is fitted as a
+/// single fit seeded `seed + (i << 32)`, and the first failure raises for the
+/// whole batch, naming its dataset index.
 #[pyfunction]
 #[pyo3(signature = (models, chains=1, draws=500, warmup=300, seed=42, sampler="nuts", step_size=0.0, target_accept=0.8, max_tree_depth=8, num_leapfrog_steps=15, show_progress=true, metric="auto"))]
 // The Python API intentionally exposes each sampler option as a named argument.
@@ -307,114 +275,46 @@ pub(crate) fn batch_sample(
     show_progress: bool,
     metric: &str,
 ) -> PyResult<Vec<BatchResult>> {
-    let metric = parse_metric(metric)?;
-    validate_sample_config(
+    let config = SamplerOptions {
         chains,
         draws,
         warmup,
-        step_size,
-        target_accept,
-        max_tree_depth,
-        num_leapfrog_steps,
-    )?;
-
-    let mut compiled_models = Vec::with_capacity(models.len());
-
-    for (spec_bound, data_bound) in &models {
-        let spec = spec_bound.borrow();
-        reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
-
-        // Bound data from ModelSpec is the base; call-site dict overrides/extends.
-        let mut data_map: HashMap<String, Vec<f64>> = spec.bound_data_1d.clone();
-        let mut matrix_map: HashMap<String, (Vec<f64>, usize, usize)> = spec.bound_data_2d.clone();
-        let (extra_1d, extra_2d) = parse_data_dict(data_bound)?;
-        merge_data_overrides(&mut data_map, &mut matrix_map, extra_1d, extra_2d);
-
-        validate_matrix_storage(&matrix_map)?;
-
-        compiled_models.push(compile_python_model(&spec, &data_map, &matrix_map)?);
-    }
-
-    let sampler = match sampler {
-        "nuts" | "NUTS" => SamplerType::Nuts,
-        "hmc" | "HMC" => SamplerType::Hmc,
-        _ => {
-            return Err(PyValueError::new_err(format!(
-                "Unknown sampler '{}'. Use 'nuts' or 'hmc'.",
-                sampler
-            )))
-        }
-    };
-
-    let config = sampler::BatchSampleConfig {
-        sampler,
-        num_chains: chains,
-        num_draws: draws,
-        num_warmup: warmup,
-        step_size,
-        target_accept,
-        num_leapfrog_steps,
-        max_tree_depth,
         seed,
+        step_size,
+        target_accept,
+        sampler,
+        max_tree_depth,
+        num_leapfrog_steps,
         show_progress,
         metric,
+    }
+    .batch()?;
+
+    let mut cells = Vec::with_capacity(models.len());
+    for (index, (spec_bound, data_bound)) in models.iter().enumerate() {
+        let spec = spec_bound.borrow();
+        reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
+        // Bound data from ModelSpec is the base; call-site dict overrides/extends.
+        let (data_map, matrix_map) = spec.data_with(Some(data_bound))?;
+        let compiled = compile_python_model(&spec, &data_map, &matrix_map)?;
+        let binding =
+            CoreDataBinding::from_graph(&compiled.graph).map_err(|error| error.to_string());
+        cells.push(ModelBatchCell {
+            id: index.to_string(),
+            model: compiled.into_model(&spec),
+            binding,
+            initial: None,
+        });
+    }
+    let options = BoundBatchOptions {
+        threads: std::thread::available_parallelism().map_or(1, usize::from),
+        chunk_size: cells.len().max(1),
+        collect_errors: false,
+        seed_policy: BatchSeedPolicy::PositionV0,
     };
-
-    let graphs: Vec<Graph> = compiled_models
-        .iter()
-        .map(|compiled| compiled.graph.clone())
-        .collect();
-
-    let results = py
-        .allow_threads(|| sampler::batch_sample_graphs(graphs, config))
-        .map_err(PyValueError::new_err)?;
-
-    results
+    py.allow_threads(|| sample_model_batch(cells, config, options))
+        .map_err(model_error)?
         .into_iter()
-        .zip(compiled_models.iter())
-        .zip(models.iter())
-        .map(|((raw_result, compiled), (spec, _))| {
-            let num_draws = raw_result.num_draws;
-            let raw = Arc::new(SampleResult {
-                samples: regroup_draws_by_chain(raw_result.samples, num_draws),
-                unconstrained_samples: raw_result.unconstrained_samples,
-                param_names: raw_result.param_names,
-                accept_rates: raw_result.accept_rates,
-                step_sizes: raw_result.step_sizes,
-                divergences: raw_result.divergences,
-                transitions: raw_result.transitions,
-            });
-            let display_result = display_sample_result(&raw, &compiled.display_params)?;
-            Ok(BatchResult {
-                full_fit: StoredBatchFit::Ready(Arc::new(FitResult {
-                    raw_result: raw,
-                    display_result,
-                    graph: compiled.graph.clone(),
-                    likelihood_names: compiled.likelihood_names.clone(),
-                    definition: spec.borrow().structure_definition(),
-                })),
-            })
-        })
+        .map(|fit| fit.map(BatchResult::new).map_err(PyValueError::new_err))
         .collect()
-}
-
-/// Regroup a flat, chain-major draw list into per-chain blocks.
-///
-/// The draw buffers are moved rather than copied, so regrouping a batch result
-/// does not duplicate the posterior. Draining the source is what keeps that
-/// true: `split_off` would leave each chain holding the capacity of the whole
-/// remaining suffix, which costs O(chains² × draws) descriptor slots.
-pub(crate) fn regroup_draws_by_chain(flat: Vec<Vec<f64>>, num_draws: usize) -> Vec<Vec<Vec<f64>>> {
-    if num_draws == 0 {
-        return Vec::new();
-    }
-    let mut remaining = flat.into_iter();
-    let mut chains = Vec::with_capacity(remaining.len().div_ceil(num_draws));
-    loop {
-        let chain: Vec<Vec<f64>> = remaining.by_ref().take(num_draws).collect();
-        if chain.is_empty() {
-            return chains;
-        }
-        chains.push(chain);
-    }
 }

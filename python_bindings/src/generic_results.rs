@@ -1,63 +1,62 @@
-//! Shared generic-result storage and Python diagnostics conversion.
-use crate::builder::ModelSpec;
-use crate::fit_result::FitResult;
+//! Result exports and diagnostics shared by `FitResult` and `BatchResult`.
+use ndarray::Array2;
+use numpy::{IntoPyArray, PyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::{data::DataBinding, graph::Graph, sampler::SampleResult};
-use std::sync::Arc;
+use rustmc_core::sampler::SampleResult;
 
-#[derive(Clone)]
-pub(super) enum StoredBatchFit {
-    Ready(Arc<FitResult>),
-    Bound(Arc<BoundBatchFit>),
-}
-impl From<Arc<FitResult>> for StoredBatchFit {
-    fn from(fit: Arc<FitResult>) -> Self {
-        Self::Ready(fit)
+/// `{name: value}` for per-parameter summaries such as means.
+pub(crate) fn named_values<'py>(
+    py: Python<'py>,
+    names: &[String],
+    values: Vec<f64>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (name, value) in names.iter().zip(values) {
+        dict.set_item(name, value)?;
     }
-}
-/// A retained batch cell.
-///
-/// The posterior draws are the bulk of a batch's memory, so they are held
-/// behind `Arc` and never deep-copied: `materialize` hands the same buffers to
-/// the `FitResult` it builds, and when the display layer is the identity both
-/// handles point at one allocation.
-pub(super) struct BoundBatchFit {
-    pub(super) structure: Arc<Graph>,
-    pub(super) binding: DataBinding,
-    pub(super) raw_result: Arc<SampleResult>,
-    pub(super) display_result: Arc<SampleResult>,
-    pub(super) likelihood_names: Vec<String>,
-    pub(super) definition: ModelSpec,
-}
-impl StoredBatchFit {
-    pub(super) fn materialize(&self) -> FitResult {
-        match self {
-            Self::Ready(fit) => (**fit).clone(),
-            Self::Bound(fit) => FitResult {
-                definition: fit.definition.clone(),
-                graph: fit.structure.with_binding(&fit.binding),
-                raw_result: Arc::clone(&fit.raw_result),
-                display_result: Arc::clone(&fit.display_result),
-                likelihood_names: fit.likelihood_names.clone(),
-            },
-        }
-    }
-    pub(super) fn raw(&self) -> &SampleResult {
-        match self {
-            Self::Ready(fit) => &fit.raw_result,
-            Self::Bound(fit) => &fit.raw_result,
-        }
-    }
-    pub(super) fn display(&self) -> &SampleResult {
-        match self {
-            Self::Ready(fit) => &fit.display_result,
-            Self::Bound(fit) => &fit.display_result,
-        }
-    }
+    Ok(dict)
 }
 
-pub(super) fn diagnostics<'py>(
+/// Every parameter's draws, chains concatenated.
+pub(crate) fn samples_flat<'py>(
+    sample: &SampleResult,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    for (index, name) in sample.param_names.iter().enumerate() {
+        let values: Vec<f64> = sample
+            .samples
+            .iter()
+            .flatten()
+            .map(|draw| draw[index])
+            .collect();
+        dict.set_item(name, PyArray1::from_vec(py, values))?;
+    }
+    Ok(dict)
+}
+
+/// Every parameter's draws as a `(chain, draw)` array.
+pub(crate) fn samples_by_chain<'py>(
+    sample: &SampleResult,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    let n_chains = sample.samples.len();
+    let n_draws = sample.samples.first().map_or(0, Vec::len);
+    for (index, name) in sample.param_names.iter().enumerate() {
+        let mut values = Array2::<f64>::zeros((n_chains, n_draws));
+        for (chain_index, chain) in sample.samples.iter().enumerate() {
+            for (draw_index, draw) in chain.iter().enumerate() {
+                values[[chain_index, draw_index]] = draw[index];
+            }
+        }
+        dict.set_item(name, values.into_pyarray(py))?;
+    }
+    Ok(dict)
+}
+
+pub(crate) fn diagnostics<'py>(
     sample: &SampleResult,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyList>> {
@@ -83,7 +82,7 @@ pub(super) fn diagnostics<'py>(
     Ok(list)
 }
 
-pub(super) fn transition_diagnostics<'py>(
+pub(crate) fn transition_diagnostics<'py>(
     sample: &SampleResult,
     py: Python<'py>,
 ) -> PyResult<Bound<'py, PyDict>> {

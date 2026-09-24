@@ -522,44 +522,71 @@ pub fn sample_bound_with_init(
     initial: Option<Vec<Vec<f64>>>,
 ) -> Result<SampleResult, String> {
     config.validate()?;
-    // Single chokepoint: `sample`, `sample_bound`, the bound-batch entry point
-    // and `model::GraphModel::sample` all funnel through here.
-    reject_discrete_latent_parameters(&graph)?;
-    let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
-    binding.validate_for(&graph).map_err(|e| e.to_string())?;
-    if let Some(positions) = &initial {
-        for position in positions {
-            validate_initial_target(&graph, binding.clone(), position)?;
-        }
-    }
+    let initial = checked_initial(&graph, &binding, &config, initial)?;
 
     let progress_state = config.show_progress.then(|| {
-        // For the progress bar, leapfrog count is approximate for NUTS.
-        let approx_leapfrog = match config.sampler {
-            SamplerType::Hmc => config.num_leapfrog_steps,
-            SamplerType::Nuts => 1 << (config.max_tree_depth / 2),
-        };
         Arc::new(ProgressState::new(
             config.num_chains,
             config.num_draws,
             config.num_warmup,
-            approx_leapfrog,
+            approximate_leapfrog_steps(&config),
         ))
     });
     let _progress_guard = progress_state
         .as_ref()
         .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
 
-    let results = with_thread_pool(config.num_threads, || {
-        run_chains(
+    with_thread_pool(config.num_threads, || {
+        sample_checked(
             &graph,
             &binding,
             &config,
             initial.as_deref(),
             progress_state.as_deref(),
         )
-    })??;
-    let (samples, unconstrained_samples) = constrain_chains(&graph, &results)?;
+    })?
+}
+
+/// The checks every gradient-based fit passes before any chain runs, returning
+/// the validated starts.
+///
+/// Single chokepoint: `sample`, `sample_bound`, the batch entry points and
+/// `model::GraphModel::sample` all funnel through here.
+fn checked_initial(
+    graph: &Graph,
+    binding: &DataBinding,
+    config: &SamplerConfig,
+    initial: Option<Vec<Vec<f64>>>,
+) -> Result<Option<Vec<Vec<f64>>>, String> {
+    reject_discrete_latent_parameters(graph)?;
+    let initial = validate_initial_values(initial, config.num_chains, graph.param_count)?;
+    binding.validate_for(graph).map_err(|e| e.to_string())?;
+    if let Some(positions) = &initial {
+        for position in positions {
+            validate_initial_target(graph, binding.clone(), position)?;
+        }
+    }
+    Ok(initial)
+}
+
+/// For the progress bar only: the leapfrog count is approximate for NUTS.
+fn approximate_leapfrog_steps(config: &SamplerConfig) -> usize {
+    match config.sampler {
+        SamplerType::Hmc => config.num_leapfrog_steps,
+        SamplerType::Nuts => 1 << (config.max_tree_depth / 2),
+    }
+}
+
+/// Run and constrain every chain of a fit that passed [`checked_initial`].
+fn sample_checked(
+    graph: &Graph,
+    binding: &DataBinding,
+    config: &SamplerConfig,
+    initial: Option<&[Vec<f64>]>,
+    progress: Option<&ProgressState>,
+) -> Result<SampleResult, String> {
+    let results = run_chains(graph, binding, config, initial, progress)?;
+    let (samples, unconstrained_samples) = constrain_chains(graph, &results)?;
     Ok(SampleResult {
         samples,
         unconstrained_samples,
@@ -730,9 +757,8 @@ pub fn sample_batch_bound_with_initial(
     bindings: Vec<(String, Result<DataBinding, String>)>,
     config: BatchSampleConfig,
     options: BoundBatchOptions,
-    initial: std::collections::HashMap<String, Vec<Vec<f64>>>,
+    mut initial: std::collections::HashMap<String, Vec<Vec<f64>>>,
 ) -> Result<Vec<Result<SampleResult, String>>, String> {
-    use crate::forecast_batch::{execute_batch, execute_batch_fail_fast, BatchError};
     config.validate()?;
     let ids: std::collections::HashSet<_> = bindings.iter().map(|(id, _)| id.as_str()).collect();
     if let Some(id) = initial.keys().find(|id| !ids.contains(id.as_str())) {
@@ -740,28 +766,76 @@ pub fn sample_batch_bound_with_initial(
             "initialization supplied for unknown dataset ID '{id}'"
         ));
     }
-    let cells: Vec<_> = bindings
+    let cells = bindings
         .into_iter()
-        .enumerate()
-        .map(|(index, (id, binding))| {
-            let position = initial.get(&id).cloned();
-            (id, (index, binding, position))
+        .map(|(id, binding)| BatchCell {
+            initial: initial.remove(&id),
+            id,
+            graph: Arc::clone(&graph),
+            binding,
         })
         .collect();
-    type InitializedCell = (usize, Result<DataBinding, String>, Option<Vec<Vec<f64>>>);
-    let fit = |(index, binding, initial): &InitializedCell, stable_seed| {
+    sample_batch_cells(cells, config, options)
+}
+
+/// One dataset of a batch: the structure to fit, its data (or why it could
+/// not be bound), and optionally one start per chain.
+#[derive(Debug, Clone)]
+pub struct BatchCell {
+    pub id: String,
+    pub graph: Arc<Graph>,
+    pub binding: Result<DataBinding, String>,
+    pub initial: Option<Vec<Vec<f64>>>,
+}
+
+/// Fit independent cells, which may have different structures, on a bounded
+/// pool.
+///
+/// Each cell is fitted as [`sample_bound_with_init`] would fit it, with the
+/// seed [`BoundBatchOptions::seed_policy`] chooses. With `collect_errors` a
+/// failed cell is that cell's result; otherwise the first failure ends the
+/// batch as `"dataset '<id>': <error>"`. `config.show_progress` draws one
+/// progress bar over every chain of every cell.
+pub fn sample_batch_cells(
+    cells: Vec<BatchCell>,
+    config: BatchSampleConfig,
+    options: BoundBatchOptions,
+) -> Result<Vec<Result<SampleResult, String>>, String> {
+    use crate::forecast_batch::{execute_batch, execute_batch_fail_fast, BatchError};
+    config.validate()?;
+    let progress_state = config.show_progress.then(|| {
+        Arc::new(ProgressState::new(
+            cells.len() * config.num_chains,
+            config.num_draws,
+            config.num_warmup,
+            approximate_leapfrog_steps(&config.sampler_config(config.seed)),
+        ))
+    });
+    let _progress_guard = progress_state
+        .as_ref()
+        .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
+    let cells: Vec<_> = cells
+        .into_iter()
+        .enumerate()
+        .map(|(index, cell)| (cell.id.clone(), (index, cell)))
+        .collect();
+    let fit = |(index, cell): &(usize, BatchCell), stable_seed| {
         // The policy chooses the cell's seed; its chains are then keyed from
         // that seed exactly as a single fit's are.
         let seed = match options.seed_policy {
             BatchSeedPolicy::CellIdV1 => stable_seed,
             BatchSeedPolicy::PositionV0 => config.seed.wrapping_add((*index as u64) << 32),
         };
-        // num_threads=0 reuses the surrounding private pool for chain work.
-        sample_bound_with_init(
-            Arc::clone(&graph),
-            binding.clone()?,
-            config.sampler_config(seed),
-            initial.clone(),
+        let binding = cell.binding.clone()?;
+        // Chain work runs on the batch's own pool.
+        let cell_config = config.sampler_config(seed);
+        let initial = checked_initial(&cell.graph, &binding, &cell_config, cell.initial.clone())?;
+        sample_checked(
+            &cell.graph,
+            &binding,
+            &cell_config,
+            initial.as_deref(),
+            progress_state.as_deref(),
         )
     };
     if options.collect_errors {

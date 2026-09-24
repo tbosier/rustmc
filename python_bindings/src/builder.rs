@@ -1,8 +1,8 @@
 //! `ModelBuilder` and the `ModelSpec` it produces.
 use crate::compiled::PyCompiledModel;
 use crate::data_input::{
-    parse_data_dict, validate_data_keys, validate_expr_keys, validate_matrix_storage, Data1d,
-    Data2d,
+    merge_data_overrides, parse_data_dict, validate_data_keys, validate_expr_keys,
+    validate_matrix_storage, Data1d, Data2d,
 };
 use crate::expressions::{extract_expr, first_param_name, Expr, ParamRef, VectorParamRef};
 use crate::{model_error, param_error, ParameterError};
@@ -16,7 +16,6 @@ use rustmc_core::model::{
 use rustmc_core::param_ref::{validate_param_references, ParamReference};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
 
 /// Monotonic id handed to each `ModelBuilder` so that a `ParamRef` produced by
 /// one model can never be silently consumed by another.
@@ -52,11 +51,17 @@ impl std::ops::DerefMut for ModelSpec {
 }
 
 impl ModelSpec {
-    pub(crate) fn structure_definition(&self) -> Self {
-        let mut definition = self.clone();
-        definition.bound_data_1d.clear();
-        definition.bound_data_2d.clear();
-        definition
+    /// The data bound at build time, overridden and extended by call-site
+    /// `data`.
+    pub(crate) fn data_with(&self, data: Option<&Bound<'_, PyDict>>) -> PyResult<(Data1d, Data2d)> {
+        let mut data_1d = self.bound_data_1d.clone();
+        let mut data_2d = self.bound_data_2d.clone();
+        if let Some(data) = data {
+            let (extra_1d, extra_2d) = parse_data_dict(data)?;
+            merge_data_overrides(&mut data_1d, &mut data_2d, extra_1d, extra_2d);
+        }
+        validate_matrix_storage(&data_2d)?;
+        Ok((data_1d, data_2d))
     }
 }
 
@@ -665,14 +670,8 @@ impl ModelBuilder {
         let (template_1d, template_2d) = template_data_for_spec(&spec)?;
         validate_matrix_storage(&template_2d)?;
         let compiled = compile_python_model(&spec, &template_1d, &template_2d)?;
-        let mut definition = spec;
-        definition.bound_data_1d.clear();
-        definition.bound_data_2d.clear();
         Ok(PyCompiledModel {
-            definition,
-            structure: Arc::new(compiled.graph.structure_only()),
-            likelihood_names: compiled.likelihood_names,
-            display_params: compiled.display_params,
+            model: compiled.into_model(&spec),
             default_data_1d: self.bound_data_1d.clone(),
             default_data_2d: self.bound_data_2d.clone(),
         })

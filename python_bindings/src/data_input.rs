@@ -3,37 +3,13 @@ use numpy::{PyArray1, PyArray2, PyArrayMethods, PyUntypedArrayMethods};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rustmc_core::data::{DataBinding as CoreDataBinding, DataInputs, MatrixBinding};
-use rustmc_core::graph::Graph;
+use rustmc_core::data::{DataInputs, MatrixBinding};
 use rustmc_core::model::MuExpr;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) type Data1d = HashMap<String, Vec<f64>>;
 pub(crate) type Data2d = HashMap<String, (Vec<f64>, usize, usize)>;
-
-pub(crate) fn core_binding_from_maps(
-    schema: &rustmc_core::DataSchema,
-    data_1d: &Data1d,
-    data_2d: &Data2d,
-    id: String,
-    strict: bool,
-    check_finite: bool,
-) -> PyResult<CoreDataBinding> {
-    let inputs = data_inputs_from_maps(data_1d, data_2d);
-    CoreDataBinding::bind(schema, inputs, id, strict, check_finite)
-        .map_err(|e| PyValueError::new_err(e.to_string()))
-}
-
-pub(crate) fn validate_core_binding(
-    graph: &Graph,
-    binding: CoreDataBinding,
-) -> PyResult<CoreDataBinding> {
-    binding
-        .validate_for(graph)
-        .map_err(|e| PyValueError::new_err(e.to_string()))?;
-    Ok(binding)
-}
 
 pub(crate) fn data_inputs_from_maps(data_1d: &Data1d, data_2d: &Data2d) -> DataInputs {
     DataInputs {
