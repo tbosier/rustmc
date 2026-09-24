@@ -538,8 +538,9 @@ Notes:
   point, uniform on (-2, 2) in unconstrained coordinates, as Stan does. A start whose
   log density or gradient is not finite is redrawn; if none of 100 draws works, the
   origin is tried, and failing that `sample()` asks for `init`.
-- Chain `c` draws from a stream derived from `seed` and `c`, so different seeds never
-  share a chain.
+- Chain `c` draws from a stream derived from `seed` and `c` through separate mixing
+  rounds, so neither neighbouring seeds nor any fixed offset of the seed reproduce
+  another fit's chains.
 - `metric` sets how warmup adapts the metric of vector parameters. `"diag"` is Stan's
   default diagonal metric. `"dense"` estimates a full covariance for each vector
   parameter of at most 512 elements. `"auto"` (the default) stays diagonal unless a

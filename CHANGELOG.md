@@ -30,8 +30,6 @@ streams and start from different points than in 0.12.0.
   copied: the Gibbs schedule and chain driver, forecast path orchestration and
   summaries, the inverse-gamma draw, Cholesky, and the size guard
   `checked_value_count` / `AllocationLimitError` / `MAX_MATERIALIZED_VALUES`.
-- `rustmc_core::adaptation` (Stan's warmup schedule, dual averaging and the
-  step-size search, now shared by NUTS and HMC) and `rustmc_core::numerics`.
 - `Evaluator::forward`, a forward-only evaluation used by prediction.
 - `HurdleLogNormalPosterior::diagnostics()` and
   `HurdleLogNormalForecast::expected_value_{paths,means,quantiles}`.
@@ -80,7 +78,9 @@ streams and start from different points than in 0.12.0.
 - Forward-filtering backward-sampling runs one filter pass instead of two, 25–45%
   faster; draws differ in the last bits. Hurdle uses the scalar version.
 - Dynamic GLM block updates evaluate only the groups a block touches: a sweep is
-  O(G·T) rather than O(G²·T), 20–90× faster at 50–200 groups, with the same target.
+  O(G·T) rather than O(G²·T), with the same target and, for a given stream, the same
+  draws. Two measurements on different runs put the speed-up at 13–20× for 50
+  groups and 41–90× for 200 groups (T = 100).
 - Dynamic GLM forecasts and prior predictions, and runoff fits, run chains in
   parallel with results independent of thread count.
 - Effective sample size uses an FFT for the autocovariance beyond the first lags,
@@ -92,21 +92,26 @@ streams and start from different points than in 0.12.0.
   every other sampler.
 - Runoff errors raise `InferenceError`, a `ValueError` subclass. `fit_runoff`,
   `PaymentTriangle::validate`, `elliptical_slice::update` and
-  `observation::{log_density, mean, sample}` return typed errors with the same
-  messages; `elliptical_slice::update` accepts `FnMut`.
+  `observation::{log_density, mean, sample}` return typed errors;
+  `elliptical_slice::update` accepts `FnMut`. Messages are unchanged except the
+  runoff size refusal, which now uses the shared size-guard wording.
 - The documentation site deploys after a release publishes instead of on every push
   to `main`, so it no longer describes behaviour `pip install rustmc` does not have.
-- Release-path GitHub Actions are pinned to commit SHAs, the PyPI publish job runs
-  in a `pypi` environment, and CI caches Rust builds.
+- The third-party actions on the release path (`maturin-action`,
+  `gh-action-pypi-publish`, `rust-cache`, and `rust-toolchain` where it builds release
+  artifacts) are pinned to commit SHAs; GitHub's own `actions/*` still use version
+  tags. The PyPI publish job runs in a `pypi` environment, and CI caches Rust builds.
 - `scripts/dev_pytest.sh` honours `RUSTMC_VENV` and finds the main checkout's
   virtual environment instead of a hard-coded home directory.
-- **Forecasting exceptions follow one rule.** Local-level, seasonal, trend, AR,
-  hurdle, regression, dynamic GLM and structural *fit* errors, the forecasting
-  priors, and `fit_batch` cell failures raise `InferenceError` where several raised
-  `StateSpaceError`. `StateSpaceError` is kept for `LinearGaussianStateSpace` and
-  structural specifications; shared argument checks raise plain `ValueError`. All
-  three still subclass `ValueError`. Code catching `StateSpaceError` from a fit must
-  catch `InferenceError` or `ValueError`.
+- **Forecasting exceptions follow one rule.** Errors from the local-level,
+  seasonal, trend, AR, hurdle, regression, dynamic GLM and structural models now
+  raise `InferenceError` where many raised `StateSpaceError`: their priors, `fit`,
+  `forecast` and `prior_predict`, `from_json` of their fits, `fit_batch` cells and
+  batch forecasts, and the accessors of the results. `StateSpaceError` is kept for
+  `LinearGaussianStateSpace` and structural specifications; shared argument checks
+  raise plain `ValueError`. All three subclass `ValueError`, so code catching
+  `StateSpaceError` from any of the calls above must catch `InferenceError` or
+  `ValueError` instead.
 - Forecasting models accept integer arrays and lists as well as float arrays, and
   report a bad input by argument name instead of PyO3's conversion message. A 1-D
   `y` for a dynamic GLM raises `ValueError` rather than `TypeError`.
@@ -126,9 +131,12 @@ streams and start from different points than in 0.12.0.
 
 #### Fixed
 
-- Effective sample size now matches ArviZ: Geyer's final positive term was dropped,
-  bulk ESS ranked before splitting, and the tail indicator used `>=` rather than
-  `<=`. ESS read slightly high before.
+- Effective sample size now follows ArviZ's algorithm: Geyer's final positive term
+  was dropped, bulk ESS ranked before splitting, and the tail indicator used `>=`
+  rather than `<=`. The old values could be off in either direction, by up to about
+  20% for short chains, and were NaN at four or five draws per chain. Two
+  differences from ArviZ are deliberate: a constant parameter's ESS is NaN (ArviZ
+  reports the draw count), and a single chain gets a split R-hat (ArviZ reports NaN).
 - Invalid input reaching the Rust API returned panics instead of errors: an
   out-of-range group index, an empty data vector, a graph node referring to a later
   node, a vector used as a log-density term or a scale, a wrong-length `init`, and
