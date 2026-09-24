@@ -10,7 +10,8 @@ fn positive(value: f64, label: &str) -> Result<f64, String> {
         Err(format!("{label} must be finite and positive; got {value}"))
     }
 }
-fn sigmoid(x: f64) -> f64 {
+/// Logistic function, evaluated so that neither tail overflows.
+pub(crate) fn sigmoid(x: f64) -> f64 {
     if x >= 0.0 {
         1.0 / (1.0 + (-x).exp())
     } else {
