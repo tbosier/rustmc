@@ -1,6 +1,5 @@
 //! Python bindings for sparse nonnegative amount forecasting.
 use super::*;
-use rustmc_core::forecast_diagnostics::parameter_diagnostics;
 use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
@@ -159,10 +158,7 @@ pub(crate) struct PyHurdleFit {
 
 impl PyHurdleFit {
     pub(crate) fn report(&self) -> rustmc_core::diagnostics::DiagnosticsReport {
-        parameter_diagnostics(
-            &self.posterior.parameter_samples(),
-            &HurdleLogNormalPosterior::parameter_names(),
-        )
+        self.posterior.diagnostics()
     }
 }
 
@@ -294,7 +290,7 @@ impl PyHurdleForecast {
     /// Conditional arithmetic means including probability of no payment.
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.paths.state_paths)
+        local_level_path_array(py, self.inner.expected_value_paths())
     }
     #[getter]
     fn positive_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
@@ -313,8 +309,7 @@ impl PyHurdleForecast {
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
         Ok(self
             .inner
-            .paths
-            .state_means()
+            .expected_value_means()
             .map_err(bayesian_forecast_error)?
             .into_pyarray(py))
     }
@@ -327,11 +322,19 @@ impl PyHurdleForecast {
     }
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        self.quantile_interval(py, &self.inner.paths, level, false)
+        self.quantile_interval(py, &self.inner.paths, level)
     }
     #[pyo3(signature = (level=0.95))]
     fn mean_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        self.quantile_interval(py, &self.inner.paths, level, true)
+        validate_interval_level(level)?;
+        let q = self
+            .inner
+            .expected_value_quantiles(&[(1.0 - level) / 2.0, (1.0 + level) / 2.0])
+            .map_err(bayesian_forecast_error)?;
+        Ok((
+            q[0].values.clone().into_pyarray(py),
+            q[1].values.clone().into_pyarray(py),
+        ))
     }
     #[pyo3(signature = (level=0.95))]
     fn cumulative_interval<'py>(
@@ -343,7 +346,7 @@ impl PyHurdleForecast {
             state_paths: Vec::new(),
             observation_paths: self.cumulative_paths()?,
         };
-        self.quantile_interval(py, &paths, level, false)
+        self.quantile_interval(py, &paths, level)
     }
     #[getter]
     fn uncertainty_kind(&self) -> &'static str {
@@ -386,16 +389,12 @@ impl PyHurdleForecast {
         py: Python<'py>,
         paths: &CorePosteriorPredictiveForecast,
         level: f64,
-        mean: bool,
     ) -> PyResult<PyIntervalArrays<'py>> {
         validate_interval_level(level)?;
         let probs = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let q = if mean {
-            paths.state_quantiles(&probs)
-        } else {
-            paths.observation_quantiles(&probs)
-        }
-        .map_err(bayesian_forecast_error)?;
+        let q = paths
+            .observation_quantiles(&probs)
+            .map_err(bayesian_forecast_error)?;
         Ok((
             q[0].values.clone().into_pyarray(py),
             q[1].values.clone().into_pyarray(py),

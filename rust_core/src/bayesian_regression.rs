@@ -4,12 +4,18 @@
 //! Coefficients are static latent states with exactly zero innovation variance;
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::bayesian_forecast::InverseGammaPrior;
-use crate::seeding::chain_seed;
+use crate::forecast_common::{
+    check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+};
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
-use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
+use rand_distr::{Distribution, StandardNormal};
+
+/// `"\0REG_FIT"`.
+const FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
+/// `"REG_PRED"`.
+const FORECAST_SEED_DOMAIN: u64 = 0x5245_475F_5052_4544;
 
 #[derive(Clone, Debug)]
 pub struct GaussianCoefficientPrior {
@@ -152,18 +158,11 @@ fn draw_variance(
     ss: f64,
     rng: &mut ChaCha8Rng,
 ) -> Result<f64, StateSpaceError> {
-    let gamma = Gamma::new(
+    Ok(sample_inverse_gamma(
         prior.shape + count as f64 / 2.0,
-        1.0 / (prior.scale + ss / 2.0),
-    )
-    .map_err(|_| invalid("invalid inverse-gamma update"))?;
-    let v = 1.0 / gamma.sample(rng);
-    if !v.is_finite() || v <= 0.0 {
-        return Err(StateSpaceError::NumericalFailure(
-            "sampled variance is not finite and positive".into(),
-        ));
-    }
-    Ok(v)
+        prior.scale + ss / 2.0,
+        rng,
+    )?)
 }
 fn normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
@@ -174,24 +173,26 @@ pub fn fit_regression(
     design: &[Vec<f64>],
     config: &RegressionConfig,
 ) -> Result<RegressionPosterior, StateSpaceError> {
-    if y.iter().any(|x| x.is_infinite()) || y.iter().filter(|x| x.is_finite()).count() < 2 {
+    if y.iter().any(|x| x.is_infinite()) {
         return Err(invalid(
-            "observations require at least two finite values and no infinities",
+            "observations may be finite or NaN, but not infinite",
         ));
     }
+    // One finite observation per inferred variance, the observation variance
+    // included.
+    let observed =
+        require_finite_observations(y, config.innovation_indices.len() + 1, "regression")?;
     if design.len() != y.len() {
         return Err(invalid(
             "exog must have one row per observation, including missing observations",
         ));
     }
-    if config.num_chains == 0 || config.num_draws == 0 || config.thinning == 0 {
-        return Err(invalid("chains, draws and thinning must be positive"));
-    }
-    let iterations = config
-        .num_draws
-        .checked_mul(config.thinning)
-        .and_then(|n| n.checked_add(config.num_warmup))
-        .ok_or_else(|| invalid("too many iterations"))?;
+    let schedule = GibbsSchedule::new(
+        config.num_chains,
+        config.num_warmup,
+        config.num_draws,
+        config.thinning,
+    )?;
     if config.structural_model.has_observation_variances() {
         return Err(invalid(
             "regression variance inference requires a constant observation variance",
@@ -213,98 +214,95 @@ pub fn fit_regression(
             return Err(invalid("inferred innovation indices must be unique and uncorrelated with all other innovations for inverse-gamma conjugacy"));
         }
     }
-    for prior in config
+    for (prior, name) in config
         .variance_priors
         .iter()
-        .chain(std::iter::once(&config.observation_variance_prior))
+        .zip(&config.variance_names)
+        .chain(std::iter::once((
+            &config.observation_variance_prior,
+            &"observation_variance".to_string(),
+        )))
     {
-        if !prior.shape.is_finite()
-            || prior.shape <= 0.0
-            || !prior.scale.is_finite()
-            || prior.scale <= 0.0
-        {
-            return Err(invalid(
-                "variance priors require finite positive shape and scale",
-            ));
-        }
+        prior.validate(&format!("{name} prior"))?;
     }
+    let augmented = d.saturating_add(config.coefficient_prior.mean.len());
+    schedule.check_fit_size(
+        "regression fit",
+        &[augmented.saturating_add(config.variance_priors.len() + 1)],
+        &[y.len() + 1, augmented, augmented, 3],
+    )?;
     let template = config.structural_model.with_static_regression(
         design,
         &config.coefficient_prior.mean,
         &config.coefficient_prior.covariance,
     )?;
-    let observed = y.iter().filter(|x| x.is_finite()).count();
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, 0x0052_4547_5F46_4954));
-            let mut model = template.clone();
-            let mut variances: Vec<f64> = config
+    let chains = run_gibbs_chains(
+        &schedule,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |rng| {
+            let variances: Vec<f64> = config
                 .variance_priors
                 .iter()
-                .map(|p| p.scale / (p.shape + 1.0))
+                .map(|prior| overdispersed_positive(prior.mode(), rng))
                 .collect();
-            let mut observation_variance = config.observation_variance_prior.scale
-                / (config.observation_variance_prior.shape + 1.0);
-            let mut draws = Vec::with_capacity(config.num_draws);
-            for iteration in 0..iterations {
-                model.set_variances(&config.innovation_indices, &variances, observation_variance);
-                let states = model.sample_states_ffbs(y, &mut rng)?;
-                for (variance, (&index, &prior)) in variances.iter_mut().zip(
-                    config
-                        .innovation_indices
-                        .iter()
-                        .zip(&config.variance_priors),
-                ) {
-                    let ss = states
-                        .windows(2)
-                        .map(|pair| {
-                            let predicted: f64 = config.structural_model.transition()
-                                [index * d..(index + 1) * d]
-                                .iter()
-                                .zip(&pair[0][..d])
-                                .map(|(a, b)| a * b)
-                                .sum();
-                            (pair[1][index] - predicted).powi(2)
-                        })
-                        .sum();
-                    *variance = draw_variance(prior, y.len(), ss, &mut rng)?;
-                }
-                let ss = y
+            let observation_variance =
+                overdispersed_positive(config.observation_variance_prior.mode(), rng);
+            Ok::<_, StateSpaceError>((template.clone(), variances, observation_variance))
+        },
+        |(model, variances, observation_variance), rng, retain| {
+            model.set_variances(&config.innovation_indices, variances, *observation_variance);
+            let states = model.sample_states_ffbs(y, rng)?;
+            for (variance, (&index, &prior)) in variances.iter_mut().zip(
+                config
+                    .innovation_indices
                     .iter()
-                    .zip(design)
-                    .zip(&states[1..])
-                    .filter(|((y, _), _)| y.is_finite())
-                    .map(|((&y, x), state)| {
-                        let structural: f64 = config
-                            .structural_model
-                            .observation()
+                    .zip(&config.variance_priors),
+            ) {
+                let ss = states
+                    .windows(2)
+                    .map(|pair| {
+                        let predicted: f64 = config.structural_model.transition()
+                            [index * d..(index + 1) * d]
                             .iter()
-                            .zip(state)
+                            .zip(&pair[0][..d])
                             .map(|(a, b)| a * b)
                             .sum();
-                        let regression: f64 = x.iter().zip(&state[d..]).map(|(a, b)| a * b).sum();
-                        (y - structural - regression).powi(2)
+                        (pair[1][index] - predicted).powi(2)
                     })
                     .sum();
-                observation_variance =
-                    draw_variance(config.observation_variance_prior, observed, ss, &mut rng)?;
-                if iteration >= config.num_warmup
-                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-                {
-                    let state = states.last().expect("validated nonempty data");
-                    draws.push(RegressionDraw {
-                        variances: variances.clone(),
-                        observation_variance,
-                        coefficients: state[d..].to_vec(),
-                        terminal_state: state[..d].to_vec(),
-                    });
-                }
+                *variance = draw_variance(prior, y.len(), ss, rng)?;
             }
-            Ok(draws)
-        })
-        .collect::<Result<Vec<_>, StateSpaceError>>()?;
+            let ss = y
+                .iter()
+                .zip(design)
+                .zip(&states[1..])
+                .filter(|((y, _), _)| y.is_finite())
+                .map(|((&y, x), state)| {
+                    let structural: f64 = config
+                        .structural_model
+                        .observation()
+                        .iter()
+                        .zip(state)
+                        .map(|(a, b)| a * b)
+                        .sum();
+                    let regression: f64 = x.iter().zip(&state[d..]).map(|(a, b)| a * b).sum();
+                    (y - structural - regression).powi(2)
+                })
+                .sum();
+            *observation_variance =
+                draw_variance(config.observation_variance_prior, observed, ss, rng)?;
+            Ok(retain.then(|| {
+                let state = states.last().expect("validated nonempty data");
+                RegressionDraw {
+                    variances: variances.clone(),
+                    observation_variance: *observation_variance,
+                    coefficients: state[d..].to_vec(),
+                    terminal_state: state[..d].to_vec(),
+                }
+            }))
+        },
+    )?;
     Ok(RegressionPosterior {
         config: config.clone(),
         chains,
@@ -355,89 +353,62 @@ impl RegressionPosterior {
                 "posterior chains must contain finite, dimensionally valid joint draws",
             ));
         }
-        let chains = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain, draws)| {
-                let mut rng =
-                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain, 0x5245_475F_5052_4544));
-                let mut result = RegressionForecast::default();
-                let (
-                    mut levels,
-                    mut secondary,
-                    mut regression,
-                    mut means,
-                    mut observations,
-                    mut cumulative,
-                ) = (vec![], vec![], vec![], vec![], vec![], vec![]);
-                for draw in draws {
-                    let mut simulation = self.config.structural_model.clone();
-                    simulation.set_variances(
-                        &self.config.innovation_indices,
-                        &draw.variances,
-                        draw.observation_variance,
-                    );
-                    let mut state = draw.terminal_state.clone();
-                    let (mut l, mut s, mut r, mut m, mut o, mut c) =
-                        (vec![], vec![], vec![], vec![], vec![], vec![]);
-                    let mut total = 0.0;
-                    for row in design {
-                        let next = simulation.simulate_transition(&state, &mut rng)?;
-                        let reg: f64 = row.iter().zip(&draw.coefficients).map(|(a, b)| a * b).sum();
-                        let mean = reg
-                            + self
-                                .config
-                                .structural_model
-                                .observation()
-                                .iter()
-                                .zip(&next)
-                                .map(|(a, b)| a * b)
-                                .sum::<f64>();
-                        let observation =
-                            mean + normal(&mut rng) * draw.observation_variance.sqrt();
-                        total += observation;
-                        if !total.is_finite() || next.iter().any(|v| !v.is_finite()) {
-                            return Err(StateSpaceError::NumericalFailure(
-                                "forecast overflowed".into(),
-                            ));
-                        }
-                        l.push(next[0]);
-                        s.push(if d > 1 { next[1] } else { 0.0 });
-                        r.push(reg);
-                        m.push(mean);
-                        o.push(observation);
-                        c.push(total);
-                        state = next;
+        check_forecast_size("regression forecast", &self.chains, design.len(), 6)?;
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &RegressionDraw, rng| {
+                let mut simulation = self.config.structural_model.clone();
+                simulation.set_variances(
+                    &self.config.innovation_indices,
+                    &draw.variances,
+                    draw.observation_variance,
+                );
+                let mut state = draw.terminal_state.clone();
+                let (mut l, mut s, mut r, mut m, mut o, mut c) =
+                    (vec![], vec![], vec![], vec![], vec![], vec![]);
+                let mut total = 0.0;
+                for row in design {
+                    let next = simulation.simulate_transition(&state, rng)?;
+                    let reg: f64 = row.iter().zip(&draw.coefficients).map(|(a, b)| a * b).sum();
+                    let mean = reg
+                        + self
+                            .config
+                            .structural_model
+                            .observation()
+                            .iter()
+                            .zip(&next)
+                            .map(|(a, b)| a * b)
+                            .sum::<f64>();
+                    let observation = mean + normal(rng) * draw.observation_variance.sqrt();
+                    total += observation;
+                    if !total.is_finite() || next.iter().any(|v| !v.is_finite()) {
+                        return Err(StateSpaceError::NumericalFailure(
+                            "forecast overflowed".into(),
+                        ));
                     }
-                    levels.push(l);
-                    secondary.push(s);
-                    regression.push(r);
-                    means.push(m);
-                    observations.push(o);
-                    cumulative.push(c);
+                    l.push(next[0]);
+                    s.push(if d > 1 { next[1] } else { 0.0 });
+                    r.push(reg);
+                    m.push(mean);
+                    o.push(observation);
+                    c.push(total);
+                    state = next;
                 }
-                result.level_paths.push(levels);
-                result.secondary_paths.push(secondary);
-                result.regression_paths.push(regression);
-                result.mean_paths.push(means);
-                result.observation_paths.push(observations);
-                result.cumulative_observation_paths.push(cumulative);
-                Ok(result)
-            })
-            .collect::<Result<Vec<_>, StateSpaceError>>()?;
-        let mut result = RegressionForecast::default();
-        for c in chains {
-            result.level_paths.extend(c.level_paths);
-            result.secondary_paths.extend(c.secondary_paths);
-            result.regression_paths.extend(c.regression_paths);
-            result.mean_paths.extend(c.mean_paths);
-            result.observation_paths.extend(c.observation_paths);
-            result
-                .cumulative_observation_paths
-                .extend(c.cumulative_observation_paths);
-        }
-        Ok(result)
+                Ok([l, s, r, m, o, c])
+            },
+        )?;
+        let [level_paths, secondary_paths, regression_paths, mean_paths, observation_paths, cumulative_observation_paths] =
+            split_paths(per_draw);
+        Ok(RegressionForecast {
+            level_paths,
+            secondary_paths,
+            regression_paths,
+            mean_paths,
+            observation_paths,
+            cumulative_observation_paths,
+        })
     }
 }
 
@@ -474,6 +445,18 @@ pub fn fourier_design(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeding::chain_seed;
+    use rand::SeedableRng;
+
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        for chain in 0..4 {
+            assert_ne!(
+                chain_seed(42, chain, FIT_SEED_DOMAIN),
+                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
+            );
+        }
+    }
     #[test]
     fn joint_static_regression_matches_analytic_posterior_and_future_covariance() {
         let y = vec![1.0, 2.0, f64::NAN, 4.0];

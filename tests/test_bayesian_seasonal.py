@@ -220,6 +220,8 @@ def test_validation_rejects_insufficient_or_invalid_seasonal_fits(rustmc_module)
     model = make_model(rmc)
     for observations in (
         np.zeros(1),
+        # Three variances need three finite observations; two used to pass.
+        np.array([0.0, np.nan, 0.0, np.nan]),
         np.array([0.0] + [np.nan] * 3),
         np.array([0.0] * 7 + [np.inf]),
     ):

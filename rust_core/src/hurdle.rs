@@ -10,17 +10,24 @@
 //! permits exact Beta occurrence draws and conjugate Gaussian severity FFBS/Gibbs.
 
 use crate::bayesian_forecast::{
-    BayesianForecastError, InverseGammaPrior, PosteriorPredictiveForecast,
+    sample_levels_ffbs, BayesianForecastError, ForecastQuantile, InverseGammaPrior,
+    PosteriorPredictiveForecast,
 };
-use crate::seeding::chain_seed;
-use crate::state_space::LinearGaussianStateSpace;
-use rand::{Rng, SeedableRng};
+use crate::diagnostics::DiagnosticsReport;
+use crate::forecast_common::{
+    check_forecast_size, checked_value_count, inverse_gamma_conditional, overdispersed_positive,
+    path_means, path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths,
+    GibbsSchedule, MAX_MATERIALIZED_VALUES,
+};
+use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Beta, Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
+use rand_distr::{Beta, Distribution, StandardNormal};
 
-const MAX_VALUES: usize = 25_000_000;
 const MAX_TRUNCATION_ATTEMPTS: usize = 100_000;
+/// `"HURDFIT"` followed by a version byte.
+const FIT_SEED_DOMAIN: u64 = 0x4855_5244_4649_5401;
+/// `"HURDPRE"` followed by a version byte.
+const FORECAST_SEED_DOMAIN: u64 = 0x4855_5244_5052_4501;
 
 #[derive(Debug, Clone)]
 pub struct HurdleLogNormalConfig {
@@ -43,6 +50,10 @@ pub struct HurdleLogNormalConfig {
 
 impl HurdleLogNormalConfig {
     pub fn validate(&self) -> Result<(), BayesianForecastError> {
+        self.schedule().map(|_| ())
+    }
+
+    fn schedule(&self) -> Result<GibbsSchedule, BayesianForecastError> {
         for (name, value) in [
             ("occurrence alpha", self.occurrence_alpha),
             ("occurrence beta", self.occurrence_beta),
@@ -71,15 +82,18 @@ impl HurdleLogNormalConfig {
             self.observation_variance_prior.shape,
             self.observation_variance_prior.scale,
         )?;
-        if self.num_chains == 0 || self.num_draws == 0 || self.thinning == 0 {
-            return Err(invalid("chains, draws, and thinning must be positive"));
-        }
-        self.num_draws
-            .checked_mul(self.thinning)
-            .and_then(|n| n.checked_add(self.num_warmup))
-            .ok_or_else(|| invalid("iteration count overflow"))?;
-        allocation(&[self.num_chains, self.num_draws, 4])?;
-        Ok(())
+        let schedule = GibbsSchedule::new(
+            self.num_chains,
+            self.num_warmup,
+            self.num_draws,
+            self.thinning,
+        )?;
+        checked_value_count(
+            "hurdle posterior",
+            &[self.num_chains, self.num_draws, 4],
+            MAX_MATERIALIZED_VALUES,
+        )?;
+        Ok(schedule)
     }
 }
 
@@ -102,11 +116,39 @@ pub struct HurdleLogNormalPosterior {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct HurdleLogNormalForecast {
-    /// `state_paths` are E[y | p, future log level, observation variance].
-    /// `observation_paths` include exact zeros and positive payment realizations.
+    /// `observation_paths` hold exact zeros and positive payment realizations.
+    ///
+    /// For this model `state_paths` are **not** latent states: they hold the
+    /// conditional expected amount `E[y | p, future log level, observation
+    /// variance]` along each path, so `paths.state_means()` and
+    /// `paths.state_quantiles()` summarise that expectation. Prefer the
+    /// [`expected_value_paths`](Self::expected_value_paths) family, which says
+    /// what it returns; the field keeps its shared type so batch and Python
+    /// code that reads it is unaffected.
     pub paths: PosteriorPredictiveForecast,
     /// E[y | y > 0, future log level, observation variance].
     pub positive_mean_paths: Vec<Vec<Vec<f64>>>,
+}
+
+impl HurdleLogNormalForecast {
+    /// Conditional expected amounts `E[y | p, log level, variance]`, indexed
+    /// `[chain][draw][step]`, including the probability of no payment.
+    pub fn expected_value_paths(&self) -> &[Vec<Vec<f64>>] {
+        &self.paths.state_paths
+    }
+
+    /// Posterior mean of the conditional expected amount at each step.
+    pub fn expected_value_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.paths.state_paths)
+    }
+
+    /// Empirical quantiles of the conditional expected amount at each step.
+    pub fn expected_value_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.paths.state_paths, probabilities)
+    }
 }
 
 /// Density with respect to a point mass at zero plus Lebesgue measure on positives.
@@ -142,7 +184,7 @@ pub fn fit_hurdle_lognormal(
     observations: &[f64],
     config: &HurdleLogNormalConfig,
 ) -> Result<HurdleLogNormalPosterior, BayesianForecastError> {
-    config.validate()?;
+    let schedule = config.schedule()?;
     if observations.iter().any(|y| y.is_infinite() || *y < 0.0) {
         return Err(BayesianForecastError::InvalidObservations(
             "hurdle observations must be nonnegative finite values or NaN".into(),
@@ -155,7 +197,11 @@ pub fn fit_hurdle_lognormal(
             "at least one observed amount (including zero) is required".into(),
         ));
     }
-    allocation(&[observations.len(), config.num_chains, 10])?;
+    checked_value_count(
+        "hurdle working state",
+        &[observations.len(), config.num_chains, 10],
+        MAX_MATERIALIZED_VALUES,
+    )?;
     let occurrence_alpha = config.occurrence_alpha + positive_count as f64;
     let occurrence_beta = config.occurrence_beta + (observed_count - positive_count) as f64;
     if !occurrence_alpha.is_finite()
@@ -172,101 +218,109 @@ pub fn fit_hurdle_lognormal(
         .iter()
         .map(|y| if *y > 0.0 { y.ln() } else { f64::NAN })
         .collect();
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, 0x4855_5244_4649_5401));
+
+    // With no positive amounts the severity posterior equals its prior.
+    // Direct independent draws avoid an uninformative augmented Gibbs chain.
+    let chains = if positive_count == 0 {
+        run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
             let mut draws = Vec::with_capacity(config.num_draws);
-            // With no positive amounts the severity posterior equals its prior.
-            // Direct independent draws avoid an uninformative augmented Gibbs chain.
-            if positive_count == 0 {
-                for _ in 0..config.num_draws {
-                    let q = inverse_gamma(
+            for _ in 0..config.num_draws {
+                let q = inverse_gamma(
+                    config.process_variance_prior,
+                    config.process_variance_upper,
+                    rng,
+                )?;
+                let r = inverse_gamma(
+                    config.observation_variance_prior,
+                    config.observation_variance_upper,
+                    rng,
+                )?;
+                let variance = config.initial_variance + observations.len() as f64 * q;
+                let level = config.initial_log_level + normal(rng) * variance.sqrt();
+                if !level.is_finite() {
+                    return Err(numerical("prior terminal level overflowed"));
+                }
+                draws.push(HurdleLogNormalDraw {
+                    payment_probability: probability_draw(&occurrence, rng)?,
+                    process_variance: q,
+                    observation_variance: r,
+                    terminal_log_level: level,
+                });
+            }
+            Ok(draws)
+        })?
+    } else {
+        run_gibbs_chains(
+            &schedule,
+            config.seed,
+            FIT_SEED_DOMAIN,
+            // These are starting values, not clipped draws from either prior.
+            |rng| {
+                Ok::<_, BayesianForecastError>((
+                    initial_variance(
                         config.process_variance_prior,
                         config.process_variance_upper,
-                        &mut rng,
-                    )?;
-                    let r = inverse_gamma(
+                        rng,
+                    )?,
+                    initial_variance(
                         config.observation_variance_prior,
                         config.observation_variance_upper,
-                        &mut rng,
-                    )?;
-                    let variance = config.initial_variance + observations.len() as f64 * q;
-                    let level = config.initial_log_level + normal(&mut rng) * variance.sqrt();
-                    if !level.is_finite() {
-                        return Err(numerical("prior terminal level overflowed"));
-                    }
-                    draws.push(HurdleLogNormalDraw {
-                        payment_probability: probability_draw(&occurrence, &mut rng)?,
-                        process_variance: q,
-                        observation_variance: r,
-                        terminal_log_level: level,
-                    });
-                }
-                return Ok(draws);
-            }
-            // These are starting values, not clipped draws from either prior.
-            let mut q =
-                initial_variance(config.process_variance_prior, config.process_variance_upper)?;
-            let mut r = initial_variance(
-                config.observation_variance_prior,
-                config.observation_variance_upper,
-            )?;
-            let iterations = config.num_warmup + config.num_draws * config.thinning;
-            for iteration in 0..iterations {
-                let model = LinearGaussianStateSpace::local_level(
-                    q,
-                    r,
+                        rng,
+                    )?,
+                ))
+            },
+            |(q, r), rng, retain| {
+                // The severity is a scalar local level on log amounts, so it
+                // uses the scalar FFBS; the general d-dimensional one gives the
+                // same draws in distribution at about twenty times the cost.
+                let levels = sample_levels_ffbs(
+                    &log_observations,
                     config.initial_log_level,
                     config.initial_variance,
-                )
-                .map_err(|e| numerical(e.to_string()))?;
-                let states = model
-                    .sample_states_ffbs(&log_observations, &mut rng)
-                    .map_err(|e| numerical(e.to_string()))?;
-                let process_ss: f64 = states
+                    *q,
+                    *r,
+                    rng,
+                )?;
+                let process_ss: f64 = levels
                     .windows(2)
-                    .map(|pair| (pair[1][0] - pair[0][0]).powi(2))
+                    .map(|pair| (pair[1] - pair[0]).powi(2))
                     .sum();
-                q = inverse_gamma(
+                *q = inverse_gamma(
                     InverseGammaPrior {
                         shape: config.process_variance_prior.shape
                             + observations.len() as f64 / 2.0,
                         scale: config.process_variance_prior.scale + process_ss / 2.0,
                     },
                     config.process_variance_upper,
-                    &mut rng,
+                    rng,
                 )?;
                 let observation_ss: f64 = log_observations
                     .iter()
-                    .zip(&states[1..])
+                    .zip(&levels[1..])
                     .filter(|(y, _)| y.is_finite())
-                    .map(|(y, x)| (y - x[0]).powi(2))
+                    .map(|(y, x)| (y - x).powi(2))
                     .sum();
-                r = inverse_gamma(
+                *r = inverse_gamma(
                     InverseGammaPrior {
                         shape: config.observation_variance_prior.shape
                             + positive_count as f64 / 2.0,
                         scale: config.observation_variance_prior.scale + observation_ss / 2.0,
                     },
                     config.observation_variance_upper,
-                    &mut rng,
+                    rng,
                 )?;
-                if iteration >= config.num_warmup
-                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-                {
-                    draws.push(HurdleLogNormalDraw {
-                        payment_probability: probability_draw(&occurrence, &mut rng)?,
-                        process_variance: q,
-                        observation_variance: r,
-                        terminal_log_level: states.last().expect("nonempty input")[0],
-                    });
+                if !retain {
+                    return Ok(None);
                 }
-            }
-            Ok(draws)
-        })
-        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
+                Ok(Some(HurdleLogNormalDraw {
+                    payment_probability: probability_draw(&occurrence, rng)?,
+                    process_variance: *q,
+                    observation_variance: *r,
+                    terminal_log_level: *levels.last().expect("nonempty input"),
+                }))
+            },
+        )?
+    };
     Ok(HurdleLogNormalPosterior {
         chains,
         time_count: observations.len(),
@@ -306,6 +360,15 @@ impl HurdleLogNormalPosterior {
             .collect()
     }
 
+    /// Rank-normalized R-hat, bulk/tail ESS, MCSE and HDIs for the occurrence
+    /// probability, both variances and the terminal log level.
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        crate::forecast_diagnostics::parameter_diagnostics(
+            &self.parameter_samples(),
+            &Self::parameter_names(),
+        )
+    }
+
     pub fn forecast(
         &self,
         horizon: usize,
@@ -320,18 +383,20 @@ impl HurdleLogNormalPosterior {
                 "positive horizon and nonempty equal-length posterior chains required",
             ));
         }
-        allocation(&[self.chains.len(), self.chains[0].len(), horizon, 3])?;
-        type Paths = (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>);
-        let chains: Vec<Paths> = self.chains.par_iter().enumerate().map(|(index, chain)| {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(seed, index, 0x4855_5244_5052_4501));
-            let mut expected = Vec::with_capacity(chain.len());
-            let mut positive = Vec::with_capacity(chain.len());
-            let mut observed = Vec::with_capacity(chain.len());
-            for draw in chain {
-                if !draw.payment_probability.is_finite() || !(0.0..=1.0).contains(&draw.payment_probability)
+        check_forecast_size("hurdle forecast", &self.chains, horizon, 3)?;
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &HurdleLogNormalDraw, rng| {
+                if !draw.payment_probability.is_finite()
+                    || !(0.0..=1.0).contains(&draw.payment_probability)
                     || !draw.terminal_log_level.is_finite()
-                    || !draw.process_variance.is_finite() || draw.process_variance <= 0.0
-                    || !draw.observation_variance.is_finite() || draw.observation_variance <= 0.0 {
+                    || !draw.process_variance.is_finite()
+                    || draw.process_variance <= 0.0
+                    || !draw.observation_variance.is_finite()
+                    || draw.observation_variance <= 0.0
+                {
                     return Err(invalid("invalid hurdle posterior draw"));
                 }
                 let mut level = draw.terminal_log_level;
@@ -339,33 +404,33 @@ impl HurdleLogNormalPosterior {
                 let mut positive_means = Vec::with_capacity(horizon);
                 let mut observations = Vec::with_capacity(horizon);
                 for _ in 0..horizon {
-                    level += normal(&mut rng) * draw.process_variance.sqrt();
+                    level += normal(rng) * draw.process_variance.sqrt();
                     let positive_mean = (level + draw.observation_variance / 2.0).exp();
                     // Draw severity even when the indicator is zero so the two RNG
                     // streams' consumption does not depend on payment probability.
-                    let amount = (level + normal(&mut rng) * draw.observation_variance.sqrt()).exp();
+                    let amount = (level + normal(rng) * draw.observation_variance.sqrt()).exp();
                     let paid = rng.gen::<f64>() < draw.payment_probability;
-                    if !positive_mean.is_finite() || !amount.is_finite() || amount == 0.0 || positive_mean == 0.0 {
-                        return Err(numerical("lognormal forecast overflowed or underflowed; inspect log-scale priors"));
+                    if !positive_mean.is_finite()
+                        || !amount.is_finite()
+                        || amount == 0.0
+                        || positive_mean == 0.0
+                    {
+                        return Err(numerical(
+                            "lognormal forecast overflowed or underflowed; inspect log-scale priors",
+                        ));
                     }
                     means.push(draw.payment_probability * positive_mean);
                     positive_means.push(positive_mean);
                     observations.push(if paid { amount } else { 0.0 });
                 }
-                expected.push(means); positive.push(positive_means); observed.push(observations);
-            }
-            Ok((expected, positive, observed))
-        }).collect::<Result<_, BayesianForecastError>>()?;
-        let mut paths = PosteriorPredictiveForecast {
-            state_paths: Vec::new(),
-            observation_paths: Vec::new(),
+                Ok([means, positive_means, observations])
+            },
+        )?;
+        let [state_paths, positive_mean_paths, observation_paths] = split_paths(per_draw);
+        let paths = PosteriorPredictiveForecast {
+            state_paths,
+            observation_paths,
         };
-        let mut positive_mean_paths = Vec::new();
-        for (means, positive, observed) in chains {
-            paths.state_paths.push(means);
-            paths.observation_paths.push(observed);
-            positive_mean_paths.push(positive);
-        }
         Ok(HurdleLogNormalForecast {
             paths,
             positive_mean_paths,
@@ -373,39 +438,17 @@ impl HurdleLogNormalPosterior {
     }
 }
 
-fn allocation(factors: &[usize]) -> Result<(), BayesianForecastError> {
-    let count = factors
-        .iter()
-        .try_fold(1usize, |acc, n| acc.checked_mul(*n));
-    if count.is_none_or(|n| n > MAX_VALUES) {
-        Err(invalid("requested hurdle allocation exceeds 25 million values; reduce chains, draws, history, or horizon"))
-    } else {
-        Ok(())
-    }
-}
 fn inverse_gamma(
     prior: InverseGammaPrior,
     upper: f64,
     rng: &mut ChaCha8Rng,
 ) -> Result<f64, BayesianForecastError> {
-    if !prior.shape.is_finite()
-        || prior.shape <= 0.0
-        || !prior.scale.is_finite()
-        || prior.scale <= 0.0
-        || !upper.is_finite()
-        || upper <= 0.0
-    {
+    if !upper.is_finite() || upper <= 0.0 {
         return Err(numerical(
             "invalid upper-truncated inverse-gamma conditional",
         ));
     }
-    let gamma_scale = 1.0 / prior.scale;
-    if !gamma_scale.is_finite() || gamma_scale <= 0.0 {
-        return Err(numerical(
-            "inverse-gamma reciprocal scale is unrepresentable",
-        ));
-    }
-    let gamma = Gamma::new(prior.shape, gamma_scale).map_err(|e| numerical(e.to_string()))?;
+    let gamma = inverse_gamma_conditional(prior.shape, prior.scale)?;
     for _ in 0..MAX_TRUNCATION_ATTEMPTS {
         let precision = gamma.sample(rng);
         if !precision.is_finite() || precision < 0.0 {
@@ -426,8 +469,14 @@ fn inverse_gamma(
     }
     Err(numerical(format!("upper-truncated inverse-gamma rejection exhausted {MAX_TRUNCATION_ATTEMPTS} attempts (shape={}, scale={}, upper={upper}); the fixed cap retains too little conditional mass; review the prior cap and data scale", prior.shape, prior.scale)))
 }
-fn initial_variance(prior: InverseGammaPrior, upper: f64) -> Result<f64, BayesianForecastError> {
-    let value = (prior.scale / (prior.shape + 1.0)).min(upper / 2.0);
+/// The prior mode, kept inside the cap, spread over the shared log-uniform
+/// start window and clipped back to the cap so the start is in support.
+fn initial_variance(
+    prior: InverseGammaPrior,
+    upper: f64,
+    rng: &mut ChaCha8Rng,
+) -> Result<f64, BayesianForecastError> {
+    let value = overdispersed_positive(prior.mode().min(upper / 2.0), rng).min(upper);
     if !value.is_finite() || value <= 0.0 {
         return Err(numerical(
             "initial log variance inside its cap is unrepresentable",
@@ -455,6 +504,19 @@ fn numerical(message: impl Into<String>) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeding::chain_seed;
+
+    #[test]
+    fn fit_and_forecast_seed_domains_are_distinct() {
+        for chain in 0..4 {
+            assert_ne!(
+                chain_seed(42, chain, FIT_SEED_DOMAIN),
+                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
+            );
+        }
+    }
+    use rand::SeedableRng;
+    use rand_distr::Gamma;
     /// `P(G >= t)` for `G ~ Gamma(k, 1)` at integer `k`, where the upper
     /// incomplete gamma closes in elementary terms. It gives `P(V <= v)` for
     /// `V ~ InverseGamma(k, scale)` exactly, at `t = scale / v`, because
@@ -585,6 +647,24 @@ mod tests {
         };
         assert_eq!(run(1), run(3));
     }
+
+    #[test]
+    fn diagnostics_cover_every_parameter_and_report_mixing() {
+        let mut cfg = config();
+        cfg.num_draws = 300;
+        cfg.num_warmup = 100;
+        let fit = fit_hurdle_lognormal(&[0., 2., 3., f64::NAN, 0., 2.5, 1.5, 0.], &cfg).unwrap();
+        let report = fit.diagnostics();
+        let names: Vec<_> = report.params.iter().map(|p| p.name.clone()).collect();
+        assert_eq!(names, HurdleLogNormalPosterior::parameter_names());
+        for parameter in &report.params {
+            assert!(
+                parameter.r_hat.is_finite() && parameter.r_hat < 1.1,
+                "{parameter:?}"
+            );
+            assert!(parameter.ess_bulk > 50.0, "{parameter:?}");
+        }
+    }
     #[test]
     fn predictive_zero_mass_and_amount_moments_match_known_parameters() {
         let draw = HurdleLogNormalDraw {
@@ -600,6 +680,15 @@ mod tests {
             positive_count: 1,
         };
         let f = fit.forecast(1, 42).unwrap();
+        assert_eq!(f.expected_value_paths(), &f.paths.state_paths[..]);
+        assert_eq!(
+            f.expected_value_means().unwrap(),
+            f.paths.state_means().unwrap()
+        );
+        assert_eq!(
+            f.expected_value_quantiles(&[0.1, 0.9]).unwrap(),
+            f.paths.state_quantiles(&[0.1, 0.9]).unwrap()
+        );
         let y: Vec<f64> = f.paths.observation_paths[0].iter().map(|p| p[0]).collect();
         let zero = y.iter().filter(|v| **v == 0.).count() as f64 / y.len() as f64;
         assert!((zero - 0.7).abs() < 0.01);

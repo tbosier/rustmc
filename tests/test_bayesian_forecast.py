@@ -123,6 +123,17 @@ def test_bayesian_local_level_validation(rustmc_module):
             forecast.state_interval(level)
 
 
+def test_oversized_forecasts_and_fits_raise_instead_of_aborting(rustmc_module):
+    # Before the shared size guard, both requests reached a Rust allocation
+    # that failed and aborted the interpreter.
+    model = make_model(rustmc_module)
+    fit = model.fit(np.array([0.0, 0.1, 0.3]), chains=4, draws=1000, warmup=10, seed=3)
+    with pytest.raises(ValueError, match="safety limit"):
+        fit.forecast(10**8)
+    with pytest.raises(ValueError, match="safety limit"):
+        model.fit(np.array([0.0, 0.1, 0.3]), chains=1, draws=2**60, warmup=0)
+
+
 def test_bayesian_fit_arviz_export_preserves_chain_draw(rustmc_module):
     pytest.importorskip("arviz")
     fit = make_model(rustmc_module).fit(

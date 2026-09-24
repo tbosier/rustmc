@@ -6,13 +6,15 @@
 //! inverse-gamma priors. Latent states are updated jointly with multivariate
 //! FFBS, so missing observations retain their calendar positions.
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
+use rand_distr::{Distribution, StandardNormal};
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
-use crate::seeding::chain_seed;
+use crate::forecast_common::{
+    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
+    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
+    split_paths, GibbsSchedule,
+};
 use crate::state_space::LinearGaussianStateSpace;
 
 #[derive(Debug, Clone)]
@@ -33,7 +35,7 @@ pub struct BayesianSeasonalLocalLevelConfig {
 }
 
 impl BayesianSeasonalLocalLevelConfig {
-    fn validate(&self) -> Result<(), BayesianForecastError> {
+    fn validate(&self) -> Result<GibbsSchedule, BayesianForecastError> {
         if self.period < 2 {
             return Err(invalid("seasonal period must be at least 2"));
         }
@@ -80,16 +82,14 @@ impl BayesianSeasonalLocalLevelConfig {
                 self.observation_variance_prior,
             ),
         ] {
-            validate_prior(name, prior)?;
+            prior.validate(name)?;
         }
-        if self.num_chains == 0 || self.num_draws == 0 || self.thinning == 0 {
-            return Err(invalid("chains, draws, and thinning must be positive"));
-        }
-        self.num_draws
-            .checked_mul(self.thinning)
-            .and_then(|saved| self.num_warmup.checked_add(saved))
-            .ok_or_else(|| invalid("warmup, draws, and thinning imply too many iterations"))?;
-        Ok(())
+        GibbsSchedule::new(
+            self.num_chains,
+            self.num_warmup,
+            self.num_draws,
+            self.thinning,
+        )
     }
 }
 
@@ -130,79 +130,52 @@ impl SeasonalLocalLevelPosterior {
                 "posterior must contain a valid period and non-empty chains",
             ));
         }
-        type ChainPaths = (Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>, Vec<Vec<f64>>);
-        let chains: Vec<ChainPaths> = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain_index, chain)| {
-                let mut rng =
-                    ChaCha8Rng::seed_from_u64(chain_seed(seed, chain_index, FORECAST_SEED_DOMAIN));
-                let mut level_paths = Vec::with_capacity(chain.len());
-                let mut seasonal_paths = Vec::with_capacity(chain.len());
-                let mut observation_paths = Vec::with_capacity(chain.len());
-                let mut cumulative_paths = Vec::with_capacity(chain.len());
-                for draw in chain {
-                    validate_variance("level", draw.level_variance)?;
-                    validate_variance("seasonal", draw.seasonal_variance)?;
-                    validate_variance("observation", draw.observation_variance)?;
-                    if draw.terminal_state.len() != self.period
-                        || draw.terminal_state.iter().any(|value| !value.is_finite())
-                    {
-                        return Err(numerical("posterior terminal seasonal state is invalid"));
-                    }
-                    let mut state = draw.terminal_state.clone();
-                    let mut levels = Vec::with_capacity(horizon);
-                    let mut seasonals = Vec::with_capacity(horizon);
-                    let mut observations = Vec::with_capacity(horizon);
-                    let mut cumulative = Vec::with_capacity(horizon);
-                    let mut running_sum = 0.0;
-                    for _ in 0..horizon {
-                        let next_level =
-                            state[0] + standard_normal(&mut rng) * draw.level_variance.sqrt();
-                        let next_seasonal = -state[1..].iter().sum::<f64>()
-                            + standard_normal(&mut rng) * draw.seasonal_variance.sqrt();
-                        for index in (2..self.period).rev() {
-                            state[index] = state[index - 1];
-                        }
-                        state[0] = next_level;
-                        state[1] = next_seasonal;
-                        let observation = next_level
-                            + next_seasonal
-                            + standard_normal(&mut rng) * draw.observation_variance.sqrt();
-                        running_sum += observation;
-                        if !observation.is_finite() || !running_sum.is_finite() {
-                            return Err(numerical("seasonal forecast simulation overflowed"));
-                        }
-                        levels.push(next_level);
-                        seasonals.push(next_seasonal);
-                        observations.push(observation);
-                        cumulative.push(running_sum);
-                    }
-                    level_paths.push(levels);
-                    seasonal_paths.push(seasonals);
-                    observation_paths.push(observations);
-                    cumulative_paths.push(cumulative);
+        check_forecast_size("seasonal forecast", &self.chains, horizon, 4)?;
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |_, _, draw: &SeasonalLocalLevelPosteriorDraw, rng| {
+                validate_variance("level", draw.level_variance)?;
+                validate_variance("seasonal", draw.seasonal_variance)?;
+                validate_variance("observation", draw.observation_variance)?;
+                if draw.terminal_state.len() != self.period
+                    || draw.terminal_state.iter().any(|value| !value.is_finite())
+                {
+                    return Err(numerical("posterior terminal seasonal state is invalid"));
                 }
-                Ok((
-                    level_paths,
-                    seasonal_paths,
-                    observation_paths,
-                    cumulative_paths,
-                ))
-            })
-            .collect::<Result<_, BayesianForecastError>>()?;
-
-        let mut level_paths = Vec::with_capacity(chains.len());
-        let mut seasonal_paths = Vec::with_capacity(chains.len());
-        let mut observation_paths = Vec::with_capacity(chains.len());
-        let mut cumulative_observation_paths = Vec::with_capacity(chains.len());
-        for (level, seasonal, observation, cumulative) in chains {
-            level_paths.push(level);
-            seasonal_paths.push(seasonal);
-            observation_paths.push(observation);
-            cumulative_observation_paths.push(cumulative);
-        }
+                let mut state = draw.terminal_state.clone();
+                let mut levels = Vec::with_capacity(horizon);
+                let mut seasonals = Vec::with_capacity(horizon);
+                let mut observations = Vec::with_capacity(horizon);
+                let mut cumulative = Vec::with_capacity(horizon);
+                let mut running_sum = 0.0;
+                for _ in 0..horizon {
+                    let next_level = state[0] + standard_normal(rng) * draw.level_variance.sqrt();
+                    let next_seasonal = -state[1..].iter().sum::<f64>()
+                        + standard_normal(rng) * draw.seasonal_variance.sqrt();
+                    for index in (2..self.period).rev() {
+                        state[index] = state[index - 1];
+                    }
+                    state[0] = next_level;
+                    state[1] = next_seasonal;
+                    let observation = next_level
+                        + next_seasonal
+                        + standard_normal(rng) * draw.observation_variance.sqrt();
+                    running_sum += observation;
+                    if !observation.is_finite() || !running_sum.is_finite() {
+                        return Err(numerical("seasonal forecast simulation overflowed"));
+                    }
+                    levels.push(next_level);
+                    seasonals.push(next_seasonal);
+                    observations.push(observation);
+                    cumulative.push(running_sum);
+                }
+                Ok([levels, seasonals, observations, cumulative])
+            },
+        )?;
+        let [level_paths, seasonal_paths, observation_paths, cumulative_observation_paths] =
+            split_paths(per_draw);
         Ok(SeasonalPosteriorPredictiveForecast {
             level_paths,
             seasonal_paths,
@@ -262,142 +235,108 @@ pub fn fit_bayesian_seasonal_local_level(
     observations: &[f64],
     config: &BayesianSeasonalLocalLevelConfig,
 ) -> Result<SeasonalLocalLevelPosterior, BayesianForecastError> {
-    config.validate()?;
-    validate_observations(observations, config.period)?;
-    let iterations = config.num_warmup + config.num_draws * config.thinning;
+    let schedule = config.validate()?;
+    let observed_count = validate_observations(observations)? as f64;
+    // Each backward conditional holds a d x d gain and a d x 2d root.
+    schedule.check_fit_size(
+        "seasonal fit",
+        &[config.period + 3],
+        &[observations.len() + 1, config.period, config.period, 3],
+    )?;
     let transitions = observations.len() as f64;
-    let observed_count = observations.iter().filter(|value| !value.is_nan()).count() as f64;
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain_index| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index, FIT_SEED_DOMAIN));
-            let mut level_variance = prior_mode(config.level_variance_prior);
-            let mut seasonal_variance = prior_mode(config.seasonal_variance_prior);
-            let mut observation_variance = prior_mode(config.observation_variance_prior);
-            let mut draws = Vec::with_capacity(config.num_draws);
-            for iteration in 0..iterations {
-                let model = LinearGaussianStateSpace::seasonal_local_level(
-                    config.period,
-                    level_variance,
-                    seasonal_variance,
-                    observation_variance,
-                    config.initial_level,
-                    config.initial_seasonal_effects.clone(),
-                    config.initial_level_variance,
-                    config.initial_seasonal_variance,
-                )
-                .map_err(|error| {
-                    numerical(&format!("could not build seasonal state model: {error}"))
-                })?;
-                // states[0] is x[-1], followed by x[0]..x[T-1].
-                let states = model
-                    .sample_states_ffbs(observations, &mut rng)
-                    .map_err(|error| numerical(&format!("seasonal FFBS failed: {error}")))?;
+    // Built and validated once; each sweep overwrites only the level (0) and
+    // seasonal (1) innovation variances and the observation variance.
+    let template = LinearGaussianStateSpace::seasonal_local_level(
+        config.period,
+        config.level_variance_prior.mode(),
+        config.seasonal_variance_prior.mode(),
+        config.observation_variance_prior.mode(),
+        config.initial_level,
+        config.initial_seasonal_effects.clone(),
+        config.initial_level_variance,
+        config.initial_seasonal_variance,
+    )
+    .map_err(|error| numerical(&format!("could not build seasonal state model: {error}")))?;
+    let chains = run_gibbs_chains(
+        &schedule,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |rng| {
+            Ok::<_, BayesianForecastError>((
+                template.clone(),
+                [
+                    overdispersed_positive(config.level_variance_prior.mode(), rng),
+                    overdispersed_positive(config.seasonal_variance_prior.mode(), rng),
+                    overdispersed_positive(config.observation_variance_prior.mode(), rng),
+                ],
+            ))
+        },
+        |(model, [level_variance, seasonal_variance, observation_variance]), rng, retain| {
+            model.set_variances(
+                &[0, 1],
+                &[*level_variance, *seasonal_variance],
+                *observation_variance,
+            );
+            // states[0] is x[-1], followed by x[0]..x[T-1].
+            let states = model
+                .sample_states_ffbs(observations, rng)
+                .map_err(|error| numerical(&format!("seasonal FFBS failed: {error}")))?;
 
-                let mut level_sum_sq = 0.0;
-                let mut seasonal_sum_sq = 0.0;
-                for pair in states.windows(2) {
-                    let level_residual = pair[1][0] - pair[0][0];
-                    let seasonal_residual = pair[1][1] + pair[0][1..].iter().sum::<f64>();
-                    level_sum_sq += level_residual * level_residual;
-                    seasonal_sum_sq += seasonal_residual * seasonal_residual;
-                }
-                level_variance = sample_inverse_gamma(
-                    config.level_variance_prior.shape + transitions / 2.0,
-                    config.level_variance_prior.scale + level_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-                seasonal_variance = sample_inverse_gamma(
-                    config.seasonal_variance_prior.shape + transitions / 2.0,
-                    config.seasonal_variance_prior.scale + seasonal_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-                let observation_sum_sq: f64 = observations
-                    .iter()
-                    .zip(&states[1..])
-                    .filter(|(observation, _)| !observation.is_nan())
-                    .map(|(observation, state)| {
-                        let residual = observation - state[0] - state[1];
-                        residual * residual
-                    })
-                    .sum();
-                observation_variance = sample_inverse_gamma(
-                    config.observation_variance_prior.shape + observed_count / 2.0,
-                    config.observation_variance_prior.scale + observation_sum_sq / 2.0,
-                    &mut rng,
-                )?;
-
-                if iteration >= config.num_warmup
-                    && (iteration + 1 - config.num_warmup).is_multiple_of(config.thinning)
-                {
-                    draws.push(SeasonalLocalLevelPosteriorDraw {
-                        level_variance,
-                        seasonal_variance,
-                        observation_variance,
-                        terminal_state: states.last().expect("observations are non-empty").clone(),
-                    });
-                }
+            let mut level_sum_sq = 0.0;
+            let mut seasonal_sum_sq = 0.0;
+            for pair in states.windows(2) {
+                let level_residual = pair[1][0] - pair[0][0];
+                let seasonal_residual = pair[1][1] + pair[0][1..].iter().sum::<f64>();
+                level_sum_sq += level_residual * level_residual;
+                seasonal_sum_sq += seasonal_residual * seasonal_residual;
             }
-            Ok(draws)
-        })
-        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
+            *level_variance = sample_inverse_gamma(
+                config.level_variance_prior.shape + transitions / 2.0,
+                config.level_variance_prior.scale + level_sum_sq / 2.0,
+                rng,
+            )?;
+            *seasonal_variance = sample_inverse_gamma(
+                config.seasonal_variance_prior.shape + transitions / 2.0,
+                config.seasonal_variance_prior.scale + seasonal_sum_sq / 2.0,
+                rng,
+            )?;
+            let observation_sum_sq: f64 = observations
+                .iter()
+                .zip(&states[1..])
+                .filter(|(observation, _)| !observation.is_nan())
+                .map(|(observation, state)| {
+                    let residual = observation - state[0] - state[1];
+                    residual * residual
+                })
+                .sum();
+            *observation_variance = sample_inverse_gamma(
+                config.observation_variance_prior.shape + observed_count / 2.0,
+                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+                rng,
+            )?;
+
+            Ok(retain.then(|| SeasonalLocalLevelPosteriorDraw {
+                level_variance: *level_variance,
+                seasonal_variance: *seasonal_variance,
+                observation_variance: *observation_variance,
+                terminal_state: states.last().expect("observations are non-empty").clone(),
+            }))
+        },
+    )?;
     Ok(SeasonalLocalLevelPosterior {
         period: config.period,
         chains,
     })
 }
 
-fn validate_observations(
-    observations: &[f64],
-    _period: usize,
-) -> Result<(), BayesianForecastError> {
+fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
     if observations.iter().any(|value| value.is_infinite()) {
         return Err(BayesianForecastError::InvalidObservations(
             "observations may be finite or NaN, but not infinite".into(),
         ));
     }
-    if observations
-        .iter()
-        .filter(|value| value.is_finite())
-        .count()
-        < 2
-    {
-        return Err(BayesianForecastError::InvalidObservations(
-            "at least two finite observations are required".into(),
-        ));
-    }
-    Ok(())
-}
-
-fn validate_prior(name: &str, prior: InverseGammaPrior) -> Result<(), BayesianForecastError> {
-    if !prior.shape.is_finite() || prior.shape <= 0.0 {
-        return Err(invalid(&format!(
-            "{name} shape must be finite and strictly positive"
-        )));
-    }
-    if !prior.scale.is_finite() || prior.scale <= 0.0 {
-        return Err(invalid(&format!(
-            "{name} scale must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
-fn prior_mode(prior: InverseGammaPrior) -> f64 {
-    prior.scale / (prior.shape + 1.0)
-}
-
-fn sample_inverse_gamma(
-    shape: f64,
-    scale: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, BayesianForecastError> {
-    let gamma = Gamma::new(shape, 1.0 / scale)
-        .map_err(|error| numerical(&format!("invalid inverse-gamma update: {error}")))?;
-    let variance = 1.0 / gamma.sample(rng);
-    validate_variance("sampled", variance)?;
-    Ok(variance)
+    // Level, seasonal and observation variances.
+    require_finite_observations(observations, 3, "seasonal local-level")
 }
 
 fn validate_variance(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
@@ -411,86 +350,6 @@ fn validate_variance(name: &str, variance: f64) -> Result<(), BayesianForecastEr
 
 fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
-}
-
-/// Posterior-predictive mean at each horizon, from the scale-aware
-/// implementation the sampler's `mean()` accessors already use.
-///
-/// Accumulating the paths and dividing by their count at the end overflows on
-/// input that is entirely finite: two paths holding `1e308` sum to infinity,
-/// and the infinity survives the division. See
-/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
-/// horizon on the first of them and divides by the largest deviation from it
-/// before summing, so no partial sum can leave the representable range.
-///
-/// `validate_paths` has already rejected an empty, ragged or non-finite
-/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
-/// reach a caller from here.
-fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    let means: Vec<f64> = (0..horizon)
-        .map(|step| {
-            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
-        })
-        .collect();
-    Ok(means)
-}
-
-fn path_quantiles(
-    paths: &[Vec<Vec<f64>>],
-    probabilities: &[f64],
-) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    if probabilities
-        .iter()
-        .any(|p| !p.is_finite() || !(0.0..=1.0).contains(p))
-    {
-        return Err(invalid(
-            "quantile probabilities must be finite and between zero and one",
-        ));
-    }
-    let mut by_step = Vec::with_capacity(horizon);
-    for step in 0..horizon {
-        let mut values: Vec<f64> = paths.iter().flatten().map(|path| path[step]).collect();
-        values.sort_by(f64::total_cmp);
-        by_step.push(values);
-    }
-    Ok(probabilities
-        .iter()
-        .map(|&probability| ForecastQuantile {
-            probability,
-            values: by_step
-                .iter()
-                .map(|values| quantile(values, probability))
-                .collect(),
-        })
-        .collect())
-}
-
-fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecastError> {
-    let horizon = paths
-        .first()
-        .and_then(|chain| chain.first())
-        .map_or(0, Vec::len);
-    if horizon == 0 || paths.iter().any(|chain| chain.is_empty()) {
-        return Err(invalid("forecast must contain non-empty paths"));
-    }
-    if paths
-        .iter()
-        .flatten()
-        .any(|path| path.len() != horizon || path.iter().any(|v| !v.is_finite()))
-    {
-        return Err(numerical("forecast paths are ragged or non-finite"));
-    }
-    Ok(horizon)
-}
-
-fn quantile(sorted: &[f64], probability: f64) -> f64 {
-    let index = probability * (sorted.len() - 1) as f64;
-    let lower = index.floor() as usize;
-    let upper = index.ceil() as usize;
-    let weight = index - lower as f64;
-    sorted[lower] * (1.0 - weight) + sorted[upper] * weight
 }
 
 fn invalid(message: &str) -> BayesianForecastError {
@@ -576,7 +435,12 @@ mod tests {
 
     #[test]
     fn validation_requires_finite_data_and_sum_to_zero_effects() {
-        assert!(fit_bayesian_seasonal_local_level(&[0.0; 2], &config()).is_ok());
+        // One finite observation per inferred variance: three.
+        assert!(fit_bayesian_seasonal_local_level(&[0.0; 3], &config()).is_ok());
+        assert!(matches!(
+            fit_bayesian_seasonal_local_level(&[0.0, f64::NAN, 0.0, f64::NAN], &config()),
+            Err(BayesianForecastError::InvalidObservations(_))
+        ));
         let mut invalid_config = config();
         invalid_config.initial_seasonal_effects[0] += 1.0;
         assert!(matches!(

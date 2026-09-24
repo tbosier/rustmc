@@ -32,13 +32,15 @@
 //! while indexed collection preserves deterministic chain ordering.
 
 use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile};
+use crate::forecast_common::{
+    check_forecast_size, checked_value_count, cholesky, path_means, path_quantiles, run_chains,
+    sample_inverse_gamma, simulate_draws, solve_lower, solve_lower_transpose, split_paths,
+    MAX_MATERIALIZED_VALUES,
+};
+#[cfg(test)]
 use crate::seeding::chain_seed;
-use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
-
-type ArChainPaths = (Vec<Vec<f64>>, Vec<Vec<f64>>);
+use rand_distr::{Distribution, StandardNormal};
 
 /// Explicit Normal-Inverse-Gamma prior for an AR(p) regression.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,7 +83,6 @@ impl NormalInverseGammaPrior {
             invalid_configuration("coefficient prior precision dimensions overflow")
         })?;
         validate_prior(&prior, dimension)?;
-        cholesky(&prior.coefficient_precision, "coefficient prior precision")?;
         Ok(prior)
     }
 }
@@ -153,68 +154,56 @@ impl BayesianArPosterior {
         self.order
             .checked_add(horizon)
             .ok_or_else(|| invalid_configuration("AR forecast history length overflows"))?;
-        for chain in &self.chains {
-            chain
-                .len()
-                .checked_mul(horizon)
-                .ok_or_else(|| invalid_configuration("AR forecast path dimensions overflow"))?;
-        }
-        let chain_paths: Vec<ArChainPaths> = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain_index, chain)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(
-                    seed,
-                    chain_index,
-                    FORECAST_SEED_DOMAIN,
-                ));
-                let mut chain_means = Vec::with_capacity(chain.len());
-                let mut chain_observations = Vec::with_capacity(chain.len());
-                for draw in chain {
-                    if draw.coefficients.len() != expected_coefficients
-                        || draw.coefficients.iter().any(|value| !value.is_finite())
-                    {
-                        return Err(invalid_configuration(
-                            "each posterior draw must contain finite intercept and lag coefficients",
-                        ));
-                    }
-                    validate_positive_finite("innovation variance", draw.innovation_variance)?;
-
-                    let mut history = self.terminal_observations.clone();
-                    history.reserve(horizon);
-                    let mut means = Vec::with_capacity(horizon);
-                    let mut observations = Vec::with_capacity(horizon);
-                    let innovation_sd = draw.innovation_variance.sqrt();
-                    for _ in 0..horizon {
-                        let mut mean = draw.coefficients[0];
-                        for lag in 1..=self.order {
-                            mean += draw.coefficients[lag] * history[history.len() - lag];
-                        }
-                        let observation = mean + standard_normal(&mut rng) * innovation_sd;
-                        if !mean.is_finite() || !observation.is_finite() {
-                            return Err(BayesianForecastError::NumericalFailure(
-                                "recursive AR forecast overflowed; posterior draws are unconstrained and may be explosive"
-                                    .into(),
-                            ));
-                        }
-                        means.push(mean);
-                        observations.push(observation);
-                        history.push(observation);
-                    }
-                    chain_means.push(means);
-                    chain_observations.push(observations);
+        check_forecast_size("AR forecast", &self.chains, horizon, 2)?;
+        let per_draw = simulate_draws(
+            &self.chains,
+            seed,
+            FORECAST_SEED_DOMAIN,
+            |chain_index, draw_index, draw: &BayesianArPosteriorDraw, rng| {
+                if draw.coefficients.len() != expected_coefficients
+                    || draw.coefficients.iter().any(|value| !value.is_finite())
+                {
+                    return Err(invalid_configuration(
+                        "each posterior draw must contain finite intercept and lag coefficients",
+                    ));
                 }
-                Ok((chain_means, chain_observations))
-            })
-            .collect::<Result<_, BayesianForecastError>>()?;
+                validate_positive_finite("innovation variance", draw.innovation_variance)?;
 
-        let mut conditional_mean_paths = Vec::with_capacity(chain_paths.len());
-        let mut observation_paths = Vec::with_capacity(chain_paths.len());
-        for (chain_means, chain_observations) in chain_paths {
-            conditional_mean_paths.push(chain_means);
-            observation_paths.push(chain_observations);
-        }
+                let mut history = self.terminal_observations.clone();
+                history.reserve(horizon);
+                let mut means = Vec::with_capacity(horizon);
+                let mut observations = Vec::with_capacity(horizon);
+                let innovation_sd = draw.innovation_variance.sqrt();
+                for step in 0..horizon {
+                    let mut mean = draw.coefficients[0];
+                    for lag in 1..=self.order {
+                        mean += draw.coefficients[lag] * history[history.len() - lag];
+                    }
+                    let observation = mean + standard_normal(rng) * innovation_sd;
+                    if !mean.is_finite() || !observation.is_finite() {
+                        // Failing names the draw rather than dropping it or
+                        // returning an infinite path: a silently thinned
+                        // forecast would misstate its own uncertainty, and an
+                        // infinite one breaks every summary downstream.
+                        return Err(BayesianForecastError::NumericalFailure(format!(
+                            "recursive AR forecast left the floating-point range at step {} of \
+                             {horizon} for chain {chain_index}, draw {draw_index} (coefficients \
+                             {:?}); AR posterior draws are not restricted to the stationary \
+                             region and this one grows without bound. Shorten the horizon, or \
+                             remove nonstationary draws or use a prior concentrated on stationary \
+                             coefficients before forecasting",
+                            step + 1,
+                            draw.coefficients
+                        )));
+                    }
+                    means.push(mean);
+                    observations.push(observation);
+                    history.push(observation);
+                }
+                Ok([means, observations])
+            },
+        )?;
+        let [conditional_mean_paths, observation_paths] = split_paths(per_draw);
 
         Ok(BayesianArForecast {
             conditional_mean_paths,
@@ -268,9 +257,8 @@ pub fn fit_bayesian_ar(
 ) -> Result<BayesianArPosterior, BayesianForecastError> {
     let dimension = validate_inputs(observations, config)?;
     let regression_rows = observations.len() - config.order;
-    let prior_cholesky = cholesky(&config.prior.coefficient_precision, "prior precision")?;
 
-    let mut posterior_precision = config.prior.coefficient_precision.clone();
+    let mut posterior_precision = flatten(&config.prior.coefficient_precision);
     let mut posterior_rhs = matrix_vector_product(
         &config.prior.coefficient_precision,
         &config.prior.coefficient_mean,
@@ -282,15 +270,21 @@ pub fn fit_bayesian_ar(
         for column in 0..dimension {
             posterior_rhs[column] += row[column] * target;
             for other in 0..dimension {
-                posterior_precision[column][other] += row[column] * row[other];
+                posterior_precision[column * dimension + other] += row[column] * row[other];
             }
         }
     }
     ensure_finite_vector("posterior right-hand side", &posterior_rhs)?;
-    ensure_finite_matrix("posterior precision", &posterior_precision)?;
+    ensure_finite_vector("posterior precision", &posterior_precision)?;
 
-    let posterior_cholesky = cholesky(&posterior_precision, "posterior precision")?;
-    let posterior_mean = solve_cholesky(&posterior_cholesky, &posterior_rhs)?;
+    let posterior_cholesky =
+        factor_positive_definite(&posterior_precision, dimension, "posterior precision")?;
+    let posterior_mean = solve_lower_transpose(
+        &posterior_cholesky,
+        dimension,
+        &solve_lower(&posterior_cholesky, dimension, &posterior_rhs),
+    );
+    ensure_finite_vector("posterior mean", &posterior_mean)?;
 
     // Stable completion-of-squares form for the posterior scale.
     let mut residual_sum_sq = 0.0;
@@ -310,40 +304,29 @@ pub fn fit_bayesian_ar(
     validate_positive_finite("posterior variance shape", posterior_shape)?;
     validate_positive_finite("posterior variance scale", posterior_scale)?;
 
-    let chains = (0..config.num_chains)
-        .into_par_iter()
-        .map(|chain_index| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain_index, FIT_SEED_DOMAIN));
-            let mut chain = Vec::with_capacity(config.num_draws);
-            for _ in 0..config.num_draws {
-                let innovation_variance =
-                    sample_inverse_gamma(posterior_shape, posterior_scale, &mut rng)?;
-                let mut standard_draw = Vec::with_capacity(dimension);
-                for _ in 0..dimension {
-                    standard_draw.push(standard_normal(&mut rng));
-                }
-                let precision_scaled_draw =
-                    solve_transposed_lower(&posterior_cholesky, &standard_draw)?;
-                let innovation_sd = innovation_variance.sqrt();
-                let coefficients: Vec<f64> = posterior_mean
-                    .iter()
-                    .zip(precision_scaled_draw)
-                    .map(|(mean, draw)| mean + innovation_sd * draw)
-                    .collect();
-                ensure_finite_vector("sampled coefficients", &coefficients)?;
-                chain.push(BayesianArPosteriorDraw {
-                    coefficients,
-                    innovation_variance,
-                });
-            }
-            Ok(chain)
-        })
-        .collect::<Result<Vec<_>, BayesianForecastError>>()?;
+    let chains = run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
+        let mut chain = Vec::with_capacity(config.num_draws);
+        for _ in 0..config.num_draws {
+            let innovation_variance = sample_inverse_gamma(posterior_shape, posterior_scale, rng)?;
+            let standard_draw: Vec<f64> = (0..dimension).map(|_| standard_normal(rng)).collect();
+            let precision_scaled_draw =
+                solve_lower_transpose(&posterior_cholesky, dimension, &standard_draw);
+            ensure_finite_vector("linear solve", &precision_scaled_draw)?;
+            let innovation_sd = innovation_variance.sqrt();
+            let coefficients: Vec<f64> = posterior_mean
+                .iter()
+                .zip(precision_scaled_draw)
+                .map(|(mean, draw)| mean + innovation_sd * draw)
+                .collect();
+            ensure_finite_vector("sampled coefficients", &coefficients)?;
+            chain.push(BayesianArPosteriorDraw {
+                coefficients,
+                innovation_variance,
+            });
+        }
+        Ok::<_, BayesianForecastError>(chain)
+    })?;
 
-    // Keep the prior factor alive until all validation and posterior arithmetic
-    // are complete; computing it above is the SPD validation for the prior.
-    drop(prior_cholesky);
     Ok(BayesianArPosterior {
         order: config.order,
         terminal_observations: observations[observations.len() - config.order..].to_vec(),
@@ -383,10 +366,11 @@ fn validate_inputs(
             "number of posterior draws must be positive",
         ));
     }
-    config
-        .num_chains
-        .checked_mul(config.num_draws)
-        .ok_or_else(|| invalid_configuration("chain and draw counts overflow"))?;
+    checked_value_count(
+        "AR posterior",
+        &[config.num_chains, config.num_draws, dimension + 1],
+        MAX_MATERIALIZED_VALUES,
+    )?;
     validate_prior(&config.prior, dimension)?;
     Ok(dimension)
 }
@@ -432,6 +416,13 @@ fn validate_prior(
     validate_symmetric(&prior.coefficient_precision)?;
     validate_positive_finite("variance prior shape", prior.variance_shape)?;
     validate_positive_finite("variance prior scale", prior.variance_scale)?;
+    // The factor itself is not needed: the posterior precision is factored
+    // on its own. Factoring is how positive definiteness is established.
+    factor_positive_definite(
+        &flatten(&prior.coefficient_precision),
+        dimension,
+        "coefficient prior precision",
+    )?;
     Ok(())
 }
 
@@ -464,68 +455,19 @@ fn validate_symmetric(matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> 
     Ok(())
 }
 
-fn cholesky(matrix: &[Vec<f64>], name: &str) -> Result<Vec<Vec<f64>>, BayesianForecastError> {
-    let dimension = matrix.len();
-    let mut lower = vec![vec![0.0; dimension]; dimension];
-    for row in 0..dimension {
-        for column in 0..=row {
-            let correction = lower[row][..column]
-                .iter()
-                .zip(&lower[column][..column])
-                .map(|(row_value, column_value)| row_value * column_value)
-                .sum::<f64>();
-            let value = matrix[row][column] - correction;
-            if row == column {
-                if !value.is_finite() || value <= 0.0 {
-                    return Err(invalid_configuration(format!(
-                        "{name} must be positive definite"
-                    )));
-                }
-                lower[row][column] = value.sqrt();
-            } else {
-                lower[row][column] = value / lower[column][column];
-                if !lower[row][column].is_finite() {
-                    return Err(BayesianForecastError::NumericalFailure(format!(
-                        "{name} factorization produced a non-finite value"
-                    )));
-                }
-            }
-        }
-    }
-    Ok(lower)
+fn flatten(matrix: &[Vec<f64>]) -> Vec<f64> {
+    matrix.iter().flatten().copied().collect()
 }
 
-fn solve_cholesky(
-    lower: &[Vec<f64>],
-    right_hand_side: &[f64],
+/// Cholesky factor of a row-major precision matrix, reporting a failed pivot
+/// as a configuration error naming the matrix.
+fn factor_positive_definite(
+    matrix: &[f64],
+    dimension: usize,
+    name: &str,
 ) -> Result<Vec<f64>, BayesianForecastError> {
-    let dimension = lower.len();
-    let mut intermediate = vec![0.0; dimension];
-    for row in 0..dimension {
-        let mut value = right_hand_side[row];
-        for (coefficient, solved) in lower[row][..row].iter().zip(&intermediate[..row]) {
-            value -= coefficient * solved;
-        }
-        intermediate[row] = value / lower[row][row];
-    }
-    solve_transposed_lower(lower, &intermediate)
-}
-
-fn solve_transposed_lower(
-    lower: &[Vec<f64>],
-    right_hand_side: &[f64],
-) -> Result<Vec<f64>, BayesianForecastError> {
-    let dimension = lower.len();
-    let mut result = vec![0.0; dimension];
-    for row in (0..dimension).rev() {
-        let mut value = right_hand_side[row];
-        for column in row + 1..dimension {
-            value -= lower[column][row] * result[column];
-        }
-        result[row] = value / lower[row][row];
-    }
-    ensure_finite_vector("linear solve", &result)?;
-    Ok(result)
+    cholesky(matrix, dimension)
+        .map_err(|()| invalid_configuration(format!("{name} must be positive definite")))
 }
 
 fn matrix_vector_product(
@@ -552,21 +494,6 @@ fn dot(left: &[f64], right: &[f64]) -> f64 {
     left.iter().zip(right).map(|(a, b)| a * b).sum()
 }
 
-fn sample_inverse_gamma(
-    shape: f64,
-    scale: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, BayesianForecastError> {
-    let gamma = Gamma::new(shape, 1.0 / scale).map_err(|error| {
-        BayesianForecastError::NumericalFailure(format!(
-            "could not construct gamma distribution: {error}"
-        ))
-    })?;
-    let variance = 1.0 / gamma.sample(rng);
-    validate_positive_finite("sampled innovation variance", variance)?;
-    Ok(variance)
-}
-
 fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
     StandardNormal.sample(rng)
 }
@@ -574,111 +501,8 @@ fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
 
-/// Posterior-predictive mean at each horizon, from the scale-aware
-/// implementation the sampler's `mean()` accessors already use.
-///
-/// Accumulating the paths and dividing by their count at the end overflows on
-/// input that is entirely finite: two paths holding `1e308` sum to infinity,
-/// and the infinity survives the division. See
-/// [`crate::diagnostics::scaled_moments`], which centres the draws at one
-/// horizon on the first of them and divides by the largest deviation from it
-/// before summing, so no partial sum can leave the representable range.
-///
-/// `validate_paths` has already rejected an empty, ragged or non-finite
-/// forecast, so the `NaN` that `scaled_moments` reports for those cases cannot
-/// reach a caller from here.
-fn path_means(paths: &[Vec<Vec<f64>>]) -> Result<Vec<f64>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    let means: Vec<f64> = (0..horizon)
-        .map(|step| {
-            crate::diagnostics::scaled_moments(|| paths.iter().flatten().map(|path| path[step])).0
-        })
-        .collect();
-    ensure_finite_vector("forecast means", &means)?;
-    Ok(means)
-}
-
-fn path_quantiles(
-    paths: &[Vec<Vec<f64>>],
-    probabilities: &[f64],
-) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-    let horizon = validate_paths(paths)?;
-    for probability in probabilities {
-        if !probability.is_finite() || !(0.0..=1.0).contains(probability) {
-            return Err(invalid_configuration(
-                "quantile probabilities must be finite and between zero and one",
-            ));
-        }
-    }
-    let mut by_step = Vec::with_capacity(horizon);
-    for step in 0..horizon {
-        let mut values: Vec<f64> = paths.iter().flatten().map(|path| path[step]).collect();
-        values.sort_by(f64::total_cmp);
-        by_step.push(values);
-    }
-    Ok(probabilities
-        .iter()
-        .map(|probability| ForecastQuantile {
-            probability: *probability,
-            values: by_step
-                .iter()
-                .map(|ordered| interpolated_quantile(ordered, *probability))
-                .collect(),
-        })
-        .collect())
-}
-
-fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecastError> {
-    let horizon = paths
-        .first()
-        .and_then(|chain| chain.first())
-        .map_or(0, Vec::len);
-    if paths.is_empty() || paths.iter().any(Vec::is_empty) || horizon == 0 {
-        return Err(invalid_configuration(
-            "forecast must contain at least one non-empty path per chain",
-        ));
-    }
-    if paths.iter().flatten().any(|path| path.len() != horizon) {
-        return Err(invalid_configuration(
-            "forecast paths must all have the same horizon",
-        ));
-    }
-    if paths
-        .iter()
-        .flatten()
-        .flatten()
-        .any(|value| !value.is_finite())
-    {
-        return Err(BayesianForecastError::NumericalFailure(
-            "forecast contains a non-finite value".into(),
-        ));
-    }
-    Ok(horizon)
-}
-
-fn interpolated_quantile(ordered: &[f64], probability: f64) -> f64 {
-    let index = probability * (ordered.len() - 1) as f64;
-    let lower = index.floor() as usize;
-    let upper = index.ceil() as usize;
-    if lower == upper {
-        ordered[lower]
-    } else {
-        let weight = index - lower as f64;
-        ordered[lower] * (1.0 - weight) + ordered[upper] * weight
-    }
-}
-
 fn ensure_finite_vector(name: &str, values: &[f64]) -> Result<(), BayesianForecastError> {
     if values.iter().any(|value| !value.is_finite()) {
-        return Err(BayesianForecastError::NumericalFailure(format!(
-            "{name} contains a non-finite value"
-        )));
-    }
-    Ok(())
-}
-
-fn ensure_finite_matrix(name: &str, matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> {
-    if matrix.iter().flatten().any(|value| !value.is_finite()) {
         return Err(BayesianForecastError::NumericalFailure(format!(
             "{name} contains a non-finite value"
         )));
@@ -702,6 +526,7 @@ fn invalid_configuration(message: impl Into<String>) -> BayesianForecastError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::SeedableRng;
 
     #[test]
     fn prior_precision_symmetry_is_independent_of_coefficient_units() {
@@ -957,5 +782,29 @@ mod tests {
         let forecast = posterior.forecast(3, 40).unwrap();
         let means = &forecast.conditional_mean_paths[0][0];
         assert!(means[0] > 2.9 && means[1] > means[0] && means[2] > means[1]);
+    }
+
+    #[test]
+    fn an_overflowing_explosive_draw_is_named_rather_than_dropped() {
+        let stable = BayesianArPosteriorDraw {
+            coefficients: vec![0.0, 0.5],
+            innovation_variance: 1.0,
+        };
+        let explosive = BayesianArPosteriorDraw {
+            coefficients: vec![0.0, 1e10],
+            innovation_variance: 1.0,
+        };
+        let posterior = BayesianArPosterior {
+            order: 1,
+            terminal_observations: vec![2.0],
+            chains: vec![vec![stable.clone(); 3], vec![stable, explosive]],
+        };
+        let message = posterior.forecast(40, 41).unwrap_err().to_string();
+        assert!(message.contains("chain 1, draw 1"), "{message}");
+        assert!(message.contains("step 31 of 40"), "{message}");
+        assert!(message.contains("stationary"), "{message}");
+        // A horizon it survives is returned unchanged, explosive draw included.
+        let forecast = posterior.forecast(5, 41).unwrap();
+        assert!(forecast.conditional_mean_paths[1][1][4] > 1e40);
     }
 }
