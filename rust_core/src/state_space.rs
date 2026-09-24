@@ -1625,10 +1625,12 @@ mod tests {
     #[test]
     fn square_root_pass_means_match_the_joseph_filter() {
         // FFBS takes its filtered and predicted means from the square-root
-        // pass rather than from a second, Joseph-form `filter`. The two are
-        // the same recursion evaluated differently, so they must agree to
-        // rounding on models with correlated innovations, per-time rows and
-        // noise, missing values and a rank-deficient process.
+        // pass rather than from a second, Joseph-form `filter`. In exact
+        // arithmetic both compute the same gain; the square-root pass forms it
+        // from a rank-revealing root, so they are checked here on
+        // well-conditioned models, a deterministic seasonal, a diffuse static
+        // regression and a singular transition as well as on correlated
+        // innovations, per-time rows and noise and missing values.
         let seasonal = LinearGaussianStateSpace::seasonal_local_level(
             4,
             0.08,
@@ -1660,7 +1662,48 @@ mod tests {
             .unwrap()
             .with_observation_variances((1..=8).map(|t| 0.1 * t as f64).collect())
             .unwrap();
-        for model in [seasonal, correlated, with_rows] {
+        let deterministic_seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            12,
+            0.05,
+            0.0,
+            0.2,
+            0.0,
+            vec![0.0; 12],
+            1e4,
+            1e4,
+        )
+        .unwrap();
+        let diffuse_regression = LinearGaussianStateSpace::local_level(0.01, 0.3, 0.0, 1e6)
+            .unwrap()
+            .with_static_regression(
+                &(0..observations.len())
+                    .map(|t| vec![t as f64, 1.0 / (1.0 + t as f64)])
+                    .collect::<Vec<_>>(),
+                &[0.0, 0.0],
+                &[1e6, 0.0, 0.0, 1e6],
+            )
+            .unwrap();
+        let singular = LinearGaussianStateSpace::new(
+            2,
+            vec![0.5, 0.0, 1.0, 0.0],
+            vec![1.0, 0.0],
+            vec![0.0; 4],
+            1.0,
+            vec![0.0; 2],
+            vec![1.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        // The diffuse regression has prior variances of 1e6 on three states,
+        // so its gains carry that condition number: the two evaluations then
+        // differ by up to 7e-11 relative, which is rounding at that scale.
+        for (model, tolerance) in [
+            (seasonal, 1e-12),
+            (correlated, 1e-12),
+            (with_rows, 1e-12),
+            (deterministic_seasonal, 1e-12),
+            (diffuse_regression, 1e-9),
+            (singular, 1e-12),
+        ] {
             let reference = model.filter(&observations).unwrap();
             let pass = model.square_root_pass(&observations).unwrap();
             assert_eq!(pass.filtered_means[0], model.initial_mean);
@@ -1677,7 +1720,7 @@ mod tests {
                 ] {
                     for (a, e) in actual.iter().zip(expected.iter()) {
                         assert!(
-                            (a - e).abs() <= 1e-12 * e.abs().max(1.0),
+                            (a - e).abs() <= tolerance * e.abs().max(1.0),
                             "time {time}: {a} vs {e}"
                         );
                     }

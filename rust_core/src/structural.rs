@@ -116,7 +116,9 @@ impl Component {
     /// `innovation`, so an inverse-gamma innovation means `2 * harmonics`
     /// separately inferred variances. That is not the usual trigonometric
     /// seasonal (Harvey, 1989), which shares one variance across every
-    /// harmonic; it is more flexible and needs more data to pin down.
+    /// harmonic. It also lets the sine and cosine coordinates of one pair have
+    /// different variances, so the seasonal disturbance depends on its phase,
+    /// and it needs more data to pin down.
     pub fn seasonal(
         name: String,
         period: f64,

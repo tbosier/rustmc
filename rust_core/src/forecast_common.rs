@@ -18,8 +18,13 @@ use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
 
-/// Largest number of `f64` values one fit, forecast or working buffer may
-/// materialize. At eight bytes each this is 200 MB before any Python copy.
+/// Largest number of `f64` values one checked request may materialize: a
+/// forecast's paths, a fit's retained draws, or one chain's FFBS working
+/// state. At eight bytes each this is 200 MB before any Python copy. It is a
+/// guard against requests that would abort the process, not a bound on peak
+/// memory: chains run concurrently, so a fit can hold one working state per
+/// running chain, and the hierarchical model allows its retained draws twice
+/// this.
 pub const MAX_MATERIALIZED_VALUES: usize = 25_000_000;
 
 /// A request whose size overflows or exceeds its safety limit.
@@ -43,13 +48,15 @@ impl fmt::Display for AllocationLimitError {
             Some(count) => write!(
                 f,
                 "{} would materialize {count} values, above the safety limit of {limit}; \
-                 reduce chains, draws, series length or forecast horizon",
+                 reduce whichever of its dimensions is large (chains, draws, series \
+                 length, forecast horizon, or the model's state, component or group size)",
                 self.what
             ),
             None => write!(
                 f,
                 "{} size overflows and exceeds the safety limit of {limit} values; \
-                 reduce chains, draws, series length or forecast horizon",
+                 reduce whichever of its dimensions is large (chains, draws, series \
+                 length, forecast horizon, or the model's state, component or group size)",
                 self.what
             ),
         }
@@ -118,8 +125,14 @@ pub(crate) fn check_forecast_size<D>(
 /// below which the likelihood cannot separate the variances it is asked to
 /// estimate, so the "fit" would largely hand the priors back; rejecting it
 /// catches an all-missing or truncated series instead of returning a
-/// posterior that looks informed and is not. Every model needs at least one
-/// finite observation. Returns the finite count.
+/// posterior that looks informed and is not. At least one finite observation
+/// is always required. Returns the finite count.
+///
+/// The local-level, trend, seasonal, regression and structural fits use this.
+/// The hurdle model keeps its own rule - one observed amount, zero or not -
+/// because with no positive amounts it deliberately returns severity prior
+/// draws; the hierarchical model requires a finite observation per program,
+/// and the AR model more observations than its order.
 pub(crate) fn require_finite_observations(
     observations: &[f64],
     inferred_variances: usize,
@@ -204,7 +217,14 @@ const START_SEED_DOMAIN: u64 = 0x5354_4152_545F_5054;
 /// most 2 has no variance and can put a chain's start many orders of magnitude
 /// from anything the data support.
 pub(crate) fn overdispersed_positive<R: Rng + ?Sized>(reference: f64, rng: &mut R) -> f64 {
-    reference * rng.gen_range(-START_HALF_WIDTH..START_HALF_WIDTH).exp()
+    let start = reference * rng.gen_range(-START_HALF_WIDTH..START_HALF_WIDTH).exp();
+    // A prior mode within a factor of e^2 of the representable range would
+    // otherwise start the chain at infinity or zero; start at the mode itself.
+    if start.is_finite() && start > 0.0 {
+        start
+    } else {
+        reference
+    }
 }
 
 /// An overdispersed starting value for a location: `center + scale U(-2, 2)`.
@@ -590,6 +610,12 @@ mod tests {
             .fold((f64::MAX, 0.0f64), |(lo, hi), &x| (lo.min(x), hi.max(x)));
         assert!(lowest >= 0.5 * (-2.0f64).exp() && highest <= 0.5 * 2.0f64.exp());
         assert!(lowest < 0.1 && highest > 2.5, "{lowest} {highest}");
+        for extreme in [f64::MAX / 2.0, f64::from_bits(1)] {
+            for _ in 0..100 {
+                let start = overdispersed_positive(extreme, &mut rng);
+                assert!(start.is_finite() && start > 0.0, "{extreme} -> {start}");
+            }
+        }
         let locations: Vec<f64> = (0..2000)
             .map(|_| overdispersed_location(10.0, 0.5, &mut rng))
             .collect();

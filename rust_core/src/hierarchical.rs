@@ -18,10 +18,11 @@
 //! `group_variance` = 0, where the group means are pinned to the population
 //! mean and in turn keep the variance small. Mixing there is slow rather than
 //! wrong, so check R-hat and ESS for `group_variance` and `program_variance`
-//! with [`HierarchicalMeanPosterior::diagnostics`]; overdispersed chain starts
-//! make a stuck chain show up in R-hat rather than hide. Series may have
-//! different lengths; `NaN` values are retained as missing positions and
-//! ignored by the likelihood.
+//! with [`HierarchicalMeanPosterior::diagnostics`]. Chains start from
+//! overdispersed points, which makes a chain stuck apart from the others more
+//! likely to show in R-hat, but cannot reveal chains that all stick alike.
+//! Series may have different lengths; `NaN` values are retained as missing
+//! positions and ignored by the likelihood.
 
 use crate::bayesian_forecast::{BayesianForecastError, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
