@@ -148,11 +148,20 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                         }
                         position
                     }
+                    // Called directly rather than through the evaluator, whose
+                    // failure latch would turn one unlucky point into a failed
+                    // fit: a non-finite density or gradient only rules out this
+                    // point, as it does for graph models. An `Err` is the
+                    // target reporting that it cannot evaluate at all, which
+                    // another point will not fix.
                     None => random_initial_position(config.seed, chain, dimension, |position| {
-                        evaluator.compute(&graph, position);
-                        match evaluator.failure.take() {
-                            Some(failure) => Err(format!("chain {chain}: {failure}")),
-                            None => Ok(evaluator.log_density.is_finite()),
+                        let gradient = &mut evaluator.gradient;
+                        gradient.fill(f64::NAN);
+                        match target.log_density_gradient(position, gradient) {
+                            Ok(value) => {
+                                Ok(value.is_finite() && gradient.iter().all(|g| g.is_finite()))
+                            }
+                            Err(message) => Err(format!("chain {chain}: {message}")),
                         }
                     })?,
                 };
@@ -279,6 +288,43 @@ mod tests {
 mod boundary_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A standard normal whose gradient is NaN for x < -1: usable from the
+    /// origin, so a random start that lands there must be retried rather than
+    /// failing the fit.
+    struct NanGradientBelowMinusOne;
+    impl LogDensity for NanGradientBelowMinusOne {
+        fn dimension(&self) -> usize {
+            1
+        }
+        fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
+            gradient[0] = if q[0] < -1.0 { f64::NAN } else { -q[0] };
+            Ok(-0.5 * q[0] * q[0])
+        }
+    }
+
+    #[test]
+    fn random_starts_retry_points_with_a_non_finite_gradient() {
+        // Chains start uniformly on (-2, 2), so a quarter of first draws land
+        // in the NaN region; with eight chains at least one does.
+        let fit = sample_target(
+            &NanGradientBelowMinusOne,
+            SamplerConfig {
+                num_chains: 8,
+                num_draws: 5,
+                num_warmup: 5,
+                // Chains barely move, so any failure is the start search's.
+                step_size: 1e-6,
+                max_tree_depth: 1,
+                num_threads: 1,
+                show_progress: false,
+                ..Default::default()
+            },
+            None,
+        )
+        .expect("an unusable random start must be retried, not fail the fit");
+        assert!(fit.samples.iter().flatten().all(|q| q[0] >= -1.0));
+    }
 
     struct FailsAfterInitialization {
         calls: AtomicUsize,

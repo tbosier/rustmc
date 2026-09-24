@@ -227,10 +227,11 @@ pub(crate) fn kernel_initial_position(
         Some(position) if position.len() == dimension && position.iter().all(|x| x.is_finite()) => {
             Ok(position)
         }
-        Some(position) => Err(format!(
+        Some(position) if position.len() != dimension => Err(format!(
             "init must be a finite unconstrained vector of length {dimension}, got length {}",
             position.len()
         )),
+        Some(_) => Err("init must contain only finite unconstrained values".to_string()),
     }
 }
 
@@ -691,7 +692,11 @@ pub struct BatchModelResult {
 pub enum BatchSeedPolicy {
     /// Stable version-one cell IDs, invariant to ordering and chunk boundaries.
     CellIdV1,
-    /// Compatibility with the original generic batch API.
+    /// Dataset `i` is fitted with seed `seed + (i << 32)`, the positional
+    /// scheme of the original generic batch API. Only the cell seed is
+    /// preserved: the chains below it are keyed and started as in any other
+    /// fit, so draws from releases that seeded chain `c` as `seed + c` and
+    /// started every chain at the origin are not reproduced.
     PositionV0,
 }
 

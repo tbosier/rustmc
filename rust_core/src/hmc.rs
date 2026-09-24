@@ -81,8 +81,9 @@ pub struct ChainResult {
 /// adaptation only in the initial and terminal buffers, and doubling
 /// metric-estimation windows between them (see `adaptation::WarmupSchedule`).
 ///
-/// Workspace buffers are allocated once per chain; a transition allocates
-/// only the retained draw.
+/// Integrator buffers are allocated once per chain. After warmup a
+/// transition allocates only the retained draw; during warmup the end of each
+/// metric-estimation window also allocates the new metric and accumulator.
 /// # Errors
 ///
 /// Returns the rejection message from

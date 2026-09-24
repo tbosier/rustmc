@@ -5,12 +5,14 @@ use rand_distr::{Distribution, StandardNormal};
 /// Largest parameter block that may receive a dense metric.
 const DENSE_BLOCK_MAX_DIM: usize = 512;
 /// Under [`MetricKind::Auto`], a window needs this many draws per dimension of
-/// a block before a dense estimate of that block is even considered.
+/// a block before a dense estimate of that block is considered at all.
 ///
-/// Below it the sample covariance is too noisy to whiten by (and below one
-/// draw per dimension it is singular); above it [`dense_beats_diagonal`]
-/// decides from the estimate itself.
-const AUTO_DENSE_DRAWS_PER_DIM: usize = 5;
+/// Below it the sample covariance is singular or close to it and there is
+/// nothing to whiten by; above it [`dense_beats_diagonal`] decides from the
+/// estimate itself. This is deliberately a low bar: a strongly correlated
+/// block gains an order of magnitude in step size from even a noisy dense
+/// estimate, while the decision rule keeps weakly structured blocks diagonal.
+const AUTO_DENSE_DRAWS_PER_DIM: usize = 2;
 const REGULARIZATION_WEIGHT: f64 = 5.0;
 const BASE_JITTER: f64 = 1e-3;
 
@@ -19,16 +21,21 @@ const BASE_JITTER: f64 = 1e-3;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MetricKind {
     /// Diagonal, except that a vector parameter of at most 512 elements gets a
-    /// dense block from any window with at least five draws per element whose
-    /// estimated correlation structure is clearly worse conditioned than the
-    /// estimate's own sampling noise. An isotropic or weakly correlated block
-    /// therefore stays diagonal, as under Stan's default metric.
+    /// dense block from any window with at least two draws per element whose
+    /// estimated correlation structure is worse conditioned than that
+    /// estimate's own sampling noise by a wide margin (see
+    /// `dense_beats_diagonal`). Weakly correlated blocks are meant to stay
+    /// diagonal, as under Stan's default metric; this is a statistical
+    /// decision, not a guarantee. Dense blocks never span more than one
+    /// vector parameter, and scalar parameters are always diagonal.
     #[default]
     Auto,
     /// Diagonal for every block, as Stan's default `diag_e` metric.
     Diagonal,
-    /// Dense for every vector parameter of at most 512 elements, estimated
-    /// from each window whatever its length, as Stan's `dense_e` metric.
+    /// Dense within every vector parameter of at most 512 elements,
+    /// estimated from each window whatever its length. Unlike Stan's
+    /// `dense_e`, which estimates one covariance over all parameters, there
+    /// is no correlation across parameters or between scalar parameters.
     Dense,
 }
 
@@ -104,6 +111,15 @@ enum AccumulatorBlock {
         m2: Vec<f64>,
         /// Deviations from the previous mean, reused across updates.
         delta: Vec<f64>,
+        /// The window's first draw, subtracted before the lag products below
+        /// so they do not lose precision to a large location.
+        shift: Vec<f64>,
+        /// The previous draw, less `shift`.
+        previous: Vec<f64>,
+        /// Sum over consecutive draws of `(x_t - shift) * (x_{t-1} - shift)`,
+        /// per coordinate: the lag-one autocovariance the effective sample
+        /// size in `dense_beats_diagonal` comes from.
+        lag_products: Vec<f64>,
         /// Fall back to a diagonal estimate unless the dense one is clearly
         /// better conditioned; see [`dense_beats_diagonal`].
         require_benefit: bool,
@@ -198,8 +214,8 @@ impl MassMatrix {
 }
 
 impl MassMatrixAccumulator {
-    /// An accumulator whose finalized metric uses dense blocks wherever `kind`
-    /// allows them.
+    /// An accumulator whose finalized metric is dense within every vector
+    /// parameter of at most 512 elements ([`MetricKind::Dense`]).
     pub fn from_graph(graph: &Graph) -> Self {
         Self::for_window(graph, MetricKind::Dense, usize::MAX)
     }
@@ -218,7 +234,7 @@ impl MassMatrixAccumulator {
                 && match kind {
                     MetricKind::Diagonal => false,
                     MetricKind::Dense => true,
-                    MetricKind::Auto => window_len / AUTO_DENSE_DRAWS_PER_DIM >= span.len,
+                    MetricKind::Auto => window_len >= AUTO_DENSE_DRAWS_PER_DIM * span.len,
                 };
             blocks.push(AccumulatorBlock::new(
                 span.start,
@@ -379,6 +395,9 @@ impl AccumulatorBlock {
                 mean: vec![0.0; len],
                 m2: vec![0.0; len * len],
                 delta: vec![0.0; len],
+                shift: vec![0.0; len],
+                previous: vec![0.0; len],
+                lag_products: vec![0.0; len],
                 require_benefit,
             }
         } else {
@@ -430,11 +449,24 @@ impl AccumulatorBlock {
                 mean,
                 m2,
                 delta,
+                shift,
+                previous,
+                lag_products,
                 ..
             } => {
                 *count += 1;
                 let n = *count as f64;
                 let x = &q[*start..*start + *dim];
+                if *count == 1 {
+                    shift.copy_from_slice(x);
+                } else {
+                    for i in 0..*dim {
+                        lag_products[i] += (x[i] - shift[i]) * previous[i];
+                    }
+                }
+                for i in 0..*dim {
+                    previous[i] = x[i] - shift[i];
+                }
                 for i in 0..*dim {
                     delta[i] = x[i] - mean[i];
                     mean[i] += delta[i] / n;
@@ -496,7 +528,10 @@ impl AccumulatorBlock {
                 start,
                 dim,
                 count,
+                mean,
                 m2,
+                shift,
+                lag_products,
                 require_benefit,
                 ..
             } => {
@@ -513,7 +548,13 @@ impl AccumulatorBlock {
                         cov[j * dim + i] = value;
                     }
                 }
-                if *require_benefit && !dense_beats_diagonal(&cov, dim, *count) {
+                if *require_benefit
+                    && !dense_beats_diagonal(
+                        &cov,
+                        dim,
+                        effective_draws(*count, mean, shift, lag_products, &cov),
+                    )
+                {
                     let variances = (0..dim)
                         .map(|i| regularize_variance(cov[i * dim + i], *count))
                         .collect();
@@ -548,26 +589,67 @@ impl AccumulatorBlock {
     }
 }
 
-/// Whether a dense metric estimated from `count` draws with sample covariance
-/// `cov` should precondition better than the diagonal one.
+/// Effective number of independent draws behind a window's covariance,
+/// from the average lag-one autocorrelation `rho` across coordinates:
+/// `n (1 - rho) / (1 + rho)`, the AR(1) approximation. Antithetic chains
+/// (`rho < 0`) are credited with no more than `n`.
+fn effective_draws(
+    count: usize,
+    mean: &[f64],
+    shift: &[f64],
+    lag_products: &[f64],
+    cov: &[f64],
+) -> f64 {
+    let dim = mean.len();
+    let n = count as f64;
+    let mut rho_sum = 0.0;
+    let mut terms = 0usize;
+    for i in 0..dim {
+        let variance = cov[i * dim + i];
+        if variance > 0.0 && variance.is_finite() {
+            let centre = mean[i] - shift[i];
+            let lag_cov = lag_products[i] / (n - 1.0) - centre * centre;
+            rho_sum += (lag_cov / variance).clamp(-1.0, 1.0);
+            terms += 1;
+        }
+    }
+    let rho = if terms > 0 {
+        (rho_sum / terms as f64).clamp(0.0, 0.95)
+    } else {
+        0.0
+    };
+    n * (1.0 - rho) / (1.0 + rho)
+}
+
+/// Whether a dense metric estimated from a window with `effective_draws`
+/// effective draws and sample covariance `cov` should precondition better
+/// than the diagonal one.
 ///
 /// A diagonal metric leaves the target's correlation matrix `R` for the
 /// integrator, whose step size is limited by the condition number `κ(R)`. A
 /// dense metric removes `R` but leaves its own estimation error: whitening by
-/// a sample covariance from `n` draws in `d` dimensions leaves a condition
-/// number near `((1 + sqrt(d/n)) / (1 - sqrt(d/n)))²` even for an isotropic
-/// target (the Marchenko–Pastur edges). The sample `κ(R)` carries the same
-/// noise, so an isotropic target shows `κ(R) ≈` that bound and stays
-/// diagonal; a dense block is used only when the estimated correlation
-/// structure is worse than the noise by a clear margin. The extreme
-/// eigenvalues come from a fixed number of power and inverse-power
-/// iterations, which can only underestimate `κ(R)` — an error toward the
-/// diagonal metric, which is never worse than the default was before.
-fn dense_beats_diagonal(cov: &[f64], dim: usize, count: usize) -> bool {
-    const MARGIN: f64 = 2.0;
+/// a sample covariance from `n` independent draws in `d` dimensions leaves a
+/// condition number near `((1 + sqrt(d/n)) / (1 - sqrt(d/n)))²` even for an
+/// isotropic target (the Marchenko–Pastur edges), and autocorrelated MCMC
+/// draws count for fewer than `n`. The sample `κ(R)` carries the same noise,
+/// so a dense block is used only when it exceeds that bound by a wide margin.
+/// The margin errs toward diagonal, Stan's default: a mildly correlated
+/// block may be left diagonal and so cost what it costs under Stan's
+/// default, while a false dense choice could cost more than that. The
+/// extreme eigenvalues come from a fixed number of power and inverse-power
+/// iterations, which can only underestimate `κ(R)`, an error in the same
+/// direction.
+fn dense_beats_diagonal(cov: &[f64], dim: usize, effective_draws: f64) -> bool {
+    // Calibrated on NUTS warmup windows: at 4, isotropic 100-dimensional
+    // blocks with two draws per dimension still went dense in two seeds of
+    // five and cost up to six times the diagonal's steps; at 8, none of 100
+    // isotropic runs (60 to 250 dimensions, 2 to 10 draws per dimension)
+    // differed from diagonal, while equicorrelated (rho = 0.9) blocks of 30 to
+    // 150 dimensions still went dense and took 5 to 12 times fewer steps.
+    const MARGIN: f64 = 8.0;
     const ITERATIONS: usize = 100;
-    let ratio = dim as f64 / count as f64;
-    if ratio >= 1.0 {
+    let ratio = dim as f64 / effective_draws;
+    if ratio.is_nan() || ratio >= 1.0 {
         return false;
     }
     let edge = ratio.sqrt();
@@ -919,9 +1001,37 @@ mod tests {
         let draws = equicorrelated_draws(10, 0.9, 200, 5);
         assert!(estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
         // Too few draws per dimension to estimate it, however correlated.
-        let short = &draws[..40];
+        let short = &draws[..15];
         assert!(!estimate(&graph, MetricKind::Auto, short).has_dense_block());
         assert!(estimate(&graph, MetricKind::Dense, short).has_dense_block());
+    }
+
+    #[test]
+    fn autocorrelated_isotropic_draws_stay_diagonal() {
+        // MCMC draws are not independent: an AR(1) chain with coefficient 0.6
+        // carries a quarter of the information of independent draws, so the
+        // sample covariance's noise is that of a quarter of the draws. Judged
+        // by the independent-draw noise bound, many of these windows looked
+        // correlated enough to go dense.
+        let dim = 40;
+        let graph = vector_graph(dim);
+        for seed in 0..20 {
+            let mut rng = ChaCha8Rng::seed_from_u64(seed);
+            let mut state = vec![0.0; dim];
+            let draws: Vec<Vec<f64>> = (0..200)
+                .map(|_| {
+                    for value in state.iter_mut() {
+                        let z: f64 = StandardNormal.sample(&mut rng);
+                        *value = 0.6 * *value + 0.8 * z;
+                    }
+                    state.clone()
+                })
+                .collect();
+            assert!(
+                !estimate(&graph, MetricKind::Auto, &draws).has_dense_block(),
+                "seed {seed}"
+            );
+        }
     }
 
     #[test]

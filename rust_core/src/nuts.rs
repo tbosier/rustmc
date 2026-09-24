@@ -985,10 +985,12 @@ mod tests {
     }
 
     #[test]
-    fn default_metric_is_not_worse_than_diagonal_on_an_isotropic_vector() {
+    fn default_metric_matches_diagonal_on_an_isotropic_vector() {
         // A dense block estimated from a 200-draw window in 100 dimensions
-        // is mostly noise; before the metric became selectable this target
-        // took ~140 leapfrog steps per draw against ~10 for diagonal.
+        // is mostly noise; when every vector parameter got one, this target
+        // took ~140 leapfrog steps per draw against ~10 for diagonal. The
+        // window has two draws per dimension, so the auto rule does evaluate a
+        // dense estimate here and has to reject it.
         let dim = 100;
         let mut x = vec![0.0; dim * dim];
         for i in 0..dim {
@@ -997,21 +999,32 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(1);
         let y: Vec<f64> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
         let graph = vector_regression(x, dim, dim, y);
-        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, 3);
-        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, 3);
-        assert!(auto < 20.0, "auto metric took {auto} steps per draw");
-        assert!(
-            auto <= 1.25 * diagonal,
-            "auto {auto} vs diagonal {diagonal}"
-        );
+        for seed in [3, 4] {
+            let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, seed);
+            let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, seed);
+            assert!(auto < 40.0, "auto metric took {auto} steps per draw");
+            assert!(
+                auto <= 1.25 * diagonal,
+                "auto {auto} vs diagonal {diagonal}"
+            );
+        }
     }
 
     #[test]
     fn default_metric_keeps_the_dense_benefit_for_correlated_coefficients() {
         // Columns of X correlated at 0.9 make the posterior of b nearly
         // singular along their sum: a diagonal metric needs several times
-        // the integration a dense one does.
-        let (dim, n_rows) = (10, 200);
+        // the integration a dense one does. 50 dimensions at the default
+        // warmup leaves a last window of four draws per dimension; an earlier
+        // auto rule that demanded five stayed diagonal here at ~100 steps per
+        // draw against ~12 for dense.
+        for dim in [10, 50] {
+            correlated_coefficients_case(dim);
+        }
+    }
+
+    fn correlated_coefficients_case(dim: usize) {
+        let n_rows = 400;
         let mut rng = ChaCha8Rng::seed_from_u64(2);
         let mut normal =
             || -> f64 { rand_distr::Distribution::sample(&rand_distr::StandardNormal, &mut rng) };
