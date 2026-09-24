@@ -75,8 +75,11 @@ streams and start from different points than in 0.12.0.
   local-level, trend, seasonal, regression, structural, hurdle and hierarchical
   Gibbs samplers start each chain from its own overdispersed point instead of the
   prior mode or the data means. Split R-hat assumes dispersed starts.
-- Forward-filtering backward-sampling runs one filter pass instead of two, 25–45%
-  faster; draws differ in the last bits. Hurdle uses the scalar version.
+- Forward-filtering backward-sampling runs one square-root pass instead of two,
+  about 25–30% faster at typical state sizes. On ordinary models draws differ in the
+  last bits. On diffuse, nearly collinear designs the old means were off by up to
+  about 0.1 posterior standard deviation, and the new ones agree with exact
+  conditioning. Hurdle uses the scalar version.
 - Dynamic GLM block updates evaluate only the groups a block touches: a sweep is
   O(G·T) rather than O(G²·T), with the same target and, for a given stream, the same
   draws. Two measurements on different runs put the speed-up at 13–20× for 50
@@ -112,13 +115,27 @@ streams and start from different points than in 0.12.0.
   raise plain `ValueError`. All three subclass `ValueError`, so code catching
   `StateSpaceError` from any of the calls above must catch `InferenceError` or
   `ValueError` instead.
-- Forecasting models accept integer arrays and lists as well as float arrays, and
-  report a bad input by argument name instead of PyO3's conversion message. A 1-D
-  `y` for a dynamic GLM raises `ValueError` rather than `TypeError`.
-- Forecast quantiles and intervals use one interpolation rule, defined once in Rust.
-  Values move by at most a few ulps; ties are now exact and a constant forecast's
-  interval is that constant. `ForecastDraws.interval` and the evaluation scores use
-  the same rule.
+- One exact converter now reads `ModelBuilder` data and every forecasting array.
+  Forecasting models accept integer arrays and lists as well as float arrays, and a
+  bad input is reported by argument name. Several inputs that raised `TypeError`
+  from PyO3's conversion now raise `ValueError`: a wrongly dimensioned array for a
+  forecasting fit (including a 1-D `y` for a dynamic GLM), a data value with more
+  than two dimensions, and a dict as a data value.
+- **Object-dtype arrays are refused**, including pandas object columns, which 0.12
+  accepted when their elements were numbers. The error says to convert with
+  `.astype(float)`. Python integers beyond 64 bits are refused for the same reason.
+- `LinearGaussianStateSpace.filter()` and `smooth()` use the same square-root pass
+  as FFBS, so the three agree. On ordinary models results change in the last bits;
+  `filter()` is somewhat slower (0.73 s against 0.53 s at d = 52, T = 1000).
+- Dynamic GLM `prior_predictive` draws its noise from its own seed domain, so its
+  paths change for every seed and no longer replay a posterior forecast made with
+  the same seed.
+- Forecast quantiles and intervals use one rule, defined once in Rust: NumPy's
+  `linear` method, which they now match bit for bit on finite draws. Most values
+  move in the last digits; near zero the old formula could be off by thousands of
+  ulps. Ties are exact, a constant forecast's interval is that constant, and NaN
+  draws are refused. `ForecastDraws.interval` and the evaluation scores use the same
+  rule.
 - Graph-fit `diagnostics()` reports an unavailable value as `None`, as the
   forecasting fits do, instead of NaN.
 - `log_likelihood`, `predict`, `posterior_predictive`, `deterministics`,
@@ -156,11 +173,15 @@ streams and start from different points than in 0.12.0.
 - State simulation errors name the covariance that failed.
 - `hierarchical.rs` no longer claims the conjugate Gibbs sampler avoids funnel
   geometry; with weak data it can stick near a group variance of zero.
-- Data dictionaries silently coerced what they could not represent: a scalar
-  became a length-1 vector, booleans became 0/1, the string `'1.5'` became a number,
-  complex values lost their imaginary part, and integers above 2⁵³ were rounded.
-  These, and arrays with more than two dimensions, now raise an error naming the
-  key.
+- Data dictionaries and forecasting inputs silently coerced what they could not
+  represent: a scalar became a length-1 vector, booleans (including `True` inside a
+  list) became 0/1, the string `'1.5'` became a number, complex values lost their
+  imaginary part, a masked array's hidden values were used as data, long doubles
+  and integers above 2⁵³ were rounded. These now raise an error naming the input.
+- On diffuse, nearly collinear state-space designs, `LinearGaussianStateSpace`'s
+  filter, smoother and log likelihood were inaccurate: in one test the log likelihood
+  was off by 4.5e-3 and a coefficient mean by 4e-4 posterior standard deviations.
+  They now agree with a 60-digit reference to about 1e-11.
 - Under `errors="collect"`, a batch cell whose binding or reported draws failed
   aborted the whole `sample_batch` call instead of recording that cell's error.
 - A `fit_batch` of only AR models silently ignored `warmup` and `thin`; it now
