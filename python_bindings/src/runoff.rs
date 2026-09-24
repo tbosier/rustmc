@@ -13,7 +13,7 @@ use rustmc_core::runoff::{
 /// independent Gamma(total_shape, rate=total_rate) Poisson intensity per cohort.
 /// This model does not accept currency as multinomial event counts.
 #[pyclass(name = "DirichletMultinomialRunoff", module = "rustmc")]
-pub struct PyRunoff {
+pub(crate) struct PyRunoff {
     alpha: Vec<f64>,
     total_shape: f64,
     total_rate: f64,
@@ -101,18 +101,29 @@ fn runoff_error(error: RunoffError) -> PyErr {
 }
 
 #[pyclass(name = "RunoffFit", module = "rustmc")]
-pub struct PyRunoffFit {
+pub(crate) struct PyRunoffFit {
     inner: RunoffPosterior,
+}
+
+/// The core keeps every draw the same shape; a ragged one is refused rather
+/// than allowed to panic the interpreter.
+fn not_rectangular(error: ndarray::ShapeError) -> PyErr {
+    InferenceError::new_err(format!("runoff draws are not rectangular: {error}"))
 }
 
 fn array3<'py, T: numpy::Element>(
     py: Python<'py>,
     data: Vec<Vec<Vec<T>>>,
-) -> Bound<'py, PyArray3<T>> {
-    let shape = (data.len(), data[0].len(), data[0][0].len());
+) -> PyResult<Bound<'py, PyArray3<T>>> {
+    let first = data.first().and_then(|chain| chain.first());
+    let shape = (
+        data.len(),
+        data.first().map_or(0, Vec::len),
+        first.map_or(0, Vec::len),
+    );
     Array3::from_shape_vec(shape, data.into_iter().flatten().flatten().collect())
-        .unwrap()
-        .into_pyarray(py)
+        .map(|array| array.into_pyarray(py))
+        .map_err(not_rectangular)
 }
 
 #[pymethods]
@@ -133,19 +144,19 @@ impl PyRunoffFit {
             py,
             self.sampler(),
             self.inner.chains.len(),
-            self.inner.chains[0].len(),
+            self.inner.chains.first().map_or(0, Vec::len),
             "shared lag probabilities; unknown cohort intensities and ultimate counts",
         )
     }
 
     /// Complete integer allocations, shape (chain, draw, cohort, lag including tail).
     #[getter]
-    fn allocation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<u64>> {
+    fn allocation_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray4<u64>>> {
         let shape = (
             self.inner.chains.len(),
-            self.inner.chains[0].len(),
+            self.inner.chains.first().map_or(0, Vec::len),
             self.inner.triangle.counts.len(),
-            self.inner.triangle.counts[0].len(),
+            self.inner.triangle.counts.first().map_or(0, Vec::len),
         );
         let data = self
             .inner
@@ -155,13 +166,13 @@ impl PyRunoffFit {
             .flat_map(|d| d.counts.iter().flatten().copied())
             .collect();
         Array4::from_shape_vec(shape, data)
-            .unwrap()
-            .into_pyarray(py)
+            .map(|array| array.into_pyarray(py))
+            .map_err(not_rectangular)
     }
 
     /// Shared lag probabilities, shape (chain, draw, lag including tail).
     #[getter]
-    fn lag_probability_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+    fn lag_probability_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
         array3(
             py,
             self.inner
@@ -174,7 +185,7 @@ impl PyRunoffFit {
 
     /// Ultimate event counts, shape (chain, draw, cohort).
     #[getter]
-    fn ultimate_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<u64>> {
+    fn ultimate_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<u64>>> {
         array3(
             py,
             self.inner
@@ -187,7 +198,7 @@ impl PyRunoffFit {
 
     /// Gamma-Poisson intensity draws; known-total cohorts have NaN, not a parameter.
     #[getter]
-    fn intensity_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+    fn intensity_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
         array3(
             py,
             self.inner
@@ -209,7 +220,7 @@ impl PyRunoffFit {
 
     /// Remaining unscheduled tail counts, shape (chain, draw, cohort).
     #[getter]
-    fn tail_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<u64>> {
+    fn tail_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<u64>>> {
         array3(py, self.inner.tail_samples())
     }
 
@@ -222,18 +233,18 @@ impl PyRunoffFit {
         steps: usize,
     ) -> PyResult<Bound<'py, PyArray3<u64>>> {
         let values = self.inner.calendar_samples(steps).map_err(runoff_error)?;
-        Ok(array3(py, values))
+        array3(py, values)
     }
 
     #[getter]
-    fn observed_mask<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<bool>> {
+    fn observed_mask<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<bool>>> {
         let rows = &self.inner.triangle.counts;
         Array2::from_shape_vec(
-            (rows.len(), rows[0].len()),
+            (rows.len(), rows.first().map_or(0, Vec::len)),
             rows.iter().flatten().map(Option::is_some).collect(),
         )
-        .unwrap()
-        .into_pyarray(py)
+        .map(|array| array.into_pyarray(py))
+        .map_err(not_rectangular)
     }
 
     #[getter]
@@ -256,7 +267,7 @@ impl PyRunoffFit {
     }
 }
 
-pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyRunoff>()?;
     m.add_class::<PyRunoffFit>()?;
     Ok(())
