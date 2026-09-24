@@ -397,6 +397,21 @@ impl LinearGaussianStateSpace {
         Ok(self)
     }
 
+    /// Replace the per-time noise variances in place, as a sampler does on
+    /// every sweep, with the same validation as `with_observation_variances`.
+    pub(crate) fn set_observation_variances(
+        &mut self,
+        variances: Vec<f64>,
+    ) -> Result<(), StateSpaceError> {
+        if variances.iter().any(|v| !v.is_finite() || *v <= 0.0) {
+            return Err(StateSpaceError::InvalidVariance(
+                "observation variances must be finite and positive".into(),
+            ));
+        }
+        self.observation_variances = Some(variances);
+        Ok(())
+    }
+
     pub(crate) fn has_observation_variances(&self) -> bool {
         self.observation_variances.is_some()
     }

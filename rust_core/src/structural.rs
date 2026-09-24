@@ -378,6 +378,16 @@ impl StructuralConfig {
         }
         LinearGaussianStateSpace::new(d, t, h, q, noise, m, p)
     }
+    /// The assembled model with every variance at its starting value.
+    ///
+    /// `build` validates the configuration and factors every covariance, which
+    /// is O(d^3) work that depends only on the configuration. Samplers build
+    /// this once and then overwrite the diagonal variances with
+    /// [`with_variances`], rather than rebuilding per sweep or per draw.
+    fn template(&self) -> Result<LinearGaussianStateSpace> {
+        let q: Vec<f64> = self.priors().iter().map(|p| p.initial()).collect();
+        self.build(&q, self.observation_variance.initial())
+    }
     fn priors(&self) -> Vec<&VarianceParameter> {
         self.components
             .iter()
@@ -400,6 +410,7 @@ impl StructuralConfig {
             "structural prior predictive",
             &[draws, steps, self.dimension() + self.components.len() + 3],
         )?;
+        let template = self.template()?;
         let prior_seed = chain_seed(seed, 0, STRUCTURAL_PRIOR_SEED_DOMAIN);
         let mut rng = ChaCha8Rng::seed_from_u64(prior_seed);
         let mut chain = vec![];
@@ -410,7 +421,8 @@ impl StructuralConfig {
                 .map(|p| p.sample(0, 0.0, &mut rng))
                 .collect::<Result<Vec<_>>>()?;
             let r = self.observation_variance.sample(0, 0.0, &mut rng)?;
-            let state = self.build(&q, r)?.simulate_initial(&mut rng)?;
+            // The initial state distribution does not depend on the variances.
+            let state = template.simulate_initial(&mut rng)?;
             chain.push(StructuralDraw {
                 variances: q,
                 observation_variance: r,
@@ -435,6 +447,13 @@ fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
 }
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+/// Overwrite a [`StructuralConfig::template`]'s diagonal innovation variances
+/// and its observation variance. Every structural innovation covariance is
+/// diagonal, so this reproduces `build(variances, noise)` exactly.
+fn with_variances(model: &mut LinearGaussianStateSpace, variances: &[f64], noise: f64) {
+    let indices: Vec<usize> = (0..variances.len()).collect();
+    model.set_variances(&indices, variances, noise);
 }
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
@@ -477,6 +496,7 @@ pub fn fit(
         ],
     )?;
     let rows = config.observation_rows(y.len(), design)?;
+    let template = config.template()?.with_observation_rows(rows.clone())?;
     let priors = config.priors();
     let observed = y.iter().filter(|v| v.is_finite()).count();
     let chains = run_gibbs_chains(
@@ -485,6 +505,7 @@ pub fn fit(
         FIT_SEED_DOMAIN,
         |_| {
             Ok::<_, StateSpaceError>(ChainState {
+                model: template.clone(),
                 q: priors.iter().map(|p| p.initial()).collect(),
                 r: config.observation_variance.initial(),
                 lambda: vec![1.0; y.len()],
@@ -492,6 +513,7 @@ pub fn fit(
             })
         },
         |ChainState {
+             model,
              q,
              r,
              lambda,
@@ -499,10 +521,10 @@ pub fn fit(
          },
          rng,
          _retain| {
-            let model = config
-                .build(q, *r)?
-                .with_observation_rows(rows.clone())?
-                .with_observation_variances(lambda.iter().map(|l| *r / l).collect())?;
+            with_variances(model, q, *r);
+            if config.student_df.is_some() {
+                model.set_observation_variances(lambda.iter().map(|l| *r / l).collect())?;
+            }
             let states = model.sample_states_ffbs(y, rng)?;
             for i in 0..d {
                 if matches!(priors[i], VarianceParameter::Fixed(_)) {
@@ -577,6 +599,7 @@ struct DrawPath {
 /// observation variance and, for Student-t observations, the per-time
 /// precision multipliers.
 struct ChainState {
+    model: LinearGaussianStateSpace,
     q: Vec<f64>,
     r: f64,
     lambda: Vec<f64>,
@@ -632,14 +655,14 @@ impl StructuralPosterior {
             ],
         )?;
         let rows = self.config.observation_rows(steps, design)?;
+        let template = self.config.template()?;
         let per_draw = simulate_draws(
             &self.chains,
             seed,
             FORECAST_SEED_DOMAIN,
             |_, _, draw: &StructuralDraw, rng| {
-                let model = self
-                    .config
-                    .build(&draw.variances, draw.observation_variance)?;
+                let mut model = template.clone();
+                with_variances(&mut model, &draw.variances, draw.observation_variance);
                 let mut state = draw.terminal_state.clone();
                 let mut path = DrawPath::default();
                 let mut total = 0.0;

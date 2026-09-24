@@ -237,31 +237,39 @@ pub fn fit_bayesian_seasonal_local_level(
     let schedule = config.validate()?;
     let observed_count = validate_observations(observations)? as f64;
     let transitions = observations.len() as f64;
+    // Built and validated once; each sweep overwrites only the level (0) and
+    // seasonal (1) innovation variances and the observation variance.
+    let template = LinearGaussianStateSpace::seasonal_local_level(
+        config.period,
+        config.level_variance_prior.mode(),
+        config.seasonal_variance_prior.mode(),
+        config.observation_variance_prior.mode(),
+        config.initial_level,
+        config.initial_seasonal_effects.clone(),
+        config.initial_level_variance,
+        config.initial_seasonal_variance,
+    )
+    .map_err(|error| numerical(&format!("could not build seasonal state model: {error}")))?;
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
         |_| {
-            Ok::<_, BayesianForecastError>([
-                config.level_variance_prior.mode(),
-                config.seasonal_variance_prior.mode(),
-                config.observation_variance_prior.mode(),
-            ])
+            Ok::<_, BayesianForecastError>((
+                template.clone(),
+                [
+                    config.level_variance_prior.mode(),
+                    config.seasonal_variance_prior.mode(),
+                    config.observation_variance_prior.mode(),
+                ],
+            ))
         },
-        |[level_variance, seasonal_variance, observation_variance], rng, retain| {
-            let model = LinearGaussianStateSpace::seasonal_local_level(
-                config.period,
-                *level_variance,
-                *seasonal_variance,
+        |(model, [level_variance, seasonal_variance, observation_variance]), rng, retain| {
+            model.set_variances(
+                &[0, 1],
+                &[*level_variance, *seasonal_variance],
                 *observation_variance,
-                config.initial_level,
-                config.initial_seasonal_effects.clone(),
-                config.initial_level_variance,
-                config.initial_seasonal_variance,
-            )
-            .map_err(|error| {
-                numerical(&format!("could not build seasonal state model: {error}"))
-            })?;
+            );
             // states[0] is x[-1], followed by x[0]..x[T-1].
             let states = model
                 .sample_states_ffbs(observations, rng)
