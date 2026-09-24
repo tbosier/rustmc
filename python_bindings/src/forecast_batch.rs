@@ -1,11 +1,40 @@
 //! Native independent-cell forecasting bindings. One pool spans cells and chains.
+use super::ar::{PyBayesianArFit, PyBayesianArForecast, PyBayesianAutoRegression};
 use super::hurdle::{PyHurdleFit, PyHurdleForecast, PyHurdleLogNormal};
+use super::local_level::{PyBayesianForecastResult, PyBayesianLocalLevel, PyBayesianLocalLevelFit};
 use super::regression::{
     PyBayesianRegressionFit, PyBayesianRegressionForecast, PyGaussianCoefficientPrior,
 };
-use super::*;
+use super::seasonal::{
+    PyBayesianSeasonalForecast, PyBayesianSeasonalLocalLevel, PyBayesianSeasonalLocalLevelFit,
+};
+use super::trend::{
+    PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
+};
+use crate::{forecast_diagnostics, StateSpaceError};
+use pyo3::exceptions::PyValueError;
+use pyo3::prelude::*;
+use pyo3::types::PyDict;
+use rustmc_core::bayesian_ar::{
+    fit_bayesian_ar, BayesianArConfig as CoreBayesianArConfig,
+    BayesianArForecast as CoreBayesianArForecast,
+};
+use rustmc_core::bayesian_forecast::{
+    fit_bayesian_local_level, BayesianLocalLevelConfig as CoreBayesianLocalLevelConfig,
+    PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
+};
 use rustmc_core::bayesian_regression::{
     fit_regression, GaussianCoefficientPrior, RegressionConfig, RegressionForecast,
+};
+use rustmc_core::bayesian_seasonal::{
+    fit_bayesian_seasonal_local_level,
+    BayesianSeasonalLocalLevelConfig as CoreBayesianSeasonalLocalLevelConfig,
+    SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
+};
+use rustmc_core::bayesian_trend::{
+    fit_bayesian_local_linear_trend,
+    BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
+    TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
 use rustmc_core::diagnostics::DiagnosticsReport;
 use rustmc_core::forecast_batch::{
@@ -686,4 +715,11 @@ pub(crate) fn forecast_cell_seed(seed: u64, cell_id: &str, domain: &str) -> PyRe
         return Err(PyValueError::new_err("domain must be 'fit' or 'forecast'"));
     }
     Ok(stable_cell_seed(seed, cell_id, domain))
+}
+
+pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
+    m.add_function(wrap_pyfunction!(forecast_cell_seed, m)?)?;
+    m.add_class::<PyForecastBatchFit>()?;
+    m.add_class::<PyForecastBatchForecast>()?;
+    Ok(())
 }

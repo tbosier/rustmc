@@ -1,5 +1,6 @@
 //! Python conversion for the native joint dynamic GLM kernel.
-use crate::{arviz_from_groups, bayesian_forecast_error, forecast_diagnostics};
+use crate::forecast_support::bayesian_forecast_error;
+use crate::{arviz_from_groups, forecast_diagnostics};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray4};
 use pyo3::prelude::*;
