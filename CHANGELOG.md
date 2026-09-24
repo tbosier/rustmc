@@ -6,11 +6,135 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+Nothing since 0.12.0 has been published. The manifests already say 0.13.0, and the
+changes below will ship under that number. An earlier revision of this file dated
+0.13.0 to 2026-09-18, but no tag, PyPI upload or crates.io upload was made for it.
+The changes came out of three repository-wide reviews and are grouped by review,
+newest first.
+
+### Third review (2026-09-24)
+
+This review found the NUTS sampler adapting a dense metric it could not estimate,
+chains that were neither independently seeded nor independently started, and a
+release that was dated but never published. **Seeded output changes for every model**:
+the sampler, every Gibbs kernel, dynamic GLM and runoff now draw from different
+streams and start from different points than in 0.12.0.
+
+#### Added
+
+- `metric="auto" | "diag" | "dense"` on `sample`, `CompiledModel.sample`,
+  `sample_batch` and `batch_sample`, and a `metric` field on `SamplerConfig`,
+  `NutsConfig`, `HmcConfig` and `BatchSampleConfig`. Rust struct literals of those
+  configs need the new field or `..Default::default()`.
+- `rustmc_core::forecast_common`, holding what the forecasting samplers had each
+  copied: the Gibbs schedule and chain driver, forecast path orchestration and
+  summaries, the inverse-gamma draw, Cholesky, and the size guard
+  `checked_value_count` / `AllocationLimitError` / `MAX_MATERIALIZED_VALUES`.
+- `rustmc_core::adaptation` (Stan's warmup schedule, dual averaging and the
+  step-size search, now shared by NUTS and HMC) and `rustmc_core::numerics`.
+- `Evaluator::forward`, a forward-only evaluation used by prediction.
+- `HurdleLogNormalPosterior::diagnostics()` and
+  `HurdleLogNormalForecast::expected_value_{paths,means,quantiles}`.
+- `rust-version = "1.87"` for `rustmc_core`, checked by a CI job.
+- Python 3.14 in the install-test matrices and classifiers.
+- CI publishes `rustmc_core` to crates.io before the PyPI upload on release tags,
+  behind a `crates-io` environment, and runs the ignored prediction-stream test and
+  the network packaging test. See `docs/releasing.md` for the one-time setup.
+
+#### Changed
+
+- **Vector parameters no longer always get a dense metric.** Every vector
+  parameter of 2 to 512 elements used to get a dense metric block estimated from at
+  most 200 warmup draws, which is noisy at 50 dimensions and singular above 200. An
+  isotropic 300-element posterior took 431 leapfrog steps per iteration and 31
+  seconds; it now takes 15 steps and 0.26 seconds, the same as scalar parameters.
+  The default `"auto"` goes dense only when a window's correlation clearly exceeds
+  its own sampling noise, which keeps the gain on correlated regression coefficients
+  (ESS per second on a 20-coefficient ρ=0.9 regression rose from about 32k to 60k).
+- **The last warmup window is stretched, not cut short**, following Stan. At
+  `warmup=1000` the final metric came from 100 draws (850–950) and discarded the
+  400-draw estimate; it now comes from draws 450–950. The default `warmup=500` was
+  unaffected. HMC now uses the same windowed schedule instead of one 15–90% window.
+- **Chains are seeded independently.** The graph sampler seeded chain `c` with
+  `seed + c`, so seed 42's second chain was seed 43's first. Every sampler now keys
+  chains through `seeding::chain_seed`, which mixes seed, domain and chain index in
+  separate rounds so that no fixed offset of the seed reproduces another chain.
+- **Chains start from different points.** Without `init`, graph-model chains start
+  uniformly on (−2, 2) in unconstrained coordinates, redrawing non-finite starts. The
+  local-level, trend, seasonal, regression, structural, hurdle and hierarchical
+  Gibbs samplers start each chain from its own overdispersed point instead of the
+  prior mode or the data means. Split R-hat assumes dispersed starts.
+- Forward-filtering backward-sampling runs one filter pass instead of two, 25–45%
+  faster; draws differ in the last bits. Hurdle uses the scalar version.
+- Dynamic GLM block updates evaluate only the groups a block touches: a sweep is
+  O(G·T) rather than O(G²·T), 20–90× faster at 50–200 groups, with the same target.
+- Dynamic GLM forecasts and prior predictions, and runoff fits, run chains in
+  parallel with results independent of thread count.
+- Effective sample size uses an FFT for the autocovariance beyond the first lags,
+  and diagnostics are computed in parallel over parameters.
+- Seasonal fits and trend or seasonal regressions need three finite observations;
+  structural fits need one per inverse-gamma variance. Structural fits previously
+  accepted a series with no finite value.
+- Structural fits with `thin > 1` keep the last sweep of each thinning block, like
+  every other sampler.
+- Runoff errors raise `InferenceError`, a `ValueError` subclass. `fit_runoff`,
+  `PaymentTriangle::validate`, `elliptical_slice::update` and
+  `observation::{log_density, mean, sample}` return typed errors with the same
+  messages; `elliptical_slice::update` accepts `FnMut`.
+- The documentation site deploys after a release publishes instead of on every push
+  to `main`, so it no longer describes behaviour `pip install rustmc` does not have.
+- Release-path GitHub Actions are pinned to commit SHAs, the PyPI publish job runs
+  in a `pypi` environment, and CI caches Rust builds.
+- `scripts/dev_pytest.sh` honours `RUSTMC_VENV` and finds the main checkout's
+  virtual environment instead of a hard-coded home directory.
+
+#### Fixed
+
+- Effective sample size now matches ArviZ: Geyer's final positive term was dropped,
+  bulk ESS ranked before splitting, and the tail indicator used `>=` rather than
+  `<=`. ESS read slightly high before.
+- Invalid input reaching the Rust API returned panics instead of errors: an
+  out-of-range group index, an empty data vector, a graph node referring to a later
+  node, a vector used as a log-density term or a scale, a wrong-length `init`, and
+  the raw `nuts::run_chain` / `hmc::run_chain` entry points. The Python API was
+  already guarded.
+- Oversized forecasts or draw counts for the local-level, trend, seasonal and AR
+  models aborted the process; they now raise, like the other models.
+- `digamma` never returned for arguments at or below −2⁵³ or −∞.
+- Normal and log-normal observation terms returned NaN rather than −∞ for a scale
+  at or below zero.
+- The step-size search could return a non-finite step, repeated its first probe and
+  reused one momentum draw for every probe.
+- Runoff chain 0 ran on the raw seed.
+- The NUTS leapfrog step allocated about five times per step despite being
+  documented as allocation-free; a counting-allocator test now holds it to that.
+- An AR forecast overflowing on an explosive draw names the chain, draw and step.
+- State simulation errors name the covariance that failed.
+- `hierarchical.rs` no longer claims the conjugate Gibbs sampler avoids funnel
+  geometry; with weak data it can stick near a group variance of zero.
+
+#### Removed
+
+- `sampler::{batch_sample, sample_batch_bound, sample_batch_bound_with_options,
+  BoundBatchResult}`, `distributions::Distribution`, `Normal::observed`,
+  `MassMatrix::{accumulator, dim}` and `MassMatrixAccumulator::reset`. None had a
+  caller outside tests; `batch_sample` also silently dropped part of its input.
+  `progress::spawn_progress_thread` and `runoff::known_total_hazard_posterior` are
+  no longer public.
+- `demo-docs/` (1.3 MB of internal material measured on 0.9.0),
+  `docs/forecasting-extension-review.md` (a stale internal review note),
+  `scripts/verify_version.sh`, and the example scripts `compare_with_pymc.py`,
+  `benchmark_vs_pymc.py`, `benchmark_multivariate.py` and `run_benchmarks.py`, which
+  `benchmarks/run.py` supersedes. `batch_many_series.py` moved to
+  `benchmarks/comparisons/`.
+
+### Second review (2026-09-19)
+
 This entry closes a second repository-wide review. Two themes dominate: claims —
 in documentation, in test names, and in a release gate — that the code did not
 support, and predictive draws sharing an RNG stream with the fit that produced them.
 
-### Added
+#### Added
 
 - `rustmc_core::seeding`, the single definition of the RNG stream-separation
   primitive that eight modules each carried a private copy of — seven named
@@ -22,18 +146,18 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   checks that each guide page's code blocks run when read in order, and that the
   output shown on the landing page is what the code above it prints.
 
-### Changed
+#### Changed
 
 - **Seeded predictive draws change.** `posterior_predictive`, `predict`,
   `to_arviz(include_ppc=True)`, `sample_prior_predictive` and
   `rustmc_core::model::ModelFit::predict` now derive their stream from a domain
   constant instead of using the caller's seed directly. Draws remain deterministic
-  and reproducible; a given seed produces different values than in 0.13.0. See Fixed.
+  and reproducible; a given seed produces different values than in 0.12.0. See Fixed.
 - **Seeded hurdle fits change.** Consolidating the seven private copies of the
   stream-separation primitive settled on the additive form six of them used; `hurdle`
   combined its arguments with XOR. Its fitting chains therefore draw different streams
   for the same seed from chain one onward, so a seeded hurdle posterior differs from
-  0.13.0. Nothing about the model changed.
+  0.12.0. Nothing about the model changed.
 - The documentation nav is grouped into sections, and `mkdocs.yml` sets
   `strict: true` so an orphan page or a nav entry pointing at a renamed file fails
   the build rather than shipping.
@@ -41,7 +165,7 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   `quality_gate.domains` the report now publishes and what a domain does not
   establish.
 
-### Fixed
+#### Fixed
 
 - **The benchmark quality gate passed on diagnostics that were not numbers.** Each
   metric was compared with a bare `>` or `<`, which reports false for a NaN, so
@@ -90,7 +214,7 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
 - A published claim that a compiled model is "validated and laid out once rather than
   per instrument". Every chain of every fit revalidates its binding and rebuilds its
   evaluator layout; what is shared is the graph structure.
-- An unsupported "63x the cost per gradient" figure in the 0.13.0 entry, which no
+- An unsupported "63x the cost per gradient" figure in the first-review entry, which no
   retained measurement in the repository supports.
 - **Recovery tests a prior-only sampler would have passed.** Across the recovery
   suite, the seasonal, trend and forecast tests, the hurdle, regression, structural
@@ -115,7 +239,7 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   so on the PyPI project page all twelve resolved against `pypi.org` and 404'd,
   including every "Start here" entry.
 
-### Removed
+#### Removed
 
 - Four `Op` variants no callable path could reach, three public items with no caller,
   and the `Option` around a batch cell's fit, which could not be `None`.
@@ -125,13 +249,13 @@ support, and predictive draws sharing an RNG stream with the fit that produced t
   the site build already treated it as local scratch, and it reviewed a revision two
   releases back. The copy on disk is untouched.
 
-## [0.13.0] - 2026-09-18
+### First review (2026-09-18)
 
-This release closes a repository-wide correctness review. The headline item is a
+This part closes a repository-wide correctness review. The headline item is a
 regression in 0.12.0 that silently transposed Fortran-ordered design matrices; if
 you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 
-### Added
+#### Added
 
 
 - `rustmc_core::model::GraphModel::sample_prior` and `GraphModel::prior_predictive`,
@@ -149,7 +273,7 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   `examples/README.md` must run inside a time budget, and a script in neither a README
   table nor an excluded section fails the build.
 
-### Changed
+#### Changed
 
 
 - **Breaking (alpha Rust API):** `nuts::run_chain`, `nuts::run_chain_bound`,
@@ -172,7 +296,7 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   panel example used 168 dense one-hot indicator columns instead of the library's own
   group indexing, and stacked four nested intercept blocks that were not identified.
 
-### Fixed
+#### Fixed
 
 
 - **Fortran-ordered and otherwise non-C-contiguous 2-D inputs are no longer read as
@@ -282,7 +406,7 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
   scale or response floors, including very small positive LogNormal observations.
 - Apply unit-independent covariance symmetry checks to specialized Gaussian models.
 
-### Removed
+#### Removed
 
 
 - **Breaking (alpha Rust API):** `rustmc_core::compiled_model` and its re-exports
@@ -457,7 +581,8 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/tbosier/rustmc/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tbosier/rustmc/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tbosier/rustmc/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/tbosier/rustmc/compare/v0.8.0...v0.9.0
