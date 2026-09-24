@@ -101,8 +101,12 @@ def test_short_diagnostics_and_invalid_prior():
         np.array([[0., np.nan]]), [0], 0, [2], draws=2, chains=1,
     )
     assert all(row["r_hat"] is None for row in fit.diagnostics())
-    with pytest.raises(ValueError):
+    with pytest.raises(rustmc.InferenceError, match="steps must be positive"):
         fit.calendar_samples(0)
+    with pytest.raises(rustmc.InferenceError, match="cohort 0: closed row"):
+        rustmc.DirichletMultinomialRunoff([1, 1]).fit(
+            np.array([[1., 2.]]), [0], 3, [7], draws=2, chains=1,
+        )
     for alpha in ([1], [1, 0], [1, np.inf]):
         with pytest.raises(ValueError):
             rustmc.DirichletMultinomialRunoff(alpha)

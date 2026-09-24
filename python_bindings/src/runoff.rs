@@ -3,7 +3,9 @@ use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4, PyReadonlyArray2};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::runoff::{fit_runoff, PaymentTriangle, RunoffConfig, RunoffPosterior};
+use rustmc_core::runoff::{
+    fit_runoff, PaymentTriangle, RunoffConfig, RunoffError, RunoffPosterior,
+};
 
 /// Pooled Dirichlet lag probabilities for integer payment-event counts.
 /// The last alpha entry is an unscheduled tail. Unknown ultimate counts use an
@@ -85,9 +87,15 @@ impl PyRunoff {
         };
         let inner = py
             .allow_threads(|| fit_runoff(&triangle, &config))
-            .map_err(PyValueError::new_err)?;
+            .map_err(runoff_error)?;
         Ok(PyRunoffFit { inner })
     }
+}
+
+/// Both kinds raise `InferenceError`, a `ValueError` subclass, so callers
+/// that caught `ValueError` before the core error was typed still do.
+fn runoff_error(error: RunoffError) -> PyErr {
+    crate::InferenceError::new_err(error.to_string())
 }
 
 #[pyclass(name = "RunoffFit", module = "rustmc")]
@@ -211,10 +219,7 @@ impl PyRunoffFit {
         py: Python<'py>,
         steps: usize,
     ) -> PyResult<Bound<'py, PyArray3<u64>>> {
-        let values = self
-            .inner
-            .calendar_samples(steps)
-            .map_err(PyValueError::new_err)?;
+        let values = self.inner.calendar_samples(steps).map_err(runoff_error)?;
         Ok(array3(py, values))
     }
 

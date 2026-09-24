@@ -1,4 +1,5 @@
 use crate::hmc::TransitionStats;
+use rayon::prelude::*;
 use std::collections::HashSet;
 
 /// Narrowest the parameter-name column is ever drawn.
@@ -391,44 +392,12 @@ pub fn compute_diagnostics(
         };
     }
 
-    let mut params = Vec::with_capacity(n_params);
-
-    for pidx in 0..n_params {
-        // Extract per-chain traces for this parameter
-        let chains: Vec<Vec<f64>> = (0..n_chains)
-            .map(|c| samples[c].iter().map(|draw| draw[pidx]).collect())
-            .collect();
-
-        if chains.iter().flatten().any(|value| !value.is_finite()) {
-            params.push(unavailable_parameter(param_names[pidx].clone()));
-            continue;
-        }
-        let (mean, std) = scaled_moments(|| chains.iter().flatten().copied());
-        let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
-        all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
-        let ess_bulk = ess_bulk_chains(&chains);
-        let ess_tail = ess_tail_chains(&chains);
-        let r_hat = r_hat_chains(&chains);
-        let ess_mean = ess_raw(&chains);
-        let mcse_mean = if ess_mean > 0.0 {
-            std / ess_mean.sqrt()
-        } else {
-            f64::NAN
-        };
-
-        params.push(ParamDiagnostics {
-            name: param_names[pidx].clone(),
-            mean,
-            std,
-            hdi_3,
-            hdi_97,
-            ess_bulk,
-            ess_tail,
-            r_hat,
-            mcse_mean,
-        });
-    }
+    // Parameters are independent, and a hierarchical fit can have thousands.
+    let params = param_names
+        .par_iter()
+        .enumerate()
+        .map(|(pidx, name)| parameter_diagnostics(samples, pidx, name))
+        .collect();
 
     DiagnosticsReport {
         params,
@@ -436,6 +405,39 @@ pub fn compute_diagnostics(
         num_draws: n_draws,
         accept_rates: accept_rates.to_vec(),
         divergences,
+    }
+}
+
+fn parameter_diagnostics(samples: &[Vec<Vec<f64>>], pidx: usize, name: &str) -> ParamDiagnostics {
+    let chains: Vec<Vec<f64>> = samples
+        .iter()
+        .map(|chain| chain.iter().map(|draw| draw[pidx]).collect())
+        .collect();
+
+    if chains.iter().flatten().any(|value| !value.is_finite()) {
+        return unavailable_parameter(name.to_string());
+    }
+    let (mean, std) = scaled_moments(|| chains.iter().flatten().copied());
+    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let (hdi_3, hdi_97) = hdi_interval_sorted(&all, 0.94);
+    let ess_mean = ess_raw(&chains);
+    let mcse_mean = if ess_mean > 0.0 {
+        std / ess_mean.sqrt()
+    } else {
+        f64::NAN
+    };
+
+    ParamDiagnostics {
+        name: name.to_string(),
+        mean,
+        std,
+        hdi_3,
+        hdi_97,
+        ess_bulk: ess_bulk_chains(&chains),
+        ess_tail: ess_tail_chains(&chains),
+        r_hat: r_hat_chains(&chains),
+        mcse_mean,
     }
 }
 
@@ -678,6 +680,9 @@ fn hdi_interval_sorted(sorted: &[f64], probability: f64) -> (f64, f64) {
 }
 
 /// Rank-normalized, folded split R-hat (Vehtari et al. 2021).
+///
+/// A single chain is split and its halves compared, as Stan and the R
+/// `posterior` package do; ArviZ returns NaN for fewer than two chains.
 fn r_hat_chains(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
     if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 2) {
@@ -729,45 +734,56 @@ fn basic_r_hat(chains: &[Vec<f64>]) -> f64 {
 }
 
 /// Bulk ESS using rank-normalized values (Vehtari et al. 2021).
+///
+/// The chains are split before they are ranked, as Stan and ArviZ do. Ranking
+/// first differs for an odd draw count, because the split drops each chain's
+/// middle draw and so changes every rank.
 fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
-    let ranked = rank_normalize(chains);
-    ess_raw(&ranked)
+    let split = split_chains(chains);
+    if !has_enough_split_draws(&split) {
+        return f64::NAN;
+    }
+    ess_split(&rank_normalize(&split))
 }
 
 /// Tail ESS: minimum of ESS for the lower and upper tail indicators.
+///
+/// Both indicators are `x <= q`, as in ArviZ and Stan. The upper one could as
+/// well be its complement, which has the same ESS, but `x >= q` is not that
+/// complement when a draw sits exactly on the quantile.
 fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
-    let all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
-    let q05 = {
-        let mut s = all.clone();
-        s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        quantile_sorted(&s, 0.05)
+    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if all.first() == all.last() {
+        // A parameter that never moved has no tail, as it has no bulk.
+        return f64::NAN;
+    }
+    let below = |q: f64| -> Vec<Vec<f64>> {
+        chains
+            .iter()
+            .map(|c| c.iter().map(|&x| if x <= q { 1.0 } else { 0.0 }).collect())
+            .collect()
     };
-    let q95 = {
-        let mut s = all;
-        s.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-        quantile_sorted(&s, 0.95)
-    };
-
-    let lower: Vec<Vec<f64>> = chains
-        .iter()
-        .map(|c| {
-            c.iter()
-                .map(|&x| if x <= q05 { 1.0 } else { 0.0 })
-                .collect()
-        })
-        .collect();
-    let upper: Vec<Vec<f64>> = chains
-        .iter()
-        .map(|c| {
-            c.iter()
-                .map(|&x| if x >= q95 { 1.0 } else { 0.0 })
-                .collect()
-        })
-        .collect();
-
-    let ess_lo = ess_raw(&lower);
-    let ess_hi = ess_raw(&upper);
+    let ess_lo = indicator_ess(&below(quantile_sorted(&all, 0.05)));
+    let ess_hi = indicator_ess(&below(quantile_sorted(&all, 0.95)));
     ess_lo.min(ess_hi)
+}
+
+/// ESS of a tail indicator. When 5% of the draws share an extreme value, or
+/// the split drops the only draws past a quantile, the split indicator is
+/// constant although the parameter is not. ArviZ scores that as the split
+/// draw count; returning NaN instead would let `f64::min` silently report the
+/// other tail alone.
+fn indicator_ess(chains: &[Vec<f64>]) -> f64 {
+    let split = split_chains(chains);
+    if !has_enough_split_draws(&split) {
+        return f64::NAN;
+    }
+    let first = split[0][0];
+    if split.iter().flatten().all(|&value| value == first) {
+        return (split.len() * split[0].len()) as f64;
+    }
+    ess_split(&split)
 }
 
 /// Rank-normalize: replace values with their normal scores.
@@ -800,7 +816,7 @@ fn rank_normalize(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
         i = j;
     }
 
-    // Normal scores: Φ⁻¹((rank - 3/8) / (N - 1/4))
+    // Blom's normal scores: Φ⁻¹((rank - 3/8) / (N + 1/4)).
     let n_f = total as f64;
     let mut result = vec![vec![0.0; n_per]; n_chains];
     for (idx, &(_, ci, di)) in indexed.iter().enumerate() {
@@ -810,79 +826,237 @@ fn rank_normalize(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
     result
 }
 
-/// ESS from split chains using autocorrelation (Geyer's initial monotone sequence).
+/// ArviZ and Stan need four draws per chain, which leaves two per split half.
+fn has_enough_split_draws(split: &[Vec<f64>]) -> bool {
+    split.len() >= 2 && split[0].len() >= 2
+}
+
+/// ESS of the mean from split chains.
 fn ess_raw(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
-    if split.len() < 2 || split.first().is_none_or(|chain| chain.len() < 3) {
+    if !has_enough_split_draws(&split) {
         return f64::NAN;
     }
-    let (_, _, split) = normalize_chains(&split);
+    ess_split(&split)
+}
+
+/// ESS of chains that are already split, by Geyer's initial monotone sequence
+/// estimator exactly as Stan and ArviZ implement it.
+fn ess_split(split: &[Vec<f64>]) -> f64 {
+    let (_, _, split) = normalize_chains(split);
     let m = split.len();
     let n = split[0].len();
-
-    let chain_means: Vec<f64> = split.iter().map(|c| mean(c)).collect();
     let m_f = m as f64;
     let n_f = n as f64;
 
-    let w: f64 = split
+    let chain_means: Vec<f64> = split.iter().map(|c| mean(c)).collect();
+    let mut acov = LazyAutocovariance::new(&split, &chain_means);
+    let acov_0 = acov.at(0);
+    let w = acov_0 * n_f / (n_f - 1.0);
+    let grand_mean = mean(&chain_means);
+    let between = chain_means
         .iter()
-        .map(|c| {
-            let cm = mean(c);
-            c.iter().map(|&x| (x - cm).powi(2)).sum::<f64>() / (n_f - 1.0)
-        })
+        .map(|chain_mean| (chain_mean - grand_mean).powi(2))
         .sum::<f64>()
-        / m_f;
-
-    if w <= 0.0 {
-        return f64::NAN;
-    }
-
-    let b = n_f / (m_f - 1.0)
-        * chain_means
-            .iter()
-            .map(|chain_mean| (chain_mean - mean(&chain_means)).powi(2))
-            .sum::<f64>();
-    let var_plus = (n_f - 1.0) / n_f * w + b / n_f;
+        / (m_f - 1.0);
+    let var_plus = acov_0 + between;
+    // Stan returns NaN when every draw is equal; ArviZ returns the draw count.
+    // Nothing about such a parameter has an effective sample size.
     if !var_plus.is_finite() || var_plus <= 0.0 {
         return f64::NAN;
     }
+    let mut rho = |lag: usize| 1.0 - (w - acov.at(lag)) / var_plus;
 
-    // Estimate autocorrelations with V-hat-plus in the denominator. The
-    // autocovariance uses the biased (1 / n) estimator used by Stan/ArviZ.
-    let rho_at = |lag: usize| {
-        let mut gamma = 0.0f64;
-        for (ci, chain) in split.iter().enumerate() {
-            let cm = chain_means[ci];
-            let valid = n - lag;
-            for t in 0..valid {
-                gamma += (chain[t] - cm) * (chain[t + lag] - cm);
-            }
+    // Geyer's initial positive sequence over pairs (rho_{t+1}, rho_{t+2}),
+    // stopping at the first pair whose sum is not positive. A pair that sums
+    // below zero is left out; its even term is still kept on its own below.
+    let mut rho_hat = vec![0.0; n];
+    let mut rho_even = 1.0;
+    let mut rho_odd = rho(1);
+    rho_hat[0] = rho_even;
+    rho_hat[1] = rho_odd;
+    let mut t = 1;
+    while t + 3 < n && rho_even + rho_odd > 0.0 {
+        rho_even = rho(t + 1);
+        rho_odd = rho(t + 2);
+        if rho_even + rho_odd >= 0.0 {
+            rho_hat[t + 1] = rho_even;
+            rho_hat[t + 2] = rho_odd;
         }
-        gamma /= m_f * n_f;
-        1.0 - (w - gamma) / var_plus
-    };
+        t += 2;
+    }
+    // The retained pairs end at lag `last_even - 1`; `last_even` is the even
+    // lag of the pair that ended the sequence. Adding that term on its own
+    // when it is positive (Stan's "improved estimate") reduces the variance of
+    // the estimate for antithetic chains.
+    let last_even = t - 1;
+    if rho_even > 0.0 {
+        rho_hat[last_even] = rho_even;
+    }
 
-    // Geyer's initial positive sequence, followed by the initial monotone
-    // sequence. The first pair includes rho_0 = 1.
-    let mut pair_sums = Vec::new();
-    let mut lag = 1;
-    while lag < n {
-        let rho_even = if lag == 1 { 1.0 } else { rho_at(lag - 1) };
-        let rho_odd = rho_at(lag);
-        let mut pair_sum = rho_even + rho_odd;
-        if !pair_sum.is_finite() || pair_sum < 0.0 {
-            break;
+    // Geyer's initial monotone sequence.
+    let mut t = 1;
+    while t + 2 < last_even {
+        let previous = rho_hat[t - 1] + rho_hat[t];
+        if rho_hat[t + 1] + rho_hat[t + 2] > previous {
+            rho_hat[t + 1] = previous / 2.0;
+            rho_hat[t + 2] = previous / 2.0;
         }
-        if let Some(previous) = pair_sums.last() {
-            pair_sum = pair_sum.min(*previous);
-        }
-        pair_sums.push(pair_sum);
-        lag += 2;
+        t += 2;
     }
 
     let total_draws = m_f * n_f;
-    let tau = (-1.0 + 2.0 * pair_sums.iter().sum::<f64>()).max(1.0 / total_draws.log10());
-    total_draws / tau
+    let tau = -1.0 + 2.0 * rho_hat[..last_even].iter().sum::<f64>() + rho_hat[last_even];
+    if rho_hat.iter().any(|value| value.is_nan()) {
+        return f64::NAN;
+    }
+    total_draws / tau.max(1.0 / total_draws.log10())
+}
+
+/// Chain-averaged autocovariance, computed only as far as Geyer's sequence
+/// asks for it.
+///
+/// Well-mixed chains end the sequence within a few lags, where the direct sum
+/// is cheapest. A slowly mixing chain can run it to lag `n`, where the direct
+/// sum costs `O(n²)`; past a cutoff of the order of the transform's own cost
+/// every lag comes from [`mean_autocovariance`] instead, so the total stays
+/// `O(n log n)`.
+struct LazyAutocovariance<'a> {
+    chains: &'a [Vec<f64>],
+    means: &'a [f64],
+    values: Vec<f64>,
+    direct_lag_limit: usize,
+}
+
+impl<'a> LazyAutocovariance<'a> {
+    fn new(chains: &'a [Vec<f64>], means: &'a [f64]) -> Self {
+        let n = chains[0].len();
+        let log_size = (2 * n).next_power_of_two().trailing_zeros() as usize;
+        Self {
+            chains,
+            means,
+            values: Vec::new(),
+            direct_lag_limit: 4 * log_size,
+        }
+    }
+
+    fn at(&mut self, lag: usize) -> f64 {
+        while self.values.len() <= lag {
+            let next = self.values.len();
+            if next >= self.direct_lag_limit {
+                self.values = mean_autocovariance(self.chains, self.means);
+                break;
+            }
+            self.values
+                .push(direct_autocovariance(self.chains, self.means, next));
+        }
+        self.values[lag]
+    }
+}
+
+/// Chain-averaged autocovariance at one lag, with the biased `1/n` estimator
+/// Stan and ArviZ use.
+fn direct_autocovariance(chains: &[Vec<f64>], means: &[f64], lag: usize) -> f64 {
+    let n = chains[0].len();
+    let mut gamma = 0.0;
+    for (chain, chain_mean) in chains.iter().zip(means) {
+        gamma += chain[..n - lag]
+            .iter()
+            .zip(&chain[lag..])
+            .map(|(a, b)| (a - chain_mean) * (b - chain_mean))
+            .sum::<f64>();
+    }
+    gamma / (n * chains.len()) as f64
+}
+
+/// Chain-averaged autocovariance at every lag `0..n` through the FFT. Zero
+/// padding to at least `2n` makes the circular correlation equal the linear
+/// one.
+fn mean_autocovariance(chains: &[Vec<f64>], means: &[f64]) -> Vec<f64> {
+    let n = chains[0].len();
+    let size = (2 * n).next_power_of_two();
+    let twiddles = fft_twiddles(size);
+    let mut power = vec![0.0; size];
+    let mut re = vec![0.0; size];
+    let mut im = vec![0.0; size];
+    // Two real chains share one complex transform: for z = a + ib,
+    // |A_k|² + |B_k|² = (|Z_k|² + |Z_{-k}|²) / 2.
+    for (pair, pair_means) in chains.chunks(2).zip(means.chunks(2)) {
+        re.fill(0.0);
+        im.fill(0.0);
+        for (slot, x) in re.iter_mut().zip(&pair[0]) {
+            *slot = x - pair_means[0];
+        }
+        if let (Some(chain), Some(chain_mean)) = (pair.get(1), pair_means.get(1)) {
+            for (slot, x) in im.iter_mut().zip(chain) {
+                *slot = x - chain_mean;
+            }
+        }
+        fft_in_place(&mut re, &mut im, &twiddles);
+        for (k, bin) in power.iter_mut().enumerate() {
+            let mirror = (size - k) % size;
+            *bin += 0.5
+                * (re[k] * re[k]
+                    + im[k] * im[k]
+                    + re[mirror] * re[mirror]
+                    + im[mirror] * im[mirror]);
+        }
+    }
+    // A real, even spectrum is its own forward transform up to the factor
+    // `size`, so the inverse transform needs no conjugation.
+    re.copy_from_slice(&power);
+    im.fill(0.0);
+    fft_in_place(&mut re, &mut im, &twiddles);
+    let scale = 1.0 / (size as f64 * n as f64 * chains.len() as f64);
+    re[..n].iter().map(|value| value * scale).collect()
+}
+
+/// `exp(-2πik/size)` for `k < size / 2`, each computed directly so the error
+/// does not accumulate the way a recurrence's does.
+fn fft_twiddles(size: usize) -> Vec<(f64, f64)> {
+    (0..size / 2)
+        .map(|k| {
+            let (sin, cos) = (-2.0 * std::f64::consts::PI * k as f64 / size as f64).sin_cos();
+            (cos, sin)
+        })
+        .collect()
+}
+
+/// Iterative radix-2 forward FFT; `re.len()` must be a power of two.
+fn fft_in_place(re: &mut [f64], im: &mut [f64], twiddles: &[(f64, f64)]) {
+    let size = re.len();
+    let mut j = 0;
+    for i in 1..size {
+        let mut bit = size >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= size {
+        let half = len / 2;
+        let stride = size / len;
+        for start in (0..size).step_by(len) {
+            for k in 0..half {
+                let (wr, wi) = twiddles[k * stride];
+                let a = start + k;
+                let b = a + half;
+                let tr = re[b] * wr - im[b] * wi;
+                let ti = re[b] * wi + im[b] * wr;
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
 }
 
 fn split_chains(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
@@ -1139,6 +1313,350 @@ mod tests {
             ess < 100.0,
             "ESS ignored persistent between-chain offsets: {ess}"
         );
+    }
+
+    /// SplitMix64 uniforms summed into Irwin-Hall normals. Every step is exact
+    /// or correctly rounded, so a Python port regenerates these arrays bit for
+    /// bit; that is how the ArviZ references below were produced.
+    struct ReferenceStream(u64);
+
+    impl ReferenceStream {
+        fn uniform(&mut self) -> f64 {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
+        }
+
+        fn normal(&mut self) -> f64 {
+            let mut acc = 0.0;
+            for _ in 0..12 {
+                acc += self.uniform();
+            }
+            acc - 6.0
+        }
+    }
+
+    fn reference_ar1(
+        seed: u64,
+        chains: usize,
+        draws: usize,
+        rho: f64,
+        offsets: &[f64],
+    ) -> Vec<Vec<f64>> {
+        let mut stream = ReferenceStream(seed);
+        let innovation = (1.0 - rho * rho).sqrt();
+        (0..chains)
+            .map(|chain| {
+                let mut x = stream.normal();
+                (0..draws)
+                    .map(|_| {
+                        x = rho * x + innovation * stream.normal();
+                        x + offsets.get(chain).copied().unwrap_or(0.0)
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    struct ArvizReference {
+        name: &'static str,
+        chains: Vec<Vec<f64>>,
+        ess_bulk: f64,
+        ess_tail: f64,
+        r_hat: f64,
+        mcse_mean: f64,
+        ess_mean: f64,
+    }
+
+    /// Values from ArviZ 0.23.4 (`_ess_bulk`, `_ess_tail`, `_rhat_rank`,
+    /// `_mcse_mean`, `_ess_mean`) on the same arrays. Both short cases hit the
+    /// `N log10 N` ceiling, which pins the split draw count; the antithetic
+    /// case is where the final even-lag term Geyer's sequence adds matters most.
+    fn arviz_references() -> Vec<ArvizReference> {
+        let floor_half = |chains: Vec<Vec<f64>>| {
+            chains
+                .into_iter()
+                .map(|chain| chain.into_iter().map(|x| (x * 2.0).floor() / 2.0).collect())
+                .collect()
+        };
+        vec![
+            ArvizReference {
+                name: "iid",
+                chains: reference_ar1(1, 4, 200, 0.0, &[]),
+                ess_bulk: 900.843_413_070_252_4,
+                ess_tail: 772.755_599_201_520_7,
+                r_hat: 0.999_338_535_778_982_8,
+                mcse_mean: 0.032_446_956_788_381_304,
+                ess_mean: 902.431_198_968_420_6,
+            },
+            ArvizReference {
+                name: "ar1_0.9",
+                chains: reference_ar1(2, 4, 500, 0.9, &[]),
+                ess_bulk: 104.382_333_518_397_56,
+                ess_tail: 182.817_875_209_919,
+                r_hat: 1.035_508_539_822_694,
+                mcse_mean: 0.094_733_472_621_408_65,
+                ess_mean: 104.432_953_482_784_84,
+            },
+            // Mixes slowly enough that the autocovariance comes from the FFT.
+            ArvizReference {
+                name: "ar1_0.99",
+                chains: reference_ar1(9, 4, 500, 0.99, &[]),
+                ess_bulk: 10.446_805_996_995_531,
+                ess_tail: 20.230_457_184_539_848,
+                r_hat: 1.331_419_289_025_579_4,
+                mcse_mean: 0.271_148_959_894_050_9,
+                ess_mean: 9.479_811_464_859_088,
+            },
+            ArvizReference {
+                name: "antithetic",
+                chains: reference_ar1(3, 4, 300, -0.3, &[]),
+                ess_bulk: 2_748.516_392_480_128,
+                ess_tail: 1_267.719_343_613_817_3,
+                r_hat: 1.000_512_372_543_435_5,
+                mcse_mean: 0.019_494_792_461_899_585,
+                ess_mean: 2_739.842_654_991_770_4,
+            },
+            ArvizReference {
+                name: "offset",
+                chains: reference_ar1(4, 4, 200, 0.3, &[0.0, 0.5, -0.5, 1.0]),
+                ess_bulk: 17.238_108_979_497_014,
+                ess_tail: 255.284_430_352_126_72,
+                r_hat: 1.173_098_755_696_653_5,
+                mcse_mean: 0.280_601_358_552_275_75,
+                ess_mean: 16.870_940_297_474_128,
+            },
+            ArvizReference {
+                name: "short_odd",
+                chains: reference_ar1(5, 3, 9, 0.2, &[]),
+                ess_bulk: 33.125_069_801_078_54,
+                ess_tail: 33.125_069_801_078_54,
+                r_hat: 1.107_470_199_310_643,
+                mcse_mean: 0.177_186_480_423_544_15,
+                ess_mean: 33.125_069_801_078_54,
+            },
+            ArvizReference {
+                name: "short_min",
+                chains: reference_ar1(6, 2, 5, 0.0, &[]),
+                ess_bulk: 7.224_719_895_935_548,
+                ess_tail: 7.224_719_895_935_548,
+                r_hat: 0.952_444_752_958_862,
+                mcse_mean: 0.263_713_943_473_540_6,
+                ess_mean: 7.224_719_895_935_548,
+            },
+            ArvizReference {
+                name: "short_ar",
+                chains: reference_ar1(8, 4, 21, 0.6, &[]),
+                ess_bulk: 37.208_185_748_418_195,
+                ess_tail: 51.421_973_228_413_82,
+                r_hat: 1.054_814_668_125_427,
+                mcse_mean: 0.178_990_320_460_839_85,
+                ess_mean: 36.953_924_554_091_89,
+            },
+            ArvizReference {
+                name: "ties",
+                chains: floor_half(reference_ar1(7, 4, 100, 0.5, &[])),
+                ess_bulk: 119.228_701_387_085_92,
+                ess_tail: 242.216_179_110_383_56,
+                r_hat: 1.022_407_235_815_689,
+                mcse_mean: 0.091_672_763_899_559_7,
+                ess_mean: 119.089_171_579_429_4,
+            },
+            // 96% ones: the upper tail indicator is constant, which ArviZ
+            // scores as the split draw count rather than leaving undefined.
+            ArvizReference {
+                name: "binary",
+                chains: map_uniforms(10, 4, 100, |u| if u < 0.96 { 1.0 } else { 0.0 }),
+                ess_bulk: 462.871_325_767_627_75,
+                ess_tail: 400.0,
+                r_hat: 1.002_572_961_121_973_1,
+                mcse_mean: 0.009_899_031_493_877_32,
+                ess_mean: 462.871_325_767_630_37,
+            },
+            ArvizReference {
+                name: "three_level",
+                chains: map_uniforms(11, 4, 200, |u| (u * 3.0).floor() * 0.1),
+                ess_bulk: 809.935_378_075_364_4,
+                ess_tail: 800.0,
+                r_hat: 0.998_643_139_149_025,
+                mcse_mean: 0.002_848_290_958_784_644,
+                ess_mean: 809.905_811_128_926_8,
+            },
+            // Chain zero's minimum is its middle draw, which the split drops.
+            ArvizReference {
+                name: "odd_extreme",
+                chains: reference_ar1(12, 2, 9, 0.0, &[]),
+                ess_bulk: 19.265_919_722_494_797,
+                ess_tail: 19.265_919_722_494_797,
+                r_hat: 1.005_664_076_174_441_3,
+                mcse_mean: 0.197_505_329_496_225_6,
+                ess_mean: 19.265_919_722_494_797,
+            },
+            // ArviZ declines R-hat for one chain; see
+            // `single_chain_r_hat_splits_the_chain` for the value reported here.
+            ArvizReference {
+                name: "one_chain",
+                chains: reference_ar1(13, 1, 200, 0.5, &[]),
+                ess_bulk: 77.853_837_061_320_23,
+                ess_tail: 132.875_703_593_115_02,
+                r_hat: f64::NAN,
+                mcse_mean: 0.108_746_355_146_533_36,
+                ess_mean: 77.518_970_079_624_35,
+            },
+        ]
+    }
+
+    fn map_uniforms(
+        seed: u64,
+        chains: usize,
+        draws: usize,
+        f: impl Fn(f64) -> f64,
+    ) -> Vec<Vec<f64>> {
+        let mut stream = ReferenceStream(seed);
+        (0..chains)
+            .map(|_| (0..draws).map(|_| f(stream.uniform())).collect())
+            .collect()
+    }
+
+    /// Stan and the R `posterior` package split a single chain and compare its
+    /// halves, which is what detects a trend within it; ArviZ returns NaN.
+    #[test]
+    fn single_chain_r_hat_splits_the_chain() {
+        let chain = reference_ar1(13, 1, 200, 0.5, &[]);
+        let halves = split_chains(&chain);
+        let expected = basic_r_hat(&rank_normalize(&halves));
+        let r_hat = r_hat_chains(&chain);
+        assert!(
+            r_hat.is_finite() && r_hat >= expected,
+            "{r_hat} vs {expected}"
+        );
+        let trending = vec![(0..200).map(|i| i as f64).collect::<Vec<_>>()];
+        assert!(r_hat_chains(&trending) > 1.5);
+    }
+
+    #[test]
+    fn reference_stream_reproduces_the_python_arrays() {
+        let iid = reference_ar1(1, 4, 200, 0.0, &[]);
+        assert_eq!(
+            iid[0][..3],
+            [-0.6189042598785681, -0.5907667571367323, 1.4329694955301964]
+        );
+        let offset = reference_ar1(4, 4, 200, 0.3, &[0.0, 0.5, -0.5, 1.0]);
+        assert_eq!(
+            offset[0][..3],
+            [0.05139799030537601, 1.0157946443861814, 0.9732998827049826]
+        );
+    }
+
+    /// The mean ESS involves no normal quantile, so it has to agree with ArviZ
+    /// to rounding. The rank-based statistics go through the Acklam inverse
+    /// normal CDF, whose relative error is about 1e-9, where ArviZ calls SciPy.
+    #[test]
+    fn diagnostics_match_arviz_references() {
+        for case in arviz_references() {
+            let rel = |actual: f64, expected: f64| (actual - expected).abs() / expected.abs();
+            let ess_mean = ess_raw(&case.chains);
+            assert!(
+                rel(ess_mean, case.ess_mean) < 1e-10,
+                "{}: mean ESS {ess_mean} vs ArviZ {}",
+                case.name,
+                case.ess_mean
+            );
+
+            let samples: Vec<Vec<Vec<f64>>> = case
+                .chains
+                .iter()
+                .map(|chain| chain.iter().map(|&x| vec![x]).collect())
+                .collect();
+            let report = compute_diagnostics(&samples, &["x".into()], &[], 0);
+            let p = &report.params[0];
+            for (label, actual, expected) in [
+                ("ess_bulk", p.ess_bulk, case.ess_bulk),
+                ("ess_tail", p.ess_tail, case.ess_tail),
+                ("r_hat", p.r_hat, case.r_hat),
+                ("mcse_mean", p.mcse_mean, case.mcse_mean),
+            ] {
+                if label == "r_hat" && expected.is_nan() {
+                    continue;
+                }
+                assert!(
+                    rel(actual, expected) < 1e-7,
+                    "{}: {label} {actual} vs ArviZ {expected}",
+                    case.name
+                );
+            }
+        }
+    }
+
+    /// ArviZ returns the draw count as the ESS of a constant array; Stan and the
+    /// R `posterior` package return NaN, which is what a parameter that never
+    /// moved should report, since no draw count describes it.
+    #[test]
+    fn constant_draws_have_no_effective_sample_size() {
+        let chains = vec![vec![3.0; 100]; 4];
+        assert!(ess_raw(&chains).is_nan());
+        assert!(ess_bulk_chains(&chains).is_nan());
+        assert!(ess_tail_chains(&chains).is_nan());
+        assert!(r_hat_chains(&chains).is_nan());
+    }
+
+    /// Chains that each sit still at different values have no within-chain
+    /// variance but a well-defined `var_plus`, so ArviZ and Stan report a tiny
+    /// ESS rather than none.
+    #[test]
+    fn stuck_chains_report_a_small_ess_rather_than_none() {
+        let chains: Vec<Vec<f64>> = [0.0, 1.0, 2.0, 3.0]
+            .iter()
+            .map(|&value| vec![value; 100])
+            .collect();
+        let ess = ess_raw(&chains);
+        // ArviZ 0.23.4 gives 100 / 23 for these chains.
+        assert!((ess - 100.0 / 23.0).abs() < 1e-12, "{ess}");
+    }
+
+    #[test]
+    fn fft_autocovariance_matches_the_direct_sum() {
+        let direct = |chains: &[Vec<f64>], means: &[f64]| -> Vec<f64> {
+            let n = chains[0].len();
+            (0..n)
+                .map(|lag| {
+                    let mut gamma = 0.0;
+                    for (chain, chain_mean) in chains.iter().zip(means) {
+                        for t in 0..n - lag {
+                            gamma += (chain[t] - chain_mean) * (chain[t + lag] - chain_mean);
+                        }
+                    }
+                    gamma / (n * chains.len()) as f64
+                })
+                .collect()
+        };
+        for (seed, chains, draws, rho) in [
+            (11, 8, 500, 0.95),
+            (12, 3, 37, -0.4),
+            (13, 1, 2, 0.0),
+            (14, 5, 1024, 0.5),
+            (15, 2, 1025, 0.999),
+        ] {
+            let chains = reference_ar1(seed, chains, draws, rho, &[]);
+            let means: Vec<f64> = chains.iter().map(|chain| mean(chain)).collect();
+            let fft = mean_autocovariance(&chains, &means);
+            let expected = direct(&chains, &means);
+            assert_eq!(fft.len(), expected.len());
+            let mut lazy = LazyAutocovariance::new(&chains, &means);
+            for (lag, (a, b)) in fft.iter().zip(&expected).enumerate() {
+                assert!(
+                    (a - b).abs() <= 1e-10 * expected[0],
+                    "seed {seed} lag {lag}: FFT {a} vs direct {b}"
+                );
+                let c = lazy.at(lag);
+                assert!(
+                    (c - b).abs() <= 1e-10 * expected[0],
+                    "seed {seed} lag {lag}: lazy {c} vs direct {b}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -3,14 +3,69 @@ use crate::graph::ObsFamily;
 use rand::Rng;
 use rand_distr::{Distribution, Exp, Gamma, Normal};
 
-fn positive(value: f64, label: &str) -> Result<f64, String> {
+/// Why an observation density, mean or draw is unavailable. The message is
+/// the whole explanation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservationError {
+    /// An observation, linear predictor or auxiliary parameter is missing or
+    /// outside the family's support.
+    InvalidInput(String),
+    /// The result, or a draw on the way to it, is not representable.
+    Unrepresentable(String),
+}
+
+impl std::fmt::Display for ObservationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(message) | Self::Unrepresentable(message) => f.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ObservationError {}
+
+/// Model-level callers carry these as messages in their own error types.
+impl From<ObservationError> for String {
+    fn from(error: ObservationError) -> Self {
+        error.to_string()
+    }
+}
+
+impl From<crate::count_sampling::CountSamplingError> for ObservationError {
+    fn from(error: crate::count_sampling::CountSamplingError) -> Self {
+        Self::Unrepresentable(error.to_string())
+    }
+}
+
+fn invalid(message: impl Into<String>) -> ObservationError {
+    ObservationError::InvalidInput(message.into())
+}
+
+fn unrepresentable(message: impl Into<String>) -> ObservationError {
+    ObservationError::Unrepresentable(message.into())
+}
+
+fn required(aux: Option<f64>, label: &str) -> Result<f64, ObservationError> {
+    aux.ok_or_else(|| invalid(format!("missing {label}")))
+}
+
+fn positive(value: f64, label: &str) -> Result<f64, ObservationError> {
     if value.is_finite() && value > 0.0 {
         Ok(value)
     } else {
-        Err(format!("{label} must be finite and positive; got {value}"))
+        Err(invalid(format!(
+            "{label} must be finite and positive; got {value}"
+        )))
     }
 }
-fn sigmoid(x: f64) -> f64 {
+
+/// [`positive`] for a quantity derived from a finite linear predictor, which
+/// can fail only by overflowing or underflowing.
+fn representable(value: f64, label: &str) -> Result<f64, ObservationError> {
+    positive(value, label).map_err(|error| unrepresentable(error.to_string()))
+}
+/// Logistic function, evaluated so that neither tail overflows.
+pub(crate) fn sigmoid(x: f64) -> f64 {
     if x >= 0.0 {
         1.0 / (1.0 + (-x).exp())
     } else {
@@ -27,13 +82,13 @@ pub fn log_density(
     observed: f64,
     eta: f64,
     aux: Option<f64>,
-) -> Result<f64, String> {
+) -> Result<f64, ObservationError> {
     if !observed.is_finite() || !eta.is_finite() {
-        return Err("observation and linear predictor must be finite".into());
+        return Err(invalid("observation and linear predictor must be finite"));
     }
     let logp = match family {
         ObsFamily::Normal | ObsFamily::LogNormal => {
-            let sigma = positive(aux.ok_or("missing sigma")?, "sigma")?;
+            let sigma = positive(required(aux, "sigma")?, "sigma")?;
             let (response, jacobian) = if family == ObsFamily::LogNormal {
                 let response = positive(observed, "LogNormal observation")?.ln();
                 (response, response)
@@ -45,7 +100,7 @@ pub fn log_density(
         }
         ObsFamily::BernoulliLogit => {
             if observed != 0.0 && observed != 1.0 {
-                return Err("Bernoulli observation must be zero or one".into());
+                return Err(invalid("Bernoulli observation must be zero or one"));
             }
             if observed == 1.0 {
                 -crate::autodiff::softplus(-eta)
@@ -55,44 +110,46 @@ pub fn log_density(
         }
         ObsFamily::PoissonLog | ObsFamily::NegativeBinomialLog => {
             if observed < 0.0 || observed.fract() != 0.0 {
-                return Err("count observation must be a nonnegative integer".into());
+                return Err(invalid("count observation must be a nonnegative integer"));
             }
             if family == ObsFamily::PoissonLog {
                 crate::count_sampling::log_mass_from_log_rate(observed, eta)
             } else {
-                let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
+                let alpha = positive(required(aux, "alpha")?, "alpha")?;
                 crate::negative_binomial::log_mass(observed, eta, alpha)
             }
         }
         ObsFamily::ExponentialLog => {
             if observed < 0.0 {
-                return Err("Exponential observation must be nonnegative".into());
+                return Err(invalid("Exponential observation must be nonnegative"));
             }
             eta - observed * eta.exp()
         }
     };
     if logp.is_nan() {
-        Err("observation log likelihood is not representable".into())
+        Err(unrepresentable(
+            "observation log likelihood is not representable",
+        ))
     } else {
         Ok(logp)
     }
 }
 /// Expected response, on the observation scale.
-pub fn mean(family: ObsFamily, eta: f64, aux: Option<f64>) -> Result<f64, String> {
+pub fn mean(family: ObsFamily, eta: f64, aux: Option<f64>) -> Result<f64, ObservationError> {
     let value = match family {
         ObsFamily::Normal => eta,
         ObsFamily::BernoulliLogit => sigmoid(eta),
         ObsFamily::PoissonLog | ObsFamily::NegativeBinomialLog => eta.exp(),
         ObsFamily::ExponentialLog => (-eta).exp(),
         ObsFamily::LogNormal => {
-            let s = positive(aux.ok_or("missing sigma")?, "sigma")?;
+            let s = positive(required(aux, "sigma")?, "sigma")?;
             (eta + 0.5 * s * s).exp()
         }
     };
     if value.is_finite() {
         Ok(value)
     } else {
-        Err("observation mean is not representable".into())
+        Err(unrepresentable("observation mean is not representable"))
     }
 }
 /// Simulate the specified family without clipping valid rates or outcomes.
@@ -101,15 +158,15 @@ pub fn sample<R: Rng + ?Sized>(
     eta: f64,
     aux: Option<f64>,
     rng: &mut R,
-) -> Result<f64, String> {
+) -> Result<f64, ObservationError> {
     if !eta.is_finite() {
-        return Err("linear predictor must be finite".into());
+        return Err(invalid("linear predictor must be finite"));
     }
     let value = match family {
         ObsFamily::Normal | ObsFamily::LogNormal => {
-            let sigma = positive(aux.ok_or("missing sigma")?, "sigma")?;
+            let sigma = positive(required(aux, "sigma")?, "sigma")?;
             let x = Normal::new(eta, sigma)
-                .map_err(|e| e.to_string())?
+                .map_err(|e| invalid(e.to_string()))?
                 .sample(rng);
             if family == ObsFamily::LogNormal {
                 x.exp()
@@ -125,26 +182,28 @@ pub fn sample<R: Rng + ?Sized>(
             }
         }
         ObsFamily::PoissonLog => {
-            crate::count_sampling::poisson(positive(eta.exp(), "Poisson rate")?, rng)?
+            crate::count_sampling::poisson(representable(eta.exp(), "Poisson rate")?, rng)?
         }
-        ObsFamily::ExponentialLog => Exp::new(positive(eta.exp(), "Exponential rate")?)
-            .map_err(|e| e.to_string())?
+        ObsFamily::ExponentialLog => Exp::new(representable(eta.exp(), "Exponential rate")?)
+            .map_err(|e| invalid(e.to_string()))?
             .sample(rng),
         ObsFamily::NegativeBinomialLog => {
-            let alpha = positive(aux.ok_or("missing alpha")?, "alpha")?;
-            let scale = positive(eta.exp() / alpha, "Gamma scale")?;
+            let alpha = positive(required(aux, "alpha")?, "alpha")?;
+            let scale = representable(eta.exp() / alpha, "Gamma scale")?;
             let lambda = Gamma::new(alpha, scale)
-                .map_err(|e| e.to_string())?
+                .map_err(|e| invalid(e.to_string()))?
                 .sample(rng);
             if lambda == 0.0 {
                 0.0
             } else {
-                crate::count_sampling::poisson(positive(lambda, "Poisson rate")?, rng)?
+                crate::count_sampling::poisson(representable(lambda, "Poisson rate")?, rng)?
             }
         }
     };
     if !value.is_finite() || (family == ObsFamily::LogNormal && value == 0.0) {
-        Err("simulated observation is not representable".into())
+        Err(unrepresentable(
+            "simulated observation is not representable",
+        ))
     } else {
         Ok(value)
     }
@@ -163,6 +222,41 @@ mod tests {
                 assert!(draw >= 0.0 && draw.fract() == 0.0);
             }
         }
+    }
+
+    #[test]
+    fn errors_say_whether_the_input_or_the_result_was_at_fault() {
+        assert_eq!(
+            log_density(ObsFamily::BernoulliLogit, 2.0, 0.0, None),
+            Err(ObservationError::InvalidInput(
+                "Bernoulli observation must be zero or one".into()
+            ))
+        );
+        assert_eq!(
+            mean(ObsFamily::LogNormal, 0.0, None),
+            Err(ObservationError::InvalidInput("missing sigma".into()))
+        );
+        assert_eq!(
+            mean(ObsFamily::PoissonLog, 1000.0, None),
+            Err(ObservationError::Unrepresentable(
+                "observation mean is not representable".into()
+            ))
+        );
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(5);
+        let error = sample(ObsFamily::PoissonLog, 37.0, None, &mut rng).unwrap_err();
+        assert_eq!(
+            error,
+            ObservationError::Unrepresentable(
+                "Poisson rate outside the supported exact-count range".into()
+            )
+        );
+        assert_eq!(String::from(error.clone()), error.to_string());
+        assert_eq!(
+            sample(ObsFamily::PoissonLog, 1000.0, None, &mut rng),
+            Err(ObservationError::Unrepresentable(
+                "Poisson rate must be finite and positive; got inf".into()
+            ))
+        );
     }
 
     #[test]

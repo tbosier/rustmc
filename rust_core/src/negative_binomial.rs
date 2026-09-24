@@ -7,15 +7,7 @@
 //! that identity and the asymptotic expansion of the digamma function.
 
 use crate::autodiff::{ln_gamma, softplus};
-
-fn sigmoid(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let e = x.exp();
-        e / (1.0 + e)
-    }
-}
+use crate::observation::sigmoid;
 
 // x - log(1+x), with the second-order term retained near zero.
 fn log1p_deviance(x: f64) -> f64 {
