@@ -1,6 +1,6 @@
 //! Bayesian local-level bindings.
 use crate::forecast_support::*;
-use crate::StateSpaceError;
+use crate::InferenceError;
 use crate::{forecast_batch, regression};
 use numpy::{PyArray1, PyArray3};
 use pyo3::prelude::*;
@@ -73,12 +73,12 @@ impl PyBayesianLocalLevel {
         initial_variance: f64,
     ) -> PyResult<Self> {
         if !initial_mean.is_finite() {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: initial mean must be finite",
             ));
         }
         if !initial_variance.is_finite() || initial_variance <= 0.0 {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: initial variance must be finite and strictly positive",
             ));
         }
@@ -137,7 +137,7 @@ impl PyBayesianLocalLevel {
                     self.initial_mean,
                     self.initial_variance,
                 )
-                .map_err(state_space_error)?,
+                .map_err(inference_error)?,
                 vec![self.process_variance_prior],
                 vec!["process_variance"],
                 self.observation_variance_prior,
@@ -147,7 +147,7 @@ impl PyBayesianLocalLevel {
             return regression::fit(py, observations, exog, coefficient_prior, config);
         }
         if coefficient_prior.is_some() {
-            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+            return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
         let config = CoreBayesianLocalLevelConfig {
             initial_mean: self.initial_mean,

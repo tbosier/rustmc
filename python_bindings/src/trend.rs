@@ -1,6 +1,6 @@
 //! Bayesian local-linear-trend bindings.
 use crate::forecast_support::*;
-use crate::StateSpaceError;
+use crate::InferenceError;
 use crate::{forecast_batch, regression};
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
@@ -90,7 +90,7 @@ impl PyBayesianLocalLinearTrend {
         initial_level_slope_covariance: f64,
     ) -> PyResult<Self> {
         if !initial_level.is_finite() || !initial_slope.is_finite() {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: initial level and slope must be finite",
             ));
         }
@@ -100,7 +100,7 @@ impl PyBayesianLocalLinearTrend {
             || initial_slope_variance <= 0.0
             || !initial_level_slope_covariance.is_finite()
         {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: initial variances must be finite and positive and covariance must be finite",
             ));
         }
@@ -108,7 +108,7 @@ impl PyBayesianLocalLinearTrend {
         let scaled_covariance = initial_level_slope_covariance / level_scale;
         let slope_remainder = initial_slope_variance - scaled_covariance * scaled_covariance;
         if !slope_remainder.is_finite() || slope_remainder <= 0.0 {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: initial state covariance must be positive definite",
             ));
         }
@@ -191,7 +191,7 @@ impl PyBayesianLocalLinearTrend {
                     self.initial_mean.to_vec(),
                     self.initial_covariance.to_vec(),
                 )
-                .map_err(state_space_error)?,
+                .map_err(inference_error)?,
                 vec![self.level_variance_prior, self.slope_variance_prior],
                 vec!["level_variance", "slope_variance"],
                 self.observation_variance_prior,
@@ -201,7 +201,7 @@ impl PyBayesianLocalLinearTrend {
             return regression::fit(py, observations, exog, coefficient_prior, config);
         }
         if coefficient_prior.is_some() {
-            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+            return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
         let config = CoreBayesianLocalLinearTrendConfig {
             initial_mean: self.initial_mean,

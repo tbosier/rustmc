@@ -67,14 +67,14 @@ def test_ragged_mixed_per_cell_models_errors_and_missing_schedule(rustmc_module)
     assert [batch[cell].time_count for cell in ids[:4]] == [8, 16, 10, 16]
     assert set(batch.diagnostics()) == set(ids)
     assert batch.diagnostics()["empty"] is None
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         batch["empty"]
     with pytest.raises(KeyError):
         batch["unknown"]
     forecast = batch.forecast(3, errors="collect", threads=2)
     assert set(forecast.errors) == set(ids[4:])
     assert forecast.results[4:] == [None, None, None]
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         batch.forecast(3)
     gaps = all_models[0].fit_batch([[0., np.nan, 1., 2.]], ["gaps"], draws=6, warmup=3)
     assert gaps["gaps"].time_count == 4
@@ -94,7 +94,7 @@ def test_batch_validation_and_cell_numerical_failures(rustmc_module):
         model.fit_batch([y], [])
     with pytest.raises(ValueError, match="one entry"):
         model.fit_batch([y], ["one"], models=[])
-    with pytest.raises(rustmc_module.StateSpaceError, match="empty"):
+    with pytest.raises(rustmc_module.InferenceError, match="empty"):
         model.fit_batch([[], y], ["empty", "ok"], chunk_size=1)
     batch = model.fit_batch([y, [1e308, -1e308]], ["ok", "overflow"], chains=1,
                             draws=6, warmup=3, errors="collect")

@@ -200,7 +200,7 @@ impl PyBayesianHierarchicalMean {
         };
         let posterior = py
             .allow_threads(|| fit_hierarchical_mean(&series, &group_index, &config))
-            .map_err(hierarchical_error)?;
+            .map_err(bayesian_forecast_error)?;
         Ok(PyBayesianHierarchicalMeanFit {
             posterior,
             time_counts,
@@ -414,7 +414,7 @@ impl PyBayesianHierarchicalMeanFit {
     ) -> PyResult<PyBayesianHierarchicalForecast> {
         let inner = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
-            .map_err(hierarchical_error)?;
+            .map_err(bayesian_forecast_error)?;
         Ok(PyBayesianHierarchicalForecast {
             inner,
             program_names: self.program_names.clone(),
@@ -524,7 +524,7 @@ impl PyBayesianHierarchicalForecast {
         let paths = self
             .inner
             .group_observation_paths()
-            .map_err(hierarchical_error)?;
+            .map_err(bayesian_forecast_error)?;
         Ok(row_major_path_array(
             py,
             &paths,
@@ -542,7 +542,7 @@ impl PyBayesianHierarchicalForecast {
         let paths = self
             .inner
             .total_observation_paths()
-            .map_err(hierarchical_error)?;
+            .map_err(bayesian_forecast_error)?;
         Ok(path_array(py, &paths))
     }
 
@@ -551,13 +551,16 @@ impl PyBayesianHierarchicalForecast {
         let means = self
             .inner
             .state_means_by_program()
-            .map_err(hierarchical_error)?;
+            .map_err(bayesian_forecast_error)?;
         Ok(repeat_over_steps(py, &means, self.steps()))
     }
 
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        let means = self.inner.observation_means().map_err(hierarchical_error)?;
+        let means = self
+            .inner
+            .observation_means()
+            .map_err(bayesian_forecast_error)?;
         program_step_array(py, means, self.program_count(), self.steps())
     }
 

@@ -1,5 +1,5 @@
 use crate::forecast_support::*;
-use crate::{forecast_diagnostics, StateSpaceError};
+use crate::{forecast_diagnostics, InferenceError, StateSpaceError};
 use ndarray::Array4;
 use numpy::{IntoPyArray, PyArray3, PyArray4};
 use pyo3::prelude::*;
@@ -234,7 +234,7 @@ impl PyStructuralModel {
         };
         let inner = py
             .allow_threads(|| core::fit(&observations, exog.as_deref(), &self.inner, &config))
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralFit { inner })
     }
     #[pyo3(signature=(steps,*,exog=None,draws=1000,seed=43))]
@@ -252,7 +252,7 @@ impl PyStructuralModel {
                 self.inner
                     .prior_predict(steps, exog.as_deref(), draws, seed)
             })
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralForecast {
             inner,
             names: self.component_names(),
@@ -367,7 +367,7 @@ impl PyStructuralFit {
                     .map(|d| {
                         d.states
                             .clone()
-                            .ok_or_else(|| StateSpaceError::new_err("fit with store_states=True"))
+                            .ok_or_else(|| InferenceError::new_err("fit with store_states=True"))
                     })
                     .collect::<PyResult<Vec<_>>>()
             })
@@ -381,7 +381,7 @@ impl PyStructuralFit {
             &self
                 .inner
                 .historical_components()
-                .map_err(state_space_error)?,
+                .map_err(inference_error)?,
         ))
     }
     #[pyo3(signature=(steps,*,exog=None,seed=43))]
@@ -395,19 +395,19 @@ impl PyStructuralFit {
         let exog = optional_matrix(exog, "exog")?;
         let inner = py
             .allow_threads(|| self.inner.forecast(steps, exog.as_deref(), seed))
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyStructuralForecast {
             inner,
             names: self.component_names(),
         })
     }
     fn to_json(&self) -> PyResult<String> {
-        self.inner.to_json().map_err(state_space_error)
+        self.inner.to_json().map_err(inference_error)
     }
     #[staticmethod]
     fn from_json(value: &str) -> PyResult<Self> {
         Ok(Self {
-            inner: StructuralPosterior::from_json(value).map_err(state_space_error)?,
+            inner: StructuralPosterior::from_json(value).map_err(inference_error)?,
         })
     }
 }

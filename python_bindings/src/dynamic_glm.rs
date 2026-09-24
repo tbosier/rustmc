@@ -87,7 +87,7 @@ impl PyDynamicGLM {
             "hurdle_lognormal" => Family::HurdleLogNormal,
             "gaussian" => Family::Gaussian,
             _ => {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::InferenceError::new_err(
                     "family must be poisson, negative_binomial, hurdle_lognormal, or gaussian",
                 ))
             }
@@ -404,7 +404,7 @@ impl PyDynamicGLMForecast {
         for ((c, d, t), value) in data.indexed_iter_mut() {
             *value = paths[c][d].iter().map(|g| g[t]).sum::<f64>();
             if !value.is_finite() {
-                return Err(pyo3::exceptions::PyValueError::new_err(
+                return Err(crate::InferenceError::new_err(
                     "aggregate predictive values overflowed",
                 ));
             }

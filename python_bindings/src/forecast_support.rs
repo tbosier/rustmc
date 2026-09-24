@@ -1,4 +1,21 @@
-//! Helpers shared by the Gaussian forecasting bindings.
+//! Helpers shared by the forecasting bindings.
+//!
+//! Every forecasting error follows one rule, and all three classes are
+//! `ValueError`s, so `except ValueError` still catches any of them:
+//!
+//! - `InferenceError`: a Bayesian forecasting model refused its priors,
+//!   configuration or data, or failed numerically - in its constructor,
+//!   `fit`, `forecast`, a `fit_batch` cell, or an accessor of the fit or
+//!   forecast it returned. This covers the local-level, seasonal, trend, AR,
+//!   hierarchical-mean, hurdle, regression (`exog`), structural, dynamic GLM
+//!   and runoff models and their priors.
+//! - `StateSpaceError`: the fixed-parameter `LinearGaussianStateSpace` layer
+//!   (construction, filtering, smoothing and forecasting) and structural
+//!   model specifications (`VarianceParameter`, `StructuralComponent`,
+//!   `StructuralModel` and its JSON).
+//! - plain `ValueError`: argument checks every model shares - array
+//!   conversion, interval levels, quantile probabilities, batch options such
+//!   as `errors=` and `threads=`, and `fourier_design` arguments.
 use crate::{arviz_from_groups, forecast_diagnostics, InferenceError, StateSpaceError};
 use ndarray::{Array2, Array3, ArrayD, IxDyn};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
@@ -16,16 +33,18 @@ use rustmc_core::state_space::StateSpaceError as CoreStateSpaceError;
 pub(crate) type PyIntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
 pub(crate) type PyIntervalMatrices<'py> = (Bound<'py, PyArray2<f64>>, Bound<'py, PyArray2<f64>>);
 
+/// A fixed-parameter state-space or structural specification error.
 pub(crate) fn state_space_error(error: CoreStateSpaceError) -> PyErr {
     StateSpaceError::new_err(error.to_string())
 }
 
-pub(crate) fn bayesian_forecast_error(error: CoreBayesianForecastError) -> PyErr {
-    StateSpaceError::new_err(error.to_string())
+/// A Bayesian forecasting model's refusal or failure, whatever its core type.
+pub(crate) fn inference_error(error: impl std::fmt::Display) -> PyErr {
+    InferenceError::new_err(error.to_string())
 }
 
-pub(crate) fn hierarchical_error(error: CoreBayesianForecastError) -> PyErr {
-    InferenceError::new_err(error.to_string())
+pub(crate) fn bayesian_forecast_error(error: CoreBayesianForecastError) -> PyErr {
+    inference_error(error)
 }
 
 /// Real numbers with exactly `ndim` axes from any numeric array-like: a

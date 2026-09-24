@@ -1,6 +1,6 @@
 //! Bayesian seasonal local-level bindings.
 use crate::forecast_support::*;
-use crate::StateSpaceError;
+use crate::InferenceError;
 use crate::{forecast_batch, regression};
 use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
@@ -98,7 +98,7 @@ impl PyBayesianSeasonalLocalLevel {
             initial_level_variance,
             initial_seasonal_variance,
         )
-        .map_err(state_space_error)?;
+        .map_err(inference_error)?;
         Ok(Self {
             period,
             initial_level,
@@ -148,7 +148,7 @@ impl PyBayesianSeasonalLocalLevel {
                     self.initial_level_variance,
                     self.initial_seasonal_variance,
                 )
-                .map_err(state_space_error)?,
+                .map_err(inference_error)?,
                 vec![self.level_variance_prior, self.seasonal_variance_prior],
                 vec!["level_variance", "seasonal_variance"],
                 self.observation_variance_prior,
@@ -158,7 +158,7 @@ impl PyBayesianSeasonalLocalLevel {
             return regression::fit(py, observations, exog, coefficient_prior, config);
         }
         if coefficient_prior.is_some() {
-            return Err(StateSpaceError::new_err("coefficient_prior requires exog"));
+            return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
         let config = CoreBayesianSeasonalLocalLevelConfig {
             period: self.period,

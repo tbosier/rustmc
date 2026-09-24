@@ -1,7 +1,7 @@
 use crate::forecast_support::{real_matrix, real_vector};
+use crate::InferenceError;
 use ndarray::{Array2, Array3, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::runoff::{
@@ -33,7 +33,7 @@ impl PyRunoff {
             || !total_rate.is_finite()
             || total_rate <= 0.0
         {
-            return Err(PyValueError::new_err("alpha requires at least two finite positive entries; total_shape and total_rate must be finite and positive"));
+            return Err(InferenceError::new_err("alpha requires at least two finite positive entries; total_shape and total_rate must be finite and positive"));
         }
         Ok(Self {
             alpha,
@@ -66,7 +66,7 @@ impl PyRunoff {
                 if n.is_nan() {
                     Ok(None)
                 } else if !n.is_finite() || *n < 0.0 || n.fract() != 0.0 || *n > ((1_u64 << 53) - 1) as f64 {
-                    Err(PyValueError::new_err("counts must be nonnegative integers <= 2**53 - 1, or NaN for unobserved cells"))
+                    Err(InferenceError::new_err("counts must be nonnegative integers <= 2**53 - 1, or NaN for unobserved cells"))
                 } else {
                     Ok(Some(*n as u64))
                 }
@@ -97,7 +97,7 @@ impl PyRunoff {
 /// Both kinds raise `InferenceError`, a `ValueError` subclass, so callers
 /// that caught `ValueError` before the core error was typed still do.
 fn runoff_error(error: RunoffError) -> PyErr {
-    crate::InferenceError::new_err(error.to_string())
+    InferenceError::new_err(error.to_string())
 }
 
 #[pyclass(name = "RunoffFit", module = "rustmc")]

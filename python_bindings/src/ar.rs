@@ -1,7 +1,7 @@
 //! Bayesian autoregression bindings.
 use crate::forecast_batch;
 use crate::forecast_support::*;
-use crate::StateSpaceError;
+use crate::InferenceError;
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
@@ -139,17 +139,17 @@ impl PyBayesianAutoRegression {
     #[new]
     fn new(order: usize, prior: PyRef<'_, PyNormalInverseGammaPrior>) -> PyResult<Self> {
         if order == 0 {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "invalid configuration: AR order must be at least one",
             ));
         }
         let expected = order.checked_add(1).ok_or_else(|| {
-            StateSpaceError::new_err(
+            InferenceError::new_err(
                 "invalid configuration: AR order is too large to represent its coefficients",
             )
         })?;
         if prior.inner.coefficient_mean.len() != expected {
-            return Err(StateSpaceError::new_err(format!(
+            return Err(InferenceError::new_err(format!(
                 "invalid configuration: AR({order}) requires {expected} coefficient prior entries (intercept plus {order} lags)"
             )));
         }

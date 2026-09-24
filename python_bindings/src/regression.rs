@@ -1,5 +1,5 @@
 use crate::forecast_support::*;
-use crate::StateSpaceError;
+use crate::InferenceError;
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::exceptions::PyValueError;
@@ -25,7 +25,7 @@ impl PyGaussianCoefficientPrior {
         let mean = real_vector(mean, "mean")?;
         let covariance = real_matrix(covariance, "covariance")?.concat();
         Ok(Self {
-            inner: GaussianCoefficientPrior::new(mean, covariance).map_err(state_space_error)?,
+            inner: GaussianCoefficientPrior::new(mean, covariance).map_err(inference_error)?,
         })
     }
     #[getter]
@@ -48,8 +48,10 @@ fn fourier_design<'py>(
     harmonics: usize,
     start: i64,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    let width = core::fourier_width(period, harmonics).map_err(state_space_error)?;
-    let rows = core::fourier_design(count, period, harmonics, start).map_err(state_space_error)?;
+    let width = core::fourier_width(period, harmonics)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
+    let rows = core::fourier_design(count, period, harmonics, start)
+        .map_err(|error| PyValueError::new_err(error.to_string()))?;
     Array2::from_shape_vec((count, width), rows.concat())
         .map(|design| design.into_pyarray(py))
         .map_err(|error| PyValueError::new_err(error.to_string()))
@@ -64,7 +66,7 @@ pub(crate) fn fit(
 ) -> PyResult<PyObject> {
     config.coefficient_prior = prior
         .ok_or_else(|| {
-            StateSpaceError::new_err(
+            InferenceError::new_err(
                 "exog requires an explicit GaussianCoefficientPrior via coefficient_prior",
             )
         })?
@@ -73,7 +75,7 @@ pub(crate) fn fit(
     let design = real_matrix(exog, "exog")?;
     let posterior = py
         .allow_threads(|| core::fit_regression(&observations, &design, &config))
-        .map_err(state_space_error)?;
+        .map_err(inference_error)?;
     Ok(Py::new(
         py,
         PyBayesianRegressionFit {
@@ -211,17 +213,17 @@ impl PyBayesianRegressionFit {
         exog: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyBayesianRegressionForecast> {
         let exog = exog.ok_or_else(|| {
-            StateSpaceError::new_err("future exog is required for regression forecasts")
+            InferenceError::new_err("future exog is required for regression forecasts")
         })?;
         let design = real_matrix(exog, "exog")?;
         if design.len() != steps {
-            return Err(StateSpaceError::new_err(
+            return Err(InferenceError::new_err(
                 "future exog row count must equal steps",
             ));
         }
         let inner = py
             .allow_threads(|| self.posterior.forecast(&design, seed))
-            .map_err(state_space_error)?;
+            .map_err(inference_error)?;
         Ok(PyBayesianRegressionForecast {
             inner,
             seasonal: self.posterior.config.seasonal,

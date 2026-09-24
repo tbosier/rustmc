@@ -12,7 +12,7 @@ use super::trend::{
     PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
 };
 use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit};
-use crate::{forecast_diagnostics, StateSpaceError};
+use crate::{forecast_diagnostics, InferenceError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -372,7 +372,7 @@ fn run_cells<T: Sync, R: Send>(
             .map_err(|error| match error {
                 BatchError::Configuration(error) => PyValueError::new_err(error),
                 BatchError::Cell { id, error } => {
-                    StateSpaceError::new_err(format!("cell {id:?}: {error}"))
+                    InferenceError::new_err(format!("cell {id:?}: {error}"))
                 }
             })
     } else {
@@ -537,7 +537,7 @@ pub(crate) fn fit_batch(
     if errors == "raise" {
         for (id, result) in ids.iter().zip(&results) {
             if let Err(error) = result {
-                return Err(StateSpaceError::new_err(format!("cell {id:?}: {error}")));
+                return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
             }
         }
     }
@@ -562,7 +562,7 @@ impl PyForecastBatchFit {
     fn __getitem__(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.results[index_of(&self.ids, id)?]
             .as_ref()
-            .map_err(|error| StateSpaceError::new_err(format!("cell {id:?}: {error}")))?
+            .map_err(|error| InferenceError::new_err(format!("cell {id:?}: {error}")))?
             .to_python(py)
     }
     #[getter]
@@ -652,7 +652,7 @@ impl PyForecastBatchFit {
         if errors == "raise" {
             for (id, result) in self.ids.iter().zip(&results) {
                 if let Err(error) = result {
-                    return Err(StateSpaceError::new_err(format!("cell {id:?}: {error}")));
+                    return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
                 }
             }
         }
@@ -679,7 +679,7 @@ impl PyForecastBatchForecast {
     fn __getitem__(&self, py: Python<'_>, id: &str) -> PyResult<Py<PyAny>> {
         self.results[index_of(&self.ids, id)?]
             .as_ref()
-            .map_err(|error| StateSpaceError::new_err(format!("cell {id:?}: {error}")))?
+            .map_err(|error| InferenceError::new_err(format!("cell {id:?}: {error}")))?
             .to_python(py)
     }
     #[getter]
