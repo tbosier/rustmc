@@ -8,11 +8,12 @@
 //!   - Divergence detection via energy error threshold
 //!   - Max tree depth cap (default 10)
 
+use crate::adaptation::WarmupAdapter;
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
-use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
+use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
 use crate::sampler::reject_discrete_latent_parameters;
 use crate::target::GradientEvaluator;
@@ -27,6 +28,8 @@ pub struct NutsConfig {
     pub max_tree_depth: usize,
     pub num_draws: usize,
     pub num_warmup: usize,
+    /// How warmup estimates the metric of vector parameters.
+    pub metric: MetricKind,
 }
 
 impl Default for NutsConfig {
@@ -37,6 +40,7 @@ impl Default for NutsConfig {
             max_tree_depth: 10,
             num_draws: 1000,
             num_warmup: 500,
+            metric: MetricKind::Auto,
         }
     }
 }
@@ -81,16 +85,17 @@ struct TreeResult {
 
 /// Run a single NUTS chain with windowed block-structured mass matrix adaptation.
 ///
-/// Warmup schedule (mirrors Stan's default):
-///   Init buffer  (~75 draws or 15% of warmup, whichever is smaller):
+/// Warmup follows Stan's windowed schedule (see `adaptation::WarmupSchedule`):
+///   Init buffer (75 draws; 15% of warmup when warmup < 150):
 ///       step-size dual-averaging only, identity mass matrix.
-///   Mass-matrix windows (doubling: 25 → 50 → 100 → 200 → …):
+///   Mass-matrix windows (doubling: 25 → 50 → 100 → …; the last one is
+///   extended to the terminal buffer rather than truncated):
 ///       At the end of each window the block-structured mass matrix is updated
-///       from Welford online variance estimates collected in that window.
-///       Dual averaging and step size are reset after each update so the
-///       sampler can re-converge with the new metric.
-///   Terminal buffer (~50 draws or 10% of warmup):
+///       from Welford estimates collected in that window, the step size is
+///       searched again under the new metric and dual averaging restarts.
+///   Terminal buffer (50 draws; 10% of warmup when warmup < 150):
 ///       step-size dual-averaging only, final fixed mass matrix.
+///
 /// # Errors
 ///
 /// Returns the rejection message from
@@ -168,39 +173,23 @@ pub(crate) fn run_chain_with_evaluator(
     let mut total_iters_done = 0u64;
 
     let mut mass = MassMatrix::from_graph(graph);
-    let mut mass_acc = MassMatrixAccumulator::from_graph(graph);
     let mut scratch = vec![0.0f64; dim];
     let mut pool = PointPool::new(dim);
-    let mut w_count = 0usize;
 
-    // --- Windowed warmup schedule (Stan defaults) ---
-    // init_buffer: step size only, identity mass
-    // windows:     growing mass-estimation windows
-    // term_buffer: step size only, fixed final mass
-    let init_buffer = 75_usize.min(config.num_warmup * 15 / 100).max(1);
-    let term_buffer = 50_usize.min(config.num_warmup * 10 / 100);
-    let terminal_start = config.num_warmup.saturating_sub(term_buffer);
-    // First mass-matrix window ends after 25 draws past init_buffer (clamped).
-    let first_window = 25_usize;
-    let mut next_window_end = (init_buffer + first_window).min(terminal_start);
-    let mut window_size = first_window;
-
-    // Step-size initialization
+    // Stan's windowed warmup: step-size-only buffers around doubling
+    // metric-estimation windows; see `adaptation::WarmupSchedule`.
+    let mut adapter = WarmupAdapter::new(
+        graph,
+        config.num_warmup,
+        config.target_accept,
+        config.step_size,
+        config.metric,
+    );
     let mut step_size = if config.step_size > 0.0 {
         config.step_size
     } else {
-        find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng)
+        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
     };
-
-    // Dual averaging targets the caller-selected acceptance probability.
-    let target_accept = config.target_accept;
-    let mut da_mu = (10.0 * step_size).ln();
-    let da_gamma = 0.05;
-    let da_t0 = 10.0;
-    let da_kappa = 0.75;
-    let mut log_eps_bar = step_size.ln();
-    let mut h_bar = 0.0f64;
-    let mut adapt_count = 0u64;
 
     // Compute initial state
     evaluator.compute(graph, &q);
@@ -263,65 +252,17 @@ pub(crate) fn run_chain_with_evaluator(
             }
         }
 
-        // --- Warmup adaptation ---
         if is_warmup {
-            // Dual averaging step-size update (always, throughout warmup)
-            adapt_count += 1;
-            let m = adapt_count as f64;
-            let w = 1.0 / (m + da_t0);
-            h_bar = (1.0 - w) * h_bar + w * (target_accept - accept_stat);
-            let log_eps = da_mu - (m.sqrt() / da_gamma) * h_bar;
-            step_size = log_eps.exp();
-            let m_pow = m.powf(-da_kappa);
-            log_eps_bar = m_pow * log_eps + (1.0 - m_pow) * log_eps_bar;
-
-            // Mass-matrix estimation: collect samples in the current window
-            let in_window = iter >= init_buffer && iter < terminal_start;
-            if in_window {
-                mass_acc.update(&current.q);
-                w_count += 1;
-            }
-
-            // End of window: update mass matrix, reset adaptation
-            let final_window = iter + 1 >= terminal_start;
-            let window_done = iter + 1 >= next_window_end;
-            // Recalibrating the metric and step size needs a meaningful
-            // terminal buffer. With very short warmup schedules, retain the
-            // preceding metric instead of installing a last-minute estimate
-            // that dual averaging has too few iterations to stabilize.
-            let enough_terminal_adaptation = !final_window || term_buffer >= first_window;
-            if window_done
-                && enough_terminal_adaptation
-                && iter >= init_buffer
-                && iter < terminal_start
-                && w_count > 3
-            {
-                mass = mass_acc.finalize();
-
-                // A new metric changes both momentum scale and velocity, so
-                // the old metric's step size is no longer calibrated. Find a
-                // reasonable value under the new geometry before restarting
-                // dual averaging for this window.
-                step_size =
-                    find_initial_step_size(graph, evaluator, &current.q, &mass, &mut scratch, rng);
-                da_mu = (10.0 * step_size).ln();
-                log_eps_bar = step_size.ln();
-                adapt_count = 0;
-                h_bar = 0.0;
-
-                // Advance window (doubling schedule)
-                window_size *= 2;
-                next_window_end = (iter + 1 + window_size).min(terminal_start);
-
-                // Reset accumulator for next window
-                mass_acc = MassMatrixAccumulator::from_graph(graph);
-                w_count = 0;
-            }
-        }
-
-        // At end of warmup, lock in the dual-averaged step size
-        if iter == config.num_warmup.saturating_sub(1) && config.num_warmup > 0 {
-            step_size = log_eps_bar.exp();
+            step_size = adapter.after_transition(
+                iter,
+                accept_stat,
+                &current.q,
+                graph,
+                evaluator,
+                &mut mass,
+                rng,
+                &mut scratch,
+            );
         }
 
         if !is_warmup {
@@ -742,75 +683,6 @@ fn normalized_selection_prob(candidate_log_weight: f64, total_log_weight: f64) -
     }
 }
 
-/// Find initial step size — same algorithm as hmc.rs.
-fn find_initial_step_size(
-    graph: &Graph,
-    evaluator: &mut impl GradientEvaluator,
-    q: &[f64],
-    mass: &MassMatrix,
-    scratch: &mut [f64],
-    rng: &mut ChaCha8Rng,
-) -> f64 {
-    evaluator.compute(graph, q);
-    let logp0 = evaluator.log_density();
-    let grad0: Vec<f64> = evaluator.gradient().to_vec();
-    let dim = q.len();
-    let mut p0 = vec![0.0; dim];
-    mass.sample_momentum_into(rng, &mut p0, scratch);
-
-    let mut eps = 1.0;
-
-    let initial_point = PhasePoint {
-        q: q.to_vec(),
-        p: p0,
-        grad: grad0,
-        logp: logp0,
-    };
-
-    let mut test = initial_point.clone();
-    leapfrog(
-        graph,
-        evaluator,
-        &initial_point,
-        eps,
-        mass,
-        &mut test,
-        scratch,
-    );
-    let h0 = initial_point.energy(mass, scratch);
-    let h1 = test.energy(mass, scratch);
-    let log_ratio = h0 - h1;
-
-    let log_half = 0.5_f64.ln();
-    let direction = if log_ratio > log_half { 1.0 } else { -1.0 };
-
-    for _ in 0..50 {
-        leapfrog(
-            graph,
-            evaluator,
-            &initial_point,
-            eps,
-            mass,
-            &mut test,
-            scratch,
-        );
-        let lr = h0 - test.energy(mass, scratch);
-        if !lr.is_finite() {
-            eps *= 0.5;
-            break;
-        }
-        if direction > 0.0 && lr < log_half {
-            break;
-        }
-        if direction < 0.0 && lr > log_half {
-            break;
-        }
-        eps *= 2.0_f64.powf(direction);
-    }
-
-    eps.clamp(1e-10, 1e3)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -909,34 +781,6 @@ mod tests {
     }
 
     #[test]
-    fn initial_step_size_search_is_not_pinned_to_lower_bound() {
-        let mut graph = Graph::new();
-        let x = graph.add_param("x");
-        let zero = graph.add_constant(0.0);
-        let one = graph.add_constant(1.0);
-        graph.normal_logp(x, zero, one);
-        let mut evaluator = Evaluator::new(&graph);
-        let mass = MassMatrix::from_graph(&graph);
-        let mut scratch = vec![0.0; 1];
-        let mut rng = ChaCha8Rng::seed_from_u64(17);
-
-        let step_size = find_initial_step_size(
-            &graph,
-            &mut evaluator,
-            &[0.0],
-            &mass,
-            &mut scratch,
-            &mut rng,
-        );
-
-        assert!(step_size.is_finite());
-        assert!(
-            step_size > 1e-6,
-            "initial step-size search collapsed to {step_size}"
-        );
-    }
-
-    #[test]
     fn nuts_chain_reports_posterior_only_diagnostics() {
         let mut graph = Graph::new();
         let x = graph.add_param("x");
@@ -949,6 +793,7 @@ mod tests {
             max_tree_depth: 3,
             num_draws: 3,
             num_warmup: 2,
+            metric: MetricKind::Auto,
         };
         let mut rng = ChaCha8Rng::seed_from_u64(9);
 
@@ -1102,5 +947,84 @@ mod tests {
         update_current(&mut current, &proposal);
         assert_eq!(current.q, proposal.q);
         assert_ne!(current.q, initial_q);
+    }
+
+    /// `y ~ Normal(X b, 1)` with `b ~ Normal(0, 5)` over a vector parameter.
+    fn vector_regression(x: Vec<f64>, n_rows: usize, dim: usize, y: Vec<f64>) -> Graph {
+        let mut graph = Graph::new();
+        let start = graph.add_vector_params("b", dim);
+        graph.vector_normal_logp(start, dim, 0.0, 5.0);
+        let matrix = graph.store_matrix(x, n_rows, dim);
+        let mu = graph.mat_vec_mul(matrix, start, dim, None);
+        let one = graph.add_constant(1.0);
+        let obs = graph.add_obs_data(y);
+        graph.normal_obs_logp(mu, one, obs);
+        graph
+    }
+
+    fn mean_draw_leapfrog_steps(graph: &Graph, metric: MetricKind, seed: u64) -> f64 {
+        let config = NutsConfig {
+            num_warmup: 500,
+            num_draws: 200,
+            metric,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let dim = graph.param_count;
+        let chain = run_chain(graph, &config, &mut rng, Some(vec![0.0; dim]), None)
+            .expect("continuous test model must run");
+        let draws: Vec<_> = chain.transitions.iter().filter(|t| !t.is_warmup).collect();
+        draws.iter().map(|t| t.num_leapfrog_steps).sum::<usize>() as f64 / draws.len() as f64
+    }
+
+    #[test]
+    fn default_metric_is_not_worse_than_diagonal_on_an_isotropic_vector() {
+        // A dense block estimated from a 200-draw window in 100 dimensions
+        // is mostly noise; before the metric became selectable this target
+        // took ~140 leapfrog steps per draw against ~10 for diagonal.
+        let dim = 100;
+        let mut x = vec![0.0; dim * dim];
+        for i in 0..dim {
+            x[i * dim + i] = 1.0;
+        }
+        let mut rng = ChaCha8Rng::seed_from_u64(1);
+        let y: Vec<f64> = (0..dim).map(|_| rng.gen_range(-1.0..1.0)).collect();
+        let graph = vector_regression(x, dim, dim, y);
+        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, 3);
+        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, 3);
+        assert!(auto < 20.0, "auto metric took {auto} steps per draw");
+        assert!(
+            auto <= 1.25 * diagonal,
+            "auto {auto} vs diagonal {diagonal}"
+        );
+    }
+
+    #[test]
+    fn default_metric_keeps_the_dense_benefit_for_correlated_coefficients() {
+        // Columns of X correlated at 0.9 make the posterior of b nearly
+        // singular along their sum: a diagonal metric needs several times
+        // the integration a dense one does.
+        let (dim, n_rows) = (10, 200);
+        let mut rng = ChaCha8Rng::seed_from_u64(2);
+        let mut normal =
+            || -> f64 { rand_distr::Distribution::sample(&rand_distr::StandardNormal, &mut rng) };
+        let mut x = Vec::with_capacity(n_rows * dim);
+        let mut y = Vec::with_capacity(n_rows);
+        for _ in 0..n_rows {
+            let shared = normal();
+            let mut mean = 0.0;
+            for k in 0..dim {
+                let value = 0.9_f64.sqrt() * shared + 0.1_f64.sqrt() * normal();
+                mean += value * (k as f64 / dim as f64 - 0.5);
+                x.push(value);
+            }
+            y.push(mean + normal());
+        }
+        let graph = vector_regression(x, n_rows, dim, y);
+        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, 4);
+        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, 4);
+        let dense = mean_draw_leapfrog_steps(&graph, MetricKind::Dense, 4);
+        assert!(auto < 0.5 * diagonal, "auto {auto} vs diagonal {diagonal}");
+        assert!(auto <= 1.5 * dense, "auto {auto} vs dense {dense}");
     }
 }

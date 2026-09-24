@@ -1,3 +1,4 @@
+mod adaptation;
 pub mod autodiff;
 pub mod bayesian_ar;
 pub mod bayesian_forecast;

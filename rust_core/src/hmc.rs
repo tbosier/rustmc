@@ -1,7 +1,8 @@
+use crate::adaptation::WarmupAdapter;
 use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::graph::Graph;
-use crate::mass_matrix::{MassMatrix, MassMatrixAccumulator};
+use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
 use crate::sampler::reject_discrete_latent_parameters;
 use crate::target::GradientEvaluator;
@@ -48,6 +49,8 @@ pub struct HmcConfig {
     pub num_leapfrog_steps: usize,
     pub num_draws: usize,
     pub num_warmup: usize,
+    /// How warmup estimates the metric of vector parameters.
+    pub metric: MetricKind,
 }
 
 impl Default for HmcConfig {
@@ -58,6 +61,7 @@ impl Default for HmcConfig {
             num_leapfrog_steps: 15,
             num_draws: 1000,
             num_warmup: 500,
+            metric: MetricKind::Auto,
         }
     }
 }
@@ -73,13 +77,12 @@ pub struct ChainResult {
 
 /// Run a single HMC chain with block-structured mass matrix adaptation.
 ///
-/// Warmup is split into three phases (following Stan's approach):
-///   Phase 1 (first 15%):  step-size adaptation only, identity mass matrix
-///   Phase 2 (15%–90%):    collect samples → estimate the block-structured metric
-///   Phase 3 (last 10%):   final step-size adaptation with the adapted mass matrix
+/// Warmup follows Stan's windowed schedule, shared with NUTS: step-size
+/// adaptation only in the initial and terminal buffers, and doubling
+/// metric-estimation windows between them (see `adaptation::WarmupSchedule`).
 ///
-/// All workspace buffers are pre-allocated. The `Evaluator` performs
-/// zero-allocation gradient computation.
+/// Workspace buffers are allocated once per chain; a transition allocates
+/// only the retained draw.
 /// # Errors
 ///
 /// Returns the rejection message from
@@ -163,29 +166,19 @@ pub(crate) fn run_chain_with_evaluator(
     let mut n_divergences = 0usize;
 
     let mut mass = MassMatrix::from_graph(graph);
-    let mut mass_acc = MassMatrixAccumulator::from_graph(graph);
-
-    // Warmup phase boundaries
-    let phase1_end = config.num_warmup * 15 / 100;
-    let phase2_end = config.num_warmup * 90 / 100;
-    let mut warmup_count = 0usize;
-
-    // Auto step-size initialization
+    // The same windowed schedule, dual averaging and step-size search as NUTS.
+    let mut adapter = WarmupAdapter::new(
+        graph,
+        config.num_warmup,
+        config.target_accept,
+        config.step_size,
+        config.metric,
+    );
     let mut step_size = if config.step_size > 0.0 {
         config.step_size
     } else {
-        find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng)
+        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
     };
-
-    // Dual-averaging state
-    let target_accept = config.target_accept;
-    let mut da_mu = (10.0 * step_size).ln();
-    let da_gamma = 0.05;
-    let da_t0 = 10.0;
-    let da_kappa = 0.75;
-    let mut log_eps_bar = step_size.ln();
-    let mut h_bar = 0.0f64;
-    let mut adapt_count = 0u64;
 
     // The density and gradient at the current position are cached across
     // iterations: a rejected proposal leaves them unchanged and an accepted
@@ -275,35 +268,16 @@ pub(crate) fn run_chain_with_evaluator(
         }
 
         if is_warmup {
-            adapt_count += 1;
-            let m = adapt_count as f64;
-            let w = 1.0 / (m + da_t0);
-            h_bar = (1.0 - w) * h_bar + w * (target_accept - accept_prob);
-            let log_eps = da_mu - (m.sqrt() / da_gamma) * h_bar;
-            step_size = log_eps.exp();
-            let m_pow = m.powf(-da_kappa);
-            log_eps_bar = m_pow * log_eps + (1.0 - m_pow) * log_eps_bar;
-
-            if iter >= phase1_end && iter < phase2_end {
-                mass_acc.update(&q);
-                warmup_count += 1;
-            }
-
-            if iter == phase2_end && warmup_count > 10 {
-                mass = mass_acc.finalize();
-                mass_acc.reset();
-                adapt_count = 0;
-                h_bar = 0.0;
-                let new_eps =
-                    find_initial_step_size(graph, evaluator, &q, &mass, &mut scratch, rng);
-                step_size = new_eps;
-                da_mu = (10.0 * new_eps).ln();
-                log_eps_bar = new_eps.ln();
-            }
-        }
-
-        if iter == config.num_warmup.saturating_sub(1) && config.num_warmup > 0 {
-            step_size = log_eps_bar.exp();
+            step_size = adapter.after_transition(
+                iter,
+                accept_prob,
+                &q,
+                graph,
+                evaluator,
+                &mut mass,
+                rng,
+                &mut scratch,
+            );
         }
 
         if !is_warmup {
@@ -335,118 +309,6 @@ pub(crate) fn run_chain_with_evaluator(
     }
 }
 
-/// Find a reasonable initial step size using a doubling/halving search.
-///
-/// Starting from ε=1, take one leapfrog step and check the acceptance
-/// probability. Double or halve ε until the acceptance is near 0.5.
-fn find_initial_step_size(
-    graph: &Graph,
-    evaluator: &mut impl GradientEvaluator,
-    q: &[f64],
-    mass: &MassMatrix,
-    scratch: &mut [f64],
-    rng: &mut ChaCha8Rng,
-) -> f64 {
-    evaluator.compute(graph, q);
-    let logp0 = evaluator.log_density();
-    let grad0: Vec<f64> = evaluator.gradient().to_vec();
-    let dim = q.len();
-    let mut p0 = vec![0.0; dim];
-    let mut p1 = vec![0.0; dim];
-    let mut q1 = vec![0.0; dim];
-    let mut velocity = vec![0.0; dim];
-    mass.sample_momentum_into(rng, &mut p0, scratch);
-    let ke0 = mass.kinetic_energy(&p0, scratch);
-
-    let mut eps = 1.0;
-
-    // One leapfrog step to gauge acceptance at eps=1
-    let log_ratio = one_step_log_ratio(
-        graph,
-        evaluator,
-        q,
-        &p0,
-        &grad0,
-        mass,
-        eps,
-        logp0,
-        ke0,
-        &mut p1,
-        &mut q1,
-        &mut velocity,
-        scratch,
-    );
-
-    let log_half = 0.5_f64.ln();
-    let direction = if log_ratio > log_half { 1.0 } else { -1.0 };
-
-    for _ in 0..50 {
-        let lr = one_step_log_ratio(
-            graph,
-            evaluator,
-            q,
-            &p0,
-            &grad0,
-            mass,
-            eps,
-            logp0,
-            ke0,
-            &mut p1,
-            &mut q1,
-            &mut velocity,
-            scratch,
-        );
-        if !lr.is_finite() {
-            eps *= 0.5;
-            break;
-        }
-        if direction > 0.0 && lr < log_half {
-            break;
-        }
-        if direction < 0.0 && lr > log_half {
-            break;
-        }
-        eps *= 2.0_f64.powf(direction);
-    }
-
-    eps.clamp(1e-10, 1e3)
-}
-
-/// Compute the log acceptance ratio for a single leapfrog step at step size `eps`.
-// This hot-path helper keeps its work buffers explicit to avoid per-step allocation.
-#[allow(clippy::too_many_arguments)]
-fn one_step_log_ratio(
-    graph: &Graph,
-    evaluator: &mut impl GradientEvaluator,
-    q: &[f64],
-    p0: &[f64],
-    grad0: &[f64],
-    mass: &MassMatrix,
-    eps: f64,
-    logp0: f64,
-    ke0: f64,
-    p1: &mut [f64],
-    q1: &mut [f64],
-    velocity: &mut [f64],
-    scratch: &mut [f64],
-) -> f64 {
-    let dim = q.len();
-    for i in 0..dim {
-        p1[i] = p0[i] + 0.5 * eps * grad0[i];
-    }
-    mass.velocity_into(p1, velocity, scratch);
-    for i in 0..dim {
-        q1[i] = q[i] + eps * velocity[i];
-    }
-    evaluator.compute(graph, q1);
-    for (momentum, &gradient) in p1.iter_mut().zip(evaluator.gradient().iter()).take(dim) {
-        *momentum += 0.5 * eps * gradient;
-    }
-    let logp1 = evaluator.log_density();
-    let ke1 = mass.kinetic_energy(p1, scratch);
-    (logp1 - ke1) - (logp0 - ke0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,8 +337,11 @@ mod tests {
         let mut rng = ChaCha8Rng::seed_from_u64(42);
         let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
             .expect("continuous test model must run");
-        let first_after_reset = &chain.transitions[91];
-        let second_after_reset = &chain.transitions[92];
+        // Warmup 100 is too short for Stan's default buffers, so the schedule
+        // falls back to 15% / 75% / 10%: one window [15, 90), with the metric
+        // replaced after transition 89.
+        let first_after_reset = &chain.transitions[90];
+        let second_after_reset = &chain.transitions[91];
         assert!((first_after_reset.step_size - config.step_size).abs() > 1e-3);
         // The first update of the new adaptation phase is centered on the
         // initial step found with the new metric, not the pre-warmup step.
@@ -495,6 +360,7 @@ mod tests {
             num_leapfrog_steps: 2,
             num_draws: 3,
             num_warmup: 2,
+            metric: MetricKind::Auto,
         };
         let mut rng = ChaCha8Rng::seed_from_u64(7);
 
@@ -531,30 +397,6 @@ mod tests {
     }
 
     #[test]
-    fn initial_step_size_search_is_not_pinned_to_lower_bound() {
-        let graph = simple_gaussian_graph();
-        let mut evaluator = Evaluator::new(&graph);
-        let mass = MassMatrix::from_graph(&graph);
-        let mut scratch = vec![0.0; 1];
-        let mut rng = ChaCha8Rng::seed_from_u64(17);
-
-        let step_size = find_initial_step_size(
-            &graph,
-            &mut evaluator,
-            &[0.0],
-            &mass,
-            &mut scratch,
-            &mut rng,
-        );
-
-        assert!(step_size.is_finite());
-        assert!(
-            step_size > 1e-6,
-            "initial step-size search collapsed to {step_size}"
-        );
-    }
-
-    #[test]
     fn hmc_flags_large_finite_energy_errors_as_divergent() {
         let graph = simple_gaussian_graph();
         let mut rng = ChaCha8Rng::seed_from_u64(7);
@@ -566,6 +408,7 @@ mod tests {
                 num_leapfrog_steps: 2,
                 num_draws: 1,
                 num_warmup: 0,
+                metric: MetricKind::Auto,
             },
             &mut rng,
             None,
@@ -586,6 +429,7 @@ mod tests {
                 num_leapfrog_steps: 2,
                 num_draws: 1,
                 num_warmup: 0,
+                metric: MetricKind::Auto,
             },
             &mut rng,
             None,

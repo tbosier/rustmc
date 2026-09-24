@@ -64,6 +64,7 @@ fn sample_graph(
             seed,
             num_threads: 1,
             show_progress: false,
+            ..Default::default()
         },
     )
     .expect("sampling failed")

@@ -3,6 +3,7 @@ use crate::data::DataBinding;
 use crate::diagnostics::{self, DiagnosticsReport};
 use crate::graph::{Graph, Op, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
+pub use crate::mass_matrix::MetricKind;
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
 use rand::SeedableRng;
@@ -32,6 +33,9 @@ pub struct SamplerConfig {
     pub seed: u64,
     pub num_threads: usize,
     pub show_progress: bool,
+    /// How warmup estimates the metric of vector parameters; see
+    /// [`MetricKind`].
+    pub metric: MetricKind,
 }
 
 impl Default for SamplerConfig {
@@ -48,6 +52,7 @@ impl Default for SamplerConfig {
             seed: 42,
             num_threads: 0,
             show_progress: true,
+            metric: MetricKind::Auto,
         }
     }
 }
@@ -64,6 +69,8 @@ pub struct BatchSampleConfig {
     pub max_tree_depth: usize,
     pub seed: u64,
     pub show_progress: bool,
+    /// How warmup estimates the metric of vector parameters.
+    pub metric: MetricKind,
 }
 
 impl Default for BatchSampleConfig {
@@ -79,6 +86,7 @@ impl Default for BatchSampleConfig {
             max_tree_depth: 8,
             seed: 42,
             show_progress: true,
+            metric: MetricKind::Auto,
         }
     }
 }
@@ -121,6 +129,7 @@ impl BatchSampleConfig {
             num_chains: self.num_chains,
             num_draws: self.num_draws,
             num_warmup: self.num_warmup,
+            metric: self.metric,
             step_size: self.step_size,
             target_accept: self.target_accept,
             num_leapfrog_steps: self.num_leapfrog_steps,
@@ -482,6 +491,7 @@ pub fn sample_bound_with_init(
                             max_tree_depth: config.max_tree_depth,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
+                            metric: config.metric,
                         };
                         nuts::run_chain_bound_unguarded(
                             &graph,
@@ -499,6 +509,7 @@ pub fn sample_bound_with_init(
                             num_leapfrog_steps: config.num_leapfrog_steps,
                             num_draws: config.num_draws,
                             num_warmup: config.num_warmup,
+                            metric: config.metric,
                         };
                         hmc::run_chain_bound_unguarded(
                             &graph,
@@ -700,6 +711,7 @@ pub fn sample_batch_bound(
         num_chains: config.num_chains,
         num_draws: config.num_draws,
         num_warmup: config.num_warmup,
+        metric: config.metric,
         step_size: config.step_size,
         target_accept: config.target_accept,
         num_leapfrog_steps: config.num_leapfrog_steps,
@@ -882,6 +894,7 @@ pub fn batch_sample_graphs(
                                 max_tree_depth: config.max_tree_depth,
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
+                                metric: config.metric,
                             };
                             nuts::run_chain_bound_unguarded(
                                 &graph,
@@ -899,6 +912,7 @@ pub fn batch_sample_graphs(
                                 num_leapfrog_steps: config.num_leapfrog_steps,
                                 num_draws: config.num_draws,
                                 num_warmup: config.num_warmup,
+                                metric: config.metric,
                             };
                             hmc::run_chain_bound_unguarded(
                                 &graph,
@@ -996,6 +1010,7 @@ mod tests {
                     max_tree_depth: config.max_tree_depth,
                     num_draws: config.num_draws,
                     num_warmup: config.num_warmup,
+                    metric: config.metric,
                 },
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
