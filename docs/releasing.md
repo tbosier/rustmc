@@ -93,7 +93,8 @@ resolving the new tag to its commit, not by editing the version comment alone.
 
 Pushes to `main` and pull requests build the documentation site without deploying
 it. To redeploy the site, run the Docs workflow by hand and choose the release tag;
-it refuses to deploy from any ref that is not a `v*` tag.
+for any ref that is not a `v*` tag the deploy job is skipped, so the run builds
+the site and finishes without deploying it.
 
 A green build is not itself evidence that publishing succeeded: verify both registry
 versions and install the published distribution before reporting the release complete.

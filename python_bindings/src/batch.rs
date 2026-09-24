@@ -292,11 +292,19 @@ pub(crate) fn batch_sample(
 
     let mut cells = Vec::with_capacity(models.len());
     for (index, (spec_bound, data_bound)) in models.iter().enumerate() {
+        // Name the dataset in errors raised while preparing it, as the native
+        // batch does for errors raised while sampling it, keeping the class.
+        let in_dataset = |error: PyErr| {
+            PyErr::from_type(
+                error.get_type(py),
+                format!("dataset '{index}': {}", error.value(py)),
+            )
+        };
         let spec = spec_bound.borrow();
-        reject_discrete_priors_for_gradient_sampling(&spec.priors)?;
+        reject_discrete_priors_for_gradient_sampling(&spec.priors).map_err(in_dataset)?;
         // Bound data from ModelSpec is the base; call-site dict overrides/extends.
-        let (data_map, matrix_map) = spec.data_with(Some(data_bound))?;
-        let compiled = compile_python_model(&spec, &data_map, &matrix_map)?;
+        let (data_map, matrix_map) = spec.data_with(Some(data_bound)).map_err(in_dataset)?;
+        let compiled = compile_python_model(&spec, &data_map, &matrix_map).map_err(in_dataset)?;
         let binding =
             CoreDataBinding::from_graph(&compiled.graph).map_err(|error| error.to_string());
         cells.push(ModelBatchCell {

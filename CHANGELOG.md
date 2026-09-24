@@ -59,13 +59,18 @@ streams and start from different points than in 0.12.0.
 #### Changed
 
 - **Vector parameters no longer always get a dense metric.** Every vector
-  parameter of 2 to 512 elements used to get a dense metric block estimated from at
-  most 200 warmup draws, which is noisy at 50 dimensions and singular above 200. On an
+  parameter of 2 to 512 elements used to get a dense metric block estimated from one
+  warmup window — 200 draws at the default `warmup=500` — which is noisy at 50
+  dimensions and singular above the window's length. On an
   isotropic 300-element regression 0.12 took about 500 leapfrog steps per draw; the
   default now takes 15, the same as scalar parameters. The default `"auto"` goes
   dense only when a window's correlation clearly exceeds its own sampling noise, which
   keeps the gain on correlated coefficients: on a 20-coefficient ρ = 0.9 regression it
-  takes 11.8 steps per draw against 56.3 for `"diag"`. An explicit `"dense"` shrinks
+  takes 11.8 steps per draw against 56.3 for `"diag"`. It considers a dense block
+  only when the window has at least two draws per element, so at the default
+  `warmup=500` a vector of more than 100 elements stays diagonal however correlated
+  it is (0.12 used a dense block there); raise `warmup` or pass `metric="dense"` for
+  such a vector. An explicit `"dense"` shrinks
   correlations toward zero when a window has fewer than two draws per element, so it
   stays well conditioned (22.7 steps at 300 isotropic elements). Figures are from
   `benchmarks/metric_adaptation.py`, which prints its configuration and seeds.
@@ -95,8 +100,9 @@ streams and start from different points than in 0.12.0.
   about 0.1 posterior standard deviation, and the new ones agree with exact
   conditioning. Hurdle uses the scalar version.
 - Dynamic GLM block updates evaluate only the groups a block touches: a sweep is
-  O(G·T) rather than O(G²·T), with the same target and, for a given stream, the same
-  draws. Two measurements on different runs put the speed-up at 13–20× for 50
+  O(G·T) rather than O(G²·T), with the same target. For a given stream the draws
+  match the old algorithm's up to floating-point rounding; they were bit-identical in
+  every comparison run. Two measurements on different runs put the speed-up at 13–20× for 50
   groups and 41–90× for 200 groups (T = 100).
 - Dynamic GLM forecasts and prior predictions, and runoff fits, run chains in
   parallel with results independent of thread count.

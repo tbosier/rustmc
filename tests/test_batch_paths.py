@@ -47,6 +47,17 @@ def test_legacy_batch_sample_names_the_failed_dataset():
                             **OPTIONS)
 
 
+def test_legacy_batch_sample_names_the_dataset_it_could_not_prepare():
+    # These fail while binding the data, before any sampling starts.
+    spec = builder().build()
+    with pytest.raises(ValueError, match="dataset '1': .*at least one value"):
+        rustmc.batch_sample([(spec, DATASETS[0]), (spec, {"x": X[:0], "y": X[:0]})],
+                            show_progress=False, **OPTIONS)
+    with pytest.raises(ValueError, match="dataset '2': .*y"):
+        rustmc.batch_sample([(spec, DATASETS[0]), (spec, DATASETS[1]), (spec, {"x": X})],
+                            show_progress=False, **OPTIONS)
+
+
 @pytest.mark.parametrize("show_progress", [True, False])
 def test_sample_batch_honours_show_progress(capfd, show_progress):
     builder().compile().sample_batch(DATASETS, show_progress=show_progress, **OPTIONS)

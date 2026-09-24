@@ -549,10 +549,14 @@ Notes:
   parameter of at most 512 elements, shrinking its correlations when a window has
   fewer than two draws per element. `"auto"` (the default) stays diagonal unless a
   vector parameter's warmup draws show correlation well beyond their own sampling
-  noise, which suits strongly correlated regression coefficients. Scalar parameters
-  are always diagonal.
+  noise, which suits strongly correlated regression coefficients. It considers a
+  dense block only when a warmup window has at least two draws per element, so at
+  the default `warmup=500` vectors of more than 100 elements stay diagonal; use a
+  longer warmup or `"dense"` for a large, strongly correlated vector. Scalar
+  parameters are always diagonal.
 - Warmup uses a windowed schedule, Stan's from 500 iterations: an initial buffer of
-  `min(75, 15%)` of warmup, doubling metric windows from 25 draws, and a terminal
+  `min(75, 15%)` of warmup, doubling metric windows from 25 draws (fewer when warmup
+  is below about 170), and a terminal
   buffer of `min(50, 10%)` but at least 25 iterations. A window whose successor could
   not fit at twice its size is stretched to the terminal buffer, so no window after
   the first is shorter than 25 draws. Below 41 warmup iterations only the step size
