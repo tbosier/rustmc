@@ -1,17 +1,17 @@
+use rustmc_core::graph::ElementwiseOp;
 use rustmc_core::model::MuExpr;
 // Python expression construction; compilation and evaluation live outside this module.
-use super::{validate_finite, ParameterError};
+use crate::builder::validate_finite;
+use crate::ParameterError;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-/// Recursive expression tree built on the Python side, compiled to graph
-/// nodes at sampling time.
-
+/// A vector parameter, from `ModelBuilder.vector_normal_prior`. It has no
+/// scalar value: index it by a group column or multiply it into a matrix.
 #[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct VectorParamRef {
     pub(super) name: String,
-    pub(super) _n: usize,
     /// Id of the `ModelBuilder` that created this reference.
     pub(super) owner: u64,
 }
@@ -116,7 +116,7 @@ fn is_dsl_operand(value: &Bound<'_, PyAny>) -> bool {
 }
 
 /// Combine the owning-model ids of two sub-expressions, rejecting mixtures.
-pub(super) fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
+fn merge_owners(a: Option<u64>, b: Option<u64>, a_name: &str) -> PyResult<Option<u64>> {
     match (a, b) {
         (Some(x), Some(y)) if x != y => Err(ParameterError::new_err(format!(
             "expression mixes parameters from two different models \
@@ -149,8 +149,7 @@ pub(super) fn first_param_name(expr: &MuExpr) -> String {
     }
 }
 
-/// Collect every parameter name referenced by an expression tree.
-
+/// A scalar parameter, as returned by a `ModelBuilder` prior.
 #[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct ParamRef {
@@ -159,6 +158,8 @@ pub(super) struct ParamRef {
     pub(super) owner: u64,
 }
 
+/// Recursive expression tree built on the Python side, compiled to graph
+/// nodes at sampling time.
 #[pyclass(module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct Expr {
@@ -243,18 +244,13 @@ impl Expr {
     fn as_expr(&self) -> Expr {
         self.clone()
     }
-    fn unary(&self, op: rustmc_core::graph::ElementwiseOp) -> Expr {
+    fn unary(&self, op: ElementwiseOp) -> Expr {
         Expr {
             inner: MuExpr::Unary(op, Box::new(self.inner.clone())),
             owner: self.owner,
         }
     }
-    fn binary(
-        &self,
-        other: &Bound<'_, PyAny>,
-        op: rustmc_core::graph::ElementwiseOp,
-        reverse: bool,
-    ) -> PyResult<Expr> {
+    fn binary(&self, other: &Bound<'_, PyAny>, op: ElementwiseOp, reverse: bool) -> PyResult<Expr> {
         let rhs = extract_expr(other)?;
         let owner = merge_owners(self.owner, rhs.owner, &first_param_name(&self.inner))?;
         let (a, b) = if reverse {
@@ -262,16 +258,109 @@ impl Expr {
         } else {
             (self.inner.clone(), rhs.inner)
         };
-        let inner = if matches!(op, rustmc_core::graph::ElementwiseOp::Add) {
+        let inner = if matches!(op, ElementwiseOp::Add) {
             MuExpr::Add(Box::new(a), Box::new(b))
         } else {
             MuExpr::Binary(op, Box::new(a), Box::new(b))
         };
         Ok(Expr { inner, owner })
     }
+    fn power(
+        &self,
+        other: &Bound<'_, PyAny>,
+        modulo: Option<&Bound<'_, PyAny>>,
+        reverse: bool,
+    ) -> PyResult<Expr> {
+        if modulo.is_some() {
+            return Err(PyValueError::new_err("modular power is unsupported"));
+        }
+        self.binary(other, ElementwiseOp::Pow, reverse)
+    }
 }
-#[pymethods]
-impl ParamRef {
+
+/// The Python methods a scalar operand shares -- `ParamRef` and `Expr` alike:
+/// arithmetic, the elementwise functions and `sum`. Each type supplies its
+/// own `__mul__` (a `ParamRef` times a data key stays a fused
+/// `ParamTimesData`) and `as_expr`, and any methods only it has.
+macro_rules! scalar_expression_methods {
+    ($ty:ty { $($own:tt)* }) => {
+        #[pymethods]
+        impl $ty {
+            $($own)*
+            fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.__mul__(other)
+            }
+            fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.as_expr().binary(other, ElementwiseOp::Add, false)
+            }
+            fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.__add__(other)
+            }
+            fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.as_expr().binary(other, ElementwiseOp::Sub, false)
+            }
+            fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.as_expr().binary(other, ElementwiseOp::Sub, true)
+            }
+            fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.as_expr().binary(other, ElementwiseOp::Div, false)
+            }
+            fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
+                self.as_expr().binary(other, ElementwiseOp::Div, true)
+            }
+            fn __pow__(
+                &self,
+                other: &Bound<'_, PyAny>,
+                modulo: Option<&Bound<'_, PyAny>>,
+            ) -> PyResult<Expr> {
+                self.as_expr().power(other, modulo, false)
+            }
+            fn __rpow__(
+                &self,
+                other: &Bound<'_, PyAny>,
+                modulo: Option<&Bound<'_, PyAny>>,
+            ) -> PyResult<Expr> {
+                self.as_expr().power(other, modulo, true)
+            }
+            fn __neg__(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Neg)
+            }
+            fn exp(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Exp)
+            }
+            fn log(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Log)
+            }
+            fn sqrt(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Sqrt)
+            }
+            fn sigmoid(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Sigmoid)
+            }
+            fn tanh(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Tanh)
+            }
+            fn softplus(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Softplus)
+            }
+            fn sin(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Sin)
+            }
+            fn cos(&self) -> Expr {
+                self.as_expr().unary(ElementwiseOp::Cos)
+            }
+            fn sum(&self) -> Expr {
+                let expr = self.as_expr();
+                Expr {
+                    inner: MuExpr::Sum(Box::new(expr.inner)),
+                    owner: expr.owner,
+                }
+            }
+        }
+    };
+}
+
+scalar_expression_methods!(ParamRef {
     /// `beta * "x"` keeps its fused `ParamTimesData` form, which
     /// `model.rs::try_extract_linear` compiles into a single `FusedLinearMu`
     /// op. Every other operand falls through to the generic expression path.
@@ -285,8 +374,7 @@ impl ParamRef {
                 owner: Some(self.owner),
             })
         } else {
-            self.as_expr()
-                .binary(other, rustmc_core::graph::ElementwiseOp::Mul, false)
+            self.as_expr().binary(other, ElementwiseOp::Mul, false)
         }
     }
     fn __matmul__(&self, data_key: &str) -> Expr {
@@ -298,182 +386,10 @@ impl ParamRef {
             owner: Some(self.owner),
         }
     }
+});
 
-    fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Add, false)
-    }
-    fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.__add__(other)
-    }
-    fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Sub, false)
-    }
-    fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Sub, true)
-    }
-    fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Div, false)
-    }
-    fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Div, true)
-    }
-    fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.__mul__(other)
-    }
-    fn __pow__(
-        &self,
-        other: &Bound<'_, PyAny>,
-        modulo: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Expr> {
-        if modulo.is_some() {
-            return Err(PyValueError::new_err("modular power is unsupported"));
-        }
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Pow, false)
-    }
-    fn __rpow__(
-        &self,
-        other: &Bound<'_, PyAny>,
-        modulo: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Expr> {
-        if modulo.is_some() {
-            return Err(PyValueError::new_err("modular power is unsupported"));
-        }
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Pow, true)
-    }
-    fn __neg__(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Neg)
-    }
-    fn exp(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Exp)
-    }
-    fn log(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Log)
-    }
-    fn sqrt(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Sqrt)
-    }
-    fn sigmoid(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Sigmoid)
-    }
-    fn tanh(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Tanh)
-    }
-    fn softplus(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Softplus)
-    }
-    fn sin(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Sin)
-    }
-    fn cos(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Cos)
-    }
-    fn sum(&self) -> Expr {
-        Expr {
-            inner: MuExpr::Sum(Box::new(self.as_expr().inner)),
-            owner: self.as_expr().owner,
-        }
-    }
-}
-#[pymethods]
-impl Expr {
+scalar_expression_methods!(Expr {
     fn __mul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.binary(other, rustmc_core::graph::ElementwiseOp::Mul, false)
+        self.binary(other, ElementwiseOp::Mul, false)
     }
-
-    fn __add__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Add, false)
-    }
-    fn __radd__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.__add__(other)
-    }
-    fn __sub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Sub, false)
-    }
-    fn __rsub__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Sub, true)
-    }
-    fn __truediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Div, false)
-    }
-    fn __rtruediv__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Div, true)
-    }
-    fn __rmul__(&self, other: &Bound<'_, PyAny>) -> PyResult<Expr> {
-        self.__mul__(other)
-    }
-    fn __pow__(
-        &self,
-        other: &Bound<'_, PyAny>,
-        modulo: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Expr> {
-        if modulo.is_some() {
-            return Err(PyValueError::new_err("modular power is unsupported"));
-        }
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Pow, false)
-    }
-    fn __rpow__(
-        &self,
-        other: &Bound<'_, PyAny>,
-        modulo: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Expr> {
-        if modulo.is_some() {
-            return Err(PyValueError::new_err("modular power is unsupported"));
-        }
-        self.as_expr()
-            .binary(other, rustmc_core::graph::ElementwiseOp::Pow, true)
-    }
-    fn __neg__(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Neg)
-    }
-    fn exp(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Exp)
-    }
-    fn log(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Log)
-    }
-    fn sqrt(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Sqrt)
-    }
-    fn sigmoid(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Sigmoid)
-    }
-    fn tanh(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Tanh)
-    }
-    fn softplus(&self) -> Expr {
-        self.as_expr()
-            .unary(rustmc_core::graph::ElementwiseOp::Softplus)
-    }
-    fn sin(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Sin)
-    }
-    fn cos(&self) -> Expr {
-        self.as_expr().unary(rustmc_core::graph::ElementwiseOp::Cos)
-    }
-    fn sum(&self) -> Expr {
-        Expr {
-            inner: MuExpr::Sum(Box::new(self.as_expr().inner)),
-            owner: self.as_expr().owner,
-        }
-    }
-}
+});

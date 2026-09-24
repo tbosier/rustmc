@@ -36,6 +36,7 @@ pub(super) fn param_error(error: ParamRefError) -> ModelError {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelSpec {
+    #[serde(serialize_with = "serialize_sorted")]
     pub dimensions: HashMap<String, String>,
     pub potentials: Vec<(String, MuExpr)>,
     pub deterministics: Vec<(String, MuExpr)>,
@@ -45,6 +46,18 @@ pub struct ModelSpec {
     pub bound_data_1d: HashMap<String, Vec<f64>>,
     #[serde(skip)]
     pub bound_data_2d: HashMap<String, (Vec<f64>, usize, usize)>,
+}
+
+/// Serialise a map in key order, so the same model always writes the same
+/// artifact bytes.
+fn serialize_sorted<S: serde::Serializer>(
+    map: &HashMap<String, String>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    serde::Serialize::serialize(
+        &map.iter().collect::<std::collections::BTreeMap<_, _>>(),
+        serializer,
+    )
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
