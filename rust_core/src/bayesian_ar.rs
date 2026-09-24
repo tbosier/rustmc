@@ -159,7 +159,7 @@ impl BayesianArPosterior {
             &self.chains,
             seed,
             FORECAST_SEED_DOMAIN,
-            |_, _, draw: &BayesianArPosteriorDraw, rng| {
+            |chain_index, draw_index, draw: &BayesianArPosteriorDraw, rng| {
                 if draw.coefficients.len() != expected_coefficients
                     || draw.coefficients.iter().any(|value| !value.is_finite())
                 {
@@ -174,17 +174,27 @@ impl BayesianArPosterior {
                 let mut means = Vec::with_capacity(horizon);
                 let mut observations = Vec::with_capacity(horizon);
                 let innovation_sd = draw.innovation_variance.sqrt();
-                for _ in 0..horizon {
+                for step in 0..horizon {
                     let mut mean = draw.coefficients[0];
                     for lag in 1..=self.order {
                         mean += draw.coefficients[lag] * history[history.len() - lag];
                     }
                     let observation = mean + standard_normal(rng) * innovation_sd;
                     if !mean.is_finite() || !observation.is_finite() {
-                        return Err(BayesianForecastError::NumericalFailure(
-                            "recursive AR forecast overflowed; posterior draws are unconstrained and may be explosive"
-                                .into(),
-                        ));
+                        // Failing names the draw rather than dropping it or
+                        // returning an infinite path: a silently thinned
+                        // forecast would misstate its own uncertainty, and an
+                        // infinite one breaks every summary downstream.
+                        return Err(BayesianForecastError::NumericalFailure(format!(
+                            "recursive AR forecast left the floating-point range at step {} of \
+                             {horizon} for chain {chain_index}, draw {draw_index} (coefficients \
+                             {:?}); AR posterior draws are not restricted to the stationary \
+                             region and this one grows without bound. Shorten the horizon, or \
+                             remove nonstationary draws or use a prior concentrated on stationary \
+                             coefficients before forecasting",
+                            step + 1,
+                            draw.coefficients
+                        )));
                     }
                     means.push(mean);
                     observations.push(observation);
@@ -772,5 +782,29 @@ mod tests {
         let forecast = posterior.forecast(3, 40).unwrap();
         let means = &forecast.conditional_mean_paths[0][0];
         assert!(means[0] > 2.9 && means[1] > means[0] && means[2] > means[1]);
+    }
+
+    #[test]
+    fn an_overflowing_explosive_draw_is_named_rather_than_dropped() {
+        let stable = BayesianArPosteriorDraw {
+            coefficients: vec![0.0, 0.5],
+            innovation_variance: 1.0,
+        };
+        let explosive = BayesianArPosteriorDraw {
+            coefficients: vec![0.0, 1e10],
+            innovation_variance: 1.0,
+        };
+        let posterior = BayesianArPosterior {
+            order: 1,
+            terminal_observations: vec![2.0],
+            chains: vec![vec![stable.clone(); 3], vec![stable, explosive]],
+        };
+        let message = posterior.forecast(40, 41).unwrap_err().to_string();
+        assert!(message.contains("chain 1, draw 1"), "{message}");
+        assert!(message.contains("step 31 of 40"), "{message}");
+        assert!(message.contains("stationary"), "{message}");
+        // A horizon it survives is returned unchanged, explosive draw included.
+        let forecast = posterior.forecast(5, 41).unwrap();
+        assert!(forecast.conditional_mean_paths[1][1][4] > 1e40);
     }
 }
