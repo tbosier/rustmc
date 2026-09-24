@@ -1100,7 +1100,7 @@ fn pointwise_log_likelihood_for_draw(
                         evaluator.vec_elem(head.linpred, i, graph),
                         aux,
                     )
-                    .map_err(PyValueError::new_err)
+                    .map_err(|e| PyValueError::new_err(e.to_string()))
                 })
                 .collect()
         })
@@ -1295,7 +1295,7 @@ impl FitResult {
                         } else {
                             rustmc_core::observation::sample(head.family, eta, aux, rng)
                         }
-                        .map_err(PyValueError::new_err)?,
+                        .map_err(|e| PyValueError::new_err(e.to_string()))?,
                     );
                 }
             }

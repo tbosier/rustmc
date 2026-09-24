@@ -12,22 +12,46 @@
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
+/// Why an elliptical slice update returned no transition. The state is left
+/// as it was on entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EllipticalSliceError {
+    /// A nonfinite state, an empty or out-of-range block, or a nonfinite
+    /// current log likelihood.
+    InvalidInput,
+    /// The callback returned NaN or positive infinity.
+    InvalidLikelihood,
+    /// The bracket shrank 100,000 times without an acceptable point.
+    BracketExhausted,
+}
+
+impl std::fmt::Display for EllipticalSliceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::InvalidInput => {
+                "ESS needs finite states, a nonempty valid block and finite current log likelihood"
+            }
+            Self::InvalidLikelihood => "ESS likelihood returned NaN or positive infinity",
+            Self::BracketExhausted => "ESS bracket exhausted; no sample was returned",
+        })
+    }
+}
+
+impl std::error::Error for EllipticalSliceError {}
+
 pub fn update<R: Rng + ?Sized>(
     state: &mut [f64],
     block: std::ops::Range<usize>,
     current_log_likelihood: f64,
     mut log_likelihood: impl FnMut(&[f64]) -> f64,
     rng: &mut R,
-) -> Result<(f64, usize), String> {
+) -> Result<(f64, usize), EllipticalSliceError> {
     if block.is_empty()
         || block.end > state.len()
         || !current_log_likelihood.is_finite()
         || state.iter().any(|v| !v.is_finite())
     {
-        return Err(
-            "ESS needs finite states, a nonempty valid block and finite current log likelihood"
-                .into(),
-        );
+        return Err(EllipticalSliceError::InvalidInput);
     }
     let direction: Vec<f64> = block.clone().map(|_| StandardNormal.sample(rng)).collect();
     let original = state[block.clone()].to_vec();
@@ -42,7 +66,7 @@ pub fn update<R: Rng + ?Sized>(
         let candidate = log_likelihood(state);
         if candidate.is_nan() || candidate == f64::INFINITY {
             state[block].copy_from_slice(&original);
-            return Err("ESS likelihood returned NaN or positive infinity".into());
+            return Err(EllipticalSliceError::InvalidLikelihood);
         }
         if candidate >= threshold {
             return Ok((candidate, evaluations));
@@ -55,7 +79,7 @@ pub fn update<R: Rng + ?Sized>(
         angle = lower + rng.gen::<f64>() * (upper - lower);
     }
     state[block].copy_from_slice(&original);
-    Err("ESS bracket exhausted; no sample was returned".into())
+    Err(EllipticalSliceError::BracketExhausted)
 }
 
 #[cfg(test)]
@@ -66,8 +90,23 @@ mod tests {
     fn rejects_nonfinite_states_even_with_constant_likelihood() {
         let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(12);
         let mut state = [f64::INFINITY];
-        assert!(update(&mut state, 0..1, 0.0, |_| 0.0, &mut rng).is_err());
+        assert_eq!(
+            update(&mut state, 0..1, 0.0, |_| 0.0, &mut rng),
+            Err(EllipticalSliceError::InvalidInput)
+        );
         assert_eq!(state[0], f64::INFINITY);
+    }
+    #[test]
+    fn invalid_likelihood_restores_the_block_and_keeps_its_message() {
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(13);
+        let mut state = [0.5, 1.5];
+        let error = update(&mut state, 0..1, 0.0, |_| f64::NAN, &mut rng).unwrap_err();
+        assert_eq!(error, EllipticalSliceError::InvalidLikelihood);
+        assert_eq!(
+            error.to_string(),
+            "ESS likelihood returned NaN or positive infinity"
+        );
+        assert_eq!(state, [0.5, 1.5]);
     }
     #[test]
     fn normal_likelihood_matches_analytic_posterior() {

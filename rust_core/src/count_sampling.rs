@@ -10,9 +10,29 @@ use rand::{distributions::Open01, Rng};
 
 pub(crate) const MAX_EXACT_COUNT: u64 = (1_u64 << 53) - 1;
 
-pub(crate) fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, String> {
+/// Why a Poisson draw could not be returned exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CountSamplingError {
+    /// The rate is negative, not finite, or above `2^53 - 1`.
+    RateOutOfRange,
+    /// The draw exceeded `2^53 - 1`, the largest count an `f64` holds exactly.
+    DrawOutOfRange,
+}
+
+impl std::fmt::Display for CountSamplingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::RateOutOfRange => "Poisson rate outside the supported exact-count range",
+            Self::DrawOutOfRange => "Poisson draw exceeds the supported exact-count range",
+        })
+    }
+}
+
+impl std::error::Error for CountSamplingError {}
+
+pub(crate) fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, CountSamplingError> {
     if !rate.is_finite() || rate < 0.0 || rate > MAX_EXACT_COUNT as f64 {
-        return Err("Poisson rate outside the supported exact-count range".into());
+        return Err(CountSamplingError::RateOutOfRange);
     }
     if rate == 0.0 {
         return Ok(0.0);
@@ -52,7 +72,7 @@ pub(crate) fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, St
             if candidate > MAX_EXACT_COUNT as f64 {
                 // Reject the operation, not this draw: resampling would
                 // silently condition the distribution on the output bound.
-                return Err("Poisson draw exceeds the supported exact-count range".into());
+                return Err(CountSamplingError::DrawOutOfRange);
             }
             return Ok(candidate);
         }
@@ -135,6 +155,21 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    #[test]
+    fn out_of_range_rates_are_typed_errors_with_their_message() {
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        for rate in [-1.0, f64::NAN, f64::INFINITY, 1e16] {
+            assert_eq!(
+                poisson(rate, &mut rng),
+                Err(CountSamplingError::RateOutOfRange)
+            );
+        }
+        assert_eq!(
+            CountSamplingError::RateOutOfRange.to_string(),
+            "Poisson rate outside the supported exact-count range"
+        );
+    }
 
     #[test]
     fn log_mass_matches_high_precision_reference_near_large_modes() {

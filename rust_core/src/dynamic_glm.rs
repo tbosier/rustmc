@@ -486,7 +486,7 @@ impl PanelCache {
             },
             rng,
         )
-        .map_err(numerical)?;
+        .map_err(|e| numerical(e.to_string()))?;
         // The accepted point was the last one evaluated.
         let rows = groups.start * times..groups.end * times;
         self.eta[c][rows.clone()].copy_from_slice(&self.proposed_eta[rows]);
@@ -984,7 +984,7 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
             "Poisson rate outside supported numerical range; no draws clipped or removed",
         ));
     }
-    crate::count_sampling::poisson(rate, rng).map_err(numerical)
+    crate::count_sampling::poisson(rate, rng).map_err(|e| numerical(e.to_string()))
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
     let n = factors
