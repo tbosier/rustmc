@@ -188,6 +188,12 @@ def test_forecast_alignment_intervals_and_rollups(rustmc_module):
     lower, upper = forecast.interval(0.95)
     np.testing.assert_allclose(lower, np.quantile(observations, 0.025, axis=(0, 1)))
     np.testing.assert_allclose(upper, np.quantile(observations, 0.975, axis=(0, 1)))
+    # Both intervals default to 95%, like every other forecast class.
+    np.testing.assert_array_equal(forecast.interval(), (lower, upper))
+    np.testing.assert_array_equal(forecast.state_interval(), forecast.state_interval(0.95))
+    state_lower, state_upper = forecast.state_interval(0.9)
+    np.testing.assert_allclose(state_lower, np.quantile(state, 0.05, axis=(0, 1)))
+    np.testing.assert_allclose(state_upper, np.quantile(state, 0.95, axis=(0, 1)))
 
     company = observations.sum(axis=2)
     division_a = observations[:, :, np.array(fit.group_index) == 0, :].sum(axis=2)

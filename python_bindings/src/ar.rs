@@ -372,12 +372,12 @@ impl PyBayesianArForecast {
 
     #[getter]
     fn conditional_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.conditional_mean_paths)
+        path_array(py, &self.inner.conditional_mean_paths)
     }
 
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.observation_paths)
+        path_array(py, &self.inner.observation_paths)
     }
 
     #[getter]

@@ -1,11 +1,11 @@
 //! Python bindings for sparse nonnegative amount forecasting.
 use crate::forecast_support::*;
-use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics, InferenceError};
+use crate::{arviz_from_groups, forecast_batch, forecast_diagnostics};
 use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray3, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::bayesian_forecast::PosteriorPredictiveForecast as CorePosteriorPredictiveForecast;
+use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
 use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
@@ -176,7 +176,7 @@ impl PyHurdleFit {
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.posterior.chains[0].len()
+        chain_shape(&self.posterior.chains).1
     }
     #[getter]
     fn time_count(&self) -> usize {
@@ -279,11 +279,11 @@ pub(crate) struct PyHurdleForecast {
 impl PyHurdleForecast {
     #[getter]
     fn chains(&self) -> usize {
-        self.inner.paths.observation_paths.len()
+        chain_shape(&self.inner.paths.observation_paths).0
     }
     #[getter]
     fn draws(&self) -> usize {
-        self.inner.paths.observation_paths[0].len()
+        chain_shape(&self.inner.paths.observation_paths).1
     }
     #[getter]
     fn steps(&self) -> usize {
@@ -291,56 +291,39 @@ impl PyHurdleForecast {
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.paths.observation_paths)
+        path_array(py, &self.inner.paths.observation_paths)
     }
     /// Conditional arithmetic means including probability of no payment.
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, self.inner.expected_value_paths())
+        path_array(py, self.inner.expected_value_paths())
     }
     #[getter]
     fn positive_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.positive_mean_paths)
+        path_array(py, &self.inner.positive_mean_paths)
     }
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .paths
-            .observation_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.paths.observation_means())
     }
     #[getter]
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
-        Ok(self
-            .inner
-            .expected_value_means()
-            .map_err(bayesian_forecast_error)?
-            .into_pyarray(py))
+        summary_array(py, self.inner.expected_value_means())
     }
     #[getter]
     fn cumulative_observation_samples<'py>(
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-        Ok(local_level_path_array(py, &self.cumulative_paths()?))
+        Ok(path_array(py, &self.cumulative_paths()?))
     }
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        self.quantile_interval(py, &self.inner.paths, level)
+        quantile_interval(py, level, |p| self.inner.paths.observation_quantiles(p))
     }
     #[pyo3(signature = (level=0.95))]
     fn mean_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let q = self
-            .inner
-            .expected_value_quantiles(&[(1.0 - level) / 2.0, (1.0 + level) / 2.0])
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            q[0].values.clone().into_pyarray(py),
-            q[1].values.clone().into_pyarray(py),
-        ))
+        quantile_interval(py, level, |p| self.inner.expected_value_quantiles(p))
     }
     #[pyo3(signature = (level=0.95))]
     fn cumulative_interval<'py>(
@@ -348,11 +331,8 @@ impl PyHurdleForecast {
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalArrays<'py>> {
-        let paths = CorePosteriorPredictiveForecast {
-            state_paths: Vec::new(),
-            observation_paths: self.cumulative_paths()?,
-        };
-        self.quantile_interval(py, &paths, level)
+        let paths = self.cumulative_paths()?;
+        quantile_interval(py, level, |p| path_quantiles(&paths, p))
     }
     #[getter]
     fn uncertainty_kind(&self) -> &'static str {
@@ -365,46 +345,8 @@ impl PyHurdleForecast {
 }
 
 impl PyHurdleForecast {
-    fn cumulative_paths(&self) -> PyResult<Vec<Vec<Vec<f64>>>> {
-        self.inner
-            .paths
-            .observation_paths
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|path| {
-                        let mut sum = 0.0;
-                        path.iter()
-                            .map(|x| {
-                                sum += x;
-                                if sum.is_finite() {
-                                    Ok(sum)
-                                } else {
-                                    Err(InferenceError::new_err("cumulative payment overflowed"))
-                                }
-                            })
-                            .collect()
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-    fn quantile_interval<'py>(
-        &self,
-        py: Python<'py>,
-        paths: &CorePosteriorPredictiveForecast,
-        level: f64,
-    ) -> PyResult<PyIntervalArrays<'py>> {
-        validate_interval_level(level)?;
-        let probs = [(1.0 - level) / 2.0, (1.0 + level) / 2.0];
-        let q = paths
-            .observation_quantiles(&probs)
-            .map_err(bayesian_forecast_error)?;
-        Ok((
-            q[0].values.clone().into_pyarray(py),
-            q[1].values.clone().into_pyarray(py),
-        ))
+    fn cumulative_paths(&self) -> PyResult<Paths> {
+        cumulative_paths(&self.inner.paths.observation_paths).map_err(bayesian_forecast_error)
     }
 }
 

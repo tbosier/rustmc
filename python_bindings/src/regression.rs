@@ -1,4 +1,3 @@
-type IntervalArrays<'py> = (Bound<'py, PyArray1<f64>>, Bound<'py, PyArray1<f64>>);
 use crate::forecast_support::*;
 use crate::{arviz_from_groups, forecast_diagnostics, StateSpaceError};
 use ndarray::{Array2, Array3};
@@ -11,6 +10,7 @@ use rustmc_core::bayesian_regression::{
     self as core, GaussianCoefficientPrior, RegressionConfig, RegressionForecast,
     RegressionPosterior,
 };
+use rustmc_core::forecast_common::{path_means, path_quantiles};
 use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
 
 #[pyclass(name = "GaussianCoefficientPrior", frozen, module = "rustmc")]
@@ -26,18 +26,9 @@ impl PyGaussianCoefficientPrior {
         covariance: PyReadonlyArray2<'_, f64>,
     ) -> PyResult<Self> {
         let mean = state_space_vector(mean);
-        let (covariance, p) = state_space_matrix("coefficient covariance", covariance)?;
-        if mean.len() != p || p == 0 {
-            return Err(StateSpaceError::new_err(
-                "coefficient mean and covariance dimensions must agree and be nonempty",
-            ));
-        }
-        CoreLinearGaussianStateSpace::local_level(1.0, 1.0, 0.0, 1.0)
-            .map_err(state_space_error)?
-            .with_static_regression(&[], &mean, &covariance)
-            .map_err(state_space_error)?;
+        let (covariance, _) = state_space_matrix("coefficient covariance", covariance)?;
         Ok(Self {
-            inner: GaussianCoefficientPrior { mean, covariance },
+            inner: GaussianCoefficientPrior::new(mean, covariance).map_err(state_space_error)?,
         })
     }
     #[getter]
@@ -68,9 +59,11 @@ fn fourier_design<'py>(
     harmonics: usize,
     start: i64,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    let width = core::fourier_width(period, harmonics).map_err(state_space_error)?;
     let rows = core::fourier_design(count, period, harmonics, start).map_err(state_space_error)?;
-    let p = 2 * harmonics - usize::from(2 * harmonics == period);
-    Ok(Array2::from_shape_fn((count, p), |(i, j)| rows[i][j]).into_pyarray(py))
+    Array2::from_shape_vec((count, width), rows.concat())
+        .map(|design| design.into_pyarray(py))
+        .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
 pub(crate) fn fit(
@@ -268,15 +261,15 @@ impl PyBayesianRegressionForecast {
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.observation_paths)
+        path_array(py, &self.inner.observation_paths)
     }
     #[getter]
     fn cumulative_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.cumulative_observation_paths)
+        path_array(py, &self.inner.cumulative_observation_paths)
     }
     #[getter]
     fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.level_paths)
+        path_array(py, &self.inner.level_paths)
     }
     #[getter]
     fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
@@ -289,68 +282,67 @@ impl PyBayesianRegressionForecast {
                 "model has no stochastic seasonal component",
             ));
         }
-        Ok(local_level_path_array(py, &self.inner.secondary_paths))
+        Ok(path_array(py, &self.inner.secondary_paths))
     }
     #[getter]
     fn slope_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
         if self.seasonal || self.dimension != 2 {
             return Err(PyValueError::new_err("model has no slope component"));
         }
-        Ok(local_level_path_array(py, &self.inner.secondary_paths))
+        Ok(path_array(py, &self.inner.secondary_paths))
     }
     #[getter]
     fn regression_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.regression_paths)
+        path_array(py, &self.inner.regression_paths)
     }
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.mean_paths)
+        path_array(py, &self.inner.mean_paths)
     }
     #[getter]
-    fn observation_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        means(&self.inner.observation_paths).into_pyarray(py)
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        summary_array(py, path_means(&self.inner.observation_paths))
     }
     #[getter]
-    fn cumulative_observation_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        means(&self.inner.cumulative_observation_paths).into_pyarray(py)
+    fn cumulative_observation_mean<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray1<f64>>> {
+        summary_array(py, path_means(&self.inner.cumulative_observation_paths))
     }
+    /// Equal-tailed interval holding `probability` of the draws; unlike
+    /// `interval`, zero and one are accepted.
     #[pyo3(signature=(probability=0.9))]
     fn observation_interval<'py>(
         &self,
         py: Python<'py>,
         probability: f64,
-    ) -> PyResult<IntervalArrays<'py>> {
-        interval(py, &self.inner.observation_paths, probability)
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        central_interval(py, &self.inner.observation_paths, probability)
     }
     #[pyo3(signature=(probability=0.9))]
     fn cumulative_observation_interval<'py>(
         &self,
         py: Python<'py>,
         probability: f64,
-    ) -> PyResult<IntervalArrays<'py>> {
-        interval(py, &self.inner.cumulative_observation_paths, probability)
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        central_interval(py, &self.inner.cumulative_observation_paths, probability)
     }
     #[pyo3(signature=(level=0.95))]
-    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<IntervalArrays<'py>> {
-        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
-            return Err(PyValueError::new_err(
-                "level must be strictly between zero and one",
-            ));
-        }
-        interval(py, &self.inner.observation_paths, level)
+    fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
+        quantile_interval(py, level, |p| {
+            path_quantiles(&self.inner.observation_paths, p)
+        })
     }
     #[pyo3(signature=(level=0.95))]
     fn cumulative_interval<'py>(
         &self,
         py: Python<'py>,
         level: f64,
-    ) -> PyResult<IntervalArrays<'py>> {
-        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
-            return Err(PyValueError::new_err(
-                "level must be strictly between zero and one",
-            ));
-        }
-        interval(py, &self.inner.cumulative_observation_paths, level)
+    ) -> PyResult<PyIntervalArrays<'py>> {
+        quantile_interval(py, level, |p| {
+            path_quantiles(&self.inner.cumulative_observation_paths, p)
+        })
     }
     #[getter]
     fn uncertainty_kind(&self) -> &'static str {
@@ -361,35 +353,19 @@ impl PyBayesianRegressionForecast {
         "pointwise_equal_tailed"
     }
 }
-fn means(paths: &core::Paths) -> Vec<f64> {
-    (0..paths[0][0].len())
-        .map(|i| {
-            paths.iter().flatten().map(|p| p[i]).sum::<f64>()
-                / (paths.len() * paths[0].len()) as f64
-        })
-        .collect()
-}
-fn interval<'py>(
+/// The central interval holding `probability` of the draws, which may be
+/// zero (the median twice) or one (the range).
+fn central_interval<'py>(
     py: Python<'py>,
     paths: &core::Paths,
     probability: f64,
-) -> PyResult<IntervalArrays<'py>> {
+) -> PyResult<PyIntervalArrays<'py>> {
     validate_probability(probability)?;
-    let mut lower = vec![];
-    let mut upper = vec![];
-    for i in 0..paths[0][0].len() {
-        let mut values: Vec<f64> = paths.iter().flatten().map(|p| p[i]).collect();
-        values.sort_by(f64::total_cmp);
-        let quantile = |p: f64| {
-            let index = p * (values.len() - 1) as f64;
-            let lo = index.floor() as usize;
-            let hi = index.ceil() as usize;
-            values[lo] * (1.0 - index.fract()) + values[hi] * index.fract()
-        };
-        lower.push(quantile((1.0 - probability) / 2.0));
-        upper.push(quantile((1.0 + probability) / 2.0));
-    }
-    Ok((lower.into_pyarray(py), upper.into_pyarray(py)))
+    let [lower, upper] = quantile_values(
+        [(1.0 - probability) / 2.0, (1.0 + probability) / 2.0],
+        |p| path_quantiles(paths, p),
+    )?;
+    Ok(interval_arrays(py, (lower, upper)))
 }
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGaussianCoefficientPrior>()?;

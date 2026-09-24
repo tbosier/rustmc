@@ -1,5 +1,5 @@
 //! Python conversion for the native joint dynamic GLM kernel.
-use crate::forecast_support::bayesian_forecast_error;
+use crate::forecast_support::{bayesian_forecast_error, interval_probabilities};
 use crate::{arviz_from_groups, forecast_diagnostics};
 use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray4};
@@ -441,16 +441,12 @@ fn path_means<'py>(py: Python<'py>, paths: &Paths) -> PyResult<Bound<'py, numpy:
     Ok(result.into_pyarray(py))
 }
 fn path_interval<'py>(py: Python<'py>, paths: &Paths, level: f64) -> PyResult<PanelInterval<'py>> {
-    if !level.is_finite() || level <= 0. || level >= 1. {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "level must lie strictly between zero and one",
-        ));
-    }
+    let probabilities = interval_probabilities(level)?;
     let mut lower = Array2::zeros((paths[0][0].len(), paths[0][0][0].len()));
     let mut upper = lower.clone();
     for g in 0..paths[0][0].len() {
         let quantiles = group_paths(paths, g)
-            .observation_quantiles(&[(1. - level) / 2., (1. + level) / 2.])
+            .observation_quantiles(&probabilities)
             .map_err(bayesian_forecast_error)?;
         for t in 0..paths[0][0][0].len() {
             lower[(g, t)] = quantiles[0].values[t];

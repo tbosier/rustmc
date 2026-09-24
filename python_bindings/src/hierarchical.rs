@@ -2,7 +2,7 @@
 use crate::forecast_diagnostics;
 use crate::forecast_support::*;
 use crate::InferenceError;
-use ndarray::{Array2, Array3, Array4};
+use ndarray::{Array2, Array4};
 use numpy::{IntoPyArray, PyArray2, PyArray3, PyArray4, PyReadonlyArray1};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
@@ -11,178 +11,46 @@ use rustmc_core::hierarchical::{
     fit_hierarchical_mean, HierarchicalMeanConfig as CoreHierarchicalMeanConfig,
     HierarchicalMeanForecast as CoreHierarchicalMeanForecast,
     HierarchicalMeanPosterior as CoreHierarchicalMeanPosterior,
-    HierarchicalMeanPosteriorDraw as CoreHierarchicalMeanPosteriorDraw,
 };
 
-pub(crate) fn hierarchical_scalar_array<'py, F>(
-    py: Python<'py>,
-    posterior: &CoreHierarchicalMeanPosterior,
-    value: F,
-) -> Bound<'py, PyArray2<f64>>
-where
-    F: Fn(&CoreHierarchicalMeanPosteriorDraw) -> f64,
-{
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    Array2::from_shape_fn((chains, draws), |(chain, draw)| {
-        value(&posterior.chains[chain][draw])
-    })
-    .into_pyarray(py)
-}
-
-pub(crate) fn hierarchical_vector_array<'py, F>(
-    py: Python<'py>,
-    posterior: &CoreHierarchicalMeanPosterior,
-    width: usize,
-    value: F,
-) -> Bound<'py, PyArray3<f64>>
-where
-    F: Fn(&CoreHierarchicalMeanPosteriorDraw, usize) -> f64,
-{
-    let chains = posterior.chains.len();
-    let draws = posterior.chains.first().map_or(0, Vec::len);
-    Array3::from_shape_fn((chains, draws, width), |(chain, draw, index)| {
-        value(&posterior.chains[chain][draw], index)
-    })
-    .into_pyarray(py)
-}
-
-pub(crate) fn hierarchical_path_array<'py>(
+/// Values indexed `[chain][draw][row * steps + step]`, shaped
+/// `(chain, draw, row, step)`.
+fn row_major_path_array<'py>(
     py: Python<'py>,
     paths: &[Vec<Vec<f64>>],
-    programs: usize,
+    rows: usize,
     steps: usize,
 ) -> Bound<'py, PyArray4<f64>> {
-    let chains = paths.len();
-    let draws = paths.first().map_or(0, Vec::len);
-    Array4::from_shape_fn(
-        (chains, draws, programs, steps),
-        |(chain, draw, program, step)| paths[chain][draw][program * steps + step],
-    )
-    .into_pyarray(py)
-}
-
-pub(crate) fn hierarchical_path_summary(
-    paths: &[Vec<Vec<f64>>],
-    programs: usize,
-    steps: usize,
-    probability: Option<f64>,
-) -> Array2<f64> {
-    let chains = paths.len();
-    let draws = paths.first().map_or(0, Vec::len);
-    Array2::from_shape_fn((programs, steps), |(program, step)| {
-        let flat_index = program * steps + step;
-        if let Some(probability) = probability {
-            let mut values = Vec::with_capacity(chains * draws);
-            for chain in paths {
-                for draw in chain {
-                    values.push(draw[flat_index]);
-                }
-            }
-            values.sort_by(f64::total_cmp);
-            let index = probability * (values.len() - 1) as f64;
-            let lower = index.floor() as usize;
-            let upper = index.ceil() as usize;
-            let weight = index - lower as f64;
-            values[lower] * (1.0 - weight) + values[upper] * weight
-        } else {
-            paths
-                .iter()
-                .flat_map(|chain| chain.iter())
-                .map(|draw| draw[flat_index])
-                .sum::<f64>()
-                / (chains * draws) as f64
-        }
-    })
-}
-
-pub(crate) fn hierarchical_state_array<'py>(
-    py: Python<'py>,
-    states: &[Vec<Vec<f64>>],
-    programs: usize,
-    steps: usize,
-) -> Bound<'py, PyArray4<f64>> {
-    let chains = states.len();
-    let draws = states.first().map_or(0, Vec::len);
-    Array4::from_shape_fn(
-        (chains, draws, programs, steps),
-        |(chain, draw, program, _step)| states[chain][draw][program],
-    )
-    .into_pyarray(py)
-}
-
-pub(crate) fn hierarchical_state_summary(
-    states: &[Vec<Vec<f64>>],
-    programs: usize,
-    steps: usize,
-    probability: Option<f64>,
-) -> Array2<f64> {
-    let chains = states.len();
-    let draws = states.first().map_or(0, Vec::len);
-    let by_program = (0..programs)
-        .map(|program| {
-            if let Some(probability) = probability {
-                let mut values = states
-                    .iter()
-                    .flat_map(|chain| chain.iter())
-                    .map(|draw| draw[program])
-                    .collect::<Vec<_>>();
-                values.sort_by(f64::total_cmp);
-                let index = probability * (values.len() - 1) as f64;
-                let lower = index.floor() as usize;
-                let upper = index.ceil() as usize;
-                let weight = index - lower as f64;
-                values[lower] * (1.0 - weight) + values[upper] * weight
-            } else {
-                states
-                    .iter()
-                    .flat_map(|chain| chain.iter())
-                    .map(|draw| draw[program])
-                    .sum::<f64>()
-                    / (chains * draws) as f64
-            }
-        })
-        .collect::<Vec<_>>();
-    Array2::from_shape_fn((programs, steps), |(program, _step)| by_program[program])
-}
-
-pub(crate) fn hierarchical_group_rollup_array<'py>(
-    py: Python<'py>,
-    paths: &[Vec<Vec<f64>>],
-    group_index: &[usize],
-    group_count: usize,
-    steps: usize,
-) -> Bound<'py, PyArray4<f64>> {
-    let chains = paths.len();
-    let draws = paths.first().map_or(0, Vec::len);
-    let mut rollups = Array4::zeros((chains, draws, group_count, steps));
-    for chain in 0..chains {
-        for draw in 0..draws {
-            for (program, &group) in group_index.iter().enumerate() {
-                for step in 0..steps {
-                    rollups[(chain, draw, group, step)] +=
-                        paths[chain][draw][program * steps + step];
-                }
-            }
-        }
-    }
-    rollups.into_pyarray(py)
-}
-
-pub(crate) fn hierarchical_total_rollup_array<'py>(
-    py: Python<'py>,
-    paths: &[Vec<Vec<f64>>],
-    programs: usize,
-    steps: usize,
-) -> Bound<'py, PyArray3<f64>> {
-    let chains = paths.len();
-    let draws = paths.first().map_or(0, Vec::len);
-    Array3::from_shape_fn((chains, draws, steps), |(chain, draw, step)| {
-        (0..programs)
-            .map(|program| paths[chain][draw][program * steps + step])
-            .sum()
+    let (chains, draws) = chain_shape(paths);
+    Array4::from_shape_fn((chains, draws, rows, steps), |(chain, draw, row, step)| {
+        paths[chain][draw][row * steps + step]
     })
     .into_pyarray(py)
+}
+
+/// A per-program summary repeated across forecast steps: the expected level
+/// is static, so every step shares it.
+fn repeat_over_steps<'py>(
+    py: Python<'py>,
+    by_program: &[f64],
+    steps: usize,
+) -> Bound<'py, PyArray2<f64>> {
+    Array2::from_shape_fn((by_program.len(), steps), |(program, _)| {
+        by_program[program]
+    })
+    .into_pyarray(py)
+}
+
+/// A program-major flat summary, shaped `(program, step)`.
+fn program_step_array<'py>(
+    py: Python<'py>,
+    values: Vec<f64>,
+    programs: usize,
+    steps: usize,
+) -> PyResult<Bound<'py, PyArray2<f64>>> {
+    Array2::from_shape_vec((programs, steps), values)
+        .map(|array| array.into_pyarray(py))
+        .map_err(|error| InferenceError::new_err(error.to_string()))
 }
 
 /// Joint population -> group -> program Gaussian partial-pooling model.
@@ -456,43 +324,55 @@ impl PyBayesianHierarchicalMeanFit {
         let samples = PyDict::new(py);
         samples.set_item(
             "population_mean",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.population_mean),
+            draw_array(py, &self.posterior.chains, |draw| draw.population_mean),
         )?;
         samples.set_item(
             "group_variance",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.group_variance),
+            draw_array(py, &self.posterior.chains, |draw| draw.group_variance),
         )?;
         samples.set_item(
             "program_variance",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.program_variance),
+            draw_array(py, &self.posterior.chains, |draw| draw.program_variance),
         )?;
         samples.set_item(
             "observation_variance",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.observation_variance),
+            draw_array(py, &self.posterior.chains, |draw| draw.observation_variance),
         )?;
         samples.set_item(
             "group_sd",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.group_variance.sqrt()),
+            draw_array(py, &self.posterior.chains, |draw| {
+                draw.group_variance.sqrt()
+            }),
         )?;
         samples.set_item(
             "program_sd",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.program_variance.sqrt()),
+            draw_array(py, &self.posterior.chains, |draw| {
+                draw.program_variance.sqrt()
+            }),
         )?;
         samples.set_item(
             "observation_sd",
-            hierarchical_scalar_array(py, &self.posterior, |draw| draw.observation_variance.sqrt()),
+            draw_array(py, &self.posterior.chains, |draw| {
+                draw.observation_variance.sqrt()
+            }),
         )?;
         samples.set_item(
             "group_mean",
-            hierarchical_vector_array(py, &self.posterior, self.group_count(), |draw, index| {
-                draw.group_means[index]
-            }),
+            draw_vector_array(
+                py,
+                &self.posterior.chains,
+                self.group_count(),
+                |draw, index| draw.group_means[index],
+            ),
         )?;
         samples.set_item(
             "program_mean",
-            hierarchical_vector_array(py, &self.posterior, self.program_count(), |draw, index| {
-                draw.program_means[index]
-            }),
+            draw_vector_array(
+                py,
+                &self.posterior.chains,
+                self.program_count(),
+                |draw, index| draw.program_means[index],
+            ),
         )?;
         Ok(samples)
     }
@@ -541,6 +421,19 @@ impl PyBayesianHierarchicalMeanFit {
             "BayesianHierarchicalMeanFit(chains={}, draws={}, programs={}, groups={}, observations={})",
             self.chains(), self.draws(), self.program_count(), self.group_count(), self.total_observed_count()
         )
+    }
+}
+
+impl PyBayesianHierarchicalForecast {
+    fn observation_quantiles<const N: usize>(
+        &self,
+        probabilities: [f64; N],
+    ) -> PyResult<[Vec<f64>; N]> {
+        quantile_values(probabilities, |p| self.inner.observation_quantiles(p))
+    }
+
+    fn state_quantiles<const N: usize>(&self, probabilities: [f64; N]) -> PyResult<[Vec<f64>; N]> {
+        quantile_values(probabilities, |p| self.inner.state_quantiles(p))
     }
 }
 
@@ -593,19 +486,22 @@ impl PyBayesianHierarchicalForecast {
         self.group_names.clone()
     }
 
+    /// The static expected level of each program repeated over steps,
+    /// shaped `(chain, draw, program, step)`.
     #[getter]
     fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
-        hierarchical_state_array(
-            py,
-            &self.inner.state_means,
-            self.program_count(),
-            self.steps(),
+        let (chains, draws) = chain_shape(&self.inner.state_means);
+        let states = &self.inner.state_means;
+        Array4::from_shape_fn(
+            (chains, draws, self.program_count(), self.steps()),
+            |(chain, draw, program, _)| states[chain][draw][program],
         )
+        .into_pyarray(py)
     }
 
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
-        hierarchical_path_array(
+        row_major_path_array(
             py,
             &self.inner.observation_paths,
             self.program_count(),
@@ -615,47 +511,48 @@ impl PyBayesianHierarchicalForecast {
 
     /// Draw-wise group totals indexed `(chain, draw, group, step)`.
     #[getter]
-    fn group_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
-        hierarchical_group_rollup_array(
+    fn group_observation_samples<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray4<f64>>> {
+        let paths = self
+            .inner
+            .group_observation_paths()
+            .map_err(hierarchical_error)?;
+        Ok(row_major_path_array(
             py,
-            &self.inner.observation_paths,
-            &self.inner.group_index,
-            self.inner.group_count,
+            &paths,
+            self.group_count(),
             self.steps(),
-        )
+        ))
     }
 
     /// Draw-wise total across all programs, shaped `(chain, draw, step)`.
     #[getter]
-    fn total_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        hierarchical_total_rollup_array(
-            py,
-            &self.inner.observation_paths,
-            self.program_count(),
-            self.steps(),
-        )
+    fn total_observation_samples<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        let paths = self
+            .inner
+            .total_observation_paths()
+            .map_err(hierarchical_error)?;
+        Ok(path_array(py, &paths))
     }
 
     #[getter]
-    fn state_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        hierarchical_state_summary(
-            &self.inner.state_means,
-            self.program_count(),
-            self.steps(),
-            None,
-        )
-        .into_pyarray(py)
+    fn state_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let means = self
+            .inner
+            .state_means_by_program()
+            .map_err(hierarchical_error)?;
+        Ok(repeat_over_steps(py, &means, self.steps()))
     }
 
     #[getter]
-    fn observation_mean<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
-        hierarchical_path_summary(
-            &self.inner.observation_paths,
-            self.program_count(),
-            self.steps(),
-            None,
-        )
-        .into_pyarray(py)
+    fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray2<f64>>> {
+        let means = self.inner.observation_means().map_err(hierarchical_error)?;
+        program_step_array(py, means, self.program_count(), self.steps())
     }
 
     fn state_quantile<'py>(
@@ -663,14 +560,8 @@ impl PyBayesianHierarchicalForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        validate_probability(probability)?;
-        Ok(hierarchical_state_summary(
-            &self.inner.state_means,
-            self.program_count(),
-            self.steps(),
-            Some(probability),
-        )
-        .into_pyarray(py))
+        let [values] = self.state_quantiles([probability])?;
+        Ok(repeat_over_steps(py, &values, self.steps()))
     }
 
     fn observation_quantile<'py>(
@@ -678,59 +569,33 @@ impl PyBayesianHierarchicalForecast {
         py: Python<'py>,
         probability: f64,
     ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-        validate_probability(probability)?;
-        Ok(hierarchical_path_summary(
-            &self.inner.observation_paths,
-            self.program_count(),
-            self.steps(),
-            Some(probability),
-        )
-        .into_pyarray(py))
+        let [values] = self.observation_quantiles([probability])?;
+        program_step_array(py, values, self.program_count(), self.steps())
     }
 
+    /// Pointwise equal-tailed posterior-predictive interval, each bound shaped
+    /// `(program, step)`.
+    #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalMatrices<'py>> {
-        validate_interval_level(level)?;
-        let tail = (1.0 - level) / 2.0;
+        let [lower, upper] = self.observation_quantiles(interval_probabilities(level)?)?;
         Ok((
-            hierarchical_path_summary(
-                &self.inner.observation_paths,
-                self.program_count(),
-                self.steps(),
-                Some(tail),
-            )
-            .into_pyarray(py),
-            hierarchical_path_summary(
-                &self.inner.observation_paths,
-                self.program_count(),
-                self.steps(),
-                Some(1.0 - tail),
-            )
-            .into_pyarray(py),
+            program_step_array(py, lower, self.program_count(), self.steps())?,
+            program_step_array(py, upper, self.program_count(), self.steps())?,
         ))
     }
 
+    /// Pointwise equal-tailed interval for each program's expected level,
+    /// repeated over steps.
+    #[pyo3(signature = (level=0.95))]
     fn state_interval<'py>(
         &self,
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalMatrices<'py>> {
-        validate_interval_level(level)?;
-        let tail = (1.0 - level) / 2.0;
+        let [lower, upper] = self.state_quantiles(interval_probabilities(level)?)?;
         Ok((
-            hierarchical_state_summary(
-                &self.inner.state_means,
-                self.program_count(),
-                self.steps(),
-                Some(tail),
-            )
-            .into_pyarray(py),
-            hierarchical_state_summary(
-                &self.inner.state_means,
-                self.program_count(),
-                self.steps(),
-                Some(1.0 - tail),
-            )
-            .into_pyarray(py),
+            repeat_over_steps(py, &lower, self.steps()),
+            repeat_over_steps(py, &upper, self.steps()),
         ))
     }
 

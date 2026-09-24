@@ -365,19 +365,19 @@ impl PyBayesianSeasonalForecast {
     }
     #[getter]
     fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.level_paths)
+        path_array(py, &self.inner.level_paths)
     }
     #[getter]
     fn seasonal_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.seasonal_paths)
+        path_array(py, &self.inner.seasonal_paths)
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.observation_paths)
+        path_array(py, &self.inner.observation_paths)
     }
     #[getter]
     fn cumulative_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.cumulative_observation_paths)
+        path_array(py, &self.inner.cumulative_observation_paths)
     }
     #[getter]
     fn level_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray1<f64>>> {

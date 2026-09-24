@@ -4,9 +4,7 @@ use crate::regression;
 use crate::StateSpaceError;
 use ndarray::{Array2, Array3};
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2};
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use rustmc_core::diagnostics::inv_normal_cdf;
 use rustmc_core::state_space::{
     ForecastResult as CoreForecastResult, KalmanFilterResult as CoreKalmanFilterResult,
     KalmanSmootherResult as CoreKalmanSmootherResult,
@@ -391,25 +389,12 @@ impl PyForecastResult {
     /// parameters. This does not include parameter-estimation uncertainty.
     #[pyo3(signature = (level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PyIntervalArrays<'py>> {
-        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
-            return Err(PyValueError::new_err(
-                "level must be finite and strictly between 0 and 1",
-            ));
-        }
-        let critical = inv_normal_cdf(0.5 + level / 2.0);
-        let mut lower = Vec::with_capacity(self.inner.observation_means.len());
-        let mut upper = Vec::with_capacity(self.inner.observation_means.len());
-        for (&mean, &variance) in self
+        validate_interval_level(level)?;
+        let bounds = self
             .inner
-            .observation_means
-            .iter()
-            .zip(&self.inner.observation_variances)
-        {
-            let half_width = critical * variance.sqrt();
-            lower.push(mean - half_width);
-            upper.push(mean + half_width);
-        }
-        Ok((lower.into_pyarray(py), upper.into_pyarray(py)))
+            .observation_interval(level)
+            .map_err(state_space_error)?;
+        Ok(interval_arrays(py, bounds))
     }
 
     /// Gaussian predictive intervals for cumulative observations 1..h,
@@ -420,25 +405,12 @@ impl PyForecastResult {
         py: Python<'py>,
         level: f64,
     ) -> PyResult<PyIntervalArrays<'py>> {
-        if !level.is_finite() || level <= 0.0 || level >= 1.0 {
-            return Err(PyValueError::new_err(
-                "level must be finite and strictly between 0 and 1",
-            ));
-        }
-        let critical = inv_normal_cdf(0.5 + level / 2.0);
-        let mut lower = Vec::with_capacity(self.inner.cumulative_observation_means.len());
-        let mut upper = Vec::with_capacity(self.inner.cumulative_observation_means.len());
-        for (&mean, &variance) in self
+        validate_interval_level(level)?;
+        let bounds = self
             .inner
-            .cumulative_observation_means
-            .iter()
-            .zip(&self.inner.cumulative_observation_variances)
-        {
-            let half_width = critical * variance.sqrt();
-            lower.push(mean - half_width);
-            upper.push(mean + half_width);
-        }
-        Ok((lower.into_pyarray(py), upper.into_pyarray(py)))
+            .cumulative_observation_interval(level)
+            .map_err(state_space_error)?;
+        Ok(interval_arrays(py, bounds))
     }
 
     #[getter]

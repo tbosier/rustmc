@@ -356,12 +356,12 @@ impl PyBayesianForecastResult {
 
     #[getter]
     fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.state_paths)
+        path_array(py, &self.inner.state_paths)
     }
 
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.observation_paths)
+        path_array(py, &self.inner.observation_paths)
     }
 
     #[getter]

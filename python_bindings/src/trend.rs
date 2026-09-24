@@ -418,17 +418,17 @@ impl PyBayesianTrendForecast {
 
     #[getter]
     fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.level_paths)
+        path_array(py, &self.inner.level_paths)
     }
 
     #[getter]
     fn slope_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.slope_paths)
+        path_array(py, &self.inner.slope_paths)
     }
 
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        local_level_path_array(py, &self.inner.observation_paths)
+        path_array(py, &self.inner.observation_paths)
     }
 
     #[getter]
