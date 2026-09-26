@@ -297,10 +297,17 @@ jobs:
     permissions:
       id-token: write
     steps:
+      # Only the release archives: the run also uploads non-distribution
+      # artifacts (posterior-validation.json), which the upload would refuse.
       - uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: wheel-*
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          name: sdist
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist/
