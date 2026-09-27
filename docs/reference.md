@@ -848,7 +848,8 @@ catches any of them.
 - `rustmc.ParameterError`: an invalid parameter or expression in `ModelBuilder`,
   including mixing references from two builders.
 - Plain `ValueError`: argument checks every model shares, such as array conversion,
-  interval levels, quantile probabilities, batch options and `fourier_design`.
+  interval levels, quantile probabilities, batch options, `fourier_design`, and
+  `DesignTerm` and `TimeDesign` ([interventions and changepoints](interventions.md)).
 
 Forecasting models accept any real numeric array-like for observations, `exog` and
 priors: float or integer NumPy arrays in any memory layout, or lists. They follow the

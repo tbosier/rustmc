@@ -323,7 +323,7 @@ def test_changepoint_basis_recovers_a_piecewise_linear_trend():
             fitted = (beta[:, :1] + beta[:, 1:] @ passed.T).mean(axis=0)
             for (first, last), truth in (((5, 30), 0.05), ((40, 60), 0.20), ((70, 95), -0.05)):
                 assert abs(fitted[first:last].mean() - truth) < 0.03, (seed, first, fitted[first:last].mean())
-    # Measured: mean CRPS 0.21 against 0.78.
+    # Measured: mean CRPS 0.21 against 0.75.
     assert (np.array(scores["with"]) < 0.5 * np.array(scores["without"])).all(), scores
 
 

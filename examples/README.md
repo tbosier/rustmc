@@ -44,6 +44,7 @@ a fit.
 | `bayesian_local_linear_trend_forecasting.py` | Level and slope intervals from one trend fit. |
 | `bayesian_seasonal_forecasting.py` | A seasonal local level on monthly data. |
 | `bayesian_ar_forecasting.py` | A Bayesian AR(3) posterior-predictive forecast. |
+| `interventions_forecast.py` | Known-date level shift, slope change and outage columns, with aligned future rows. |
 | `payment_triangle_runoff.py` | Censored payment-count development with uncertain ultimates. |
 | `rebate_accrual_forecast.py` | A deliberately cautious accrual baseline, with its own limitations stated. |
 
