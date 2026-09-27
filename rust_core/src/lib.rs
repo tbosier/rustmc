@@ -7,6 +7,7 @@ pub mod bayesian_seasonal;
 pub mod bayesian_trend;
 mod count_sampling;
 pub mod data;
+pub mod decision;
 pub mod diagnostics;
 pub mod distributions;
 pub mod dynamic_glm;
