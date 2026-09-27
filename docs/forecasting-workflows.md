@@ -9,10 +9,11 @@ particular model: [structural composition](structural-forecasting.md),
 [sparse amounts](sparse-amounts.md), and [payment runoff](runoff.md).
 
 These models do not use `ModelBuilder` or the NUTS sampler. Each has its own
-constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models,
-exact conjugate draws for AR, block elliptical slice sampling for dynamic GLMs, and for
-runoff either exact conjugate draws or latent-count Gibbs, depending on whether every
-ultimate total is known. A fit's `sampler_stats` names the one that ran. Where the
+constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models
+(the local linear trend integrates its states out instead), exact conjugate draws for
+AR, block elliptical slice sampling for dynamic GLMs, and for runoff either exact
+conjugate draws or latent-count Gibbs, depending on whether every ultimate total is
+known. A fit's `sampler_stats` names the one that ran. Where the
 draws are exact and independent there is no warmup and no convergence period, so read
 `sampler_stats` before interpreting a diagnostic.
 

@@ -90,6 +90,33 @@ versioning while the public API is stabilized.
   `BacktestResult.observations`, so a backtest also holds 1,000 baseline paths per
   fold in memory. Both fields default to `None`, so existing constructor calls still work.
   Scores and `summary()` are unchanged.
+- **The local-linear-trend sampler integrates the states out, and its seeded
+  output changes.** `BayesianLocalLinearTrend.fit` without `exog`, and trend cells
+  of `fit_batch` without `exog`, used to draw the state path by FFBS and then each
+  variance given the states. That mixed slowly. On simulated series in five regimes
+  and two lengths, fitted with 4 chains, 300 warmup and 500 draws, the level
+  variance's worst R-hat in each setting was 1.06 to 2.06 and its smallest bulk ESS
+  6 to 58 out of 2000 draws. Each variance now takes one slice-sampling step on its
+  conditional given the other two, with the likelihood computed exactly by a Kalman
+  filter, and retained draws sample the terminal state from its filtered
+  distribution. On the same series no variance's R-hat exceeded 1.008, and the
+  smallest bulk ESS in each setting was 388 to 1920.
+  The target posterior is the same. In the benchmark, on a short series, both
+  samplers' means lie within 1.8 Monte Carlo standard errors of means computed by
+  quadrature, and a unit test holds the new sampler to within 4 of them.
+  A fit took 2.0 to 2.3 times as long in the recorded run, and the level variance's
+  bulk ESS per second rose 3.7 to 96 times. In the low signal-to-noise regime, where
+  the old sampler already mixed the observation variance, that variance's ESS per
+  second fell to 0.57 to 0.68 of its old value. An interweaving (ASIS) update added
+  to the old sampler was tried first, as a prototype that was not kept. On the
+  twelve series of the new mixing test it raised the level variance's bulk ESS from
+  6–15 only to 13–181. The other figures are from `benchmarks/llt_variance_mixing.py`,
+  with raw output in `benchmarks/results/2026-09-27-llt-variance-mixing*`.
+  `sampler_stats["sampler"]` for these fits now reads
+  `"Gibbs over variances with states integrated out (slice steps)"`.
+- The trend fitted with `exog`, `StructuralModel` trends, the seasonal model and the
+  local level still draw their variances given sampled states. The same benchmark
+  shows them mixing slowly; see ROADMAP.md.
 
 ## [0.14.0] - 2026-10-14
 

@@ -8,9 +8,10 @@ comparisons written with `ModelBuilder` run on the graph-based NUTS/HMC sampler.
 forecasting models — structural, seasonal, AR, dynamic GLM, hurdle, runoff, and the
 Gaussian hierarchy — are hand-written samplers that do not use that graph, its
 autodiff, or its samplers at all. Nor are they one kernel: Gibbs with FFBS for the
-Gaussian state-space models, exact conjugate draws for AR, block elliptical slice
-sampling for dynamic GLMs, and for runoff either exact conjugate draws or latent-count
-Gibbs, depending on whether every ultimate total is known.
+Gaussian state-space models (the local linear trend integrates its states out
+instead), exact conjugate draws for AR, block elliptical slice sampling for dynamic
+GLMs, and for runoff either exact conjugate draws or latent-count Gibbs, depending on
+whether every ultimate total is known.
 
 What they share is worth stating precisely, because it decides which work pays off
 twice. `diagnostics` is common to every model. The batch executor is shared inside
@@ -43,12 +44,24 @@ Gibbs and noncentered sampling before extending the approach.
 Learned scales for dynamic count and hurdle models can follow once the Gaussian path
 is dependable. Their current scales and pooling strengths are fixed inputs.
 
-The local-linear-trend Gibbs sampler mixes slowly on its level and slope variances:
-on a synthetic series with 4 chains, 300 warmup and 500 draws, their R-hat ranged
-from 1.05 to 1.9, with prior-mode and overdispersed starts alike. Dispersed starts
-exposed this rather than caused it. A non-centred or interweaving (ASIS) update of
-the state variances is the likely fix and should come with a recovery test that
-fails today.
+`BayesianLocalLinearTrend` without `exog` no longer mixes slowly on its variances.
+It now integrates the states out and slice-samples each variance given the other
+two. On simulated series with 4 chains, 300 warmup and 500 draws, the level
+variance's worst R-hat per setting went from 1.06–2.06 to at most 1.008. An
+interweaving (ASIS) update of the old sampler was tried first; on the twelve series
+of the new mixing test it raised the level variance's bulk ESS only to 13–181, and it
+was not kept.
+
+The trend with `exog`, the `StructuralModel` trend, the seasonal model and the local
+level still draw their variances given sampled states. On 200-point series,
+`benchmarks/llt_variance_mixing.py --other-models` shows the level variance of both
+trends at a worst R-hat of 1.43–1.78 and a bulk ESS of 6–8. The seasonal variance
+reaches a bulk ESS of only 10–35, and the local level's process variance 143–189. The
+same approach should carry over to them, using the general filter's likelihood, and
+so should the new test. The trend itself is slowest in the balanced regime at 1000
+points and with a near-zero observation variance, where the level variance's
+smallest bulk ESS is 388 to 479 out of 2000 draws. A joint update of the three
+variances may help there.
 
 ## Scope
 

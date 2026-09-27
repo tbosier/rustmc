@@ -111,8 +111,8 @@ Models you write with `ModelBuilder` compile to a differentiable graph and are f
 by NUTS or HMC. The forecasting models — structural, seasonal, AR, dynamic GLM,
 hurdle, runoff, and the Gaussian hierarchy — are separate hand-written samplers that do
 not use that graph at all. Each exploits structure the general sampler cannot: Gibbs
-with FFBS, exact conjugate draws, block elliptical slice sampling, or a choice between
-two kernels, depending on the model.
+with FFBS or with the states integrated out, exact conjugate draws, block elliptical
+slice sampling, or a choice between two kernels, depending on the model.
 
 `diagnostics` is shared, so R-hat, ESS and MCSE are computed by the same code for every
 fit, and `summary()` and `diagnostics()` read the same way wherever you find them. The

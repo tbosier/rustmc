@@ -312,13 +312,26 @@ process innovations are independent (diagonal process covariance). `NaN` retains
 scheduled missing time point. Variance components can be weakly identified near zero,
 so inspect multi-chain convergence.
 
-### Known limitation: slow mixing of the level and slope variances
+The sampler integrates the states out. Each sweep updates the level, slope and
+observation variances in turn, each by one slice-sampling step on its conditional
+given the other two, with the likelihood computed exactly by a Kalman filter. Each
+retained draw then samples the terminal level and slope from their filtered
+distribution.
 
-The local-linear-trend Gibbs sampler mixes `level_variance` and `slope_variance`
-slowly, so every `BayesianLocalLinearTrendFit.warnings()`, and every trend fitted with
-`exog`, includes a `known_limitation` record with status `"fail"`. The measurements and
-the other samplers that carry the record are in
-[slow state-variance mixing](#slow-state-variance-mixing).
+Up to 0.14.0 the sampler drew the whole state path and then each variance given
+those states, and mixed slowly. On simulated series in five regimes and two lengths,
+fitted with 4 chains, 300 warmup and 500 draws, the level variance's worst R-hat in
+each setting was 1.06 to 2.06, and its smallest bulk ESS 6 to 58 out of 2000 draws.
+On the same series no variance's R-hat now exceeds 1.008, and the smallest bulk ESS
+in each setting is 388 to 1920. A fit takes about twice as long. The level variance
+mixes least well in the balanced regime at 1000 points and when the observation
+variance is near zero, where its smallest bulk ESS is 388 to 479.
+
+`fit(..., exog=X)` does not use this sampler. It uses the joint regression sampler,
+which still draws the variances given sampled states and mixes as slowly as the old
+one, so its fits carry a `known_limitation` record (see
+[slow state-variance mixing](#slow-state-variance-mixing)). `benchmarks/llt_variance_mixing.py` reproduces these
+numbers.
 
 ## Bayesian autoregression AR(p)
 
