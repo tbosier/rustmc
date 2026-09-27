@@ -18,6 +18,7 @@ pub mod fault_injection;
 pub mod forecast_batch;
 pub mod forecast_common;
 pub(crate) mod forecast_diagnostics;
+pub mod forecast_evaluation;
 pub mod graph;
 pub mod hierarchical;
 pub mod hmc;
