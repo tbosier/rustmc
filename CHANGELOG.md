@@ -46,6 +46,30 @@ versioning while the public API is stabilized.
   `decision_mcse_calibration_over_3000_replicates`); the default tests hold it to
   within 20%. The math is in `rustmc_core::decision`. See `docs/decisions.md` and
   `examples/reserve_decision.py`.
+- Calibration diagnostics for forecasts and rolling backtests. `pit` gives PIT values
+  from predictive draws, with ties broken at random by default, so that the values
+  for a correct count or hurdle forecast are close to uniform rather than piled on a
+  few points; `pit_histogram` counts them in equal bins. `calibration_table` gives
+  empirical coverage of central intervals at 19 levels from 5% to 95%, a 95% Wilson
+  interval for each, and the mean interval width, per horizon step or pooled.
+  `point_accuracy` gives MAE, RMSE, WAPE and MASE of the predictive mean or median.
+  `BacktestResult` gains `pit()`, `pit_histogram()`, `calibration()`, `accuracy()`
+  and `baseline()`, and `compare_backtests` reports accuracy and calibration of
+  several results side by side over the origins they all completed. The statistics
+  are computed in the new `rustmc_core::forecast_evaluation`. Limitations, stated in
+  the documentation where each is described: PIT values from overlapping folds and
+  from the steps of one path are dependent, so no uniformity p-value is provided and
+  the Wilson intervals, which assume independence, are typically too narrow for
+  backtests; and interval coverage of a count forecast exceeds the nominal level even
+  when the forecast is right. See `examples/forecast_calibration.py`.
+
+### Changed
+
+- `backtest` keeps each fold's baseline draws in the new
+  `BacktestFold.baseline_samples` and a read-only copy of the observations in the new
+  `BacktestResult.observations`, so a backtest also holds 1,000 baseline paths per
+  fold in memory. Both fields default to `None`, so existing constructor calls still work.
+  Scores and `summary()` are unchanged.
 
 ## [0.14.0] - 2026-10-14
 

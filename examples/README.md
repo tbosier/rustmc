@@ -38,6 +38,7 @@ a fit.
 | Example | Use it for |
 |---|---|
 | `custom_forecast_workflow.py` | Structural forecasts and held-out scoring. |
+| `forecast_calibration.py` | Comparing a model with the seasonal naive baseline on accuracy, interval coverage, width and PIT values. |
 | `state_space_forecasting.py` | Fixed-parameter local-level, local-trend, and AR(1) forecasts. |
 | `custom_state_space_forecasting.py` | A custom latent state-space system built from explicit matrices. |
 | `bayesian_local_level_forecasting.py` | Predictive intervals against latent-state intervals. |

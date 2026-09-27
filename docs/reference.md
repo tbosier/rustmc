@@ -910,4 +910,6 @@ yourself, which is how you score draws that rustmc did not produce.
 Not everything returns a wrapper. `fit.predict()`, `fit.deterministics()`,
 `fit.get_samples()`, `fit.get_samples_2d()`, `fit.log_likelihood()` and
 `fit.posterior_predictive()` return plain dicts of NumPy arrays, and the evaluation
-helpers return NumPy arrays or dicts of them.
+helpers return NumPy arrays or dicts of them, except `compare_backtests`, which
+returns a `BacktestComparison` whose `metrics` are such dicts and whose `str()` is a
+text table.
