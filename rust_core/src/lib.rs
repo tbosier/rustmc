@@ -32,6 +32,7 @@ pub mod observation;
 pub mod param_ref;
 pub mod prior_sampling;
 pub(crate) mod progress;
+pub mod reconciliation;
 pub mod runoff;
 pub mod sampler;
 pub mod seeding;
