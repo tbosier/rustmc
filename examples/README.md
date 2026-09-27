@@ -47,6 +47,7 @@ a fit.
 | `interventions_forecast.py` | Known-date level shift, slope change and outage columns, with aligned future rows. |
 | `payment_triangle_runoff.py` | Censored payment-count development with uncertain ultimates. |
 | `rebate_accrual_forecast.py` | A deliberately cautious accrual baseline, with its own limitations stated. |
+| `reserve_decision.py` | Choosing a reserve when shortfalls cost more than surpluses, from forecast draws. |
 
 Each script above runs on the released package with NumPy alone, except
 `arviz_example.py`, which needs `pip install "rustmc[viz]"`.

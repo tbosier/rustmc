@@ -22,6 +22,30 @@ versioning while the public API is stabilized.
   GLMs. Changepoint coefficients get the models' Gaussian priors, which shrink like
   ridge regression; there is no sparse prior and no break detection. See
   `docs/interventions.md` and `examples/interventions_forecast.py`.
+- Decisions from predictive draws. `rustmc.decide(draws, loss)` returns the decision
+  with the lowest expected loss, estimated from the draws, and
+  `rustmc.expected_loss(draws, decision, loss)` the average loss of a given one;
+  `ForecastDraws.optimal_decision` and `ForecastDraws.expected_loss` do the same for a
+  forecast. Built-in losses are `AsymmetricLinearLoss(under=, over=)` (pinball; its
+  optimum is the `under / (under + over)` quantile by the rule behind every interval,
+  which can sit up to one gap between draws from the exact minimiser of the average),
+  `SquaredLoss` (the mean), `AbsoluteLoss` (the median) and `PiecewiseLinearLoss`; a
+  Python function of the decision and each draw also works. Losses without a known
+  optimum are minimised over candidate decisions only, up to 201 points across the
+  draws by default. With `(chain, draw, horizon)` draws, `steps=` decides on the total
+  over those steps within each path. The result reports the expected-loss curve, a
+  Monte Carlo standard error of the expected loss from the split-chain effective
+  sample size, and a batch-means standard error of the decision from contiguous
+  blocks of each chain. The latter is `nan` for grid searches, where batch means
+  understated the spread of the decision threefold on a coarse grid. In repeated
+  simulation the first matched the observed spread of the estimate to within 7% for
+  independent and AR(1) φ = 0.8 draws (300 and 400 replicates, in
+  `tests/test_decision.py` and the `rustmc_core::decision` tests). The second ran 3%
+  to 7% below the observed spread of the decision in 3,000-replicate runs of the
+  pinball optimum (the ignored test
+  `decision_mcse_calibration_over_3000_replicates`); the default tests hold it to
+  within 20%. The math is in `rustmc_core::decision`. See `docs/decisions.md` and
+  `examples/reserve_decision.py`.
 
 ## [0.14.0] - 2026-10-14
 

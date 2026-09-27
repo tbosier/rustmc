@@ -832,6 +832,36 @@ coordinate is a standard normal `raw`, and the value reported under the declared
 `vector_normal_prior` takes constant hyperparameters; write a pooled vector block
 explicitly as `sigma * z[key]`.
 
+## Decisions from predictive draws
+
+See [Decisions from forecast draws](decisions.md) for a worked example.
+
+```python
+rmc.decide(draws, loss, *, steps=None, candidates=None, method="auto") -> Decision
+rmc.expected_loss(draws, decision, loss, *, steps=None) -> ExpectedLoss
+ForecastDraws.optimal_decision(loss, *, steps=None, candidates=None, method="auto") -> Decision
+ForecastDraws.expected_loss(decision, loss, *, steps=None) -> ExpectedLoss
+```
+
+`draws` is an array shaped `(draw,)`, `(chain, draw)` or `(chain, draw, horizon)`, a
+`ForecastDraws`, or a forecast result with `observation_samples`. With a horizon,
+`steps` (zero-based) chooses the steps to total within each path; it may be omitted
+only when the horizon is one step. `loss` is `AsymmetricLinearLoss(*, under, over)`,
+`SquaredLoss()`, `AbsoluteLoss()`, `PiecewiseLinearLoss(shortfall, loss)`, or a
+callable `loss(decision, outcomes)` returning one loss per draw of the `(chain, draw)`
+array `outcomes`, each depending only on the decision and its own draw. `candidates`
+must be finite and strictly increasing; by default they are up to 201 evenly spaced
+points from the smallest draw to the largest. `method="auto"`
+uses the closed form (quantile, mean or median) when the loss has one, and `"grid"`
+always takes the best candidate.
+
+`Decision` has `decision`, `method`, `quantile`, `expected_loss`,
+`expected_loss_mcse`, `expected_loss_ess`, `candidates`, `curve` (average loss at each
+candidate), `batch_decisions` (shaped `(chain, block)`), `decision_mcse` (`nan` for
+a grid search) and `on_grid_edge`. `ExpectedLoss` has `decision`, `value`, `mcse` and `ess`. Refused
+arguments raise `ValueError`; a loss or total that is not finite raises
+`InferenceError`; an exception raised by a loss function propagates unchanged.
+
 ## Exceptions
 
 All three rustmc exception classes subclass `ValueError`, so `except ValueError`
