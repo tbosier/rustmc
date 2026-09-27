@@ -19,6 +19,7 @@ pub(crate) use errors::{
 
 // Forecasting surface: one module per model family.
 mod ar;
+mod decision;
 mod dynamic_glm;
 mod forecast_batch;
 mod forecast_diagnostics;
@@ -52,6 +53,7 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     trend::register(m)?;
     ar::register(m)?;
     time_design::register(m)?;
+    decision::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<builder::ModelBuilder>()?;
     m.add_class::<builder::ModelSpec>()?;

@@ -158,6 +158,17 @@ class ForecastDraws:
         return ForecastDraws(np.einsum("cdsh,s->cdh", self.observation_samples, weight), mean, self.dates,
             metadata={**self.metadata, "aggregation_weights": weight.tolist()})
 
+    def expected_loss(self, decision: float, loss: Any, *, steps: Sequence[int] | None = None) -> Any:
+        """Expected loss of ``decision`` over the observation draws; see ``rustmc.expected_loss``."""
+        from ._rustmc import expected_loss
+        return expected_loss(self, decision, loss, steps=steps)
+
+    def optimal_decision(self, loss: Any, *, steps: Sequence[int] | None = None,
+        candidates: Any = None, method: str = "auto") -> Any:
+        """Decision minimising expected loss over the observation draws; see ``rustmc.decide``."""
+        from ._rustmc import decide
+        return decide(self, loss, steps=steps, candidates=candidates, method=method)
+
     def save(self, path: str | Path) -> None:
         """Store a versioned NumPy archive without Python pickle payloads."""
         metadata = json.dumps({"format": "rustmc.forecast", "version": 1, "dates": self.dates,
