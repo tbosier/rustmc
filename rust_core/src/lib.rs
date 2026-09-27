@@ -36,5 +36,6 @@ pub mod seeding;
 pub mod state_space;
 pub mod structural;
 pub mod target;
+pub mod time_design;
 
 pub use data::{BindError, DataBinding, DataInputs, DataSchema, DataSlot, MatrixBinding, SlotKind};
