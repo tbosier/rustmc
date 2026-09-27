@@ -10,9 +10,18 @@
 //! ```
 //!
 //! All three variances have caller-specified inverse-gamma priors. The fitted
-//! posterior is sampled with a seeded conjugate Gibbs sampler and a two-state
-//! forward-filtering, backward-sampling (FFBS) step. `NaN` observations retain
-//! their scheduled time positions while infinities are rejected.
+//! posterior is sampled by a seeded Gibbs sampler over the three variances with
+//! the states integrated out: each variance in turn takes one slice-sampling
+//! step on its conditional given the other two, whose likelihood is computed
+//! exactly by a two-state Kalman filter. Retained draws add the terminal state,
+//! drawn from its filtered distribution. `NaN` observations retain their
+//! scheduled time positions while infinities are rejected.
+//!
+//! An earlier version drew the whole state path by forward filtering, backward
+//! sampling (FFBS) and then each variance from its conjugate inverse-gamma
+//! conditional given the states. That mixes slowly whenever the states pin
+//! their variances down, and badly when a variance is near zero; see
+//! `benchmarks/llt_variance_mixing.py`.
 //!
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
@@ -22,9 +31,9 @@ use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTel
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
     path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
-    split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
-    ForecastQuantile, GibbsSchedule, InverseGammaPrior, TREND_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
-    TREND_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
+    slice_sample_positive, split_paths, standard_normal, validate_positive_variance,
+    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    TREND_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, TREND_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 use rand_chacha::ChaCha8Rng;
@@ -263,208 +272,232 @@ impl TrendPosteriorPredictiveForecast {
     }
 }
 
-/// Fit a Bayesian local-linear-trend model with conjugate Gibbs/FFBS.
+/// Fit a Bayesian local-linear-trend model by Gibbs sampling over its three
+/// variances with the states integrated out.
+///
+/// Each sweep updates the level, slope and observation variances in turn,
+/// each by one slice-sampling step on its conditional given the other two,
+/// `prior(q) * p(y | variances)`, where `p(y | variances)` is the Kalman
+/// filter likelihood with every state integrated out. This targets the same
+/// posterior as drawing the states and then each variance given them, but no
+/// update conditions on the states, so the variances do not inherit the
+/// states' autocorrelation. A retained draw adds the terminal state from
+/// `p(x[T - 1] | variances, y)`, the filter's last filtered distribution.
 pub fn fit_bayesian_local_linear_trend(
     observations: &[f64],
     config: &BayesianLocalLinearTrendConfig,
 ) -> Result<LocalLinearTrendPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = require_finite_observations(observations, 3, "local-linear-trend")?;
-    // Five values per draw; the two-state filter holds about 14 per time.
-    schedule.check_fit_size(
-        "local-linear-trend fit",
-        &[5],
-        &[observations.len() + 1, 14],
-    )?;
-    let transition_count = observations.len();
+    require_finite_observations(observations, 3, "local-linear-trend")?;
+    // Five values per draw. The filter keeps only its current moments, so a
+    // chain's working state does not grow with the series.
+    schedule.check_fit_size("local-linear-trend fit", &[5], &[6])?;
+    let priors = [
+        config.level_variance_prior,
+        config.slope_variance_prior,
+        config.observation_variance_prior,
+    ];
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
         FIT_SEED_DOMAIN,
         |rng| {
-            Ok::<_, BayesianForecastError>([
-                overdispersed_positive(config.level_variance_prior.mode(), rng),
-                overdispersed_positive(config.slope_variance_prior.mode(), rng),
-                overdispersed_positive(config.observation_variance_prior.mode(), rng),
-            ])
+            Ok::<_, BayesianForecastError>(
+                priors.map(|prior| overdispersed_positive(prior.mode(), rng)),
+            )
         },
-        |[level_variance, slope_variance, observation_variance], rng, retain| {
-            // Index zero is x[-1], followed by x[0] through x[T - 1].
-            let states = sample_states_ffbs(
+        |variances, rng, retain| {
+            for (index, prior) in priors.iter().enumerate() {
+                let others = *variances;
+                variances[index] = slice_sample_positive(
+                    others[index],
+                    |candidate| {
+                        let mut trial = others;
+                        trial[index] = candidate;
+                        prior.log_density(candidate)
+                            + log_marginal_likelihood(
+                                observations,
+                                config.initial_mean,
+                                config.initial_covariance,
+                                trial,
+                            )
+                    },
+                    rng,
+                )?;
+            }
+            if !retain {
+                return Ok(None);
+            }
+            let [level_variance, slope_variance, observation_variance] = *variances;
+            let [terminal_level, terminal_slope] = sample_terminal_state(
                 observations,
                 config.initial_mean,
                 config.initial_covariance,
-                *level_variance,
-                *slope_variance,
-                *observation_variance,
+                *variances,
                 rng,
             )?;
-
-            let mut level_sum_sq = 0.0;
-            let mut slope_sum_sq = 0.0;
-            for pair in states.windows(2) {
-                let level_residual = pair[1][0] - pair[0][0] - pair[0][1];
-                let slope_residual = pair[1][1] - pair[0][1];
-                level_sum_sq += level_residual * level_residual;
-                slope_sum_sq += slope_residual * slope_residual;
-            }
-            *level_variance = config.level_variance_prior.conditional_draw(
-                transition_count,
-                level_sum_sq,
-                rng,
-            )?;
-            *slope_variance = config.slope_variance_prior.conditional_draw(
-                transition_count,
-                slope_sum_sq,
-                rng,
-            )?;
-
-            let observation_sum_sq: f64 = observations
-                .iter()
-                .zip(&states[1..])
-                .filter(|(observation, _)| !observation.is_nan())
-                .map(|(observation, state)| {
-                    let residual = observation - state[0];
-                    residual * residual
-                })
-                .sum();
-            *observation_variance = config.observation_variance_prior.conditional_draw(
-                observed_count,
-                observation_sum_sq,
-                rng,
-            )?;
-
-            Ok(retain.then(|| {
-                let terminal = states.last().expect("observations are non-empty");
-                LocalLinearTrendPosteriorDraw {
-                    level_variance: *level_variance,
-                    slope_variance: *slope_variance,
-                    observation_variance: *observation_variance,
-                    terminal_level: terminal[0],
-                    terminal_slope: terminal[1],
-                }
+            Ok(Some(LocalLinearTrendPosteriorDraw {
+                level_variance,
+                slope_variance,
+                observation_variance,
+                terminal_level,
+                terminal_slope,
             }))
         },
     )?;
     Ok(LocalLinearTrendPosterior { chains })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn sample_states_ffbs(
+/// Log density of the observations given the level, slope and observation
+/// variances, with every state integrated out, by the prediction-error
+/// decomposition of the Kalman filter. Returns `-inf` where the filter breaks
+/// down, which the slice sampler treats as zero density.
+fn log_marginal_likelihood(
     observations: &[f64],
     initial_mean: [f64; 2],
     initial_covariance: [f64; 4],
+    [level_variance, slope_variance, observation_variance]: [f64; 3],
+) -> f64 {
+    let mut mean = initial_mean;
+    let mut covariance = initial_covariance;
+    let mut log_likelihood = 0.0;
+    for &observation in observations {
+        let step = kalman_step(
+            mean,
+            covariance,
+            observation,
+            level_variance,
+            slope_variance,
+            observation_variance,
+        );
+        if let Some((innovation, innovation_variance)) = step.innovation {
+            if !innovation_variance.is_finite() || innovation_variance <= 0.0 {
+                return f64::NEG_INFINITY;
+            }
+            // Standardise before squaring: the square of a large innovation
+            // can overflow where its ratio to the variance does not.
+            let standardized = innovation / innovation_variance.sqrt();
+            log_likelihood -=
+                0.5 * (LOG_2_PI + innovation_variance.ln() + standardized * standardized);
+        }
+        mean = step.filtered_mean;
+        covariance = step.filtered_covariance;
+    }
+    if log_likelihood.is_finite() {
+        log_likelihood
+    } else {
+        f64::NEG_INFINITY
+    }
+}
+
+const LOG_2_PI: f64 = 1.837_877_066_409_345_5;
+
+/// One Kalman filter prediction and, for a non-missing observation, update.
+struct KalmanStep {
+    predicted_mean: [f64; 2],
+    predicted_covariance: [f64; 4],
+    filtered_mean: [f64; 2],
+    filtered_covariance: [f64; 4],
+    /// The one-step prediction error and its variance; `None` when missing.
+    innovation: Option<(f64, f64)>,
+}
+
+fn kalman_step(
+    mean: [f64; 2],
+    covariance: [f64; 4],
+    observation: f64,
     level_variance: f64,
     slope_variance: f64,
     observation_variance: f64,
+) -> KalmanStep {
+    let predicted_mean = [mean[0] + mean[1], mean[1]];
+    let predicted_covariance = [
+        covariance[0] + covariance[1] + covariance[2] + covariance[3] + level_variance,
+        covariance[1] + covariance[3],
+        covariance[2] + covariance[3],
+        covariance[3] + slope_variance,
+    ];
+    if observation.is_nan() {
+        return KalmanStep {
+            predicted_mean,
+            predicted_covariance,
+            filtered_mean: predicted_mean,
+            filtered_covariance: predicted_covariance,
+            innovation: None,
+        };
+    }
+    let innovation_variance = predicted_covariance[0] + observation_variance;
+    let innovation = observation - predicted_mean[0];
+    let gain = [
+        predicted_covariance[0] / innovation_variance,
+        predicted_covariance[2] / innovation_variance,
+    ];
+    let filtered_mean = [
+        predicted_mean[0] + gain[0] * innovation,
+        predicted_mean[1] + gain[1] * innovation,
+    ];
+    // Algebraically equivalent to the Joseph update for scalar H=[1,0].
+    let filtered_covariance = [
+        predicted_covariance[0] * observation_variance / innovation_variance,
+        predicted_covariance[1] * observation_variance / innovation_variance,
+        predicted_covariance[2] * observation_variance / innovation_variance,
+        predicted_covariance[3]
+            - predicted_covariance[2] * predicted_covariance[1] / innovation_variance,
+    ];
+    KalmanStep {
+        predicted_mean,
+        predicted_covariance,
+        filtered_mean,
+        filtered_covariance: symmetrized(filtered_covariance),
+        innovation: Some((innovation, innovation_variance)),
+    }
+}
+
+/// Draw the terminal state `x[T - 1]` from `p(x[T - 1] | variances, y)`: run
+/// the Kalman filter to the end, checking every predicted and filtered moment,
+/// and sample the last filtered distribution.
+fn sample_terminal_state(
+    observations: &[f64],
+    initial_mean: [f64; 2],
+    initial_covariance: [f64; 4],
+    variances: [f64; 3],
     rng: &mut ChaCha8Rng,
-) -> Result<Vec<[f64; 2]>, BayesianForecastError> {
+) -> Result<[f64; 2], BayesianForecastError> {
+    let [level_variance, slope_variance, observation_variance] = variances;
     validate_positive_variance("level", level_variance)?;
     validate_positive_variance("slope", slope_variance)?;
     validate_positive_variance("observation", observation_variance)?;
 
-    let len = observations.len();
-    let mut filtered_means = Vec::with_capacity(len + 1);
-    let mut filtered_covariances = Vec::with_capacity(len + 1);
-    let mut predicted_means = Vec::with_capacity(len);
-    let mut predicted_covariances = Vec::with_capacity(len);
-    filtered_means.push(initial_mean);
-    filtered_covariances.push(initial_covariance);
-
+    let mut mean = initial_mean;
+    let mut covariance = initial_covariance;
     for (time, &observation) in observations.iter().enumerate() {
-        let mean = filtered_means[time];
-        let covariance = filtered_covariances[time];
-        let predicted_mean = [mean[0] + mean[1], mean[1]];
-        let predicted_covariance = [
-            covariance[0] + covariance[1] + covariance[2] + covariance[3] + level_variance,
-            covariance[1] + covariance[3],
-            covariance[2] + covariance[3],
-            covariance[3] + slope_variance,
-        ];
-        validate_computed_state("predicted", time, predicted_mean, predicted_covariance)?;
-
-        let (filtered_mean, filtered_covariance) = if observation.is_nan() {
-            (predicted_mean, predicted_covariance)
-        } else {
-            let innovation_variance = predicted_covariance[0] + observation_variance;
+        let step = kalman_step(
+            mean,
+            covariance,
+            observation,
+            level_variance,
+            slope_variance,
+            observation_variance,
+        );
+        validate_computed_state(
+            "predicted",
+            time,
+            step.predicted_mean,
+            step.predicted_covariance,
+        )?;
+        if let Some((_, innovation_variance)) = step.innovation {
             validate_positive_variance("innovation", innovation_variance)?;
-            let innovation = observation - predicted_mean[0];
-            let gain = [
-                predicted_covariance[0] / innovation_variance,
-                predicted_covariance[2] / innovation_variance,
-            ];
-            let filtered_mean = [
-                predicted_mean[0] + gain[0] * innovation,
-                predicted_mean[1] + gain[1] * innovation,
-            ];
-            // Algebraically equivalent to the Joseph update for scalar H=[1,0].
-            let filtered_covariance = [
-                predicted_covariance[0] * observation_variance / innovation_variance,
-                predicted_covariance[1] * observation_variance / innovation_variance,
-                predicted_covariance[2] * observation_variance / innovation_variance,
-                predicted_covariance[3]
-                    - predicted_covariance[2] * predicted_covariance[1] / innovation_variance,
-            ];
-            (filtered_mean, symmetrized(filtered_covariance))
-        };
-        validate_computed_state("filtered", time, filtered_mean, filtered_covariance)?;
-        predicted_means.push(predicted_mean);
-        predicted_covariances.push(predicted_covariance);
-        filtered_means.push(filtered_mean);
-        filtered_covariances.push(filtered_covariance);
+        }
+        validate_computed_state(
+            "filtered",
+            time,
+            step.filtered_mean,
+            step.filtered_covariance,
+        )?;
+        mean = step.filtered_mean;
+        covariance = step.filtered_covariance;
     }
-
-    let mut states = vec![[0.0; 2]; len + 1];
-    states[len] = sample_bivariate_normal(filtered_means[len], filtered_covariances[len], rng)?;
-    for index in (0..len).rev() {
-        let covariance = filtered_covariances[index];
-        // C F' for F=[[1,1],[0,1]].
-        let numerator = [
-            covariance[0] + covariance[1],
-            covariance[1],
-            covariance[2] + covariance[3],
-            covariance[3],
-        ];
-        let prediction_factor = cholesky_2x2(predicted_covariances[index])
-            .map_err(|_| numerical("predicted covariance could not be factored"))?;
-        let first_gain_row = solve_cholesky_2x2(prediction_factor, [numerator[0], numerator[1]]);
-        let second_gain_row = solve_cholesky_2x2(prediction_factor, [numerator[2], numerator[3]]);
-        let gain = [
-            first_gain_row[0],
-            first_gain_row[1],
-            second_gain_row[0],
-            second_gain_row[1],
-        ];
-        let delta = [
-            states[index + 1][0] - predicted_means[index][0],
-            states[index + 1][1] - predicted_means[index][1],
-        ];
-        let correction = mat_vec_2x2(gain, delta);
-        let conditional_mean = [
-            filtered_means[index][0] + correction[0],
-            filtered_means[index][1] + correction[1],
-        ];
-        // Joseph form for C - J P J': with A = I - J F and
-        // P = F C F' + Q, the conditional covariance is
-        // A C A' + J Q J'. This avoids catastrophic cancellation.
-        let residual_transition = [
-            1.0 - gain[0],
-            -(gain[0] + gain[1]),
-            -gain[2],
-            1.0 - gain[2] - gain[3],
-        ];
-        let propagated = mat_mul_2x2(
-            mat_mul_2x2(residual_transition, covariance),
-            transpose_2x2(residual_transition),
-        );
-        let process_contribution = mat_mul_2x2(
-            mat_mul_2x2(gain, [level_variance, 0.0, 0.0, slope_variance]),
-            transpose_2x2(gain),
-        );
-        let conditional_covariance = symmetrized(add_2x2(propagated, process_contribution));
-        states[index] = sample_bivariate_normal(conditional_mean, conditional_covariance, rng)?;
-    }
-    Ok(states)
+    sample_bivariate_normal(mean, covariance, rng)
 }
 
 fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError> {
@@ -532,43 +565,6 @@ fn cholesky_2x2(matrix: [f64; 4]) -> Result<[f64; 4], ()> {
     let mut factor = [0.0; 4];
     cholesky_into(&matrix, 2, &mut factor)?;
     Ok(factor)
-}
-
-fn solve_cholesky_2x2(factor: [f64; 4], right_hand_side: [f64; 2]) -> [f64; 2] {
-    let y0 = right_hand_side[0] / factor[0];
-    let y1 = (right_hand_side[1] - factor[2] * y0) / factor[3];
-    let x1 = y1 / factor[3];
-    let x0 = (y0 - factor[2] * x1) / factor[0];
-    [x0, x1]
-}
-
-fn mat_mul_2x2(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
-    [
-        left[0] * right[0] + left[1] * right[2],
-        left[0] * right[1] + left[1] * right[3],
-        left[2] * right[0] + left[3] * right[2],
-        left[2] * right[1] + left[3] * right[3],
-    ]
-}
-
-fn mat_vec_2x2(matrix: [f64; 4], vector: [f64; 2]) -> [f64; 2] {
-    [
-        matrix[0] * vector[0] + matrix[1] * vector[1],
-        matrix[2] * vector[0] + matrix[3] * vector[1],
-    ]
-}
-
-fn transpose_2x2(matrix: [f64; 4]) -> [f64; 4] {
-    [matrix[0], matrix[2], matrix[1], matrix[3]]
-}
-
-fn add_2x2(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
-    [
-        left[0] + right[0],
-        left[1] + right[1],
-        left[2] + right[2],
-        left[3] + right[3],
-    ]
 }
 
 fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
@@ -698,17 +694,13 @@ mod tests {
         assert!(fit_bayesian_local_linear_trend(&[1.0, 2.0, 3.0], &invalid_prior).is_err());
     }
 
-    #[test]
-    fn ffbs_midpoint_and_terminal_moments_match_existing_kalman_smoother() {
-        use crate::state_space::LinearGaussianStateSpace;
-
-        let observations = [0.2, 0.5, 0.9, f64::NAN, f64::NAN];
-        let initial_mean = [-0.1, 0.15];
-        let initial_covariance = [1.4, 0.25, 0.25, 0.8];
-        let level_variance = 0.3;
-        let slope_variance = 0.08;
-        let observation_variance = 0.5;
-        let smoother = LinearGaussianStateSpace::new(
+    /// The general state-space model with this module's trend dynamics.
+    fn general_trend_model(
+        initial_mean: [f64; 2],
+        initial_covariance: [f64; 4],
+        [level_variance, slope_variance, observation_variance]: [f64; 3],
+    ) -> crate::state_space::LinearGaussianStateSpace {
+        crate::state_space::LinearGaussianStateSpace::new(
             2,
             vec![1.0, 1.0, 0.0, 1.0],
             vec![1.0, 0.0],
@@ -718,95 +710,299 @@ mod tests {
             initial_covariance.to_vec(),
         )
         .unwrap()
-        .smooth(&observations)
-        .unwrap();
-        let midpoint = 2;
-        let expected_midpoint_mean = &smoother.smoothed_means[midpoint];
-        let expected_midpoint_covariance = &smoother.smoothed_covariances[midpoint];
-        let expected_terminal_mean = smoother.smoothed_means.last().unwrap();
-        let expected_terminal_covariance = smoother.smoothed_covariances.last().unwrap();
+    }
 
-        let draws = 30_000;
-        let mut rng = ChaCha8Rng::seed_from_u64(123);
-        let mut midpoint_sum = [0.0; 2];
-        let mut midpoint_products = [0.0; 4];
-        let mut terminal_sum = [0.0; 2];
-        let mut terminal_products = [0.0; 4];
-        for _ in 0..draws {
-            let states = sample_states_ffbs(
+    #[test]
+    fn marginal_likelihood_matches_the_general_kalman_filter() {
+        let observations = [0.2, 0.5, f64::NAN, 0.9, 1.6, f64::NAN, f64::NAN, 2.4];
+        let initial_mean = [-0.1, 0.15];
+        let initial_covariance = [1.4, 0.25, 0.25, 0.8];
+        for variances in [
+            [0.3, 0.08, 0.5],
+            [1e-6, 0.02, 0.3],
+            [0.05, 1e-7, 0.3],
+            [0.2, 0.01, 1e-5],
+            [40.0, 3.0, 25.0],
+        ] {
+            let expected = general_trend_model(initial_mean, initial_covariance, variances)
+                .filter(&observations)
+                .unwrap()
+                .log_likelihood;
+            let actual =
+                log_marginal_likelihood(&observations, initial_mean, initial_covariance, variances);
+            assert!(
+                (actual - expected).abs() <= 1e-10 * expected.abs().max(1.0),
+                "{variances:?}: {actual} vs {expected}"
+            );
+        }
+        // A far-off initial level with a diffuse prior squares to more than
+        // f64::MAX, but standardised it does not.
+        let offset = [0.0, 1.0, 2.0, 3.0, 4.0];
+        let far = [1e155, 0.0];
+        let wide = [1e300, 0.0, 0.0, 1.0];
+        let expected = general_trend_model(far, wide, [0.25; 3])
+            .filter(&offset)
+            .unwrap()
+            .log_likelihood;
+        let actual = log_marginal_likelihood(&offset, far, wide, [0.25; 3]);
+        assert!(expected.is_finite());
+        assert!(
+            (actual - expected).abs() <= 1e-10 * expected.abs(),
+            "{actual} vs {expected}"
+        );
+
+        // Where the filter cannot be evaluated the slice sampler must see zero
+        // density rather than a NaN.
+        assert_eq!(
+            log_marginal_likelihood(
                 &observations,
                 initial_mean,
                 initial_covariance,
-                level_variance,
-                slope_variance,
-                observation_variance,
+                [f64::INFINITY, 0.1, 0.1],
+            ),
+            f64::NEG_INFINITY
+        );
+    }
+
+    #[test]
+    fn terminal_state_moments_match_existing_kalman_smoother() {
+        let observations = [0.2, 0.5, 0.9, f64::NAN, f64::NAN];
+        let initial_mean = [-0.1, 0.15];
+        let initial_covariance = [1.4, 0.25, 0.25, 0.8];
+        let variances = [0.3, 0.08, 0.5];
+        let smoother = general_trend_model(initial_mean, initial_covariance, variances)
+            .smooth(&observations)
+            .unwrap();
+        let expected_mean = smoother.smoothed_means.last().unwrap();
+        let expected_covariance = smoother.smoothed_covariances.last().unwrap();
+
+        let draws = 30_000;
+        let mut rng = ChaCha8Rng::seed_from_u64(123);
+        let mut sum = [0.0; 2];
+        let mut products = [0.0; 4];
+        for _ in 0..draws {
+            let state = sample_terminal_state(
+                &observations,
+                initial_mean,
+                initial_covariance,
+                variances,
                 &mut rng,
             )
             .unwrap();
-            for (state, sum, products) in [
-                (
-                    states[midpoint + 1],
-                    &mut midpoint_sum,
-                    &mut midpoint_products,
-                ),
-                (
-                    *states.last().unwrap(),
-                    &mut terminal_sum,
-                    &mut terminal_products,
-                ),
-            ] {
-                sum[0] += state[0];
-                sum[1] += state[1];
-                products[0] += state[0] * state[0];
-                products[1] += state[0] * state[1];
-                products[2] += state[1] * state[0];
-                products[3] += state[1] * state[1];
-            }
+            sum[0] += state[0];
+            sum[1] += state[1];
+            products[0] += state[0] * state[0];
+            products[1] += state[0] * state[1];
+            products[2] += state[1] * state[0];
+            products[3] += state[1] * state[1];
         }
-        for (sum, products, expected_mean, expected_covariance) in [
-            (
-                midpoint_sum,
-                midpoint_products,
-                expected_midpoint_mean,
-                expected_midpoint_covariance,
-            ),
-            (
-                terminal_sum,
-                terminal_products,
-                expected_terminal_mean,
-                expected_terminal_covariance,
-            ),
-        ] {
-            let mean = [sum[0] / draws as f64, sum[1] / draws as f64];
-            let covariance = [
-                products[0] / draws as f64 - mean[0] * mean[0],
-                products[1] / draws as f64 - mean[0] * mean[1],
-                products[2] / draws as f64 - mean[1] * mean[0],
-                products[3] / draws as f64 - mean[1] * mean[1],
-            ];
-            for index in 0..2 {
-                assert!((mean[index] - expected_mean[index]).abs() < 0.025);
-            }
-            for index in 0..4 {
-                assert!((covariance[index] - expected_covariance[index]).abs() < 0.035);
-            }
+        let mean = [sum[0] / draws as f64, sum[1] / draws as f64];
+        let covariance = [
+            products[0] / draws as f64 - mean[0] * mean[0],
+            products[1] / draws as f64 - mean[0] * mean[1],
+            products[2] / draws as f64 - mean[1] * mean[0],
+            products[3] / draws as f64 - mean[1] * mean[1],
+        ];
+        for index in 0..2 {
+            assert!((mean[index] - expected_mean[index]).abs() < 0.025);
+        }
+        for index in 0..4 {
+            assert!((covariance[index] - expected_covariance[index]).abs() < 0.035);
         }
     }
 
     #[test]
-    fn ffbs_smoothing_stays_finite_at_extreme_covariance_scales() {
+    fn terminal_state_stays_finite_at_extreme_covariance_scales() {
         let mut rng = ChaCha8Rng::seed_from_u64(7);
-        let states = sample_states_ffbs(
+        let state = sample_terminal_state(
             &[f64::NAN; 4],
             [0.0, 0.0],
             [1e200, 0.0, 0.0, 1e200],
-            1e-7,
-            1e-12,
-            1.0,
+            [1e-7, 1e-12, 1.0],
             &mut rng,
         )
         .unwrap();
-        assert!(states.iter().flatten().all(|value| value.is_finite()));
+        assert!(state.iter().all(|value| value.is_finite()));
+    }
+
+    #[test]
+    fn posterior_means_match_independent_quadrature() {
+        // The posterior of the three variances, integrated on a grid in log
+        // coordinates with the general state-space filter's likelihood, which
+        // the sampler does not use. The terminal level's reference is the same
+        // grid's average of the filtered terminal mean.
+        let mut observations = simulate_trend([0.3, 0.05, 0.2], 40, 5);
+        observations[17] = f64::NAN;
+        let initial_mean = [0.0, 0.0];
+        let initial_covariance = [4.0, 0.0, 0.0, 1.0];
+        // Prior means of 0.05, 0.005 and 1.0 against truths of 0.3, 0.05 and 0.2.
+        let priors = [
+            InverseGammaPrior {
+                shape: 3.0,
+                scale: 0.1,
+            },
+            InverseGammaPrior {
+                shape: 3.0,
+                scale: 0.01,
+            },
+            InverseGammaPrior {
+                shape: 3.0,
+                scale: 2.0,
+            },
+        ];
+        // 40 points a side give means within 1e-5 of 80 points a side, far
+        // inside the sampler's Monte Carlo error.
+        let points = 40;
+        let (lowest, highest) = (-11.0, 2.0);
+        let log_grid: Vec<f64> = (0..points)
+            .map(|k| lowest + (highest - lowest) * k as f64 / (points - 1) as f64)
+            .collect();
+        let mut log_weights = Vec::with_capacity(points * points * points);
+        for &a in &log_grid {
+            for &b in &log_grid {
+                for &c in &log_grid {
+                    let variances = [a.exp(), b.exp(), c.exp()];
+                    let filter = general_trend_model(initial_mean, initial_covariance, variances)
+                        .filter(&observations)
+                        .unwrap();
+                    // The inverse-gamma density times the Jacobian q of log
+                    // coordinates, written out rather than shared with the sampler.
+                    let log_prior: f64 = priors
+                        .iter()
+                        .zip(variances)
+                        .map(|(prior, q)| -prior.shape * q.ln() - prior.scale / q)
+                        .sum();
+                    log_weights.push((
+                        log_prior + filter.log_likelihood,
+                        variances,
+                        filter.filtered_means.last().unwrap()[0],
+                    ));
+                }
+            }
+        }
+        let peak = log_weights
+            .iter()
+            .map(|(w, _, _)| *w)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let mut total = 0.0;
+        let mut reference = [0.0; 4];
+        for (log_weight, variances, terminal_level) in &log_weights {
+            let weight = (log_weight - peak).exp();
+            total += weight;
+            for index in 0..3 {
+                reference[index] += weight * variances[index];
+            }
+            reference[3] += weight * terminal_level;
+        }
+        reference.iter_mut().for_each(|value| *value /= total);
+
+        let mut fit_config = config(31);
+        fit_config.initial_mean = initial_mean;
+        fit_config.initial_covariance = initial_covariance;
+        [
+            fit_config.level_variance_prior,
+            fit_config.slope_variance_prior,
+            fit_config.observation_variance_prior,
+        ] = priors;
+        fit_config.num_chains = 4;
+        fit_config.num_warmup = 500;
+        fit_config.num_draws = 5000;
+        let report = fit_bayesian_local_linear_trend(&observations, &fit_config)
+            .unwrap()
+            .diagnostics();
+        for (parameter, expected) in report.params.iter().zip(reference) {
+            assert!(
+                (parameter.mean - expected).abs() < 4.0 * parameter.mcse_mean,
+                "{}: sampled mean {} (MCSE {}) vs quadrature {expected}",
+                parameter.name,
+                parameter.mean,
+                parameter.mcse_mean,
+            );
+        }
+        // Negative control: the data must move every variance's mean well
+        // away from its prior mean, scale / (shape - 1), or matching the
+        // quadrature would not show the likelihood is used.
+        for ((parameter, expected), prior) in report.params.iter().zip(reference).zip(priors) {
+            let prior_mean = prior.scale / (prior.shape - 1.0);
+            assert!(
+                (prior_mean - expected).abs() > 8.0 * parameter.mcse_mean,
+                "{}: prior mean {prior_mean} is too close to the posterior mean {expected}",
+                parameter.name,
+            );
+        }
+    }
+
+    /// Simulate `count` observations from a local linear trend that starts at
+    /// level 0 with slope 0.02.
+    fn simulate_trend(variances: [f64; 3], count: usize, seed: u64) -> Vec<f64> {
+        let mut rng = ChaCha8Rng::seed_from_u64(seed);
+        let [level_sd, slope_sd, observation_sd] = variances.map(f64::sqrt);
+        let (mut level, mut slope) = (0.0, 0.02);
+        (0..count)
+            .map(|_| {
+                level += slope + standard_normal(&mut rng) * level_sd;
+                slope += standard_normal(&mut rng) * slope_sd;
+                level + standard_normal(&mut rng) * observation_sd
+            })
+            .collect()
+    }
+
+    #[test]
+    fn state_variances_mix_in_every_signal_to_noise_regime() {
+        // The sampler this replaced, FFBS followed by conjugate draws of each
+        // variance given the states, gave the level variance a split R-hat of
+        // 1.20 to 1.75 and a bulk ESS of 6 to 15 out of 2000 draws on every one
+        // of these twelve series, and the slope variance an R-hat up to 1.16
+        // and a bulk ESS of 17 to 106. Interweaving a non-centred update into
+        // it (ASIS) raised the level variance's bulk ESS only to 13 to 181.
+        // The thresholds are Vehtari et al. (2021)'s: R-hat below 1.01 is
+        // their target, and 1.02 leaves room for its sampling noise over 36
+        // checks; 400 bulk and tail ESS is their minimum of 100 per chain.
+        let regimes = [
+            ("balanced", [0.05, 0.005, 0.3]),
+            ("near-zero slope variance", [0.05, 1e-6, 0.3]),
+            ("near-zero level variance", [1e-6, 0.002, 0.3]),
+            ("low signal-to-noise", [0.005, 0.0005, 1.0]),
+        ];
+        for (regime, variances) in regimes {
+            for seed in 0..3 {
+                let observations = simulate_trend(variances, 200, 7_000 + seed);
+                let mut fit_config = config(100 + seed);
+                fit_config.initial_mean = [observations[0], 0.0];
+                fit_config.initial_covariance = [10.0, 0.0, 0.0, 1.0];
+                fit_config.level_variance_prior = InverseGammaPrior {
+                    shape: 2.0,
+                    scale: 0.01,
+                };
+                fit_config.slope_variance_prior = InverseGammaPrior {
+                    shape: 2.0,
+                    scale: 0.001,
+                };
+                fit_config.observation_variance_prior = InverseGammaPrior {
+                    shape: 2.0,
+                    scale: 0.1,
+                };
+                fit_config.num_chains = 4;
+                fit_config.num_warmup = 300;
+                fit_config.num_draws = 500;
+                let report = fit_bayesian_local_linear_trend(&observations, &fit_config)
+                    .unwrap()
+                    .diagnostics();
+                for parameter in &report.params[..3] {
+                    assert!(
+                        parameter.r_hat < 1.02
+                            && parameter.ess_bulk >= 400.0
+                            && parameter.ess_tail >= 400.0,
+                        "{regime}, seed {seed}: {} has R-hat {:.3}, bulk ESS {:.0}, \
+                         tail ESS {:.0}",
+                        parameter.name,
+                        parameter.r_hat,
+                        parameter.ess_bulk,
+                        parameter.ess_tail
+                    );
+                }
+            }
+        }
     }
 
     #[test]

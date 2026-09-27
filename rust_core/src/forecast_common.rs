@@ -5,7 +5,8 @@
 //! independent chain per Rayon task, and they and the AR model all forecast by
 //! pairing every retained draw with one simulated path. This module holds what
 //! they have in common: the size guard in front of every large allocation, the
-//! inverse-gamma conditional, the chain driver with its warmup/thinning
+//! inverse-gamma conditional, a slice-sampling step for a positive parameter
+//! with no conjugate conditional, the chain driver with its warmup/thinning
 //! schedule and overdispersed starting points, the per-chain forecast loop,
 //! the empirical path summaries, and the error, prior and forecast types they
 //! share. [`crate::bayesian_forecast`] re-exports those types under their
@@ -14,7 +15,7 @@
 use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
+use rand_distr::{Distribution, Exp1, Gamma, StandardNormal};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
@@ -103,6 +104,11 @@ impl InverseGammaPrior {
 
     pub(crate) fn mode(self) -> f64 {
         self.scale / (self.shape + 1.0)
+    }
+
+    /// Log density at `variance`, without its normalising constant.
+    pub(crate) fn log_density(self, variance: f64) -> f64 {
+        -(self.shape + 1.0) * variance.ln() - self.scale / variance
     }
 
     /// One draw of a variance from its conjugate full conditional under this
@@ -361,6 +367,94 @@ pub(crate) fn sample_inverse_gamma<R: Rng + ?Sized>(
         ));
     }
     Ok(variance)
+}
+
+/// Width, on the log scale, of the slice sampler's first bracket.
+const SLICE_WIDTH: f64 = 1.0;
+
+/// Most brackets the slice sampler may step out across, over both sides
+/// together: 32 log-units, a factor of about 10^14 in the parameter.
+const SLICE_MAX_STEPS: usize = 32;
+
+/// Most shrinkage proposals before the slice sampler gives up. The bracket
+/// shrinks towards the current point, which is always inside the slice, and
+/// halves in width on average with each rejection, so 200 rejections take it
+/// far below the spacing of floating-point numbers near any start.
+const SLICE_MAX_SHRINKS: usize = 200;
+
+/// Take one slice-sampling step (Neal 2003, stepping out and shrinkage) on
+/// `log q` for a positive parameter `q` whose log density, up to a constant,
+/// is `log_density(q)`.
+///
+/// The step leaves that density exactly invariant: it works on `log q` and
+/// adds the Jacobian `log q` itself, and its bracket width is fixed rather
+/// than tuned from earlier draws. `log_density` may return `-inf` or `NaN`
+/// where the density is zero or cannot be computed, which puts that point
+/// outside the slice; it must be finite at `current`.
+pub(crate) fn slice_sample_positive<R, F>(
+    current: f64,
+    mut log_density: F,
+    rng: &mut R,
+) -> Result<f64, BayesianForecastError>
+where
+    R: Rng + ?Sized,
+    F: FnMut(f64) -> f64,
+{
+    let numerical = |message: &str| BayesianForecastError::NumericalFailure(message.into());
+    // A point whose parameter overflows or underflows lands outside every slice.
+    let mut log_target = |log_value: f64| {
+        let value = log_value.exp();
+        if !value.is_finite() || value <= 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        let density = log_density(value) + log_value;
+        if density.is_nan() {
+            f64::NEG_INFINITY
+        } else {
+            density
+        }
+    };
+    let start = current.ln();
+    let height = log_target(start);
+    if !height.is_finite() {
+        return Err(numerical(
+            "slice sampler started where its density is not finite",
+        ));
+    }
+    let exponential: f64 = Exp1.sample(rng);
+    // The slice is every point at or above `level`. When the log density is
+    // large, `height - exponential` can round back to `height`; including the
+    // boundary keeps the current point inside the slice even then, and costs
+    // nothing otherwise, since the density takes any one value on a set of
+    // measure zero.
+    let level = height - exponential;
+
+    let mut left = start - SLICE_WIDTH * rng.gen::<f64>();
+    let mut right = left + SLICE_WIDTH;
+    let mut left_steps = rng.gen_range(0..SLICE_MAX_STEPS);
+    let mut right_steps = SLICE_MAX_STEPS - 1 - left_steps;
+    while left_steps > 0 && log_target(left) >= level {
+        left -= SLICE_WIDTH;
+        left_steps -= 1;
+    }
+    while right_steps > 0 && log_target(right) >= level {
+        right += SLICE_WIDTH;
+        right_steps -= 1;
+    }
+    for _ in 0..SLICE_MAX_SHRINKS {
+        let proposal = left + rng.gen::<f64>() * (right - left);
+        if log_target(proposal) >= level {
+            return Ok(proposal.exp());
+        }
+        if proposal < start {
+            left = proposal;
+        } else {
+            right = proposal;
+        }
+    }
+    Err(numerical(
+        "slice sampler did not find a point inside its slice",
+    ))
 }
 
 /// Half-width, on the log scale for a positive parameter and in units of a
@@ -1110,6 +1204,47 @@ mod tests {
             cumulative_paths(&overflowing),
             Err(BayesianForecastError::NumericalFailure(_))
         ));
+    }
+
+    #[test]
+    fn slice_steps_leave_a_known_density_invariant() {
+        // InverseGamma(4, 3) has mean 1 and variance 0.5; chained slice steps
+        // started far out must reproduce both.
+        let mut rng = ChaCha8Rng::seed_from_u64(11);
+        let log_density = |q: f64| -5.0 * q.ln() - 3.0 / q;
+        let mut value = 50.0;
+        let draws = 40_000;
+        let (mut sum, mut sum_sq) = (0.0, 0.0);
+        for _ in 0..draws {
+            value = slice_sample_positive(value, log_density, &mut rng).unwrap();
+            sum += value;
+            sum_sq += value * value;
+        }
+        let mean = sum / draws as f64;
+        let variance = sum_sq / draws as f64 - mean * mean;
+        assert!((mean - 1.0).abs() < 0.02, "{mean}");
+        assert!((variance - 0.5).abs() < 0.06, "{variance}");
+
+        // A start with no finite density is refused, and a density that is
+        // -inf or NaN away from the start is treated as outside the slice.
+        assert!(slice_sample_positive(1.0, |_| f64::NAN, &mut rng).is_err());
+        let bounded = |q: f64| if q < 2.0 { 0.0 } else { f64::NAN };
+        for _ in 0..200 {
+            value = slice_sample_positive(1.0, bounded, &mut rng).unwrap();
+            assert!(value > 0.0 && value < 2.0);
+        }
+
+        // InverseGamma(1e17, 1e17) sits at 1 with a standard deviation of
+        // 3e-9, and its log density there is about -1e17, where floating-point
+        // numbers are 16 apart: subtracting an exponential draw rounds to
+        // nothing, and the density is flat to rounding near its peak. A strict
+        // slice was then empty at the current point and the step failed.
+        let concentrated = |q: f64| -(1e17 + 1.0) * q.ln() - 1e17 / q;
+        let mut value = 1.0;
+        for _ in 0..200 {
+            value = slice_sample_positive(value, concentrated, &mut rng).unwrap();
+            assert!((value - 1.0).abs() < 1e-5, "{value}");
+        }
     }
 
     #[test]

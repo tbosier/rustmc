@@ -238,7 +238,7 @@ pub(crate) struct PyBayesianLocalLinearTrendFit {
 
 impl ForecastFit for PyBayesianLocalLinearTrendFit {
     fn sampler(&self) -> &'static str {
-        "conjugate Gibbs/FFBS"
+        "Gibbs over variances with states integrated out (slice steps)"
     }
     fn coverage(&self) -> &'static str {
         "variance parameters, terminal level and slope; historical states are not retained"
