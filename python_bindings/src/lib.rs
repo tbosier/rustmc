@@ -31,6 +31,7 @@ mod runoff;
 mod seasonal;
 mod state_space;
 mod structural;
+mod time_design;
 mod trend;
 
 use pyo3::prelude::*;
@@ -50,6 +51,7 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     seasonal::register(m)?;
     trend::register(m)?;
     ar::register(m)?;
+    time_design::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<builder::ModelBuilder>()?;
     m.add_class::<builder::ModelSpec>()?;
