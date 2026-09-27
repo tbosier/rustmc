@@ -75,7 +75,9 @@ platform; floating-point libraries can differ across platforms.
 
 Batch forecasts preserve each model's paired posterior parameters and coherent future
 path. Aggregation across cells represents independent series and introduces no shared
-shocks or hierarchical dependence.
+shocks or hierarchical dependence. To make the forecasts of a hierarchy's nodes add
+up, see [forecast reconciliation](reconciliation.md), which also explains what
+independent draws mean there.
 
 All five fitted models and hierarchical Gibbs fits expose `summary()`, `diagnostics()`,
 `warnings()`, and a `sampler_stats` dictionary. Parameter reports reuse rank-normalized folded split

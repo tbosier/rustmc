@@ -54,6 +54,7 @@ nav:
       - Interventions and changepoints: interventions.md
       - Dynamic counts, amounts, and pooling: dynamic-glm.md
       - Independent batches and diagnostics: forecast-batches.md
+      - Forecast reconciliation: reconciliation.md
       - Sparse amounts: sparse-amounts.md
       - Payment-count runoff: runoff.md
       - Decisions from forecast draws: decisions.md

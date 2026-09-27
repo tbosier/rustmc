@@ -62,6 +62,26 @@ versioning while the public API is stabilized.
   the Wilson intervals, which assume independence, are typically too narrow for
   backtests; and interval coverage of a count forecast exceeds the nominal level even
   when the forecast is right. See `examples/forecast_calibration.py`.
+- **Forecast reconciliation.** `rustmc.reconcile(draws, hierarchy, method=...)` makes
+  the forecasts of a hierarchy add up draw by draw, keeping chain, draw and step, and
+  returns a `ReconciledForecast` with the draws, node names, means, quantiles and
+  intervals. `rustmc.Hierarchy` is built from an explicit 0/1 summing matrix, which
+  may describe a grouped structure, or from each bottom series' labels, which gives
+  a nested hierarchy with a documented node order and path names such as
+  `BU1/IDN3/cust17`. The methods are bottom-up, top-down by average historical
+  proportions or by forecast proportions, OLS, WLS with structural or variance
+  scaling, and MinT with Schäfer–Strimmer shrinkage of one-step residuals.
+  `reconcile` accepts `(chain, draw, node, step)` arrays, per-node dicts,
+  `ForecastDraws`, `ForecastBatchForecast` and `BayesianHierarchicalForecast`. The
+  arithmetic is in `rustmc_core::reconciliation`. On a simulated hierarchy with
+  correlated errors, over 1,000 seeded replications, MinT's mean squared error was
+  0.38 of the incoherent base forecasts' and its CRPS 0.66; WLS with structural
+  scaling was worse than the base there (1.12 on both). Draws must be joint draws of
+  all nodes: draws generated independently per node still add up, but their
+  intervals ignore the correlation between node errors. See
+  `docs/reconciliation.md` and `examples/forecast_reconciliation.py`.
+- `ForecastDraws.from_result` labels the series of a `ReconciledForecast` with its
+  node names.
 
 ### Changed
 

@@ -16,6 +16,8 @@ Coverage is not complete. These public names are documented only in their guides
   `interval_score` and `weighted_interval_score`.
 - [Independent batches and diagnostics](forecast-batches.md): `forecast_cell_seed`.
 - [Sparse amounts](sparse-amounts.md): `hurdle_lognormal_logp`.
+- [Forecast reconciliation](reconciliation.md): `Hierarchy`, `reconcile` and
+  `ReconciledForecast`.
 
 Each section states what a model does not do as well as what it does. Those limits are
 deliberate and current; where a thing is not supported, it says so next to the thing.
@@ -878,8 +880,9 @@ catches any of them.
 - `rustmc.ParameterError`: an invalid parameter or expression in `ModelBuilder`,
   including mixing references from two builders.
 - Plain `ValueError`: argument checks every model shares, such as array conversion,
-  interval levels, quantile probabilities, batch options, `fourier_design`, and
-  `DesignTerm` and `TimeDesign` ([interventions and changepoints](interventions.md)).
+  interval levels, quantile probabilities, batch options, `fourier_design`,
+  `DesignTerm` and `TimeDesign` ([interventions and changepoints](interventions.md)),
+  and every refusal from forecast reconciliation (`Hierarchy`, `reconcile`).
 
 Forecasting models accept any real numeric array-like for observations, `exog` and
 priors: float or integer NumPy arrays in any memory layout, or lists. They follow the

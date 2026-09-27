@@ -49,6 +49,7 @@ a fit.
 | `payment_triangle_runoff.py` | Censored payment-count development with uncertain ultimates. |
 | `rebate_accrual_forecast.py` | A deliberately cautious accrual baseline, with its own limitations stated. |
 | `reserve_decision.py` | Choosing a reserve when shortfalls cost more than surpluses, from forecast draws. |
+| `forecast_reconciliation.py` | Making store, region and total forecasts add up, and comparing reconciliation methods. |
 
 Each script above runs on the released package with NumPy alone, except
 `arviz_example.py`, which needs `pip install "rustmc[viz]"`.
