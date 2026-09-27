@@ -441,3 +441,20 @@ def test_top_down_refusals_name_the_reason(rmc):
     with pytest.raises(ValueError, match="non-negative base means"):
         rmc.reconcile(negative, rmc.Hierarchy.from_labels(LABELS),
                       method="top_down_forecast_proportions")
+
+
+def test_a_reconciled_hierarchy_is_not_summed_into_a_decision_by_default(rmc):
+    # Nodes of a reconciled hierarchy include their own totals, so summing every node
+    # would count each bottom series once per level: here 30 would become 60.
+    draws = np.zeros((1, 4, 3, 1))
+    draws[:, :, 1, 0], draws[:, :, 2, 0] = 10.0, 20.0
+    reconciled = rmc.reconcile(draws, rmc.Hierarchy.from_labels([("a",), ("b",)]),
+                               method="bottom_up")
+    with pytest.raises(ValueError, match="node_samples"):
+        rmc.decide(reconciled, rmc.SquaredLoss())
+    with pytest.raises(ValueError, match="reconciled hierarchy"):
+        rmc.ForecastDraws.from_result(reconciled).aggregate()
+    total = reconciled.node_samples(reconciled.node_names[0])
+    assert rmc.decide(total, rmc.SquaredLoss(), steps=[0]).decision == 30.0
+    weighted = rmc.ForecastDraws.from_result(reconciled).aggregate(weights=[1.0, 0.0, 0.0])
+    assert np.all(weighted.observation_samples == 30.0)

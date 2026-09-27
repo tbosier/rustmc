@@ -93,9 +93,9 @@ by NUTS or HMC. The forecasting models are different: structural, seasonal, AR,
 dynamic GLM, hurdle, runoff, and the Gaussian hierarchy are hand-written samplers that
 do not use that graph, its autodiff, or its samplers. Each exploits structure the
 general sampler cannot, and they are not all the same kind: Gibbs with FFBS for the
-Gaussian state-space models (the local linear trend integrates its states out
-instead), exact independent conjugate draws for AR, block
-elliptical slice sampling for dynamic GLMs, and — for runoff — either exact conjugate
+Gaussian state-space models (the local linear trend without `exog` integrates its
+states out instead), exact independent conjugate draws for AR, block elliptical slice
+sampling for dynamic GLMs, and — for runoff — either exact conjugate
 draws or latent-count Gibbs, depending on whether every ultimate total is known.
 `sampler_stats` on a fit reports which one ran, and whether warmup applied.
 

@@ -153,6 +153,10 @@ class ForecastDraws:
         """Sum within each joint panel draw, preserving cross-series dependence."""
         if self.observation_samples.ndim != 4:
             raise ValueError("aggregation requires a series axis")
+        if weights is None and self.metadata.get("source") == "ReconciledForecast":
+            raise ValueError("these series are the nodes of a reconciled hierarchy, which already "
+                "include their totals, so summing them counts each bottom series once per level; "
+                "use the total node's draws, or pass weights")
         weight = np.ones(self.observation_samples.shape[2]) if weights is None else np.asarray(weights, dtype=float)
         if weight.shape != (self.observation_samples.shape[2],) or not np.isfinite(weight).all():
             raise ValueError("weights must contain one finite value per series")

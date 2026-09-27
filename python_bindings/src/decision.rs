@@ -368,8 +368,10 @@ fn decision_draws(
             DecisionDraws::from_path_totals(&paths, &steps).map_err(core)
         }
         ([_, _, _, _], _) => Err(PyValueError::new_err(
-            "draws with a series axis, shaped (chain, draw, series, horizon), must be combined \
-             into one outcome first, for example with ForecastDraws.aggregate()",
+            "draws with a series axis, shaped (chain, draw, series, horizon), must be reduced \
+             to one outcome first: for separate series, ForecastDraws.aggregate(); for a \
+             ReconciledForecast, one node with node_samples(name), since its nodes already \
+             include their own totals",
         )),
         (_, _) => Err(PyValueError::new_err(format!(
             "draws must be shaped (draw,), (chain, draw) or (chain, draw, horizon); got {} axes",

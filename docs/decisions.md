@@ -159,6 +159,9 @@ print(rmc.decide(native, rmc.SquaredLoss(), steps=[0]).decision)
 
 Arrays follow the same exact-conversion rule as model data: booleans, strings, values
 float64 would round, and non-finite draws raise a `ValueError` naming the argument.
+The rule applies to arrays passed to `decide` and `expected_loss` directly. A
+`ForecastDraws` converts its input with NumPy's float conversion when it is built, so
+a value float64 would round is rounded there rather than refused.
 
 ## How far to trust the answer
 
