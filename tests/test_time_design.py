@@ -82,6 +82,11 @@ def test_start_shifts_the_calendar_but_not_the_definitions():
     negative = rmc.TimeDesign([D.pulse("p", at=-1)], length=3, start=-3)
     np.testing.assert_array_equal(negative.training()[:, 0], [0, 0, 1])
     np.testing.assert_array_equal(negative.future(2)[:, 0], [0, 0])
+    # The future may reach the last 64-bit position, and no further.
+    edge = rmc.TimeDesign([D.ramp("r", at=2**63 - 3)], length=1, start=2**63 - 2)
+    np.testing.assert_array_equal(edge.future(1), [[2.0]])
+    with pytest.raises(ValueError, match="64-bit calendar"):
+        edge.future(2)
 
 
 @pytest.mark.parametrize("length", [1, 7, 12, 25])
@@ -173,6 +178,10 @@ REFUSALS = {
     "calendar overflow": (lambda: rmc.TimeDesign([D.step("a", at=1)], length=2, start=2**63 - 1),
                           "64-bit calendar"),
     "oversized horizon": (lambda: rmc.TimeDesign([D.step("a", at=1)], length=2).future(2**40), "safety limit"),
+    # Refused before any column name or grid position is built.
+    "oversized grid": (lambda: rmc.TimeDesign([D.changepoints("cp", count=2**40, first=0, last=2**63 - 1)],
+                                              length=1), "safety limit"),
+    "oversized fourier": (lambda: rmc.TimeDesign([D.fourier("f", 2**41, 2**40)], length=1), "safety limit"),
 }
 
 
@@ -196,6 +205,8 @@ def test_regressor_values_are_named_sized_finite_and_exact():
         (lambda: design.training(regressors={"promo": [1.0] * 3, "price": [1.0] * 3}),
          "regressor 'price': is not a regressor term"),
         (lambda: design.training(regressors={"promo": np.array([True, False, True])}), "bool"),
+        (lambda: design.training(regressors={"promo": np.array([2**53 + 1, 0, 1])}),
+         "float64 cannot represent"),
         (lambda: design.training(regressors={"promo": np.ones((3, 1))}), "one-dimensional"),
     ]
     for build, message in refusals:
@@ -313,14 +324,16 @@ def test_changepoint_basis_recovers_a_piecewise_linear_trend():
             if label == "without":
                 continue
             # The coefficients mix well. The level variance does not: its R-hat
-            # reached 1.1-1.4 at these settings, the local-level mixing problem
-            # ROADMAP.md describes, so it is not asserted here.
+            # was 1.04-1.19 over these four seeds, like the variance mixing
+            # problem ROADMAP.md describes, so it is not asserted here.
             r_hat = {d["name"]: d["r_hat"] for d in fit.diagnostics()}
             assert max(r_hat[f"coefficient[{i}]"] for i in range(design.width)) < 1.02, r_hat
             beta = fit.get_samples_2d()["coefficients"].reshape(-1, design.width)
             # Slope from t to t + 1: the base slope plus every hinge already passed.
             passed = (np.arange(n)[:, None] >= positions[None, :]).astype(float)
             fitted = (beta[:, :1] + beta[:, 1:] @ passed.T).mean(axis=0)
+            # Averages over the middle of each segment: next to a change the
+            # fitted slope lags until the next candidate, and is not checked.
             for (first, last), truth in (((5, 30), 0.05), ((40, 60), 0.20), ((70, 95), -0.05)):
                 assert abs(fitted[first:last].mean() - truth) < 0.03, (seed, first, fitted[first:last].mean())
     # Measured: mean CRPS 0.21 against 0.75.

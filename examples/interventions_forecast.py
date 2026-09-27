@@ -3,8 +3,8 @@
 The synthetic series has a trend, annual seasonality, a promotion effect, a one-month
 outage, and a contract change that shifts the level and steepens the trend. The dates
 of the outage and the contract change are known. One `TimeDesign` builds every
-regression column for the training months and the forecast months, so the two sets of
-rows cannot drift apart.
+regression column for the training months and the forecast months, so the generated
+forecast columns continue the training columns; only the promotion plan is supplied.
 
 The same model without the intervention columns is scored on the same held-out year,
 first on one series and then on twelve simulated series, because one year of held-out
@@ -70,6 +70,9 @@ model = rmc.BayesianLocalLevel(
 )
 
 
+largest_r_hat = []
+
+
 def fit_and_forecast(terms, y, promotion, draws=1000):
     design = rmc.TimeDesign(terms, length=history)
     sd = np.concatenate([
@@ -85,6 +88,7 @@ def fit_and_forecast(terms, y, promotion, draws=1000):
     )
     # future() continues the training calendar; only the promotion plan is supplied.
     future = design.future(horizon, regressors={"promotion": promotion[history:]})
+    largest_r_hat.append(max(d["r_hat"] for d in fit.diagnostics()))
     return design, fit, fit.forecast(horizon, exog=future, seed=43)
 
 
@@ -110,7 +114,9 @@ _, _, without = fit_and_forecast(baseline_terms, y, promotion)
 for label, result in (("with intervention columns", forecast), ("without them", without)):
     print(f"  {label:26s} mean CRPS {rmc.crps(result.observation_samples, actual).mean():6.3f}")
 
-# Shorter runs for the repeated comparison; the fit above shows the mixing.
+# Shorter runs for the repeated comparison. Their largest R-hat, printed below, is
+# above 1.01 (a variance, not a coefficient), so treat the comparison as indicative.
+largest_r_hat.clear()
 print("\nMean CRPS on the held-out year of twelve simulated series:")
 scores = []
 for seed in range(12):
@@ -124,3 +130,4 @@ scores = np.array(scores)
 print(f"  with intervention columns  {scores[:, 0].mean():6.3f}")
 print(f"  without them               {scores[:, 1].mean():6.3f}")
 print(f"  series where the intervention columns scored better: {(scores[:, 0] < scores[:, 1]).sum()} of 12")
+print(f"  largest R-hat over the 24 fits: {max(largest_r_hat):.3f}")

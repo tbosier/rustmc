@@ -15,7 +15,9 @@ versioning while the public API is stabilized.
   piecewise-linear trend changepoints at given positions or on a Prophet-style grid
   over the first `fraction` of a window, and named columns the caller supplies.
   `future(steps)` evaluates the same columns at the positions after the training
-  window, so forecast rows cannot be offset from training rows. The columns work as
+  window, so the generated forecast columns continue the training columns without a
+  separate start position; values the caller supplies are only checked for length
+  and finiteness. The columns work as
   `exog` for the Bayesian regression forecasters, `StructuralModel` and the dynamic
   GLMs. Changepoint coefficients get the models' Gaussian priors, which shrink like
   ridge regression; there is no sparse prior and no break detection. See

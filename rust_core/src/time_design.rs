@@ -189,9 +189,7 @@ fn changepoint_grid(
         ));
     }
     let span = i128::from(last) - i128::from(first);
-    // `fraction <= 1`, so the product is at most `span`, which f64 represents
-    // to within rounding of the floor.
-    let window = ((fraction * span as f64).floor() as i128).clamp(0, span);
+    let window = floor_fraction_of(fraction, span);
     let count_wide = count as i128;
     if window < count_wide {
         return Err(format!(
@@ -207,6 +205,39 @@ fn changepoint_grid(
             (i128::from(first) + offset) as i64
         })
         .collect())
+}
+
+/// `floor(fraction * span)` in exact arithmetic, for `0 < fraction <= 1` and
+/// `0 < span < 2^64`. A float64 product would round a span above 2^53 before
+/// the floor is taken, moving the grid's end away from `last`.
+fn floor_fraction_of(fraction: f64, span: i128) -> i128 {
+    // fraction = mantissa * 2^exponent exactly.
+    let bits = fraction.to_bits();
+    let biased = ((bits >> 52) & 0x7ff) as i32;
+    let fraction_bits = (bits & ((1u64 << 52) - 1)) as i128;
+    let (mantissa, exponent) = if biased == 0 {
+        (fraction_bits, -1074)
+    } else {
+        (fraction_bits | (1i128 << 52), biased - 1075)
+    };
+    // mantissa < 2^53 and span < 2^64, so the product fits in i128; the
+    // exponent is negative because fraction <= 1.
+    let shift = -exponent;
+    if shift >= 127 {
+        0
+    } else {
+        (mantissa * span) >> shift
+    }
+}
+
+/// Number of columns a term will produce, before any are built.
+fn planned_width(term: &DesignTerm) -> usize {
+    match &term.kind {
+        TermKind::Fourier { period, harmonics } => fourier_width(*period, *harmonics).unwrap_or(0),
+        TermKind::Changepoints(ChangepointPlacement::At(positions)) => positions.len(),
+        TermKind::Changepoints(ChangepointPlacement::Grid { count, .. }) => *count,
+        _ => 1,
+    }
 }
 
 /// A term with its window-dependent arguments resolved.
@@ -286,12 +317,23 @@ impl TimeDesign {
                 )
             })?;
         let last_training = end - 1;
+        // Refuse an oversized design before building any column name or grid.
+        for term in &terms {
+            term.validate()?;
+        }
+        let planned = terms
+            .iter()
+            .try_fold(0usize, |total, term| total.checked_add(planned_width(term)));
+        checked_value_count(
+            "time design training rows",
+            &[length, planned.unwrap_or(usize::MAX)],
+            MAX_MATERIALIZED_VALUES,
+        )?;
         let mut resolved = Vec::with_capacity(terms.len());
         let mut names = Vec::new();
         let mut widths = Vec::with_capacity(terms.len());
         let mut term_names = BTreeSet::new();
         for term in &terms {
-            term.validate()?;
             if !term_names.insert(term.name.as_str()) {
                 return Err(DesignError::DuplicateName(term.name.clone()));
             }
@@ -349,20 +391,14 @@ impl TimeDesign {
                 return Err(DesignError::DuplicateName(name.clone()));
             }
         }
-        let design = Self {
+        Ok(Self {
             terms,
             resolved,
             start,
             length,
             names,
             widths,
-        };
-        checked_value_count(
-            "time design training rows",
-            &[design.length, design.width()],
-            MAX_MATERIALIZED_VALUES,
-        )?;
-        Ok(design)
+        })
     }
 
     pub fn terms(&self) -> &[DesignTerm] {
@@ -454,10 +490,12 @@ impl TimeDesign {
     ) -> Result<Vec<Vec<f64>>, DesignError> {
         let width = self.width();
         checked_value_count("time design rows", &[count, width], MAX_MATERIALIZED_VALUES)?;
-        if i64::try_from(count)
-            .ok()
-            .and_then(|count| first.checked_add(count))
-            .is_none()
+        // The last requested position is `first + count - 1`.
+        if count > 0
+            && i64::try_from(count - 1)
+                .ok()
+                .and_then(|offset| first.checked_add(offset))
+                .is_none()
         {
             return Err(DesignError::InvalidDesign(format!(
                 "{count} {window} rows from position {first} run past the 64-bit calendar"
@@ -699,6 +737,16 @@ mod tests {
             changepoint_grid(i64::MIN, i64::MAX, 2, 1.0).unwrap(),
             [0, i64::MAX]
         );
+        // The window end is exact beyond float64's integer range.
+        for last in [(1i64 << 53) + 1, (1i64 << 62) + 511, i64::MAX] {
+            assert_eq!(changepoint_grid(0, last, 1, 1.0).unwrap(), [last]);
+        }
+        assert_eq!(
+            changepoint_grid(0, (1i64 << 62) + 3, 1, 0.5).unwrap(),
+            [(1i64 << 61) + 1]
+        );
+        assert_eq!(floor_fraction_of(0.8, 99), 79);
+        assert_eq!(floor_fraction_of(f64::MIN_POSITIVE, 1 << 60), 0);
 
         // Defaults come from the training window 100..=149.
         let design = TimeDesign::new(
@@ -857,9 +905,43 @@ mod tests {
         assert!(TimeDesign::new(vec![], 0, 5).is_err());
         assert!(TimeDesign::new(vec![step.clone()], 0, 0).is_err());
         assert!(TimeDesign::new(vec![step.clone()], i64::MAX, 2).is_err());
+        // Training positions MAX - 3 and MAX - 2; the future may reach MAX itself.
         let edge = TimeDesign::new(vec![step], i64::MAX - 3, 2).unwrap();
-        assert!(edge.future_rows(1, &none()).is_ok());
-        assert!(message(edge.future_rows(2, &none()).unwrap_err()).contains("64-bit calendar"));
+        assert_eq!(edge.future_rows(2, &none()).unwrap(), [[1.0], [1.0]]);
+        assert!(message(edge.future_rows(3, &none()).unwrap_err()).contains("64-bit calendar"));
+        // Oversized terms are refused before their columns are built.
+        let huge_grid = term(
+            "trend",
+            TermKind::Changepoints(ChangepointPlacement::Grid {
+                count: 1 << 40,
+                first: Some(0),
+                last: Some(i64::MAX),
+                fraction: 1.0,
+            }),
+        );
+        let huge_fourier = term(
+            "annual",
+            TermKind::Fourier {
+                period: 1 << 41,
+                harmonics: 1 << 40,
+            },
+        );
+        for huge in [huge_grid.clone(), huge_fourier] {
+            assert!(
+                message(TimeDesign::new(vec![huge], 0, 1).unwrap_err()).contains("safety limit")
+            );
+        }
+        let mut overflow = huge_grid;
+        overflow.kind = TermKind::Changepoints(ChangepointPlacement::Grid {
+            count: usize::MAX,
+            first: Some(0),
+            last: Some(i64::MAX),
+            fraction: 1.0,
+        });
+        assert!(
+            message(TimeDesign::new(vec![overflow.clone(), overflow], 0, 1).unwrap_err())
+                .contains("safety limit")
+        );
         assert!(message(edge.future_rows(1 << 40, &none()).unwrap_err()).contains("safety limit"));
     }
 }

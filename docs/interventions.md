@@ -10,7 +10,8 @@ for it.
 A `TimeDesign` fixes the training window when you build it. Its `future(steps)` rows
 come from the same column definitions evaluated at the positions after that window,
 so they continue the training rows exactly. You never give the forecast rows their
-own start position, which is where hand-built intervention columns usually go wrong.
+own start position, so they cannot be shifted by one or more steps against the
+training rows, a mistake that is easy to make when building such columns by hand.
 
 ## Build a design and fit it
 
@@ -49,8 +50,9 @@ for name, low, high in zip(design.names, lower, upper):
     print(f"{name:13s} [{low:6.3f}, {high:6.3f}]")
 ```
 
-Each coefficient gets its own prior variance, in units of `y` per unit of its column.
-Choose them for your series. The coefficient intervals are equal-tailed posterior
+Each coefficient gets its own prior variance. The coefficient is in units of `y` per
+unit of its column, so the variance is in the square of those units. Choose them for
+your series. The coefficient intervals are equal-tailed posterior
 intervals; the forecast intervals are posterior-predictive intervals conditional on
 the design.
 
@@ -88,14 +90,17 @@ knowing before you fit:
 
 - **Before the training window.** A step is 1 on every training row, so it is
   indistinguishable from the level or an intercept; only its prior separates them. A
-  pulse is 0 everywhere and its coefficient is the prior. A ramp keeps counting from
-  `at`, and a decay has already decayed by the first row.
+  pulse is 0 on every training row, so the data say nothing about it. A ramp keeps
+  counting from `at` and a decay has already decayed by the first row; both still
+  vary over the training rows, so the data do inform them.
 - **At the first training position.** A step is again constant over the training
   rows. A ramp at `start` is the linear trend.
 - **After the training window, inside the forecast horizon.** Every training value is
-  0, so the data say nothing about the effect: the coefficient is its prior, and the
-  forecast carries that prior uncertainty from `at` on. Use this for a planned change
-  whose size you can state as a prior. Its future rows switch on at the right step.
+  0, so the data say nothing about the effect directly. With independent coefficient
+  priors (a diagonal covariance) its posterior is its prior; with a correlated prior
+  it moves with the coefficients it is correlated with. The forecast carries that
+  uncertainty from `at` on. Use this for a planned change whose size you can state as
+  a prior. Its future rows switch on at the right step.
 - **Late in the training window.** Only the few rows after `at` inform the effect, so
   its interval is wide.
 
@@ -134,10 +139,20 @@ X_future = design.future(steps, regressors={"promo": promo[n:]})
 print(X.shape, X_future.shape)   # (100, 6) (12, 6)
 ```
 
-Regressor values need exactly one finite number per row requested. A missing name, an
-unknown name, a wrong length, `NaN` or a boolean array raises a `ValueError` naming the
-regressor. Other design errors also raise a plain `ValueError` naming the term or
-argument at fault, as `fourier_design` does.
+Regressor values need exactly one finite number per row requested, and follow the
+same exact-conversion rule as every other array argument. A missing name, an unknown
+name, a wrong length, `NaN`, a boolean array or an integer float64 cannot hold raises
+a `ValueError` naming the regressor. An invalid term or design raises a plain
+`ValueError` naming the term or the problem, as `fourier_design` does. As there, an
+argument of the wrong Python type, or an integer out of range (a negative `count` or
+`length`, a position beyond 64 bits), raises Python's own `TypeError` or
+`OverflowError` instead.
+
+What the design cannot check is the data you pair it with. The generated columns are
+right for positions `start ..`, but the regressor values you pass for the future must
+be the values for those positions, and the observations you fit must be the
+`length` observations the design describes. The models do refuse an `exog` whose row
+count differs from the observations or from the forecast horizon.
 
 For a rolling-origin evaluation with `backtest`, build the design over every
 observation and pass `design.training()` as `exog`; `backtest` slices it at each
@@ -186,8 +201,11 @@ regression shrinks, not the way a sparse prior does. In the test suite's four se
 versions of the example above, the slope change of +0.15 at step 35, which lies
 between candidates 32 and 40, was split between them (posterior means 0.03–0.14 at 32
 and 0.06–0.13 at 40), and candidates where nothing changed still had posterior means
-of up to about ±0.07. The fitted slope in each segment was within 0.03 of the truth;
-the individual coefficients do not say where a break happened. No part of this
+of up to about ±0.07. Averaged over the middle of each segment (steps 5–29, 40–59
+and 70–94), the fitted slope was within 0.03 of the truth. Near a change it can be far
+off: at step 70, five steps after the slope fell to −0.05, the fitted slope was
+still between +0.02 and +0.04 on all four seeds, because the next candidate is at 71. The individual
+coefficients do not say where a break happened. No part of this
 estimates a break date or tests whether a break occurred.
 
 A sparse prior such as the Laplace or horseshoe, which would push most changepoint
@@ -273,6 +291,7 @@ real series has the breaks you encode, or that the dates are right.
   at 300 draws) while the coefficients mixed well (R-hat below 1.01). This resembles
   the slow variance mixing the project roadmap describes for the local linear trend;
   check `fit.diagnostics()`.
-- An event on or before the first training row, or after the last, is identified only
-  by its prior. Check the design before fitting if the date could be wrong: a column
-  of zeros is not an error.
+- A column that is constant or zero on every training row, such as a step on or
+  before the first training row or any event after the last, is identified only by
+  its prior (see [where the event falls](#where-the-event-falls)). Check the design
+  before fitting if the date could be wrong: a column of zeros is not an error.
