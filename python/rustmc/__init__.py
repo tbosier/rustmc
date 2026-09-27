@@ -5,6 +5,9 @@ from .evaluation import (
     BacktestFold, BacktestResult, backtest, crps, interval_score,
     naive_forecast, score_forecast, seasonal_naive, weighted_interval_score,
 )
+from .evaluation import (
+    BacktestComparison, calibration_table, compare_backtests, pit, pit_histogram, point_accuracy,
+)
 from .forecasting import (
     ForecastDraws, ForecastSession, NamedDesign, ScenarioForecast, forecast_scenarios,
 )
@@ -22,6 +25,7 @@ from .forecasting import (
 __all__ = [
     "AbsoluteLoss",
     "AsymmetricLinearLoss",
+    "BacktestComparison",
     "BacktestFold",
     "BacktestResult",
     "BatchFit",
@@ -93,6 +97,8 @@ __all__ = [
     "VectorParamRef",
     "backtest",
     "batch_sample",
+    "calibration_table",
+    "compare_backtests",
     "crps",
     "decide",
     "expected_loss",
@@ -102,6 +108,9 @@ __all__ = [
     "hurdle_lognormal_logp",
     "interval_score",
     "naive_forecast",
+    "pit",
+    "pit_histogram",
+    "point_accuracy",
     "sample",
     "sample_prior_predictive",
     "score_forecast",

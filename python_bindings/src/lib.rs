@@ -23,6 +23,7 @@ mod decision;
 mod dynamic_glm;
 mod forecast_batch;
 mod forecast_diagnostics;
+mod forecast_evaluation;
 mod forecast_support;
 mod hierarchical;
 mod hurdle;
@@ -47,6 +48,7 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     forecast_batch::register(m)?;
     state_space::register(m)?;
     forecast_support::register(m)?;
+    forecast_evaluation::register(m)?;
     hierarchical::register(m)?;
     local_level::register(m)?;
     seasonal::register(m)?;

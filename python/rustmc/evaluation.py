@@ -161,6 +161,105 @@ def naive_forecast(observations: Any, steps: int, *, period: int = 1, draws: int
     return paths[np.newaxis]
 
 
+# Central-interval levels of a calibration table: 0.05, 0.10, ..., 0.95.
+CALIBRATION_LEVELS = tuple(round(0.05 * k, 2) for k in range(1, 20))
+
+
+def _check_flag(name: str, value: Any) -> bool:
+    if not isinstance(value, (bool, np.bool_)):
+        raise ValueError(f"{name} must be True or False")
+    return bool(value)
+
+
+def _check_count(name: str, value: Any, minimum: int = 1) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or not minimum <= value < 2**63:
+        raise ValueError(f"{name} must be an integer from {minimum} to 2**63 - 1")
+    return int(value)
+
+
+def _check_seed(seed: Any) -> int:
+    if isinstance(seed, bool) or not isinstance(seed, (int, np.integer)) or not 0 <= seed < 2**64:
+        raise ValueError("seed must be an integer between 0 and 2**64 - 1")
+    return int(seed)
+
+
+def pit(samples: Any, actual: Any, *, randomized: bool = True, seed: int = 42) -> np.ndarray:
+    """Probability integral transform (PIT) of each outcome under its predictive draws.
+
+    Returns an array shaped like ``actual``, NaN where the outcome is missing. If
+    the forecasts are calibrated, PIT values are uniform on [0, 1]: too many near
+    0 and 1 means intervals are too narrow, too many near 0.5 means too wide.
+
+    ``randomized=False`` gives the fraction of draws at or below the outcome. For a
+    count forecast that is not uniform even when the forecast is exactly right,
+    because a count has atoms. The default breaks ties at random: with ``n`` draws,
+    of which ``below`` are smaller than the outcome and ``ties`` equal to it, the
+    value is ``(below + u * (ties + 1)) / (n + 1)`` for a uniform ``u`` drawn from
+    ``seed``. That is exactly uniform when the outcome and the draws come from the
+    same distribution independently, for counts, continuous amounts and mixtures
+    such as hurdle forecasts alike. MCMC draws are correlated with each other, so
+    even for a correct model the uniformity is approximate.
+    """
+    from ._rustmc import _pit_values
+
+    return _pit_values(samples, actual, _check_flag("randomized", randomized), _check_seed(seed), 0)
+
+
+def pit_histogram(values: Any, bins: int = 10) -> np.ndarray:
+    """Counts of PIT values in ``bins`` equal-width bins on [0, 1], ignoring NaN.
+
+    The last bin includes 1. A calibrated forecast gives roughly equal counts.
+    """
+    from ._rustmc import _pit_histogram
+
+    return _pit_histogram(values, _check_count("bins", bins))
+
+
+def calibration_table(samples: Any, actual: Any, levels: Sequence[float] = CALIBRATION_LEVELS, *,
+    by_horizon: bool = True) -> dict[str, np.ndarray]:
+    """Empirical coverage and mean width of central predictive intervals at each level.
+
+    ``samples`` and ``actual`` are shaped as for ``score_forecast``. Every target
+    with an observed outcome counts; with ``by_horizon`` they are grouped by the
+    last axis of ``actual``. Returns ``level`` (L,), and ``coverage``,
+    ``coverage_lower``, ``coverage_upper`` and ``width`` shaped (horizon, L), or
+    (L,) without ``by_horizon``, plus ``count``, the outcomes in each group.
+
+    ``coverage_lower`` and ``coverage_upper`` are the 95% Wilson interval for a
+    binomial proportion. It treats every outcome as an independent trial. Outcomes
+    across the horizon steps of one path and across overlapping backtest folds are
+    not independent, and their errors are usually positively correlated, which
+    makes the interval too narrow.
+
+    Bounds count as inside. For a forecast with atoms, such as a count or a
+    hurdle forecast's zeros, an interval that ends on an atom holds more than its
+    nominal probability, so coverage exceeds the level even when the forecast is
+    exactly right (a forecast that is always zero covers at every level). Use the
+    randomised PIT to check calibration of such forecasts.
+    """
+    from ._rustmc import _calibration_table
+
+    return _calibration_table([(samples, actual)], levels, _check_flag("by_horizon", by_horizon))
+
+
+def point_accuracy(samples: Any, actual: Any, *, training: Any = None, period: int = 1,
+    point: str = "mean", by_horizon: bool = True) -> dict[str, np.ndarray | float]:
+    """MAE, RMSE, WAPE and, given ``training``, MASE of a point forecast from draws.
+
+    The point forecast is the predictive ``"mean"`` or ``"median"`` of the draws.
+    WAPE is ``sum |error| / sum |actual|``. MASE divides each absolute error by its
+    series' in-sample mean absolute difference between observations ``period``
+    steps apart in ``training``, shaped ``(*series, time)`` for ``actual`` shaped
+    ``(*series, horizon)``. A missing outcome is skipped. A zero denominator gives
+    zero for a zero error and infinity otherwise, and MASE is NaN if a series has
+    no observed pair ``period`` apart.
+    """
+    from ._rustmc import _point_accuracy
+
+    return _point_accuracy([(samples, actual, training)], point, _check_count("period", period),
+        _check_flag("by_horizon", by_horizon))
+
+
 @dataclass(frozen=True)
 class BacktestFold:
     origin: int
@@ -171,11 +270,13 @@ class BacktestFold:
     diagnostics: Any = None
     error: str | None = None
     baseline_error: str | None = None
+    baseline_samples: np.ndarray | None = None
 
 
 @dataclass(frozen=True)
 class BacktestResult:
     folds: tuple[BacktestFold, ...]
+    observations: np.ndarray | None = None
 
     def summary(self, *, baseline: bool = False, by_horizon: bool = True) -> dict[str, np.ndarray | float]:
         """Average successful fold scores; report failures separately in .errors."""
@@ -209,6 +310,196 @@ class BacktestResult:
     @property
     def baseline_errors(self) -> dict[int, str]:
         return {f.origin: f.baseline_error for f in self.folds if f.baseline_error is not None}
+
+    def _forecast_folds(self) -> list[BacktestFold]:
+        return [f for f in self.folds if f.error is None and f.samples is not None]
+
+    def baseline(self) -> BacktestResult:
+        """The baseline's forecasts as a result of their own, for the same methods.
+
+        A fold whose baseline was not computed carries the reason as its error.
+        """
+        folds = []
+        for f in self.folds:
+            missing = f.baseline_samples is None and f.baseline_scores is None
+            error = (f.baseline_error or f.error or "no baseline forecast") if missing else None
+            folds.append(BacktestFold(f.origin, f.actual, f.baseline_samples, f.baseline_scores, None, error=error))
+        return BacktestResult(tuple(folds), self.observations)
+
+    def pit(self, *, randomized: bool = True, seed: int = 42) -> np.ndarray:
+        """PIT values shaped ``(fold, *target)``, one row per entry of ``folds``.
+
+        A failed fold's row is NaN, as is a missing outcome. Randomised values
+        draw from a stream keyed by ``seed`` and the fold's origin. See ``pit``.
+
+        The values are not independent. Folds that overlap share outcomes and most
+        of their training data, and the horizon steps of one path share its errors.
+        A uniformity test that assumes independence does not describe them, so read
+        the histogram as a description, not as a test.
+        """
+        from ._rustmc import _pit_values
+
+        randomized, seed = _check_flag("randomized", randomized), _check_seed(seed)
+        if not self.folds:
+            return np.empty((0,))
+        shape = np.shape(self.folds[0].actual)
+        if any(np.shape(fold.actual) != shape for fold in self.folds):
+            raise ValueError("every fold must have the same target shape")
+        values = np.full((len(self.folds),) + shape, np.nan)
+        for index, fold in enumerate(self.folds):
+            if fold.error is None and fold.samples is not None:
+                values[index] = _pit_values(fold.samples, fold.actual, randomized, seed,
+                    _check_count("fold origin", fold.origin, 0))
+        return values
+
+    def pit_histogram(self, bins: int = 10, *, randomized: bool = True, seed: int = 42,
+        by_horizon: bool = False) -> np.ndarray:
+        """PIT counts over all folds and series, shaped (bins,) or (horizon, bins)."""
+        values = self.pit(randomized=randomized, seed=seed)
+        if not _check_flag("by_horizon", by_horizon) or values.ndim < 2:
+            return pit_histogram(values, bins)
+        return np.stack([pit_histogram(values[..., h], bins) for h in range(values.shape[-1])])
+
+    def calibration(self, levels: Sequence[float] = CALIBRATION_LEVELS, *,
+        by_horizon: bool = True) -> dict[str, np.ndarray]:
+        """Coverage and interval width per level, pooled over successful folds and series.
+
+        See ``calibration_table`` for the keys and their limitations. The Wilson
+        interval treats every outcome as independent. Outcomes from overlapping
+        folds and from the steps of one path are not; their errors are usually
+        positively correlated, which makes the interval too narrow by an amount
+        this cannot estimate. Returns an empty dict when no fold succeeded.
+        """
+        from ._rustmc import _calibration_table
+
+        folds = self._forecast_folds()
+        if not folds:
+            return {}
+        return _calibration_table([(f.samples, f.actual) for f in folds], levels,
+            _check_flag("by_horizon", by_horizon))
+
+    def accuracy(self, *, period: int = 1, point: str = "mean", by_horizon: bool = True) -> dict[str, np.ndarray | float]:
+        """MAE, RMSE, WAPE and MASE pooled over successful folds and series.
+
+        MASE scales each fold by the training data before its origin, using
+        ``observations``; without them it is omitted. See ``point_accuracy``.
+        Returns an empty dict when no fold succeeded.
+        """
+        from ._rustmc import _point_accuracy
+
+        folds = self._forecast_folds()
+        if not folds:
+            return {}
+        y = self.observations
+        if y is not None:
+            for fold in folds:
+                if _check_count("fold origin", fold.origin, 0) > np.shape(y)[-1]:
+                    raise ValueError(f"fold origin {fold.origin} is beyond the observations")
+        forecasts = [(f.samples, f.actual, None if y is None else y[..., :f.origin]) for f in folds]
+        return _point_accuracy(forecasts, point, _check_count("period", period), _check_flag("by_horizon", by_horizon))
+
+
+@dataclass(frozen=True)
+class BacktestComparison:
+    """Accuracy and calibration of several backtests over the origins they share.
+
+    ``metrics[name]`` maps each metric to a value, or to one value per horizon
+    step. ``origins`` are the origins every result forecast successfully, the
+    only ones scored; ``excluded[name]`` lists that result's other origins.
+    """
+    metrics: Mapping[str, Mapping[str, np.ndarray | float]]
+    origins: tuple[int, ...]
+    excluded: Mapping[str, tuple[int, ...]]
+
+    def __str__(self) -> str:
+        names = list(self.metrics)
+        rows = []
+        for metric, first in self.metrics[names[0]].items():
+            values = [np.atleast_1d(self.metrics[name][metric]) for name in names]
+            for h in range(len(values[0])):
+                label = metric if np.ndim(first) == 0 else f"{metric} h={h + 1}"
+                rows.append([label] + [format(float(v[h]), ".4g") for v in values])
+        header = ["metric"] + names
+        widths = [max(len(row[i]) for row in [header] + rows) for i in range(len(header))]
+        lines = [f"{len(self.origins)} common origins"]
+        for row in [header] + rows:
+            lines.append("  ".join([row[0].ljust(widths[0])] + [c.rjust(w) for c, w in zip(row[1:], widths[1:])]))
+        return "\n".join(lines)
+
+
+def compare_backtests(results: Mapping[str, BacktestResult], *, levels: Sequence[float] = (0.5, 0.8, 0.95),
+    period: int = 1, point: str = "mean", by_horizon: bool = False) -> BacktestComparison:
+    """Point accuracy and calibration of several backtests, side by side.
+
+    Pass each forecaster's ``BacktestResult`` under a name, for example
+    ``{"model": result, "seasonal naive": result.baseline()}``. Only origins every
+    result forecast successfully are scored, and all results must hold the same
+    outcomes there. Metrics are ``mae``, ``rmse``, ``wape``, ``mase`` (NaN for a
+    result without its observations), ``crps`` (when every scored fold of every
+    result holds its scores), ``wis`` (when, in addition, all were scored at the
+    same interval levels), ``coverage_<level>`` and ``width_<level>`` for each of
+    ``levels``, ``coverage_error``, the mean absolute gap between empirical and
+    nominal coverage over ``CALIBRATION_LEVELS``, and ``count``, the outcomes
+    scored. See ``calibration_table`` for when coverage can exceed the nominal
+    level even for a correct forecast.
+    """
+    from ._rustmc import _interval_levels
+
+    names = list(results)
+    if not names or any(not isinstance(name, str) or not name or not isinstance(results[name], BacktestResult)
+                        for name in names):
+        raise ValueError("results must be a nonempty mapping from names to BacktestResult")
+    succeeded = {}
+    for name in names:
+        folds = results[name]._forecast_folds()
+        succeeded[name] = {f.origin: f for f in folds}
+        if len(succeeded[name]) != len(folds):
+            raise ValueError(f"'{name}' has more than one successful fold at the same origin")
+    common = set.intersection(*(set(folds) for folds in succeeded.values()))
+    if not common:
+        raise ValueError("no origin was forecast successfully by every result")
+    origins = tuple(sorted(common))
+    reference = succeeded[names[0]]
+    for name in names[1:]:
+        for origin in origins:
+            if not np.array_equal(succeeded[name][origin].actual, reference[origin].actual, equal_nan=True):
+                raise ValueError(f"'{name}' and '{names[0]}' hold different outcomes at origin {origin}")
+    levels = _interval_levels(levels)
+    table_levels = list(dict.fromkeys(levels + list(CALIBRATION_LEVELS)))
+    # A scalar target has no horizon axis to group by.
+    by_horizon = _check_flag("by_horizon", by_horizon) and np.ndim(reference[origins[0]].actual) > 0
+    # CRPS and WIS come from each fold's stored scores. Averaging them over a
+    # subset of the origins, or WIS computed at different levels, would not
+    # compare like with like, so they are left out unless neither happens.
+    subsets = {name: BacktestResult(tuple(succeeded[name][origin] for origin in origins), results[name].observations)
+               for name in names}
+    scored = all(f.scores is not None for subset in subsets.values() for f in subset.folds)
+    wis_levels = {frozenset(key for key in f.scores if key.startswith("coverage_"))
+                  for subset in subsets.values() for f in subset.folds} if scored else set()
+    shared_scores = ("crps", "wis") if len(wis_levels) == 1 else ("crps",) if scored else ()
+    metrics = {}
+    for name, subset in subsets.items():
+        accuracy = subset.accuracy(period=period, point=point, by_horizon=by_horizon)
+        table = subset.calibration(table_levels, by_horizon=by_horizon)
+        row = {key: accuracy[key] for key in ("mae", "rmse", "wape", "mase") if key in accuracy}
+        scores = subset.summary(by_horizon=by_horizon)
+        row.update({key: scores[key] for key in shared_scores if key in scores})
+        for index, level in enumerate(levels):
+            suffix = format(float(level), ".12g")
+            row[f"coverage_{suffix}"] = table["coverage"][..., index]
+            row[f"width_{suffix}"] = table["width"][..., index]
+        grid = [table_levels.index(level) for level in CALIBRATION_LEVELS]
+        row["coverage_error"] = np.abs(table["coverage"][..., grid] - np.asarray(CALIBRATION_LEVELS)).mean(axis=-1)
+        row["count"] = accuracy["count"]
+        metrics[name] = row
+    # A metric one result lacks (MASE without observations) is NaN for it, so
+    # every result reports the same metrics.
+    keys = list(dict.fromkeys(key for row in metrics.values() for key in row))
+    for name, row in metrics.items():
+        missing = np.full(np.shape(row["count"]), np.nan)
+        metrics[name] = {key: row.get(key, missing if missing.ndim else float("nan")) for key in keys}
+    excluded = {name: tuple(sorted(f.origin for f in results[name].folds if f.origin not in common)) for name in names}
+    return BacktestComparison(metrics, origins, excluded)
 
 
 def backtest(
@@ -283,17 +574,22 @@ def backtest(
             samples = np.asarray(forecast.observation_samples)
             scores = score_forecast(samples, truth, levels)
             baseline = None
+            baseline_samples = None
             baseline_error = None
             if baseline_period is not None:
                 try:
-                    baseline = score_forecast(naive_forecast(train, horizon, period=baseline_period,
-                        seed=forecast_cell_seed(seed, f"baseline:{origin}", "forecast")), truth, levels)
+                    baseline_samples = naive_forecast(train, horizon, period=baseline_period,
+                        seed=forecast_cell_seed(seed, f"baseline:{origin}", "forecast"))
+                    baseline = score_forecast(baseline_samples, truth, levels)
                 except ValueError as error:
-                    baseline_error = str(error)
+                    baseline, baseline_samples, baseline_error = None, None, str(error)
             diagnostics = fit.diagnostics() if hasattr(fit, "diagnostics") else None
-            folds.append(BacktestFold(origin, truth, samples, scores, baseline, diagnostics, baseline_error=baseline_error))
+            folds.append(BacktestFold(origin, truth, samples, scores, baseline, diagnostics,
+                baseline_error=baseline_error, baseline_samples=baseline_samples))
         except Exception as error:
             if errors == "raise":
                 raise
             folds.append(BacktestFold(origin, truth, None, None, None, error=f"{type(error).__name__}: {error}"))
-    return BacktestResult(tuple(folds))
+    observations = y.copy()
+    observations.setflags(write=False)
+    return BacktestResult(tuple(folds), observations)
