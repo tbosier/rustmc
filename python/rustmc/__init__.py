@@ -11,6 +11,7 @@ from .evaluation import (
 from .forecasting import (
     ForecastDraws, ForecastSession, NamedDesign, ScenarioForecast, forecast_scenarios,
 )
+from .reconciliation import reconcile
 
 # The public API, and nothing else.  Importing the two submodules below binds
 # them as package attributes, so without this list `from rustmc import *` also
@@ -72,6 +73,7 @@ __all__ = [
     "ForecastResult",
     "ForecastSession",
     "GaussianCoefficientPrior",
+    "Hierarchy",
     "InferenceError",
     "InverseGammaPrior",
     "KalmanFilterResult",
@@ -84,6 +86,7 @@ __all__ = [
     "ParamRef",
     "ParameterError",
     "PiecewiseLinearLoss",
+    "ReconciledForecast",
     "RunoffFit",
     "ScenarioForecast",
     "SquaredLoss",
@@ -111,6 +114,7 @@ __all__ = [
     "pit",
     "pit_histogram",
     "point_accuracy",
+    "reconcile",
     "sample",
     "sample_prior_predictive",
     "score_forecast",

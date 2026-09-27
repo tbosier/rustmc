@@ -28,6 +28,7 @@ mod forecast_support;
 mod hierarchical;
 mod hurdle;
 mod local_level;
+mod reconciliation;
 mod regression;
 mod runoff;
 mod seasonal;
@@ -56,6 +57,7 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     ar::register(m)?;
     time_design::register(m)?;
     decision::register(m)?;
+    reconciliation::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<builder::ModelBuilder>()?;
     m.add_class::<builder::ModelSpec>()?;

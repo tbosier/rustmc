@@ -117,9 +117,11 @@ class ForecastDraws:
                 result.dates if dates is None else tuple(dates),
                 result.series if series is None else tuple(series), result.metadata)
         if series is None:
-            from ._rustmc import BayesianHierarchicalForecast
+            from ._rustmc import BayesianHierarchicalForecast, ReconciledForecast
             if isinstance(result, BayesianHierarchicalForecast):
                 series = result.program_names
+            elif isinstance(result, ReconciledForecast):
+                series = result.node_names
         return cls(result.observation_samples, _conditional_mean_samples(result),
             None if dates is None else tuple(dates), None if series is None else tuple(series),
             {"source": type(result).__name__, "uncertainty_kind": getattr(result, "uncertainty_kind", "posterior_predictive")})
