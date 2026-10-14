@@ -27,7 +27,9 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 
 /// The sampler options shared by `sample`, `CompiledModel.sample` and the
 /// batch entry points, as Python passes them, checked once by the core's
-/// `BatchSampleConfig::validate`.
+/// `BatchSampleConfig::validate`. Every entry point checks them before it
+/// compiles or binds a model, so a request over the core's size limits fails
+/// before that work, ahead of any error the model itself would raise.
 pub(crate) struct SamplerOptions<'a> {
     pub(crate) chains: usize,
     pub(crate) draws: usize,
