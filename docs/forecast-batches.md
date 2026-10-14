@@ -87,9 +87,9 @@ fit; numerical failures terminate the affected cell and appear separately in bat
 errors. Nonfinite traces, parameters whose draws never move, and chains of fewer than
 four draws have unavailable convergence metrics (`None` in Python), the same rule
 HMC/NUTS fits follow. Chains that each sit still at a different value are not hidden:
-they report an infinite R-hat and a small ESS. A one-chain fit
-can have split diagnostics, but `independent_chain_comparison=False` makes clear that it
-cannot compare independent chains. Finite diagnostics do not prove convergence,
+they report an infinite R-hat and a small ESS. A one-chain fit can have split
+diagnostics, but `independent_chain_comparison=False` makes clear that it cannot
+compare independent chains. Finite diagnostics do not prove convergence,
 identification, or model adequacy.
 
 Regression batches accept `exog=[X_cell, ...]` and
