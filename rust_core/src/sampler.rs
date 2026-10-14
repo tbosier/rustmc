@@ -8,6 +8,7 @@ pub use crate::mass_matrix::MetricKind;
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
 use crate::seeding::{chain_seed, SAMPLER_FIT_SEED_DOMAIN, SAMPLER_INIT_SEED_DOMAIN};
+use crate::target::GradientEvaluator;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -170,6 +171,30 @@ impl SamplerConfig {
         check_retained_draws(self.num_chains, self.num_draws, 1)?;
         Ok(())
     }
+
+    /// The NUTS kernel's share of this configuration.
+    pub(crate) fn nuts_config(&self) -> NutsConfig {
+        NutsConfig {
+            step_size: self.step_size,
+            target_accept: self.target_accept,
+            max_tree_depth: self.max_tree_depth,
+            num_draws: self.num_draws,
+            num_warmup: self.num_warmup,
+            metric: self.metric,
+        }
+    }
+
+    /// The HMC kernel's share of this configuration.
+    pub(crate) fn hmc_config(&self) -> HmcConfig {
+        HmcConfig {
+            step_size: self.step_size,
+            target_accept: self.target_accept,
+            num_leapfrog_steps: self.num_leapfrog_steps,
+            num_draws: self.num_draws,
+            num_warmup: self.num_warmup,
+            metric: self.metric,
+        }
+    }
 }
 
 impl BatchSampleConfig {
@@ -284,6 +309,60 @@ pub(crate) fn kernel_initial_position(
             position.len()
         )),
         Some(_) => Err("init must contain only finite unconstrained values".to_string()),
+    }
+}
+
+/// The checks and setup the public raw kernels (`nuts::run_chain(_bound)`,
+/// `hmc::run_chain(_bound)`) share, before `run` drives the chain.
+///
+/// These kernels do not pass through any other entry point in this module, so
+/// the discrete-latent check has to happen here or not at all. `binding` is
+/// `None` when the data are still embedded in `graph`.
+pub(crate) fn run_raw_kernel(
+    graph: &Graph,
+    binding: Option<DataBinding>,
+    init: Option<Vec<f64>>,
+    run: impl FnOnce(Vec<f64>, &mut Evaluator) -> ChainResult,
+) -> Result<ChainResult, String> {
+    reject_discrete_latent_parameters(graph)?;
+    let binding = match binding {
+        Some(binding) => binding,
+        None => DataBinding::from_graph(graph).map_err(|error| error.to_string())?,
+    };
+    let mut evaluator =
+        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
+    let position = kernel_initial_position(init, graph.param_count)?;
+    Ok(run(position, &mut evaluator))
+}
+
+/// Run one chain of the kernel `config` selects from a start the caller has
+/// already checked. `sample*` and `target::sample_target` both run chains
+/// through here.
+pub(crate) fn run_kernel(
+    config: &SamplerConfig,
+    graph: &Graph,
+    rng: &mut ChaCha8Rng,
+    init: Vec<f64>,
+    progress: Option<&ProgressState>,
+    evaluator: &mut impl GradientEvaluator,
+) -> ChainResult {
+    match config.sampler {
+        SamplerType::Nuts => nuts::run_chain_with_evaluator(
+            graph,
+            &config.nuts_config(),
+            rng,
+            init,
+            progress,
+            evaluator,
+        ),
+        SamplerType::Hmc => hmc::run_chain_with_evaluator(
+            graph,
+            &config.hmc_config(),
+            rng,
+            init,
+            progress,
+            evaluator,
+        ),
     }
 }
 
@@ -463,10 +542,11 @@ fn validate_initial_target(
 /// which funnels here.
 ///
 /// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
-/// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
-/// they call this directly. That is why they return a `Result` rather than a
-/// bare `ChainResult`. `sampler`'s own call sites use the `_unguarded` variants
-/// instead, having already run this once at their boundary.
+/// and `hmc::run_chain_bound` are `pub` and do not pass through the `sample*`
+/// entry points, so they call this through [`run_raw_kernel`]. That is why they
+/// return a `Result` rather than a bare `ChainResult`. `sampler`'s own chains
+/// go through [`run_kernel`] instead, having already run this once at their
+/// boundary.
 ///
 /// Observed data is never rejected, and not by a heuristic: the observation
 /// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
@@ -702,38 +782,16 @@ fn run_chains(
                 None => random_graph_initial_position(graph, binding, config.seed, chain)?,
             };
             let mut rng = chain_rng(config.seed, chain);
-            match config.sampler {
-                SamplerType::Nuts => nuts::run_chain_bound_unguarded(
-                    graph,
-                    binding.clone(),
-                    &NutsConfig {
-                        step_size: config.step_size,
-                        target_accept: config.target_accept,
-                        max_tree_depth: config.max_tree_depth,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                        metric: config.metric,
-                    },
-                    &mut rng,
-                    Some(position),
-                    progress,
-                ),
-                SamplerType::Hmc => hmc::run_chain_bound_unguarded(
-                    graph,
-                    binding.clone(),
-                    &HmcConfig {
-                        step_size: config.step_size,
-                        target_accept: config.target_accept,
-                        num_leapfrog_steps: config.num_leapfrog_steps,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                        metric: config.metric,
-                    },
-                    &mut rng,
-                    Some(position),
-                    progress,
-                ),
-            }
+            let mut evaluator = Evaluator::try_with_binding(graph, binding.clone())
+                .map_err(|error| error.to_string())?;
+            Ok(run_kernel(
+                config,
+                graph,
+                &mut rng,
+                position,
+                progress,
+                &mut evaluator,
+            ))
         })
         .collect()
 }
@@ -993,14 +1051,7 @@ mod tests {
             let mut rng = chain_rng(config.seed, chain_index);
             let expected = nuts::run_chain(
                 &graph,
-                &NutsConfig {
-                    step_size: config.step_size,
-                    target_accept: config.target_accept,
-                    max_tree_depth: config.max_tree_depth,
-                    num_draws: config.num_draws,
-                    num_warmup: config.num_warmup,
-                    metric: config.metric,
-                },
+                &config.nuts_config(),
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
                 None,

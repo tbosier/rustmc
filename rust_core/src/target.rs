@@ -7,11 +7,9 @@
 
 use crate::autodiff::Evaluator;
 use crate::graph::Graph;
-use crate::hmc::{self, HmcConfig};
-use crate::nuts::{self, NutsConfig};
 use crate::sampler::{
-    chain_rng, check_retained_draws, random_initial_position, validate_initial_values,
-    with_thread_pool, SampleResult, SamplerConfig, SamplerType,
+    chain_rng, check_retained_draws, random_initial_position, run_kernel, validate_initial_values,
+    with_thread_pool, SampleResult, SamplerConfig,
 };
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -167,38 +165,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                     })?,
                 };
                 let mut rng = chain_rng(config.seed, chain);
-                let result = match config.sampler {
-                    SamplerType::Hmc => hmc::run_chain_with_evaluator(
-                        &graph,
-                        &HmcConfig {
-                            step_size: config.step_size,
-                            target_accept: config.target_accept,
-                            num_leapfrog_steps: config.num_leapfrog_steps,
-                            num_draws: config.num_draws,
-                            num_warmup: config.num_warmup,
-                            metric: config.metric,
-                        },
-                        &mut rng,
-                        position.clone(),
-                        None,
-                        &mut evaluator,
-                    ),
-                    SamplerType::Nuts => nuts::run_chain_with_evaluator(
-                        &graph,
-                        &NutsConfig {
-                            step_size: config.step_size,
-                            target_accept: config.target_accept,
-                            max_tree_depth: config.max_tree_depth,
-                            num_draws: config.num_draws,
-                            num_warmup: config.num_warmup,
-                            metric: config.metric,
-                        },
-                        &mut rng,
-                        position.clone(),
-                        None,
-                        &mut evaluator,
-                    ),
-                };
+                let result = run_kernel(&config, &graph, &mut rng, position, None, &mut evaluator);
                 match evaluator.failure {
                     Some(error) => Err(format!("chain {chain}: {error}")),
                     None => Ok(result),
@@ -220,6 +187,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sampler::SamplerType;
     struct Normal;
     impl LogDensity for Normal {
         fn dimension(&self) -> usize {
@@ -288,6 +256,7 @@ mod tests {
 #[cfg(test)]
 mod boundary_tests {
     use super::*;
+    use crate::sampler::SamplerType;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A standard normal whose gradient is NaN for x < -1: usable from the

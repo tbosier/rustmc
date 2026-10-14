@@ -5,11 +5,10 @@
 
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use rustmc_core::data::DataInputs;
+use rustmc_core::data::{DataBinding, DataInputs};
 use rustmc_core::distributions::Normal;
 use rustmc_core::graph::Graph;
 use rustmc_core::model::{compile, GraphModel, ModelSpec};
-use rustmc_core::data::DataBinding;
 use rustmc_core::sampler::{
     sample, sample_batch_cells, BatchCell, BatchSampleConfig, BatchSeedPolicy, BoundBatchOptions,
     SampleResult, SamplerConfig,

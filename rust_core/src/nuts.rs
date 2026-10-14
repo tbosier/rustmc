@@ -9,15 +9,13 @@
 //!   - Max tree depth cap (default 10)
 
 use crate::adaptation::WarmupAdapter;
-use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
 use crate::sampler::{
-    kernel_initial_position, reject_discrete_latent_parameters, validate_max_tree_depth, validate_step_size,
-    validate_target_accept,
+    run_raw_kernel, validate_max_tree_depth, validate_step_size, validate_target_accept,
 };
 use crate::target::GradientEvaluator;
 use rand::Rng;
@@ -132,9 +130,9 @@ pub fn run_chain(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     config.validate()?;
-    reject_discrete_latent_parameters(graph)?;
-    let binding = DataBinding::from_graph(graph).map_err(|error| error.to_string())?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
+    run_raw_kernel(graph, None, init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
@@ -154,33 +152,9 @@ pub fn run_chain_bound(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     config.validate()?;
-    reject_discrete_latent_parameters(graph)?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
-}
-
-/// [`run_chain_bound`] without the discrete-latent check.
-///
-/// For callers inside `sampler`, which run the check once at their own
-/// boundary and would otherwise repeat a whole-graph scan per chain.
-pub(crate) fn run_chain_bound_unguarded(
-    graph: &Graph,
-    binding: DataBinding,
-    config: &NutsConfig,
-    rng: &mut ChaCha8Rng,
-    init: Option<Vec<f64>>,
-    progress: Option<&ProgressState>,
-) -> Result<ChainResult, String> {
-    let mut evaluator =
-        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
-    let position = kernel_initial_position(init, graph.param_count)?;
-    Ok(run_chain_with_evaluator(
-        graph,
-        config,
-        rng,
-        position,
-        progress,
-        &mut evaluator,
-    ))
+    run_raw_kernel(graph, Some(binding), init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 pub(crate) fn run_chain_with_evaluator(
@@ -191,6 +165,8 @@ pub(crate) fn run_chain_with_evaluator(
     progress: Option<&ProgressState>,
     evaluator: &mut impl GradientEvaluator,
 ) -> ChainResult {
+    // Every caller has validated the configuration it was built from.
+    debug_assert_eq!(config.validate(), Ok(()));
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
@@ -715,6 +691,7 @@ fn normalized_selection_prob(candidate_log_weight: f64, total_log_weight: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autodiff::Evaluator;
     use crate::graph::Graph;
     use rand::SeedableRng;
 
@@ -884,7 +861,8 @@ mod tests {
             let error = run_chain(&graph, &config, &mut rng, None, None).unwrap_err();
             assert!(error.contains(field), "{error}");
             let binding = DataBinding::from_graph(&graph).unwrap();
-            let error = run_chain_bound(&graph, binding, &config, &mut rng, None, None).unwrap_err();
+            let error =
+                run_chain_bound(&graph, binding, &config, &mut rng, None, None).unwrap_err();
             assert!(error.contains(field), "{error}");
         }
     }
