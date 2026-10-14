@@ -27,9 +27,11 @@
 //! almost to where it started: from 4000 draws the worst coordinate's bulk
 //! ESS is 7, and the median 170. With 10 steps the same run's worst bulk ESS
 //! is 2164. The standardized errors of the coordinates that do mix were also
-//! wider than a correct MCSE allows: on the correlated target, over six
-//! seeds, their spread reached 2.8 times the expected one even at 10,000
-//! draws.
+//! wider than a correct MCSE allows: on the correlated target, over seeds
+//! 9200 to 9205 at 10,000 draws per chain, their spread reached 2.8 times the
+//! expected one. The ignored independent-normals test below prints the worst
+//! bulk ESS of 7; the integration times, the median and the 10-step and
+//! 10,000-draw figures come from one-off runs with the settings stated.
 //!
 //! Each run also prints the leapfrog steps spent per unit of bulk ESS (the
 //! smallest across coordinates), so a change to tree building or adaptation
@@ -136,7 +138,8 @@ impl LogDensity for CorrelatedGaussian {
     }
 }
 
-/// The shipped defaults, apart from the seed and the progress bar.
+/// The shipped defaults, apart from the seed, a single worker thread and no
+/// progress bar.
 fn default_config(sampler: SamplerType, seed: u64) -> SamplerConfig {
     SamplerConfig {
         sampler,
