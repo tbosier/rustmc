@@ -494,6 +494,12 @@ impl SampleResult {
         self.divergences.iter().sum()
     }
 
+    /// Mean of the chains' acceptance rates (0 with no chains), the figure
+    /// the summary table reports.
+    pub fn mean_accept_rate(&self) -> f64 {
+        diagnostics::mean_accept_rate(&self.accept_rates)
+    }
+
     pub fn diagnostics(&self) -> DiagnosticsReport {
         diagnostics::compute_diagnostics(
             &self.samples,
@@ -1360,6 +1366,16 @@ mod tests {
             ]],
             param_names: vec!["x".to_string()],
         };
+
+        assert_eq!(result.mean_accept_rate(), 0.8);
+        assert_eq!(
+            SampleResult {
+                accept_rates: vec![],
+                ..result.clone()
+            }
+            .mean_accept_rate(),
+            0.0
+        );
 
         let report = result.transition_diagnostics();
         assert_eq!(report.total_transitions, 2);

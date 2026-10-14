@@ -268,11 +268,7 @@ impl DiagnosticsReport {
         if let Some(sampler) = sampler {
             lines.push(sampler.to_string());
         } else {
-            let avg_accept: f64 = if self.accept_rates.is_empty() {
-                0.0
-            } else {
-                self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
-            };
+            let avg_accept = mean_accept_rate(&self.accept_rates);
             lines.push(format!(
                 "Mean accept rate: {:.2}  │  Divergences: {}",
                 avg_accept, self.divergences
@@ -461,6 +457,15 @@ fn unavailable_parameter(name: String) -> ParamDiagnostics {
         ess_tail: f64::NAN,
         r_hat: f64::NAN,
         mcse_mean: f64::NAN,
+    }
+}
+
+/// Mean of per-chain acceptance rates, or 0 for no chains.
+pub(crate) fn mean_accept_rate(accept_rates: &[f64]) -> f64 {
+    if accept_rates.is_empty() {
+        0.0
+    } else {
+        accept_rates.iter().sum::<f64>() / accept_rates.len() as f64
     }
 }
 
