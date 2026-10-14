@@ -1027,10 +1027,15 @@ impl Evaluator {
                     sigma,
                 } => {
                     // Combine density and Jacobian using the log scale ratio.
+                    if !scale_is_valid(*sigma) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let ln_sigma = sigma.ln();
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        sum += log_half_normal_logp(raw, *sigma);
+                        sum += log_half_normal_kernel(raw, ln_sigma);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -1041,10 +1046,16 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
+                    if !student_t_args_valid(*nu, *sigma) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let (ln_nu, ln_sigma) = (nu.ln(), sigma.ln());
+                    let log_normaliser = student_t_log_normaliser(*nu, ln_nu, ln_sigma);
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        sum += student_t_logp_scalar(v, *nu, *mu, *sigma);
+                        sum += student_t_kernel(v - mu, *nu, ln_nu, ln_sigma, log_normaliser);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -1055,10 +1066,15 @@ impl Evaluator {
                     beta,
                 } => {
                     // Combine density and Jacobian before exponentiation.
+                    if !gamma_args_valid(*alpha, *beta) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let (ln_beta, ln_gamma_alpha) = (beta.ln(), ln_gamma(*alpha));
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        sum += log_gamma_logp(raw, *alpha, *beta);
+                        sum += log_gamma_kernel(raw, *alpha, ln_beta, ln_gamma_alpha);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -1553,10 +1569,10 @@ impl Evaluator {
                     n_params,
                     sigma,
                 } => {
+                    let ln_sigma = sigma.ln();
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        self.grad[param_start + k] +=
-                            a_s * (1.0 - (2.0 * (raw - sigma.ln())).exp());
+                        self.grad[param_start + k] += a_s * (1.0 - (2.0 * (raw - ln_sigma)).exp());
                     }
                 }
                 Op::VectorStudentTLogP {
@@ -1566,10 +1582,13 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
+                    // Only the location score is needed: `nu` and `sigma` are
+                    // constants of the op, so their digamma terms are never formed.
+                    let (ln_sigma, ln_nu, ln_nu1) = (sigma.ln(), nu.ln(), (nu + 1.0).ln());
                     for k in 0..*n_params {
                         let v = params[param_start + k];
                         self.grad[param_start + k] +=
-                            a_s * student_t_derivatives(v, *nu, *mu, *sigma).0;
+                            a_s * student_t_dx(v - mu, ln_sigma, ln_nu, ln_nu1);
                     }
                 }
                 Op::VectorGammaLogP {
@@ -1578,9 +1597,10 @@ impl Evaluator {
                     alpha,
                     beta,
                 } => {
+                    let ln_beta = beta.ln();
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        self.grad[param_start + k] += a_s * (alpha - (raw + beta.ln()).exp());
+                        self.grad[param_start + k] += a_s * (alpha - (raw + ln_beta).exp());
                     }
                 }
                 Op::VectorBetaLogP {
@@ -1639,6 +1659,16 @@ impl Evaluator {
 mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
+
+/// The summed log density of `n` elements whose constant arguments are
+/// outside their support: `-inf`, or the empty sum.
+fn invalid_vector_logp(n: usize) -> f64 {
+    if n == 0 {
+        0.0
+    } else {
+        f64::NEG_INFINITY
+    }
+}
 
 /// Whether `sigma` is a usable scale: finite and strictly positive.
 #[inline]
@@ -1724,48 +1754,93 @@ use obs_logp_sums::*;
 
 // Combined transformed densities avoid materializing exp(raw), and form
 // scale ratios in log space before squaring or multiplying extreme values.
+//
+// Each density is split into a validity check and a kernel that takes the
+// logarithms of its constant arguments, so the vector priors -- whose scale,
+// shape and rate are constants of the op -- take those logarithms once per op
+// instead of once per element. The kernels perform the same operations in the
+// same order either way, so hoisting changes no bits; see
+// `vector_priors_match_their_scalar_densities_bit_for_bit`.
 fn log_half_normal_logp(raw: f64, sigma: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0 {
+    if !scale_is_valid(sigma) {
         return f64::NEG_INFINITY;
     }
-    let z = raw - sigma.ln();
+    log_half_normal_kernel(raw, sigma.ln())
+}
+
+fn log_half_normal_kernel(raw: f64, ln_sigma: f64) -> f64 {
+    let z = raw - ln_sigma;
     0.5 * (2.0 / std::f64::consts::PI).ln() + z - 0.5 * (2.0 * z).exp()
 }
 
+fn gamma_args_valid(alpha: f64, beta: f64) -> bool {
+    alpha.is_finite() && alpha > 0.0 && beta.is_finite() && beta > 0.0
+}
+
 fn log_gamma_logp(raw: f64, alpha: f64, beta: f64) -> f64 {
-    if !alpha.is_finite() || alpha <= 0.0 || !beta.is_finite() || beta <= 0.0 {
+    if !gamma_args_valid(alpha, beta) {
         return f64::NEG_INFINITY;
     }
-    let z = raw + beta.ln();
-    alpha * z - ln_gamma(alpha) - z.exp()
+    log_gamma_kernel(raw, alpha, beta.ln(), ln_gamma(alpha))
+}
+
+fn log_gamma_kernel(raw: f64, alpha: f64, ln_beta: f64, ln_gamma_alpha: f64) -> f64 {
+    let z = raw + ln_beta;
+    alpha * z - ln_gamma_alpha - z.exp()
+}
+
+fn student_t_args_valid(nu: f64, sigma: f64) -> bool {
+    nu.is_finite() && nu > 0.0 && scale_is_valid(sigma)
 }
 
 fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
-    if !nu.is_finite() || nu <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+    if !student_t_args_valid(nu, sigma) {
         return f64::NEG_INFINITY;
     }
-    let log_ratio = 2.0 * ((x - mu).abs().ln() - sigma.ln()) - nu.ln();
+    let (ln_nu, ln_sigma) = (nu.ln(), sigma.ln());
+    student_t_kernel(
+        x - mu,
+        nu,
+        ln_nu,
+        ln_sigma,
+        student_t_log_normaliser(nu, ln_nu, ln_sigma),
+    )
+}
+
+/// The terms of the Student-t log density that do not depend on `x`, summed
+/// left to right as [`student_t_kernel`] continues them.
+fn student_t_log_normaliser(nu: f64, ln_nu: f64, ln_sigma: f64) -> f64 {
     ln_gamma(0.5 * (nu + 1.0))
         - ln_gamma(0.5 * nu)
-        - 0.5 * (nu.ln() + std::f64::consts::PI.ln())
-        - sigma.ln()
-        - 0.5 * (nu + 1.0) * softplus(log_ratio)
+        - 0.5 * (ln_nu + std::f64::consts::PI.ln())
+        - ln_sigma
+}
+
+fn student_t_kernel(diff: f64, nu: f64, ln_nu: f64, ln_sigma: f64, log_normaliser: f64) -> f64 {
+    let log_ratio = 2.0 * (diff.abs().ln() - ln_sigma) - ln_nu;
+    log_normaliser - 0.5 * (nu + 1.0) * softplus(log_ratio)
+}
+
+/// d/dx of the Student-t log density at `x - mu == diff`, from the logs of
+/// `sigma`, `nu` and `nu + 1`. Log-ratio arithmetic retains the polynomial
+/// tails even where the squared residual overflows.
+fn student_t_dx(diff: f64, ln_sigma: f64, ln_nu: f64, ln_nu1: f64) -> f64 {
+    if diff == 0.0 {
+        return 0.0;
+    }
+    let log_abs_diff = diff.abs().ln();
+    let log_tail = softplus(2.0 * (log_abs_diff - ln_sigma) - ln_nu);
+    -diff.signum() * (ln_nu1 + log_abs_diff - 2.0 * ln_sigma - ln_nu - log_tail).exp()
 }
 
 // Return derivatives with respect to x, sigma, and nu. Log-ratio arithmetic
 // retains Student-t's polynomial tails even when the squared residual overflows.
 fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
     let diff = x - mu;
-    let log_abs_diff = diff.abs().ln();
-    let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
+    let log_ratio = 2.0 * (diff.abs().ln() - sigma.ln()) - nu.ln();
     let log_tail = softplus(log_ratio);
     let weight = stable_sigmoid(log_ratio);
-    let dx = if diff == 0.0 {
-        0.0
-    } else {
-        -diff.signum()
-            * ((nu + 1.0).ln() + log_abs_diff - 2.0 * sigma.ln() - nu.ln() - log_tail).exp()
-    };
+    let dx = student_t_dx(diff, sigma.ln(), nu.ln(), (nu + 1.0).ln());
     let scale_term = (nu + 1.0) * weight - 1.0;
     let dsigma = scale_term / sigma;
     let dnu = 0.5 * digamma(0.5 * (nu + 1.0)) - 0.5 * digamma(0.5 * nu) - 0.5 * log_tail
@@ -2445,6 +2520,79 @@ mod tests {
         g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    /// The vector priors take the logarithms of their constant arguments once
+    /// per op rather than once per element. That is only a hoist if every
+    /// element still gets exactly the bits the per-element density and score
+    /// give it, including where an argument is outside its support.
+    #[test]
+    fn vector_priors_match_their_scalar_densities_bit_for_bit() {
+        let raws = [-3.5, -0.4, 0.0, 0.7, 2.25, 9.0];
+        let n = raws.len();
+        let bits = |x: f64| (0.0 + x).to_bits();
+        let check =
+            |g: &Graph, node: NodeId, logp: &dyn Fn(f64) -> f64, dx: &dyn Fn(f64) -> f64| {
+                let mut evaluator = Evaluator::new(g);
+                evaluator.compute(g, &raws);
+                let mut expected = 0.0f64;
+                for raw in raws {
+                    expected += logp(raw);
+                }
+                assert_eq!(bits(evaluator.scalar_at(node)), bits(expected));
+                if expected.is_finite() {
+                    for (k, raw) in raws.iter().enumerate() {
+                        assert_eq!(bits(evaluator.grad[k]), bits(dx(*raw)), "element {k}");
+                    }
+                }
+            };
+        for sigma in [0.3, 1.0, 17.5, 0.0, -1.0, f64::NAN] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_half_normal_logp(start, n, sigma);
+            check(&g, node, &|raw| log_half_normal_logp(raw, sigma), &|raw| {
+                1.0 - (2.0 * (raw - sigma.ln())).exp()
+            });
+        }
+        for (alpha, beta) in [
+            (0.5, 2.0),
+            (3.0, 0.25),
+            (40.0, 7.0),
+            (0.0, 1.0),
+            (2.0, -1.0),
+        ] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_gamma_logp(start, n, alpha, beta);
+            check(&g, node, &|raw| log_gamma_logp(raw, alpha, beta), &|raw| {
+                alpha - (raw + beta.ln()).exp()
+            });
+        }
+        for (nu, mu, sigma) in [
+            (1.0, 0.0, 1.0),
+            (3.0, 0.7, 0.2),
+            (30.0, -2.0, 5.0),
+            (0.5, 2.25, 1e-3),
+            (0.0, 0.0, 1.0),
+            (3.0, 0.0, -2.0),
+        ] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_student_t_logp(start, n, nu, mu, sigma);
+            check(
+                &g,
+                node,
+                &|v| student_t_logp_scalar(v, nu, mu, sigma),
+                &|v| student_t_derivatives(v, nu, mu, sigma).0,
+            );
+        }
+        // An empty span sums to zero whatever its arguments.
+        let mut g = Graph::new();
+        let start = g.add_vector_params("x", 0);
+        let node = g.vector_gamma_logp(start, 0, -1.0, 1.0);
+        let mut evaluator = Evaluator::new(&g);
+        evaluator.compute(&g, &[]);
+        assert_eq!(evaluator.scalar_at(node).to_bits(), 0.0f64.to_bits());
     }
 }
 
