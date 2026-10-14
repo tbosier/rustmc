@@ -8,10 +8,12 @@
 //! Only `Err` ends a fit. A density that is NaN or `+inf`, or a gradient element
 //! that is non-finite or was never written, is handled exactly as `-inf` is, and
 //! as a graph model's `-inf` is: the point counts as outside the support, with a
-//! zero gradient. A NUTS leaf there diverges; an HMC proposal that ends there is
-//! rejected, while one that only passes through it is judged, like any HMC
-//! proposal, by the energy at its end. A random start retries elsewhere; an
-//! explicit `init` must be usable, so there it is an error.
+//! zero gradient. A trajectory that reaches such a point is a divergence and
+//! never moves to it: a NUTS leaf there ends the tree, whose draw comes from
+//! the points before it, and an HMC trajectory stops there and its proposal is
+//! rejected, wherever its remaining steps would have ended. A random start
+//! retries elsewhere; an explicit `init` must be usable, so there it is an
+//! error.
 //!
 //! A custom target's parameters are all scalars, so `MetricKind::Dense` and
 //! `MetricKind::Auto`, which only estimate dense blocks within vector
@@ -395,6 +397,134 @@ mod boundary_tests {
                 sample_target(&target, config, Some(vec![vec![4.0], vec![0.0]])).unwrap_err();
             assert!(error.contains("initial log density"), "{error}");
         }
+    }
+
+    /// Flat with a zero gradient on (-10, 10), except for a NaN band on
+    /// (0.9, 1.1), and `-inf` outside. Every point asked about is logged in
+    /// order, so a test can replay each trajectory.
+    struct NanBand {
+        calls: std::sync::Mutex<Vec<f64>>,
+    }
+    impl NanBand {
+        fn outside(x: f64) -> bool {
+            (x > 0.9 && x < 1.1) || x.abs() >= 10.0
+        }
+    }
+    impl LogDensity for NanBand {
+        fn dimension(&self) -> usize {
+            1
+        }
+        fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
+            self.calls.lock().unwrap().push(q[0]);
+            gradient[0] = 0.0;
+            Ok(if q[0] > 0.9 && q[0] < 1.1 {
+                f64::NAN
+            } else if q[0].abs() < 10.0 {
+                0.0
+            } else {
+                f64::NEG_INFINITY
+            })
+        }
+    }
+
+    /// Run one chain of `sampler` on [`NanBand`] from the origin with unit
+    /// metric, step size 1 and no warmup, and return it with the log of the
+    /// points each transition evaluated.
+    fn nan_band_chain(sampler: SamplerType) -> (crate::hmc::ChainResult, Vec<Vec<f64>>) {
+        let target = NanBand {
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let mut graph = Graph::new();
+        graph.add_param("x");
+        let mut evaluator = TargetEvaluator {
+            target: &target,
+            gradient: vec![0.0],
+            log_density: f64::NAN,
+            failure: None,
+        };
+        let config = SamplerConfig {
+            sampler,
+            num_draws: 2000,
+            num_warmup: 0,
+            step_size: 1.0,
+            num_leapfrog_steps: 2,
+            max_tree_depth: 4,
+            ..Default::default()
+        };
+        let mut rng = crate::sampler::chain_rng(5, 0);
+        let chain = run_kernel(&config, &graph, &mut rng, vec![0.0], None, &mut evaluator);
+        assert!(!evaluator.has_failed());
+        let calls = target.calls.into_inner().unwrap();
+        // One evaluation at the start, then every transition's leapfrog
+        // steps in order: no step-size search or adaptation runs.
+        assert_eq!(calls[0], 0.0);
+        let mut log = &calls[1..];
+        let mut trajectories = Vec::new();
+        for transition in &chain.transitions {
+            let (trajectory, rest) = log.split_at(transition.num_leapfrog_steps);
+            trajectories.push(trajectory.to_vec());
+            log = rest;
+        }
+        assert!(log.is_empty(), "unaccounted evaluations: {log:?}");
+        (chain, trajectories)
+    }
+
+    #[test]
+    fn an_hmc_trajectory_through_a_point_outside_the_support_is_a_rejected_divergence() {
+        let (chain, trajectories) = nan_band_chain(SamplerType::Hmc);
+        let mut start = 0.0;
+        let mut through_the_band_and_back = 0;
+        for ((transition, draw), trajectory) in chain
+            .transitions
+            .iter()
+            .zip(&chain.samples)
+            .zip(&trajectories)
+        {
+            let left = trajectory.iter().any(|&x| NanBand::outside(x));
+            assert_eq!(transition.divergent, left, "{trajectory:?} from {start}");
+            if left {
+                assert!(!transition.accepted, "{trajectory:?} from {start}");
+                assert_eq!(draw[0], start);
+                // The trajectory stops at the point outside the support.
+                assert!(NanBand::outside(*trajectory.last().unwrap()));
+                // The trace from review: from q, momentum p, step 1, two
+                // steps visit q + p, in the band, and then q + 2p, inside.
+                let p = trajectory[0] - start;
+                if trajectory.len() == 1 && !NanBand::outside(start + 2.0 * p) {
+                    through_the_band_and_back += 1;
+                }
+            } else {
+                // A flat density has no energy error inside the support.
+                assert!(transition.accepted);
+                assert_eq!(trajectory.len(), 2);
+            }
+            assert!(!NanBand::outside(draw[0]));
+            start = draw[0];
+        }
+        assert!(through_the_band_and_back > 0);
+    }
+
+    #[test]
+    fn a_nuts_leaf_outside_the_support_ends_the_tree_as_a_divergence() {
+        let (chain, trajectories) = nan_band_chain(SamplerType::Nuts);
+        let mut divergences = 0;
+        for ((transition, draw), trajectory) in chain
+            .transitions
+            .iter()
+            .zip(&chain.samples)
+            .zip(&trajectories)
+        {
+            let outside: Vec<bool> = trajectory.iter().map(|&x| NanBand::outside(x)).collect();
+            assert_eq!(transition.divergent, outside.contains(&true));
+            // Nothing is evaluated after the first leaf outside the support.
+            assert!(!outside[..outside.len() - 1].contains(&true));
+            assert!(!NanBand::outside(draw[0]));
+            divergences += usize::from(transition.divergent);
+        }
+        assert!(divergences > 0);
+        assert!(trajectories
+            .iter()
+            .any(|t| t.last().is_some_and(|&x| x > 0.9 && x < 1.1)));
     }
 
     struct TruncatedNormal {

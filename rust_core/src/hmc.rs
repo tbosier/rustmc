@@ -164,6 +164,10 @@ impl<'a> ChainRecorder<'a> {
 /// is re-estimated at the end of each doubling window between an initial and
 /// a terminal buffer (see `adaptation::WarmupSchedule`).
 ///
+/// A leapfrog step that lands where the log density is not finite, outside
+/// the support, ends the trajectory there: the transition is divergent, its
+/// proposal is rejected, and its `num_leapfrog_steps` counts the steps taken.
+///
 /// Integrator buffers are allocated once per chain. After warmup a
 /// transition allocates only the retained draw; during warmup the end of each
 /// metric-estimation window also allocates the new metric and accumulator.
@@ -275,6 +279,12 @@ pub(crate) fn run_chain_with_evaluator(
             p_prop[i] += 0.5 * step_size * grad_current[i];
         }
 
+        // A step that lands outside the support (a non-finite log density)
+        // ends the trajectory there, as a NUTS leaf there ends its tree: the
+        // proposal is divergent and rejected, however the remaining steps
+        // would have ended.
+        let mut steps_taken = 0;
+        let mut left_support = false;
         for step in 0..config.num_leapfrog_steps {
             mass.velocity_into(&p_prop, &mut velocity, &mut scratch);
             for i in 0..dim {
@@ -284,6 +294,11 @@ pub(crate) fn run_chain_with_evaluator(
             evaluator.compute(graph, &q_prop);
             if evaluator.has_failed() {
                 break 'iterations;
+            }
+            steps_taken += 1;
+            if !evaluator.log_density().is_finite() {
+                left_support = true;
+                break;
             }
             grad.copy_from_slice(evaluator.gradient());
 
@@ -302,7 +317,13 @@ pub(crate) fn run_chain_with_evaluator(
             *v = -*v;
         }
 
-        let logp_prop = evaluator.log_density();
+        // Outside the support the density is -inf, whatever non-finite value
+        // the evaluator gave, so the energy error is +inf rather than NaN.
+        let logp_prop = if left_support {
+            f64::NEG_INFINITY
+        } else {
+            evaluator.log_density()
+        };
         let ke_current = mass.kinetic_energy(&p, &mut scratch);
         let ke_prop = mass.kinetic_energy(&p_prop, &mut scratch);
         let h_current = -logp_current + ke_current;
@@ -311,7 +332,7 @@ pub(crate) fn run_chain_with_evaluator(
         let energy_error = h_prop - h_current;
         let accept_prob = acceptance_probability(energy_error);
 
-        let divergent = energy_error > MAX_DELTA_H || !energy_error.is_finite();
+        let divergent = left_support || energy_error > MAX_DELTA_H || !energy_error.is_finite();
         let mut accepted_transition = false;
         if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
@@ -344,7 +365,7 @@ pub(crate) fn run_chain_with_evaluator(
                 energy_error,
                 divergent,
                 step_size: step_size_used,
-                num_leapfrog_steps: config.num_leapfrog_steps,
+                num_leapfrog_steps: steps_taken,
                 tree_depth: None,
             },
             accept,
