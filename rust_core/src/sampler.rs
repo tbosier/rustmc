@@ -105,6 +105,13 @@ impl Default for SamplerConfig {
     }
 }
 
+/// Settings for a batch of independent fits: [`SamplerConfig`] without
+/// `num_threads`, since the batch's own pool runs every chain.
+///
+/// The defaults are smaller than a single fit's on purpose (one chain of 300
+/// warmup and 500 draws, tree depth 8): a batch of many small series trades
+/// per-fit diagnostics for throughput. They are the Python `batch_sample`
+/// defaults too, so changing them changes results there.
 #[derive(Debug, Clone)]
 pub struct BatchSampleConfig {
     pub sampler: SamplerType,
@@ -198,10 +205,19 @@ impl SamplerConfig {
 }
 
 impl BatchSampleConfig {
+    /// The checks [`SamplerConfig::validate`] applies, with the same messages.
     pub fn validate(&self) -> Result<(), String> {
         self.sampler_config(self.seed).validate()
     }
-    fn sampler_config(&self, seed: u64) -> SamplerConfig {
+
+    /// The single-fit configuration with these settings, `seed`, a pool of
+    /// `num_threads` workers (0 for the ambient one) and `show_progress`.
+    pub fn to_sampler_config(
+        &self,
+        seed: u64,
+        num_threads: usize,
+        show_progress: bool,
+    ) -> SamplerConfig {
         SamplerConfig {
             sampler: self.sampler,
             num_chains: self.num_chains,
@@ -213,9 +229,15 @@ impl BatchSampleConfig {
             num_leapfrog_steps: self.num_leapfrog_steps,
             max_tree_depth: self.max_tree_depth,
             seed,
-            num_threads: 0,
-            show_progress: false,
+            num_threads,
+            show_progress,
         }
+    }
+
+    /// One cell's fit: it runs on the batch's pool and under the batch's
+    /// progress bar, if any.
+    fn sampler_config(&self, seed: u64) -> SamplerConfig {
+        self.to_sampler_config(seed, 0, false)
     }
 }
 
@@ -1113,6 +1135,106 @@ mod tests {
         assert_eq!(bound.samples, single.samples);
         for (position, constrained) in raw.iter().flatten().zip(bound.samples.iter().flatten()) {
             assert_eq!(graph.param_transforms[0].apply(position[0]), constrained[0]);
+        }
+    }
+
+    #[test]
+    fn batch_configs_convert_and_validate_as_single_fits() {
+        let batch = BatchSampleConfig {
+            sampler: SamplerType::Hmc,
+            num_chains: 3,
+            step_size: 0.2,
+            seed: 7,
+            metric: MetricKind::Dense,
+            ..Default::default()
+        };
+        let single = batch.to_sampler_config(9, 2, true);
+        assert_eq!(
+            (
+                single.sampler,
+                single.num_chains,
+                single.num_draws,
+                single.num_warmup,
+                single.step_size,
+                single.target_accept,
+                single.num_leapfrog_steps,
+                single.max_tree_depth,
+                single.metric,
+            ),
+            (
+                batch.sampler,
+                batch.num_chains,
+                batch.num_draws,
+                batch.num_warmup,
+                batch.step_size,
+                batch.target_accept,
+                batch.num_leapfrog_steps,
+                batch.max_tree_depth,
+                batch.metric,
+            )
+        );
+        assert_eq!(
+            (single.seed, single.num_threads, single.show_progress),
+            (9, 2, true)
+        );
+        // The wording the Python bindings have always used for these.
+        let refused = [
+            (
+                BatchSampleConfig {
+                    num_chains: 0,
+                    ..batch.clone()
+                },
+                "chains must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    num_draws: 0,
+                    ..batch.clone()
+                },
+                "draws must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    num_warmup: 0,
+                    ..batch.clone()
+                },
+                "warmup must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    step_size: -1.0,
+                    ..batch.clone()
+                },
+                "step_size must be finite and >= 0 (0 enables adaptation)",
+            ),
+            (
+                BatchSampleConfig {
+                    target_accept: 0.0,
+                    ..batch.clone()
+                },
+                "target_accept must be finite and strictly between 0 and 1",
+            ),
+            (
+                BatchSampleConfig {
+                    max_tree_depth: 0,
+                    ..batch.clone()
+                },
+                "max_tree_depth must be between 1 and 63",
+            ),
+            (
+                BatchSampleConfig {
+                    num_leapfrog_steps: 0,
+                    ..batch.clone()
+                },
+                "num_leapfrog_steps must be >= 1",
+            ),
+        ];
+        for (config, message) in refused {
+            assert_eq!(config.validate(), Err(message.to_string()));
+            assert_eq!(
+                config.to_sampler_config(1, 1, false).validate(),
+                Err(message.to_string())
+            );
         }
     }
 
