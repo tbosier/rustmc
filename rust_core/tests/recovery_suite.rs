@@ -42,16 +42,20 @@ const HEALTHY_ESS: f64 = 400.0;
 /// quietly hollowing it out.
 const MIN_PRIOR_MARGIN_WIDTHS: f64 = 1.0;
 
-/// The step-size adaptation target every case in this suite runs at by
-/// default. It is not the shipped default (0.80): the suite moved to 0.999
-/// when the release gate began demanding zero divergences.
-const SUITE_TARGET_ACCEPT: f64 = 0.999;
+/// The step-size adaptation target every case in this suite runs at: the
+/// shipped default. The suite ran at 0.999 from when the release gate began
+/// demanding zero divergences until every case was shown to pass at 0.80 at
+/// its seed. That is a seeded result: over 20 other sampler seeds two
+/// positive cases end with one divergence at 0.80 in some runs, and at 0.999
+/// the negative controls miss their signal in some runs.
+/// docs/statistical-validation.md has the counts.
+const SUITE_TARGET_ACCEPT: f64 = 0.80;
 
 /// Environment variable that reruns every case at another target acceptance,
-/// for example the shipped default:
+/// for example the suite's former 0.999:
 ///
 /// ```text
-/// RUSTMC_RECOVERY_TARGET_ACCEPT=0.8 cargo test --release -p rustmc_core \
+/// RUSTMC_RECOVERY_TARGET_ACCEPT=0.999 cargo test --release -p rustmc_core \
 ///     --test recovery_suite -- --nocapture
 /// ```
 ///
@@ -961,7 +965,8 @@ fn centered_funnel_reports_bad_geometry() {
     // landed; the ESS/R-hat signal fired in about half of them either way, so
     // the second assertion below holds for a seeded run, not for every run.
     // Seed 111 stopped firing it when the chains' streams changed; 113 fires
-    // both.
+    // both. Those runs were at target_accept 0.999. At the suite's 0.80 both
+    // signals fired at seed 113 and at each of the sampler seeds 114 to 133.
     let result = sample_graph(
         graph,
         113,
