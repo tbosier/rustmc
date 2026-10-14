@@ -134,6 +134,7 @@ impl Transition {
             accepted: self.accepted,
             accept_prob: self.accept_prob,
             energy_error,
+            energy: f64::NAN,
             divergent: self.divergent,
             step_size: self.step_size,
             num_leapfrog_steps: self.num_leapfrog_steps,

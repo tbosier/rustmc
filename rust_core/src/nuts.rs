@@ -273,6 +273,7 @@ pub(crate) fn run_chain_with_evaluator(
                 accepted: !tree_stats.diverging,
                 accept_prob: accept_stat,
                 energy_error: tree_stats.energy_error,
+                energy: tree_stats.energy,
                 divergent: tree_stats.diverging,
                 step_size: step_size_used,
                 num_leapfrog_steps: tree_stats.n_leapfrog,
@@ -289,6 +290,8 @@ struct TreeStats {
     diverging: bool,
     mean_accept_prob: f64,
     energy_error: f64,
+    /// Hamiltonian of the selected state, under the transition's metric.
+    energy: f64,
     tree_depth: usize,
     n_leapfrog: usize,
 }
@@ -454,7 +457,8 @@ fn build_tree_iterative(
     } else {
         0.0
     };
-    let energy_error = proposal.energy(mass, scratch) - h0;
+    let energy = proposal.energy(mass, scratch);
+    let energy_error = energy - h0;
 
     (
         proposal,
@@ -462,6 +466,7 @@ fn build_tree_iterative(
             diverging,
             mean_accept_prob: mean_accept,
             energy_error,
+            energy,
             tree_depth: depth,
             n_leapfrog: n_leapfrog_total,
         },
