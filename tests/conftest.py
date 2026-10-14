@@ -10,15 +10,6 @@ import sys
 import pytest
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "network: test builds a wheel and/or hits the network (deselected by default)"
-    )
-    config.addinivalue_line(
-        "markers", "slow: test is slower than the rest of the suite"
-    )
-
-
 @pytest.fixture(scope="session")
 def rustmc_module():
     """
