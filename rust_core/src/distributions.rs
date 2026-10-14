@@ -95,7 +95,7 @@ impl Uniform {
     }
 }
 
-// ── Bernoulli (discrete — not differentiable, kept for completeness) ─
+// ── Bernoulli (discrete latent: prior-predictive only, rejected by HMC/NUTS) ──
 
 pub struct Bernoulli;
 
@@ -115,7 +115,7 @@ impl Bernoulli {
     }
 }
 
-// ── Poisson (x > 0, log-transform for rate parameter) ───────────────
+// ── Poisson (discrete latent: prior-predictive only, rejected by HMC/NUTS) ──
 
 pub struct Poisson;
 
