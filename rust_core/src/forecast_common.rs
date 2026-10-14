@@ -513,9 +513,14 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
     Ok(horizon)
 }
 
-/// The `probability` quantile of the non-empty ascending `ordered`,
-/// interpolated linearly between the order statistics either side of
-/// position `(n - 1) * probability`.
+/// The `probability` quantile of the ascending `ordered`, interpolated
+/// linearly between the order statistics either side of position
+/// `(n - 1) * probability`.
+///
+/// The function is total: an empty `ordered`, or a `probability` that is not
+/// finite or lies outside `[0, 1]`, has no quantile and returns `NaN` rather
+/// than panicking or extrapolating. Callers that report these cases as errors
+/// check them first.
 ///
 /// This is the one empirical-quantile rule behind every forecast interval
 /// and quantile, native or in `rustmc.evaluation`. On finite draws it
@@ -533,6 +538,9 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
 /// or NaN. The convex form `lower * (1 - w) + upper * w` cannot overflow and
 /// is used instead.
 pub fn sorted_quantile(ordered: &[f64], probability: f64) -> f64 {
+    if ordered.is_empty() || !(0.0..=1.0).contains(&probability) {
+        return f64::NAN;
+    }
     let last = ordered.len() - 1;
     let index = last as f64 * probability;
     if index >= last as f64 {
@@ -781,6 +789,14 @@ mod tests {
         assert_eq!(sorted_quantile(&ordered, 0.125), 1.5);
         assert_eq!(sorted_quantile(&ordered, 0.875), 12.0);
         assert_eq!(sorted_quantile(&[3.0], 0.3), 3.0);
+        // Total: no quantile is NaN, never a panic or an extrapolation.
+        assert!(sorted_quantile(&[], 0.5).is_nan());
+        for probability in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                sorted_quantile(&ordered, probability).is_nan(),
+                "{probability}"
+            );
+        }
         // A span wider than f64::MAX interpolates without overflowing.
         let extremes = [-f64::MAX, f64::MAX];
         assert_eq!(sorted_quantile(&extremes, 0.5), 0.0);
