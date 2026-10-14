@@ -8,9 +8,11 @@
 //!   - Max tree depth cap (default 10)
 //!
 //! The U-turn criterion is Hoffman and Gelman's original endpoint test,
-//! applied to each subtree and to the whole trajectory. Current Stan and PyMC
-//! also test the two spans that straddle each merge of subtrees, which can stop a trajectory earlier on near-periodic targets;
-//! this implementation does not, so it can build deeper trees there. Either
+//! applied to each subtree and to the whole trajectory. Stan (since 2.21.0)
+//! and PyMC also test the two spans that straddle each merge of subtrees,
+//! which catches U-turns the endpoint test misses on targets such as
+//! approximately iid normals; this implementation does not, so it can build
+//! deeper trees there. Either
 //! way the stopping rule is symmetric, so the draws are valid; the difference
 //! is in efficiency.
 
@@ -58,7 +60,8 @@ impl NutsConfig {
     /// Check the settings the kernel cannot run with: a non-finite or negative
     /// step size (0 asks warmup to find one), `target_accept` outside (0, 1),
     /// and a tree depth outside 1..=63. `num_warmup` may be 0, which samples
-    /// with the given step size and the unit metric.
+    /// with the given step size (or the one a search finds, for 0) and the
+    /// unit metric.
     pub fn validate(&self) -> Result<(), String> {
         validate_step_size(self.step_size)?;
         validate_target_accept(self.target_accept)?;

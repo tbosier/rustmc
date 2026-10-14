@@ -68,8 +68,8 @@ pub struct ChainTransitionDiagnostics {
     pub mean_accept_prob: f64,
     pub mean_energy_error: f64,
     pub max_abs_energy_error: f64,
-    /// Mean step size over the draw transitions, which all use the step size
-    /// warmup settled on.
+    /// Mean step size over the draw transitions, which all use one step size:
+    /// the one warmup settled on, or with no warmup the starting one.
     pub mean_step_size: f64,
     pub max_tree_depth: Option<usize>,
     pub total_leapfrog_steps: usize,

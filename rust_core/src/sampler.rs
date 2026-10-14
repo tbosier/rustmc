@@ -110,8 +110,9 @@ impl Default for SamplerConfig {
 ///
 /// The defaults are smaller than a single fit's on purpose (one chain of 300
 /// warmup and 500 draws, tree depth 8): a batch of many small series trades
-/// per-fit diagnostics for throughput. They are the Python `batch_sample`
-/// defaults too, so changing them changes results there.
+/// per-fit diagnostics for throughput. They match the Python `batch_sample`
+/// defaults, which the bindings' signature writes out separately, so a change
+/// here has to be made there too.
 #[derive(Debug, Clone)]
 pub struct BatchSampleConfig {
     pub sampler: SamplerType,
