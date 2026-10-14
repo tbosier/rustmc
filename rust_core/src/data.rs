@@ -339,11 +339,8 @@ impl DataBinding {
                 .collect();
             extras.sort_unstable();
             if let Some(key) = extras.first() {
-                let suggestion = required
-                    .iter()
-                    .copied()
-                    .find(|candidate| edit_distance(key, candidate) <= 2)
-                    .map(str::to_string);
+                let suggestion =
+                    crate::param_ref::closest(key, required.iter().copied(), 2).map(str::to_string);
                 return Err(BindError::UnexpectedKey {
                     key: (*key).to_string(),
                     did_you_mean: suggestion,
@@ -695,22 +692,6 @@ impl DataBinding {
     }
 }
 
-fn edit_distance(a: &str, b: &str) -> usize {
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.bytes().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.bytes().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (row[j + 1] + 1)
-                .min(row[j] + 1)
-                .min(prev + usize::from(ca != cb));
-            prev = old;
-        }
-    }
-    row[b.len()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -844,6 +825,39 @@ mod tests {
         evaluator.compute(&structure, &[0.5]);
         assert!(evaluator.total_logp < small_logp);
         assert!(Arc::ptr_eq(&structure, &shared));
+    }
+
+    /// An unexpected key is matched against the closest required key, not the
+    /// first one within the edit budget: "xa" is one edit from "x" and two
+    /// from "ab", and "ab" sorts first.
+    #[test]
+    fn unexpected_key_suggests_the_closest_required_key() {
+        let mut graph = Graph::new();
+        graph.add_data("ab", vec![1.0]);
+        graph.add_data("x", vec![1.0]);
+        let column = || Arc::from(vec![1.0, 2.0]);
+        let error = DataBinding::bind(
+            &graph.schema,
+            DataInputs {
+                vectors: HashMap::from([
+                    ("ab".into(), column()),
+                    ("x".into(), column()),
+                    ("xa".into(), column()),
+                ]),
+                matrices: HashMap::new(),
+            },
+            "extra",
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            BindError::UnexpectedKey {
+                key: "xa".into(),
+                did_you_mean: Some("x".into()),
+            }
+        );
     }
 
     /// The evaluator caches `ln(y)` for LogNormal observations. A rebind to
