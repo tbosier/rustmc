@@ -414,9 +414,12 @@ fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Co
 ///
 /// AR draws are exact and independent, so an all-AR batch has no warmup or
 /// thinning; silently dropping the settings would let a caller believe they
-/// had changed the fit. `all_ar` comes from each cell's model kind, which does
-/// not depend on whether its observations or exog converted; only a cell with
-/// an invalid `models` entry has no known kind, and it counts as possibly Gibbs.
+/// had changed the fit. `all_ar` is true when at least one cell will run and
+/// every cell whose `models` entry names a forecasting model is AR, whether or
+/// not that cell's observations or exog converted. A Gibbs cell whose data
+/// failed therefore still keeps the batch from counting as all-AR. A cell with
+/// an invalid `models` entry has no kind and is left out, and a batch in which
+/// no cell will run is not refused, so its cells report their own errors.
 fn reject_unused_schedule(
     all_ar: bool,
     warmup: Option<usize>,
@@ -514,7 +517,7 @@ pub(crate) fn fit_batch(
     let designs = aligned_optional(exog, ids.len(), "exog")?;
     let priors = aligned_optional(coefficient_priors, ids.len(), "coefficient_priors")?;
     let mut cells = Vec::with_capacity(ids.len());
-    let mut all_ar = !rows.is_empty();
+    let (mut every_known_kind_is_ar, mut any_cell_built) = (true, false);
     for (index, row) in rows.iter().enumerate() {
         // The cell's model is resolved before its input, so its kind is known
         // even when the input fails; the observations error still comes first.
@@ -524,7 +527,9 @@ pub(crate) fn fit_batch(
             }
             _ => Some(default.clone()),
         };
-        all_ar &= matches!(config, Some(Config::Ar(_)));
+        if let Some(config) = &config {
+            every_known_kind_is_ar &= matches!(config, Config::Ar(_));
+        }
         let input = (|| -> CellInput {
             let y = cell_input(py, real_vector(row, "observations"))?;
             let config = config.ok_or(
@@ -561,9 +566,10 @@ pub(crate) fn fit_batch(
             let size = config.allocation_size(y.len())?;
             Ok((y, config, size))
         })();
+        any_cell_built |= input.is_ok();
         cells.push((ids[index].clone(), input));
     }
-    reject_unused_schedule(all_ar, warmup, thin)?;
+    reject_unused_schedule(any_cell_built && every_known_kind_is_ar, warmup, thin)?;
     check_total_retention(
         cells
             .iter()

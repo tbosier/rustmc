@@ -266,10 +266,16 @@ def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
         with pytest.raises(ValueError, match="exact and independent"):
             local.fit_batch([y, ["invalid"]], ["a", "b"], models=[ar, ar], draws=8,
                             errors="collect", **schedule)
-    # ...and an invalid models entry has no known kind, so it may be Gibbs.
-    unknown = ar.fit_batch([y, y], ["ar", "bad"], models=[None, "not a model"], draws=8,
-                           warmup=10, errors="collect")
-    assert unknown["ar"].draws == 8 and "invalid configuration" in unknown.errors["bad"]
+    # ...an invalid models entry has no kind and is left out, so the AR cells
+    # beside it still make the batch all-AR...
+    with pytest.raises(ValueError, match="exact and independent"):
+        ar.fit_batch([y, y], ["ar", "bad"], models=[None, "not a model"], draws=8,
+                     warmup=10, errors="collect")
+    # ...and a batch in which no cell can run reports each cell's own error.
+    failed = ar.fit_batch([["invalid"]], ["bad"], draws=8, warmup=10, errors="collect")
+    assert "bad" in failed.errors
+    with pytest.raises(rustmc_module.InferenceError, match="observations"):
+        ar.fit_batch([["invalid"]], ["bad"], draws=8, warmup=10)
     # Omitted, they take the Gibbs defaults.
     defaulted = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8)
     assert (defaulted["level"].warmup, defaulted["level"].thin) == (500, 1)
