@@ -55,8 +55,8 @@ mod tests {
         // from four. Both now follow compute_diagnostics: HMC/NUTS fits reach
         // it through SampleResult::diagnostics with their draws unchanged, so
         // the bit comparison below fails if the forecasting path adds a floor
-        // of its own or reorders the draws; the availability assertions pin
-        // the floor itself.
+        // of its own or pairs a name with another parameter's draws; the
+        // availability assertions pin the floor itself.
         let names = ["process_variance", "observation_variance", "terminal_level"]
             .map(String::from)
             .to_vec();
