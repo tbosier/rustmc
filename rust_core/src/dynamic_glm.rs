@@ -1013,17 +1013,12 @@ fn validate_design(
     }
     Ok(())
 }
+/// One Poisson count over the shared sampler's exact range, `[0, 2^53 - 1]`,
+/// the same range the likelihood and the runoff model support. A rate or
+/// draw outside it is an error, never a clipped count.
 fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
-    if rate == 0. {
-        return Ok(0.);
-    }
-    // The sampler and f64 output cannot represent arbitrary integer counts.
-    if !rate.is_finite() || rate > 1e15 {
-        return Err(numerical(
-            "Poisson rate outside supported numerical range; no draws clipped or removed",
-        ));
-    }
-    crate::count_sampling::poisson(rate, rng).map_err(|e| numerical(e.to_string()))
+    crate::count_sampling::poisson(rate, rng)
+        .map_err(|e| numerical(format!("{e}; no draws clipped or removed")))
 }
 fn allocation(factors: &[usize]) -> Result<(), Error> {
     checked_value_count("dynamic GLM", factors, MAX_MATERIALIZED_VALUES)
@@ -1205,6 +1200,47 @@ mod incremental_likelihood_tests {
 #[cfg(test)]
 mod poisson_density_tests {
     use super::*;
+
+    /// A one-group, one-draw Poisson posterior whose forecast rate is `rate`.
+    fn posterior_at_rate(rate: f64) -> DynamicGlmPosterior {
+        let config = DynamicGlmConfig {
+            family: Family::Poisson,
+            process_sd: 0.0,
+            chains: 1,
+            draws: 1,
+            ..Default::default()
+        };
+        DynamicGlmPosterior {
+            config,
+            chains: vec![vec![DynamicGlmDraw {
+                population_coefficients: vec![vec![rate.ln()]],
+                coefficients: vec![vec![vec![rate.ln()]]],
+                states: vec![vec![vec![0.0]]],
+            }]],
+            groups: 1,
+            time_count: 1,
+            features: 0,
+            likelihood_evaluations: vec![0],
+            observed_count: 0,
+        }
+    }
+
+    #[test]
+    fn forecasts_sample_every_rate_the_count_sampler_supports() {
+        // Rates in (1e15, 2^53 - 1] used to be refused by a local cap, although
+        // the likelihood fits counts there and the shared sampler draws them.
+        let forecast = posterior_at_rate(5e15).forecast(2, None, None, 3).unwrap();
+        for count in &forecast.observation_paths[0][0][0] {
+            assert_eq!(count.fract(), 0.0);
+            assert!((count - 5e15).abs() < 1e9, "{count}");
+        }
+        let error = posterior_at_rate(1e16)
+            .forecast(1, None, None, 3)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exact-count range"), "{error}");
+        assert!(error.contains("no draws clipped or removed"), "{error}");
+    }
 
     #[test]
     fn poisson_large_count_curvature_is_preserved_with_exposure() {
