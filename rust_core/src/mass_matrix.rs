@@ -57,6 +57,15 @@ impl MetricKind {
     }
 }
 
+impl std::str::FromStr for MetricKind {
+    type Err = String;
+
+    /// The same spellings as [`MetricKind::parse`], so `"dense".parse()` works.
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        Self::parse(name)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct MassMatrix {
     dim: usize,
@@ -1159,5 +1168,10 @@ mod tests {
         assert_eq!(MetricKind::parse("diag"), Ok(MetricKind::Diagonal));
         assert_eq!(MetricKind::parse("dense"), Ok(MetricKind::Dense));
         assert!(MetricKind::parse("unit").is_err());
+        assert_eq!("diagonal".parse(), Ok(MetricKind::Diagonal));
+        assert_eq!(
+            "unit".parse::<MetricKind>(),
+            Err(MetricKind::parse("unit").unwrap_err())
+        );
     }
 }
