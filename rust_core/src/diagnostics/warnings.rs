@@ -391,6 +391,14 @@ fn non_hamiltonian_warnings(sampler: &str, warnings: &mut Vec<FitWarning>) {
     );
 }
 
+/// Whether `warnings` hold a failed check whose code is not in `ignore`:
+/// the rule batch triage flags a fit by. An unavailable check never flags.
+pub fn has_failure(warnings: &[FitWarning], ignore: &[WarningCode]) -> bool {
+    warnings
+        .iter()
+        .any(|warning| warning.status == WarningStatus::Fail && !ignore.contains(&warning.code))
+}
+
 /// A known limitation of a model's sampler, reported as a failed check so
 /// that triage flags every such fit until the user rules it out by code.
 ///

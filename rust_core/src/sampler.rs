@@ -534,6 +534,16 @@ impl SampleResult {
         )
     }
 
+    /// Every failed or unavailable check of this fit, by the one rule
+    /// [`diagnostics::fit_warnings`] applies to every engine.
+    pub fn warnings(&self) -> Vec<diagnostics::FitWarning> {
+        let transitions = self.transition_diagnostics();
+        diagnostics::fit_warnings(
+            &self.diagnostics(),
+            diagnostics::SamplerTelemetry::Hamiltonian(&transitions),
+        )
+    }
+
     /// Structured per-transition telemetry aggregated across chains, with
     /// tree-depth saturation counted against [`Self::max_tree_depth`].
     pub fn transition_diagnostics(&self) -> diagnostics::TransitionDiagnosticsReport {

@@ -166,6 +166,9 @@ def _split_type_arguments(inner):
     return [part.strip() for part in parts]
 
 
+_FIT_WARNING_KEYS = {"code", "status", "parameter", "chain", "value", "threshold", "message"}
+
+
 def _annotation_is_known(annotation):
     """Whether `_value_matches` can decide this annotation *at all*.
 
@@ -186,7 +189,7 @@ def _annotation_is_known(annotation):
             if arity is not None and len(arguments) != arity:
                 return False
             return all(_annotation_is_known(argument) for argument in arguments)
-    if annotation.startswith("_Diagnostic"):
+    if annotation.startswith("_Diagnostic") or annotation == "_FitWarning":
         return True
     return isinstance(getattr(importlib.import_module("rustmc"), annotation, None), type)
 
@@ -244,6 +247,9 @@ def _value_matches(value, annotation):
         )
     if annotation.startswith("_Diagnostic"):
         return isinstance(value, dict)
+    if annotation == "_FitWarning":
+        # The record's keys are its whole contract.
+        return isinstance(value, dict) and set(value) == _FIT_WARNING_KEYS
     return isinstance(value, getattr(importlib.import_module("rustmc"), annotation))
 
 

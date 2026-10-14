@@ -268,6 +268,19 @@ impl PyDynamicGLMFit {
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         forecast_diagnostics::diagnostics_list(py, &self.posterior.diagnostics())
     }
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let warnings = py.allow_threads(|| {
+            rustmc_core::diagnostics::fit_warnings(
+                &self.posterior.diagnostics(),
+                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian {
+                    sampler: "block_elliptical_slice",
+                },
+            )
+        });
+        forecast_diagnostics::warnings_list(py, &warnings)
+    }
     fn summary(&self) -> String {
         self.posterior.diagnostics().to_table_with_sampler(Some(
             "Sampler: block elliptical slice (latent Gaussian prior); scales and dispersion fixed",

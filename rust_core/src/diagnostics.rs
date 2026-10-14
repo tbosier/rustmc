@@ -10,8 +10,8 @@ use std::collections::HashSet;
 
 pub(crate) mod warnings;
 pub use warnings::{
-    fit_warnings, FitWarning, SamplerTelemetry, WarningCode, WarningStatus, ESS_THRESHOLD,
-    E_BFMI_THRESHOLD, R_HAT_THRESHOLD,
+    fit_warnings, has_failure, FitWarning, SamplerTelemetry, WarningCode, WarningStatus,
+    ESS_THRESHOLD, E_BFMI_THRESHOLD, R_HAT_THRESHOLD,
 };
 
 /// The fewest retained draws per chain for which R-hat, bulk/tail ESS and the

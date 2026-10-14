@@ -37,6 +37,7 @@ use rustmc_core::bayesian_trend::{
     BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
     TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
+use rustmc_core::diagnostics::has_failure;
 use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
@@ -640,6 +641,45 @@ impl PyForecastBatchFit {
             }
         }
         Ok(output)
+    }
+    /// Each cell's fit warnings keyed by ID, as `diagnostics()` keys its
+    /// reports: a list of dicts for a successful cell, `None` for a failed one.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let warnings: Vec<Option<_>> = py.allow_threads(|| {
+            self.results
+                .iter()
+                .map(|result| result.as_ref().ok().map(|fit| fit.as_fit().warnings()))
+                .collect()
+        });
+        let output = PyDict::new(py);
+        for (id, cell) in self.ids.iter().zip(warnings) {
+            match cell {
+                Some(cell) => {
+                    output.set_item(id, forecast_diagnostics::warnings_list(py, &cell)?)?
+                }
+                None => output.set_item(id, py.None())?,
+            }
+        }
+        Ok(output)
+    }
+    /// IDs of the successful cells with at least one failed check, in batch
+    /// order. Checks whose code is in `ignore` do not count, so
+    /// `flagged(ignore=["known_limitation"])` leaves out local-linear-trend
+    /// cells that fail nothing else. Failed cells are not listed: they have
+    /// no fit, and their errors are in `errors`.
+    #[pyo3(signature = (ignore=None))]
+    fn flagged(&self, py: Python<'_>, ignore: Option<Vec<String>>) -> PyResult<Vec<String>> {
+        let ignore = forecast_diagnostics::ignored_codes(ignore)?;
+        Ok(py.allow_threads(|| {
+            self.ids
+                .iter()
+                .zip(&self.results)
+                .filter_map(|(id, result)| {
+                    let fit = result.as_ref().ok()?;
+                    has_failure(&fit.as_fit().warnings(), &ignore).then(|| id.clone())
+                })
+                .collect()
+        }))
     }
     #[pyo3(signature = (steps, *, exog=None, seed=43, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]

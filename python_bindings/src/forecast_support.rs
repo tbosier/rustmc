@@ -28,6 +28,7 @@ use rustmc_core::bayesian_forecast::{
     InverseGammaPrior as CoreInverseGammaPrior,
 };
 pub(crate) use rustmc_core::diagnostics::DiagnosticsReport;
+use rustmc_core::diagnostics::{fit_warnings, FitWarning, SamplerTelemetry};
 use rustmc_core::forecast_common::sorted_quantile;
 use rustmc_core::state_space::StateSpaceError as CoreStateSpaceError;
 
@@ -330,6 +331,18 @@ pub(crate) trait ForecastFit {
     /// Parameter draws keyed by name, each with leading `(chain, draw)` axes.
     fn posterior<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>>;
 
+    /// Every failed or unavailable check of this fit, by the core rule. No
+    /// forecasting sampler is Hamiltonian, so the divergence, E-BFMI and
+    /// tree-depth checks are reported as unavailable.
+    fn warnings(&self) -> Vec<FitWarning> {
+        fit_warnings(
+            &self.report(),
+            SamplerTelemetry::NonHamiltonian {
+                sampler: self.sampler(),
+            },
+        )
+    }
+
     /// The sampler line printed under the summary table.
     fn summary_line(&self) -> String {
         format!(
@@ -349,6 +362,14 @@ pub(crate) fn fit_diagnostics<'py>(
     fit: &impl ForecastFit,
 ) -> PyResult<Bound<'py, PyList>> {
     forecast_diagnostics::diagnostics_list(py, &fit.report())
+}
+
+pub(crate) fn fit_warning_list<'py>(
+    py: Python<'py>,
+    fit: &(impl ForecastFit + Sync),
+) -> PyResult<Bound<'py, PyList>> {
+    let warnings = py.allow_threads(|| fit.warnings());
+    forecast_diagnostics::warnings_list(py, &warnings)
 }
 
 pub(crate) fn fit_sampler_stats<'py>(

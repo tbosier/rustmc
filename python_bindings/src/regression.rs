@@ -147,6 +147,12 @@ impl PyBayesianRegressionFit {
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         fit_diagnostics(py, self)
     }
+
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        fit_warning_list(py, self)
+    }
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         fit_sampler_stats(py, self)
