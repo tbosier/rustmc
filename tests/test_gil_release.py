@@ -22,6 +22,8 @@ COPIES = 4
 # skipping, so a fast runner cannot turn the whole test into skips.
 MIN_ELAPSED = 0.01
 MAX_COPIES = 16
+# CI services set CI=true or CI=1; an explicit CI=false or CI=0 is not CI.
+ON_CI = os.environ.get("CI", "").strip().lower() not in ("", "0", "false", "no")
 
 
 @pytest.fixture(scope="module")
@@ -103,7 +105,7 @@ def test_per_draw_work_releases_the_gil(heavy_fit, operation):
         copies *= 2
     if elapsed < MIN_ELAPSED:
         message = f"call finished in {elapsed:.3f}s at {copies} copies, too quickly to observe"
-        if os.environ.get("CI") or os.environ.get("RUSTMC_REQUIRE_SOURCE_ROOT"):
+        if ON_CI or os.environ.get("RUSTMC_REQUIRE_SOURCE_ROOT"):
             pytest.fail(message)
         pytest.skip(message)
     # A held GIL leaves the main thread no chance to run until the call
