@@ -170,18 +170,18 @@ pub(crate) fn run_chain_with_evaluator(
 
     let mut mass = MassMatrix::from_graph(graph);
     // The same windowed schedule, dual averaging and step-size search as NUTS.
-    let mut adapter = WarmupAdapter::new(
+    let (mut adapter, mut step_size) = WarmupAdapter::start(
         graph,
         config.num_warmup,
         config.target_accept,
         config.step_size,
         config.metric,
+        evaluator,
+        &q,
+        &mass,
+        rng,
+        &mut scratch,
     );
-    let mut step_size = if config.step_size > 0.0 {
-        config.step_size
-    } else {
-        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
-    };
 
     // The density and gradient at the current position are cached across
     // iterations: a rejected proposal leaves them unchanged and an accepted

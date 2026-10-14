@@ -183,18 +183,18 @@ pub(crate) fn run_chain_with_evaluator(
 
     // Windowed warmup: step-size-only buffers around doubling
     // metric-estimation windows; see `adaptation::WarmupSchedule`.
-    let mut adapter = WarmupAdapter::new(
+    let (mut adapter, mut step_size) = WarmupAdapter::start(
         graph,
         config.num_warmup,
         config.target_accept,
         config.step_size,
         config.metric,
+        evaluator,
+        &q,
+        &mass,
+        rng,
+        &mut scratch,
     );
-    let mut step_size = if config.step_size > 0.0 {
-        config.step_size
-    } else {
-        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
-    };
 
     // Compute initial state
     evaluator.compute(graph, &q);

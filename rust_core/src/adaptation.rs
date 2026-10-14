@@ -142,6 +142,11 @@ impl DualAveraging {
     /// Re-centre on `step_size` and forget the accumulated statistics, as
     /// Stan does after each metric update.
     pub(crate) fn restart(&mut self, step_size: f64) {
+        // `ln` of anything else would centre the average on -inf or NaN.
+        debug_assert!(
+            step_size.is_finite() && step_size > 0.0,
+            "dual averaging needs a positive step size, got {step_size}"
+        );
         self.mu = (10.0 * step_size).ln();
         self.log_step_bar = step_size.ln();
         self.h_bar = 0.0;
@@ -179,12 +184,49 @@ pub(crate) struct WarmupAdapter {
 }
 
 impl WarmupAdapter {
-    pub(crate) fn new(
+    /// The adapter for a chain starting at `q` under `mass`, and the step
+    /// size of its first transition: `requested_step_size` when it is
+    /// positive, and otherwise the result of a step-size search from `q`.
+    ///
+    /// Dual averaging is centred on that resolved step, so it never sees the
+    /// 0 that asks for a search.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn start(
         graph: &Graph,
         num_warmup: usize,
         target_accept: f64,
-        initial_step_size: f64,
+        requested_step_size: f64,
         metric: MetricKind,
+        evaluator: &mut impl GradientEvaluator,
+        q: &[f64],
+        mass: &MassMatrix,
+        rng: &mut ChaCha8Rng,
+        scratch: &mut [f64],
+    ) -> (Self, f64) {
+        let mut workspace = StepSizeWorkspace::new(graph.param_count);
+        let step_size = if requested_step_size > 0.0 {
+            requested_step_size
+        } else {
+            find_reasonable_step_size(graph, evaluator, q, 1.0, mass, rng, &mut workspace, scratch)
+        };
+        let adapter = Self::with_workspace(
+            graph,
+            num_warmup,
+            target_accept,
+            step_size,
+            metric,
+            workspace,
+        );
+        (adapter, step_size)
+    }
+
+    fn with_workspace(
+        graph: &Graph,
+        num_warmup: usize,
+        target_accept: f64,
+        step_size: f64,
+        metric: MetricKind,
+        workspace: StepSizeWorkspace,
     ) -> Self {
         let windows = WarmupSchedule::new(num_warmup).windows;
         let first_len = windows.first().map_or(0, |(start, end)| end - start);
@@ -192,35 +234,11 @@ impl WarmupAdapter {
             num_warmup,
             next_window: 0,
             metric,
-            dual: DualAveraging::new(initial_step_size, target_accept),
+            dual: DualAveraging::new(step_size, target_accept),
             accumulator: MassMatrixAccumulator::for_window(graph, metric, first_len),
-            workspace: StepSizeWorkspace::new(graph.param_count),
+            workspace,
             windows,
         }
-    }
-
-    /// Search for an initial step size from the chain's starting point.
-    pub(crate) fn initial_step_size(
-        &mut self,
-        graph: &Graph,
-        evaluator: &mut impl GradientEvaluator,
-        q: &[f64],
-        mass: &MassMatrix,
-        rng: &mut ChaCha8Rng,
-        scratch: &mut [f64],
-    ) -> f64 {
-        let step_size = find_reasonable_step_size(
-            graph,
-            evaluator,
-            q,
-            1.0,
-            mass,
-            rng,
-            &mut self.workspace,
-            scratch,
-        );
-        self.dual.restart(step_size);
-        step_size
     }
 
     /// Adapt after warmup transition `iter`, which left the chain at `q` with
@@ -568,7 +586,14 @@ mod tests {
     fn run_adapter(windows: Vec<(usize, usize)>, num_warmup: usize) -> MassMatrix {
         let (graph, _) = standard_normal();
         let mut evaluator = Evaluator::new(&graph);
-        let mut adapter = WarmupAdapter::new(&graph, num_warmup, 0.8, 0.5, MetricKind::Auto);
+        let mut adapter = WarmupAdapter::with_workspace(
+            &graph,
+            num_warmup,
+            0.8,
+            0.5,
+            MetricKind::Auto,
+            StepSizeWorkspace::new(graph.param_count),
+        );
         adapter.windows = windows;
         adapter.accumulator = MassMatrixAccumulator::for_window(&graph, MetricKind::Auto, 1);
         let mut mass = MassMatrix::from_graph(&graph);
