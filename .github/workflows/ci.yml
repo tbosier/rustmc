@@ -31,6 +31,12 @@ jobs:
       # build above already in place it adds well under a minute.
       - name: Run the ignored realistic-settings prediction test
         run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
+      # Power controls for the exactness gate (rust_core/tests/exactness.rs):
+      # the same gate against NUTS kernels broken on purpose must fail. The
+      # fault-injection feature compiles the fault hooks in; it is off in
+      # every other build.
+      - name: Check the exactness gate fails on injected sampler faults
+        run: cargo test --release -p rustmc_core --features fault-injection --test exactness_power
       - name: Verify publishable Rust crate archive
         run: cargo package -p rustmc_core --locked
       # cargo package verifies the library only. Build the shipped test and
