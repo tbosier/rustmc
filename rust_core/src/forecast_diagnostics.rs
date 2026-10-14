@@ -52,7 +52,11 @@ mod tests {
     fn forecasting_fits_share_the_engine_wide_availability_rule() {
         // These forecasting fits used to blank R-hat, ESS and MCSE below six
         // draws per chain, while the same draws from an HMC fit reported them
-        // from four. Both now follow compute_diagnostics.
+        // from four. Both now follow compute_diagnostics: HMC/NUTS fits reach
+        // it through SampleResult::diagnostics with their draws unchanged, so
+        // the bit comparison below fails if the forecasting path adds a floor
+        // of its own or reorders the draws; the availability assertions pin
+        // the floor itself.
         let names = ["process_variance", "observation_variance", "terminal_level"]
             .map(String::from)
             .to_vec();
