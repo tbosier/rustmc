@@ -36,12 +36,15 @@ jobs:
       # cargo package verifies the library only. Build the shipped test and
       # example targets from the unpacked archive too, so a test that reaches
       # outside the crate (for a fixture, say) fails here, not for a user.
+      # The exact file name, since a restored cache can leave other versions'
+      # archives in target/package.
       - name: Build the packaged crate's tests from the archive alone
         run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('rust_core/Cargo.toml', 'rb'))['package']['version'])")
           mkdir -p "$RUNNER_TEMP/crate"
-          tar xzf target/package/rustmc_core-*.crate -C "$RUNNER_TEMP/crate"
+          tar xzf "target/package/rustmc_core-$version.crate" -C "$RUNNER_TEMP/crate"
           cargo test --release --no-run --locked --target-dir target \
-            --manifest-path "$(ls -d "$RUNNER_TEMP"/crate/rustmc_core-*)/Cargo.toml"
+            --manifest-path "$RUNNER_TEMP/crate/rustmc_core-$version/Cargo.toml"
 
   msrv:
     name: Minimum supported Rust version
