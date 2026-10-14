@@ -293,34 +293,50 @@ impl GibbsSchedule {
         Ok(())
     }
 
-    /// Whether the state after `iteration` (zero-based) is retained: every
-    /// `thinning`-th iteration after warmup, ending on the last one.
+    /// Whether the state after `iteration` (zero-based) is retained.
     fn retains(&self, iteration: usize) -> bool {
-        iteration >= self.warmup && (iteration + 1 - self.warmup).is_multiple_of(self.thinning)
+        retains(self.warmup, self.thinning, iteration)
     }
+}
+
+/// Whether the state after `iteration` (zero-based) is retained under
+/// `warmup` and `thinning`: every `thinning`-th iteration after warmup,
+/// ending on the last one. Shared by [`GibbsSchedule`] and the samplers that
+/// keep their own schedule.
+pub(crate) fn retains(warmup: usize, thinning: usize, iteration: usize) -> bool {
+    iteration >= warmup && (iteration + 1 - warmup).is_multiple_of(thinning)
 }
 
 /// Run `chains` independent chains on the active Rayon pool, each with its
 /// own ChaCha stream keyed by `(seed, chain, domain)`, and collect them in
 /// chain order so the result does not depend on the pool size.
+///
+/// `chain` receives the chain index, its key and its stream, and returns that
+/// chain's result. When several chains fail, the error of the first failing
+/// chain in chain order is returned, whatever order the pool ran them in: the
+/// results are gathered into a `Vec` before the first error is picked, because
+/// collecting a parallel iterator straight into a `Result` keeps whichever
+/// error a worker records first.
 pub(crate) fn run_chains<T, E, F>(
     chains: usize,
     seed: u64,
     domain: u64,
     chain: F,
-) -> Result<Vec<Vec<T>>, E>
+) -> Result<Vec<T>, E>
 where
     T: Send,
     E: Send,
-    F: Fn(u64, &mut ChaCha8Rng) -> Result<Vec<T>, E> + Sync,
+    F: Fn(usize, u64, &mut ChaCha8Rng) -> Result<T, E> + Sync,
 {
     (0..chains)
         .into_par_iter()
         .map(|index| {
             let key = chain_seed(seed, index, domain);
             let mut rng = ChaCha8Rng::seed_from_u64(key);
-            chain(key, &mut rng)
+            chain(index, key, &mut rng)
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -345,7 +361,7 @@ where
     Start: Fn(&mut ChaCha8Rng) -> Result<S, E> + Sync,
     Step: Fn(&mut S, &mut ChaCha8Rng, bool) -> Result<Option<T>, E> + Sync,
 {
-    run_chains(schedule.chains, seed, fit_domain, |key, rng| {
+    run_chains(schedule.chains, seed, fit_domain, |_, key, rng| {
         let mut start_rng = ChaCha8Rng::seed_from_u64(chain_seed(key, 0, START_SEED_DOMAIN));
         let mut state = start(&mut start_rng)?;
         let mut draws = Vec::with_capacity(schedule.draws);
@@ -361,6 +377,8 @@ where
 
 /// Pair every posterior draw with one simulated result, one ChaCha stream per
 /// chain keyed by `(seed, chain, domain)`, preserving `[chain][draw]` order.
+/// As in [`run_chains`], an error is that of the first failing chain in chain
+/// order.
 pub(crate) fn simulate_draws<D, P, E, F>(
     chains: &[Vec<D>],
     seed: u64,
@@ -384,6 +402,8 @@ where
                 .map(|(draw_index, draw)| simulate(chain_index, draw_index, draw, &mut rng))
                 .collect()
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -706,6 +726,34 @@ mod tests {
         assert_eq!(first, again, "starts must depend only on the seed");
         let other: Vec<f64> = starts(8, 1).into_iter().flatten().collect();
         assert_ne!(first[0], other[0], "chain 0's start must follow the seed");
+    }
+
+    #[test]
+    fn the_first_failing_chain_in_chain_order_is_reported_whatever_the_pool() {
+        // Every chain fails with its own index; chain 0 fails last in wall
+        // time, so a driver that kept the first error a worker recorded would
+        // report another chain's on a multi-thread pool.
+        let failing = |index: usize| {
+            if index == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            Err::<(), usize>(index)
+        };
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let fitted = pool.install(|| run_chains(8, 1, 0x1234, |index, _, _| failing(index)));
+            assert_eq!(fitted, Err(0), "{threads} threads");
+            let draws: Vec<Vec<u8>> = vec![vec![0]; 8];
+            let simulated = pool.install(|| {
+                simulate_draws(&draws, 1, 0x1234, |chain, _, _, _| {
+                    failing(chain).map(|()| 0u8)
+                })
+            });
+            assert_eq!(simulated, Err(0), "{threads} threads");
+        }
     }
 
     #[test]

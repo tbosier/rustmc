@@ -304,28 +304,35 @@ pub fn fit_bayesian_ar(
     validate_positive_finite("posterior variance shape", posterior_shape)?;
     validate_positive_finite("posterior variance scale", posterior_scale)?;
 
-    let chains = run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
-        let mut chain = Vec::with_capacity(config.num_draws);
-        for _ in 0..config.num_draws {
-            let innovation_variance = sample_inverse_gamma(posterior_shape, posterior_scale, rng)?;
-            let standard_draw: Vec<f64> = (0..dimension).map(|_| standard_normal(rng)).collect();
-            let precision_scaled_draw =
-                solve_lower_transpose(&posterior_cholesky, dimension, &standard_draw);
-            ensure_finite_vector("linear solve", &precision_scaled_draw)?;
-            let innovation_sd = innovation_variance.sqrt();
-            let coefficients: Vec<f64> = posterior_mean
-                .iter()
-                .zip(precision_scaled_draw)
-                .map(|(mean, draw)| mean + innovation_sd * draw)
-                .collect();
-            ensure_finite_vector("sampled coefficients", &coefficients)?;
-            chain.push(BayesianArPosteriorDraw {
-                coefficients,
-                innovation_variance,
-            });
-        }
-        Ok::<_, BayesianForecastError>(chain)
-    })?;
+    let chains = run_chains(
+        config.num_chains,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |_, _, rng| {
+            let mut chain = Vec::with_capacity(config.num_draws);
+            for _ in 0..config.num_draws {
+                let innovation_variance =
+                    sample_inverse_gamma(posterior_shape, posterior_scale, rng)?;
+                let standard_draw: Vec<f64> =
+                    (0..dimension).map(|_| standard_normal(rng)).collect();
+                let precision_scaled_draw =
+                    solve_lower_transpose(&posterior_cholesky, dimension, &standard_draw);
+                ensure_finite_vector("linear solve", &precision_scaled_draw)?;
+                let innovation_sd = innovation_variance.sqrt();
+                let coefficients: Vec<f64> = posterior_mean
+                    .iter()
+                    .zip(precision_scaled_draw)
+                    .map(|(mean, draw)| mean + innovation_sd * draw)
+                    .collect();
+                ensure_finite_vector("sampled coefficients", &coefficients)?;
+                chain.push(BayesianArPosteriorDraw {
+                    coefficients,
+                    innovation_variance,
+                });
+            }
+            Ok::<_, BayesianForecastError>(chain)
+        },
+    )?;
 
     Ok(BayesianArPosterior {
         order: config.order,

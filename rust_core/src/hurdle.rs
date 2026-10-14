@@ -222,33 +222,38 @@ pub fn fit_hurdle_lognormal(
     // With no positive amounts the severity posterior equals its prior.
     // Direct independent draws avoid an uninformative augmented Gibbs chain.
     let chains = if positive_count == 0 {
-        run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
-            let mut draws = Vec::with_capacity(config.num_draws);
-            for _ in 0..config.num_draws {
-                let q = inverse_gamma(
-                    config.process_variance_prior,
-                    config.process_variance_upper,
-                    rng,
-                )?;
-                let r = inverse_gamma(
-                    config.observation_variance_prior,
-                    config.observation_variance_upper,
-                    rng,
-                )?;
-                let variance = config.initial_variance + observations.len() as f64 * q;
-                let level = config.initial_log_level + normal(rng) * variance.sqrt();
-                if !level.is_finite() {
-                    return Err(numerical("prior terminal level overflowed"));
+        run_chains(
+            config.num_chains,
+            config.seed,
+            FIT_SEED_DOMAIN,
+            |_, _, rng| {
+                let mut draws = Vec::with_capacity(config.num_draws);
+                for _ in 0..config.num_draws {
+                    let q = inverse_gamma(
+                        config.process_variance_prior,
+                        config.process_variance_upper,
+                        rng,
+                    )?;
+                    let r = inverse_gamma(
+                        config.observation_variance_prior,
+                        config.observation_variance_upper,
+                        rng,
+                    )?;
+                    let variance = config.initial_variance + observations.len() as f64 * q;
+                    let level = config.initial_log_level + normal(rng) * variance.sqrt();
+                    if !level.is_finite() {
+                        return Err(numerical("prior terminal level overflowed"));
+                    }
+                    draws.push(HurdleLogNormalDraw {
+                        payment_probability: probability_draw(&occurrence, rng)?,
+                        process_variance: q,
+                        observation_variance: r,
+                        terminal_log_level: level,
+                    });
                 }
-                draws.push(HurdleLogNormalDraw {
-                    payment_probability: probability_draw(&occurrence, rng)?,
-                    process_variance: q,
-                    observation_variance: r,
-                    terminal_log_level: level,
-                });
-            }
-            Ok(draws)
-        })?
+                Ok(draws)
+            },
+        )?
     } else {
         run_gibbs_chains(
             &schedule,
