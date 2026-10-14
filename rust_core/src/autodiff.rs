@@ -988,7 +988,7 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
+                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
@@ -1019,12 +1019,7 @@ impl Evaluator {
                     };
                     let beta_col = col::from_slice::<f64>(beta_slice);
                     let out_col = col::from_slice_mut::<f64>(out);
-                    // Use Rayon threads for matrices large enough to amortise spawn cost.
-                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
-                        Parallelism::Rayon(0)
-                    } else {
-                        Parallelism::None
-                    };
+                    let par = matvec_parallelism(matrix.n_rows, matrix.n_cols);
                     matmul(
                         out_col.as_2d_mut(),
                         x,
@@ -1532,7 +1527,7 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
+                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
@@ -1550,11 +1545,7 @@ impl Evaluator {
                     let all_identity = transforms
                         .iter()
                         .all(|t| matches!(t, ParamTransform::Identity));
-                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
-                        Parallelism::Rayon(0)
-                    } else {
-                        Parallelism::None
-                    };
+                    let par = matvec_parallelism(matrix.n_rows, matrix.n_cols);
                     // grad += X^T @ adj
                     if all_identity {
                         let target = &mut self.grad[*param_start..*param_start + *n_params];
@@ -1696,6 +1687,22 @@ impl Evaluator {
 mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
+
+/// Design-matrix size, in elements, from which a `MatVecMul` lets faer split
+/// its product over the Rayon pool. Below it the split costs more than the
+/// product. Chains already run on that pool, so this nests work-stealing
+/// tasks rather than adding threads. The value is a judgement, not a
+/// benchmark result; the product is the same to the bit either way (see
+/// `mat_vec_mul_is_bitwise_identical_across_thread_counts`).
+const MATVEC_PARALLEL_ELEMENTS: usize = 100_000;
+
+fn matvec_parallelism(n_rows: usize, n_cols: usize) -> faer::Parallelism<'static> {
+    if n_rows.saturating_mul(n_cols) >= MATVEC_PARALLEL_ELEMENTS {
+        faer::Parallelism::Rayon(0)
+    } else {
+        faer::Parallelism::None
+    }
+}
 
 /// The summed log density of `n` elements whose constant arguments are
 /// outside their support: `-inf`, or the empty sum.
@@ -2502,6 +2509,49 @@ mod tests {
                     i
                 );
             }
+        }
+    }
+
+    /// A 400 x 300 design is past `MATVEC_PARALLEL_ELEMENTS`, so faer splits
+    /// both products over the pool. Seeded sampling must not depend on how
+    /// many threads that pool has.
+    #[test]
+    fn mat_vec_mul_is_bitwise_identical_across_thread_counts() {
+        let (rows, cols) = (400usize, 300usize);
+        assert!(rows * cols >= MATVEC_PARALLEL_ELEMENTS);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", cols);
+        g.vector_normal_logp(start, cols, 0.0, 1.0);
+        let one = g.add_constant(1.0);
+        let matrix: Vec<f64> = (0..rows * cols).map(|_| next()).collect();
+        let matrix_idx = g.store_matrix(matrix, rows, cols);
+        let mu = g.mat_vec_mul(matrix_idx, start, cols, None);
+        let obs = g.add_obs_data((0..rows).map(|_| next()).collect());
+        g.obs_logp_normal(mu, one, obs);
+        let params: Vec<f64> = (0..cols).map(|_| next()).collect();
+
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let mut evaluator = Evaluator::new(&g);
+                    evaluator.compute(&g, &params);
+                    let bits: Vec<u64> = evaluator.grad.iter().map(|x| x.to_bits()).collect();
+                    (evaluator.total_logp.to_bits(), bits)
+                })
+        };
+        let serial = run(1);
+        for threads in [2, 4, 7] {
+            assert_eq!(run(threads), serial, "{threads} threads");
         }
     }
 
