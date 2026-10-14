@@ -9,7 +9,11 @@ use rustmc_core::data::DataInputs;
 use rustmc_core::distributions::Normal;
 use rustmc_core::graph::Graph;
 use rustmc_core::model::{compile, GraphModel, ModelSpec};
-use rustmc_core::sampler::{batch_sample_graphs, sample, BatchSampleConfig, SamplerConfig};
+use rustmc_core::data::DataBinding;
+use rustmc_core::sampler::{
+    sample, sample_batch_cells, BatchCell, BatchSampleConfig, BatchSeedPolicy, BoundBatchOptions,
+    SampleResult, SamplerConfig,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -54,6 +58,28 @@ fn assert_refused<T: std::fmt::Debug>(result: Result<T, impl std::fmt::Display>)
     assert!(error.contains("safety limit"), "{error}");
 }
 
+/// Fit independent graphs as one batch, dataset `i` seeded `seed + (i << 32)`.
+fn batch_of_graphs(
+    graphs: Vec<Graph>,
+    config: BatchSampleConfig,
+) -> Result<Vec<Result<SampleResult, String>>, String> {
+    let cells = graphs
+        .iter()
+        .enumerate()
+        .map(|(index, graph)| BatchCell {
+            id: index.to_string(),
+            graph: Arc::new(graph.structure_only()),
+            binding: DataBinding::from_graph(graph).map_err(|error| error.to_string()),
+            initial: None,
+        })
+        .collect();
+    let options = BoundBatchOptions {
+        seed_policy: BatchSeedPolicy::PositionV0,
+        ..Default::default()
+    };
+    sample_batch_cells(cells, config, options)
+}
+
 fn scalar_graph() -> Graph {
     let mut graph = Graph::new();
     Normal::prior(&mut graph, "x", 0.0, 1.0);
@@ -90,8 +116,8 @@ fn oversized_fits_are_refused_before_sampling() {
         show_progress: false,
         ..Default::default()
     };
-    assert_refused(batch_sample_graphs(vec![wide], batch.clone()));
-    assert_refused(batch_sample_graphs(
+    assert_refused(batch_of_graphs(vec![wide], batch.clone()));
+    assert_refused(batch_of_graphs(
         vec![scalar_graph()],
         BatchSampleConfig {
             num_draws: HUGE,

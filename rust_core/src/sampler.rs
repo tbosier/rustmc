@@ -361,9 +361,8 @@ impl SampleResult {
     /// Every draw of parameter `index`, chain-major. Requires
     /// [`Self::is_rectangular`].
     ///
-    /// The order is the order the naive loop accumulated in, and it is the
-    /// order `BatchModelResult` accumulates in, so the two keep reporting the
-    /// same value for the same draws.
+    /// The order is the order the naive loop accumulated in; the summation
+    /// order is part of the reported value.
     fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
         self.samples
             .iter()
@@ -755,21 +754,6 @@ fn constrain_chains(
     Ok((samples, unconstrained))
 }
 
-/// Result for a single model in a batch run, with flattened constrained draws.
-#[derive(Debug, Clone)]
-pub struct BatchModelResult {
-    pub samples: Vec<Vec<f64>>,
-    /// Exact positions in chain/draw/parameter order for transformed graphs.
-    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
-    pub param_names: Vec<String>,
-    pub num_chains: usize,
-    pub num_draws: usize,
-    pub accept_rates: Vec<f64>,
-    pub step_sizes: Vec<f64>,
-    pub divergences: Vec<usize>,
-    pub transitions: Vec<Vec<TransitionStats>>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BatchSeedPolicy {
     /// Stable version-one cell IDs, invariant to ordering and chunk boundaries.
@@ -917,127 +901,6 @@ pub fn sample_batch_cells(
     }
 }
 
-impl BatchModelResult {
-    /// Posterior mean per parameter; see [`SampleResult::mean`].
-    pub fn mean(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        if !self.is_rectangular() {
-            return vec![f64::NAN; n_params];
-        }
-        (0..n_params)
-            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
-            .collect()
-    }
-
-    /// Posterior standard deviation per parameter; see [`SampleResult::std`].
-    pub fn std(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        if !self.is_rectangular() {
-            return vec![f64::NAN; n_params];
-        }
-        (0..n_params)
-            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
-            .collect()
-    }
-
-    /// Whether every draw carries every parameter; see
-    /// [`SampleResult::is_rectangular`].
-    fn is_rectangular(&self) -> bool {
-        !self.samples.is_empty()
-            && self
-                .samples
-                .iter()
-                .all(|draw| draw.len() == self.param_names.len())
-    }
-
-    /// Every draw of parameter `index`. `samples` is already chain-major, so
-    /// this is the same sequence `SampleResult::draws_of` yields.
-    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
-        self.samples.iter().map(move |draw| draw[index])
-    }
-
-    pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {
-        let mut vals: Vec<f64> = self.samples.iter().map(|d| d[param_idx]).collect();
-        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let idx = (q * (vals.len() - 1) as f64) as usize;
-        vals[idx.min(vals.len() - 1)]
-    }
-
-    pub fn mean_accept_rate(&self) -> f64 {
-        if self.accept_rates.is_empty() {
-            0.0
-        } else {
-            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
-        }
-    }
-
-    pub fn total_divergences(&self) -> usize {
-        self.divergences.iter().sum()
-    }
-}
-
-/// Fit independent data-owning graphs, one per entry, through one Rayon pool.
-///
-/// Each model gets `num_chains` chains, seeded as a single fit seeded
-/// `config.seed + (model_index << 32)` would be, and starting from random
-/// initial points. Prefer [`sample_batch_bound_with_initial`] when the models
-/// share one structure.
-pub fn batch_sample_graphs(
-    models: Vec<Graph>,
-    config: BatchSampleConfig,
-) -> Result<Vec<BatchModelResult>, String> {
-    config.validate()?;
-    let mut bindings = Vec::with_capacity(models.len());
-    for graph in &models {
-        graph.validate_shapes().map_err(|e| e.to_string())?;
-        reject_discrete_latent_parameters(graph)?;
-        check_retained_draws(config.num_chains, config.num_draws, graph.param_count)?;
-        bindings.push(DataBinding::from_graph(graph).map_err(|e| e.to_string())?);
-    }
-
-    let progress_state = config.show_progress.then(|| {
-        Arc::new(ProgressState::new(
-            models.len() * config.num_chains,
-            config.num_draws,
-            config.num_warmup,
-            8, // approximate leapfrog for progress display
-        ))
-    });
-    let _progress_guard = progress_state
-        .as_ref()
-        .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
-
-    with_thread_pool(0, || {
-        models
-            .into_par_iter()
-            .zip(bindings)
-            .enumerate()
-            .map(|(model_index, (graph, binding))| {
-                let seed = config.seed.wrapping_add((model_index as u64) << 32);
-                let chains = run_chains(
-                    &graph,
-                    &binding,
-                    &config.sampler_config(seed),
-                    None,
-                    progress_state.as_deref(),
-                )?;
-                let (samples, unconstrained_samples) = constrain_chains(&graph, &chains)?;
-                Ok(BatchModelResult {
-                    samples: samples.into_iter().flatten().collect(),
-                    unconstrained_samples,
-                    param_names: graph.param_names.clone(),
-                    num_chains: config.num_chains,
-                    num_draws: config.num_draws,
-                    accept_rates: chains.iter().map(|c| c.accept_rate).collect(),
-                    step_sizes: chains.iter().map(|c| c.step_size).collect(),
-                    divergences: chains.iter().map(|c| c.divergences).collect(),
-                    transitions: chains.into_iter().map(|c| c.transitions).collect(),
-                })
-            })
-            .collect()
-    })?
-}
-
 fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), String> {
     if let Some(index) = draw.iter().position(|value| !value.is_finite()) {
         return Err(format!(
@@ -1140,9 +1003,15 @@ mod tests {
             show_progress: false,
             ..Default::default()
         };
-        let legacy = batch_sample_graphs(vec![graph.clone()], config.clone()).unwrap();
-        // The position policy seeds dataset `i` as `seed + (i << 32)`, the
-        // same seed the per-graph batch gives model `i`.
+        // The position policy seeds dataset `i` as `seed + (i << 32)`, so
+        // dataset 0 is fitted exactly as a single fit seeded `seed` is.
+        let single = sample_bound_with_init(
+            Arc::new(graph.structure_only()),
+            DataBinding::from_graph(&graph).unwrap(),
+            config.sampler_config(config.seed),
+            None,
+        )
+        .unwrap();
         let bound = sample_batch_bound_with_initial(
             Arc::new(graph.structure_only()),
             vec![("0".into(), Ok(DataBinding::from_graph(&graph).unwrap()))],
@@ -1155,11 +1024,12 @@ mod tests {
         )
         .unwrap();
         let bound = bound[0].as_ref().unwrap();
-        let raw = legacy[0].unconstrained_samples.as_ref().unwrap();
+        let raw = bound.unconstrained_samples.as_ref().unwrap();
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[0].len(), 20);
-        assert_eq!(raw, bound.unconstrained_samples.as_ref().unwrap());
-        for (position, constrained) in raw.iter().flatten().zip(&legacy[0].samples) {
+        assert_eq!(raw, single.unconstrained_samples.as_ref().unwrap());
+        assert_eq!(bound.samples, single.samples);
+        for (position, constrained) in raw.iter().flatten().zip(bound.samples.iter().flatten()) {
             assert_eq!(graph.param_transforms[0].apply(position[0]), constrained[0]);
         }
     }

@@ -553,9 +553,9 @@ pub fn compute_transition_diagnostics(
 /// draws' own units and without an intermediate that leaves the exponent range.
 ///
 /// This is the single definition of both moments. `compute_diagnostics` uses it
-/// for the summary table, and `SampleResult::mean`/`std` and
-/// `BatchModelResult::mean`/`std` use it for the values they report directly,
-/// so a fit cannot describe its own posterior two different ways.
+/// for the summary table, and `SampleResult::mean`/`std` use it for the values
+/// they report directly, so a fit cannot describe its own posterior two
+/// different ways.
 ///
 /// `draws` is a factory rather than a slice because the two callers hold the
 /// draws in different shapes — chain-major `Vec<Vec<f64>>` per parameter, and a
