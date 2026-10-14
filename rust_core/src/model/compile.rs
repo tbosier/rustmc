@@ -54,12 +54,9 @@ fn build_likelihood_into_graph(
         value_node_map,
     )?;
 
-    let obs_vec = data_map
-        .get(&lik.observed_key)
-        .ok_or_else(|| {
-            ModelError::invalid(format!("Missing observed data key: {}", lik.observed_key))
-        })?
-        .clone();
+    let obs_vec = data_map.get(&lik.observed_key).ok_or_else(|| {
+        ModelError::invalid(format!("Missing observed data key: {}", lik.observed_key))
+    })?;
     let obs_idx = graph.add_named_obs_data(&lik.observed_key, &lik.name, obs_vec.clone());
 
     let linpred_node = if lik.mu_expr.is_scalar() {
@@ -77,19 +74,19 @@ fn build_likelihood_into_graph(
             graph.obs_logp_normal(linpred_node, sigma_node, obs_idx);
         }
         LikelihoodFamily::BernoulliLogit => {
-            validate_binary_observations(&obs_vec, &lik.name)?;
+            validate_binary_observations(obs_vec, &lik.name)?;
             graph.obs_logp_bernoulli_logit(linpred_node, obs_idx);
         }
         LikelihoodFamily::PoissonLog => {
-            validate_count_observations(&obs_vec, &lik.name)?;
+            validate_count_observations(obs_vec, &lik.name)?;
             graph.obs_logp_poisson_log(linpred_node, obs_idx);
         }
         LikelihoodFamily::ExponentialLog => {
-            validate_positive_observations(&obs_vec, &lik.name, false)?;
+            validate_positive_observations(obs_vec, &lik.name, false)?;
             graph.obs_logp_exponential_log(linpred_node, obs_idx);
         }
         LikelihoodFamily::LogNormal => {
-            validate_positive_observations(&obs_vec, &lik.name, true)?;
+            validate_positive_observations(obs_vec, &lik.name, true)?;
             let sigma_spec = lik.sigma.as_ref().ok_or_else(|| {
                 ModelError::invalid(format!(
                     "LogNormal likelihood '{}' is missing sigma",
@@ -100,7 +97,7 @@ fn build_likelihood_into_graph(
             graph.obs_logp_lognormal(linpred_node, sigma_node, obs_idx);
         }
         LikelihoodFamily::NegativeBinomialLog => {
-            validate_integer_observations(&obs_vec, &lik.name)?;
+            validate_integer_observations(obs_vec, &lik.name)?;
             let alpha_spec = lik.sigma.as_ref().ok_or_else(|| {
                 ModelError::invalid(format!(
                     "NegativeBinomial likelihood '{}' is missing alpha",
@@ -402,7 +399,7 @@ pub fn compile(
         )?;
     }
 
-    for (name, expr) in &model_spec.potentials {
+    for (_, expr) in &model_spec.potentials {
         let node = build_mu_expr(
             &mut graph,
             expr,
@@ -412,7 +409,6 @@ pub fn compile(
             &value_node_map,
         )?;
         graph.add_logp_term(node);
-        let _ = name;
     }
     for (name, expr) in &model_spec.deterministics {
         if model_spec.priors.iter().any(|p| prior_name(p) == name)
