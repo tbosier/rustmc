@@ -280,13 +280,14 @@ fn false_alarm_rate_over_seeds() {
 ///
 /// Fits each case at the shipped defaults for `RUSTMC_EXACTNESS_COST_SEEDS`
 /// seeds (default 10: the gate's own seed and the ones after it) and writes,
-/// to the path in `RUSTMC_EXACTNESS_JSON` (required), each fit's leapfrog
+/// to the path in `RUSTMC_EXACTNESS_JSON` (required; a relative path is
+/// taken from `rust_core`, where cargo runs the test), each fit's leapfrog
 /// steps in warmup and in draws (from the transition records; the step-size
 /// searches warmup runs are not transitions and are not counted), its
 /// smallest bulk ESS, their ratios, and the machine and command.
 ///
 /// ```text
-/// RUSTMC_EXACTNESS_JSON=benchmarks/results/<date>-exactness.json \
+/// RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/<date>-exactness.json \
 ///     cargo test --release -p rustmc_core --test exactness -- --ignored \
 ///     --nocapture exactness_cost_report
 /// ```
@@ -386,6 +387,12 @@ fn exactness_cost_report() {
                        warmup and draws, divided by the smallest bulk ESS over \
                        coordinates; the step-size searches at the start of warmup and \
                        after each metric update are not transitions and are not counted",
+        "not_measured": "other engines (this is a rustmc-only cost record, so the \
+                         template's PyMC, nutpie, NumPyro, JAX, ArviZ, NumPy and Python \
+                         fields do not apply), compilation and post-processing time \
+                         (fit_wall_seconds is the whole sampling call), and peak RSS",
+        "data": "every target is generated deterministically in \
+                 rust_core/tests/exactness_support/mod.rs; no external data",
         "cases": cases,
     });
     std::fs::write(
