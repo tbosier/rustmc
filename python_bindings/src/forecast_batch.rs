@@ -384,7 +384,8 @@ fn run_cells<T: Sync, R: Send>(
 }
 
 /// A cell's converted observations and model, or why it could not be built.
-/// The size is `Config::allocation_size` for the cell's history, computed once.
+/// The size is `Config::allocation_size` for the cell's history, computed when
+/// the cell is prepared and reused by the batch retention check.
 type CellInput = Result<(Vec<f64>, Config, usize), String>;
 
 /// A forecasting model that can fit `fit_batch` cells.
@@ -413,7 +414,8 @@ fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Co
 ///
 /// AR draws are exact and independent, so an all-AR batch has no warmup or
 /// thinning; silently dropping the settings would let a caller believe they
-/// had changed the fit.
+/// had changed the fit. A cell that failed to build may have been a Gibbs
+/// model, so a batch with one is not known to be all-AR and is not refused.
 fn reject_unused_schedule(
     cells: &[(String, CellInput)],
     warmup: Option<usize>,
@@ -422,12 +424,11 @@ fn reject_unused_schedule(
     if warmup.is_none() && thin.is_none() {
         return Ok(());
     }
-    let mut configs = cells
-        .iter()
-        .filter_map(|(_, input)| input.as_ref().ok())
-        .map(|(_, config, _)| config)
-        .peekable();
-    if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
+    let all_ar = !cells.is_empty()
+        && cells
+            .iter()
+            .all(|(_, input)| matches!(input, Ok((_, Config::Ar(_), _))));
+    if all_ar {
         return Err(PyValueError::new_err(
             "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
              draws are exact and independent; leave them unset",

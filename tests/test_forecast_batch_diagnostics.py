@@ -254,6 +254,11 @@ def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     assert ar.fit_batch([y], ["ar"], draws=8)["ar"].draws == 8
     mixed = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8, warmup=10, thin=2)
     assert (mixed["ar"].draws, mixed["level"].warmup, mixed["level"].thin) == (8, 10, 2)
+    # A cell that failed to build may have been a Gibbs model, so its batch is
+    # not known to be all-AR and keeps the rest of its results.
+    partial = ar.fit_batch([y, ["invalid"]], ["ar", "level"], models=[None, local], draws=8,
+                           warmup=500, errors="collect")
+    assert partial["ar"].draws == 8 and "level" in partial.errors
     # Omitted, they take the Gibbs defaults.
     defaulted = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8)
     assert (defaulted["level"].warmup, defaulted["level"].thin) == (500, 1)
