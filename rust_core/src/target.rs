@@ -6,10 +6,12 @@
 //! model operation and is deliberately not inferred from a log density.
 //!
 //! Only `Err` ends a fit. A density that is NaN or `+inf`, or a gradient element
-//! that is non-finite or was never written, makes that point unusable, as `-inf`
-//! does: inside a trajectory the kernels record it as a divergence or a rejected
-//! proposal, as they do for graph models, and a random start retries elsewhere.
-//! An explicit `init` must be usable, so there it is an error.
+//! that is non-finite or was never written, is handled exactly as `-inf` is, and
+//! as a graph model's `-inf` is: the point counts as outside the support, with a
+//! zero gradient. A NUTS leaf there diverges; an HMC proposal that ends there is
+//! rejected, while one that only passes through it is judged, like any HMC
+//! proposal, by the energy at its end. A random start retries elsewhere; an
+//! explicit `init` must be usable, so there it is an error.
 //!
 //! A custom target's parameters are all scalars, so `MetricKind::Dense` and
 //! `MetricKind::Auto`, which only estimate dense blocks within vector
