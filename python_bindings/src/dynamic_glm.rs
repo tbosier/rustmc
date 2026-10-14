@@ -10,6 +10,7 @@ use pyo3::types::{PyDict, PyList};
 use rustmc_core::dynamic_glm::{
     self, Design, DynamicGlmConfig, DynamicGlmForecast, DynamicGlmPosterior, Family, Panel, Paths,
 };
+use rustmc_core::forecast_common;
 
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDynamicGLM>()?;
@@ -358,19 +359,19 @@ impl PyDynamicGLMForecast {
     }
     #[getter]
     fn mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
-        path_means(py, &self.inner.mean_paths)
+        panel_means(py, &self.inner.mean_paths)
     }
     #[getter]
     fn observation_mean<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
-        path_means(py, &self.inner.observation_paths)
+        panel_means(py, &self.inner.observation_paths)
     }
     #[pyo3(signature=(level=0.95))]
     fn interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PanelInterval<'py>> {
-        path_interval(py, &self.inner.observation_paths, level)
+        panel_interval(py, &self.inner.observation_paths, level)
     }
     #[pyo3(signature=(level=0.95))]
     fn mean_interval<'py>(&self, py: Python<'py>, level: f64) -> PyResult<PanelInterval<'py>> {
-        path_interval(py, &self.inner.mean_paths, level)
+        panel_interval(py, &self.inner.mean_paths, level)
     }
     #[getter]
     fn interval_kind(&self) -> &'static str {
@@ -434,37 +435,32 @@ type PanelInterval<'py> = (
     Bound<'py, numpy::PyArray2<f64>>,
     Bound<'py, numpy::PyArray2<f64>>,
 );
-fn group_paths(
-    paths: &Paths,
-    group: usize,
-) -> rustmc_core::bayesian_forecast::PosteriorPredictiveForecast {
-    rustmc_core::bayesian_forecast::PosteriorPredictiveForecast {
-        state_paths: Vec::new(),
-        observation_paths: paths
-            .iter()
-            .map(|c| c.iter().map(|d| d[group].clone()).collect())
-            .collect(),
-    }
+/// One group's `[chain][draw][step]` paths, for the shared path summaries.
+fn group_paths(paths: &Paths, group: usize) -> forecast_common::Paths {
+    paths
+        .iter()
+        .map(|c| c.iter().map(|d| d[group].clone()).collect())
+        .collect()
 }
-fn path_means<'py>(py: Python<'py>, paths: &Paths) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
+/// Per-group means, shaped `(group, step)`.
+fn panel_means<'py>(py: Python<'py>, paths: &Paths) -> PyResult<Bound<'py, numpy::PyArray2<f64>>> {
     let mut result = Array2::zeros((paths[0][0].len(), paths[0][0][0].len()));
     for g in 0..paths[0][0].len() {
-        let values = group_paths(paths, g)
-            .observation_means()
-            .map_err(bayesian_forecast_error)?;
+        let values =
+            forecast_common::path_means(&group_paths(paths, g)).map_err(bayesian_forecast_error)?;
         for (t, value) in values.into_iter().enumerate() {
             result[(g, t)] = value;
         }
     }
     Ok(result.into_pyarray(py))
 }
-fn path_interval<'py>(py: Python<'py>, paths: &Paths, level: f64) -> PyResult<PanelInterval<'py>> {
+/// Per-group equal-tailed intervals, each shaped `(group, step)`.
+fn panel_interval<'py>(py: Python<'py>, paths: &Paths, level: f64) -> PyResult<PanelInterval<'py>> {
     let probabilities = interval_probabilities(level)?;
     let mut lower = Array2::zeros((paths[0][0].len(), paths[0][0][0].len()));
     let mut upper = lower.clone();
     for g in 0..paths[0][0].len() {
-        let quantiles = group_paths(paths, g)
-            .observation_quantiles(&probabilities)
+        let quantiles = forecast_common::path_quantiles(&group_paths(paths, g), &probabilities)
             .map_err(bayesian_forecast_error)?;
         for t in 0..paths[0][0][0].len() {
             lower[(g, t)] = quantiles[0].values[t];
