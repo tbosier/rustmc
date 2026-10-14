@@ -35,6 +35,8 @@ impl Display for GraphShapeError {
     }
 }
 
+impl std::error::Error for GraphShapeError {}
+
 /// A 2-D data matrix stored row-major (n_rows × n_cols).
 #[derive(Debug, Clone)]
 pub struct MatrixData {
