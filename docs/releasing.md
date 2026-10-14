@@ -28,10 +28,11 @@ Explicit malformed tags and mismatched dependency/lock versions fail validation.
 
 Both registries publish from CI when the matching `vX.Y.Z` tag is pushed; neither is
 published by hand. The tag triggers `.github/workflows/ci.yml`, whose release path
-requires Rust tests/package verification, version checks (including the tag), and
-source/wheel installs across CPython 3.9–3.14. Each release wheel is then built and
-installed on a matching native platform; a clean temporary environment runs the
-full Python tests against that exact wheel before upload.
+requires Rust tests/package verification, version checks (including the tag), a
+source install on CPython 3.11, and wheel installs across CPython 3.9–3.14. Each
+release wheel is then built and installed on a matching native platform; a clean
+temporary environment runs the full Python tests against that exact wheel before
+upload.
 The source archive is likewise installed and tested before upload. Pull requests run
 these same native artifact checks before merge. Publishing remains restricted to
 matching release tags.
