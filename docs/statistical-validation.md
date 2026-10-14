@@ -39,6 +39,10 @@ diagnostics that cannot be serialized. No report is written if importing `rustmc
 fails, or if the trailing `git rev-parse` and native-hash calls raise.
 The default local run uses 64. Increase the replicate count for a more precise study.
 
+Neither gate samples at the shipped default `target_accept=0.8`. The fixed
+reference cases above run at `target_accept=0.95`, and the Rust recovery tests in
+`rust_core/tests/recovery_suite.rs` run every case at 0.999.
+
 Rust recovery tests enforce the same convergence thresholds for positive cases.
 The Gaussian partial-pooling case uses noncentered effects. Centered funnel and
 centered eight-schools cases remain negative controls: poor recovery must produce a

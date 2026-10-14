@@ -42,23 +42,31 @@ const HEALTHY_ESS: f64 = 400.0;
 /// quietly hollowing it out.
 const MIN_PRIOR_MARGIN_WIDTHS: f64 = 1.0;
 
+/// The step-size adaptation target every case in this suite runs at. It is
+/// not the shipped default (0.80): the suite moved to 0.999 when the release
+/// gate began demanding zero divergences. Whether each case also passes at the
+/// default is an open question, not something this suite shows.
+const SUITE_TARGET_ACCEPT: f64 = 0.999;
+
+/// Runs NUTS on `graph` with exactly the draws, warmup and target acceptance
+/// the call site states.
 fn sample_graph(
     graph: Graph,
     seed: u64,
     draws: usize,
     warmup: usize,
     max_tree_depth: usize,
+    target_accept: f64,
 ) -> rustmc_core::sampler::SampleResult {
     run_sample(
         graph,
         SamplerConfig {
             sampler: SamplerType::Nuts,
             num_chains: CHAIN_COUNT,
-            // Positive reference cases need enough retained draws for the release gate.
-            num_draws: draws.max(2000),
-            num_warmup: warmup.max(1000),
+            num_draws: draws,
+            num_warmup: warmup,
             step_size: 0.0,
-            target_accept: 0.999,
+            target_accept,
             num_leapfrog_steps: 15,
             max_tree_depth,
             seed,
@@ -256,7 +264,14 @@ fn intercept_only_gaussian_recovers_location_and_scale() {
     let obs_idx = graph.add_obs_data(y);
     graph.normal_obs_logp(mu_vec, sigma, obs_idx);
 
-    let result = sample_graph(graph, 101, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(
+        graph,
+        101,
+        DEFAULT_DRAWS,
+        DEFAULT_WARMUP,
+        10,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "mu", mu_true, 0.15, 0.0);
@@ -293,7 +308,14 @@ fn linear_regression_recovers_coefficients() {
     let obs_idx = graph.add_obs_data(y);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 102, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(
+        graph,
+        102,
+        DEFAULT_DRAWS,
+        DEFAULT_WARMUP,
+        10,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.15, 0.0);
@@ -332,7 +354,14 @@ fn logistic_regression_recovers_linear_predictor() {
     let obs_idx = graph.add_obs_data(y);
     graph.obs_logp_bernoulli_logit(mu, obs_idx);
 
-    let result = sample_graph(graph, 103, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(
+        graph,
+        103,
+        DEFAULT_DRAWS,
+        DEFAULT_WARMUP,
+        10,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.35, 0.0);
@@ -365,7 +394,14 @@ fn poisson_glm_recovers_rate_coefficients() {
     let obs_idx = graph.add_obs_data(y);
     graph.obs_logp_poisson_log(eta, obs_idx);
 
-    let result = sample_graph(graph, 104, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(
+        graph,
+        104,
+        DEFAULT_DRAWS,
+        DEFAULT_WARMUP,
+        10,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.25, 0.0);
@@ -397,7 +433,14 @@ fn ar1_style_regression_recovers_lag_coefficient() {
     let obs_idx = graph.add_obs_data(y);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 105, DEFAULT_DRAWS, DEFAULT_WARMUP, 10);
+    let result = sample_graph(
+        graph,
+        105,
+        DEFAULT_DRAWS,
+        DEFAULT_WARMUP,
+        10,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "alpha", alpha_true, 0.15, 0.0);
@@ -453,7 +496,7 @@ fn ridge_regression_recovers_high_dimensional_coefficients() {
     let sigma = graph.add_constant(sigma_true);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 106, 200, 200, 8);
+    let result = sample_graph(graph, 106, 2000, 1000, 8, SUITE_TARGET_ACCEPT);
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_rmse_beats_constant(
@@ -524,7 +567,7 @@ fn noncentered_partial_pooling_panel_recovers_group_effects() {
     let obs_idx = graph.add_obs_data(y);
     graph.normal_obs_logp(mu, sigma, obs_idx);
 
-    let result = sample_graph(graph, 107, 2000, 1000, 10);
+    let result = sample_graph(graph, 107, 2000, 1000, 10, SUITE_TARGET_ACCEPT);
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "mu_alpha", mu_alpha_true, 0.3, 0.0);
@@ -635,7 +678,7 @@ fn noncentered_hierarchical_poisson_recovers_partial_pooling_counts() {
     let obs_idx = graph.add_obs_data(y);
     graph.obs_logp_poisson_log(eta, obs_idx);
 
-    let result = sample_graph(graph, 108, 2000, 1500, 12);
+    let result = sample_graph(graph, 108, 2000, 1500, 12, SUITE_TARGET_ACCEPT);
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     assert_scalar(&report, "mu_alpha", mu_alpha_true, 0.25, 0.0);
@@ -726,7 +769,7 @@ fn centered_eight_schools_reports_bad_geometry() {
         graph.normal_logp(yi, theta, si);
     }
 
-    let result = sample_graph(graph, 109, 800, 800, 10);
+    let result = sample_graph(graph, 109, 2000, 1000, 10, SUITE_TARGET_ACCEPT);
     let report = result.diagnostics();
     assert!(
         report.divergences > 0,
@@ -783,7 +826,7 @@ fn eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean() {
         graph.normal_logp(yi, theta, si);
     }
 
-    let result = sample_graph(graph, 110, 800, 800, 10);
+    let result = sample_graph(graph, 110, 2000, 1000, 10, SUITE_TARGET_ACCEPT);
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
     // The window is 2.0, not the 0.5 this seed happens to land inside. Even with
@@ -857,7 +900,14 @@ fn centered_funnel_reports_bad_geometry() {
     // the second assertion below holds for a seeded run, not for every run.
     // Seed 111 stopped firing it when the chains' streams changed; 113 fires
     // both.
-    let result = sample_graph(graph, 113, FUNNEL_DRAWS, FUNNEL_WARMUP, 12);
+    let result = sample_graph(
+        graph,
+        113,
+        FUNNEL_DRAWS,
+        FUNNEL_WARMUP,
+        12,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert!(
         report.divergences > 0,
@@ -907,7 +957,14 @@ fn noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal() {
     let _y = Normal::prior(&mut graph, "y", 0.0, 3.0);
     let _z = Normal::prior(&mut graph, "z", 0.0, 1.0);
 
-    let result = sample_graph(graph, 112, FUNNEL_DRAWS, FUNNEL_WARMUP, 12);
+    let result = sample_graph(
+        graph,
+        112,
+        FUNNEL_DRAWS,
+        FUNNEL_WARMUP,
+        12,
+        SUITE_TARGET_ACCEPT,
+    );
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
 
