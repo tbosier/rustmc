@@ -39,6 +39,14 @@ diagnostics that cannot be serialized. No report is written if importing `rustmc
 fails, or if the trailing `git rev-parse` and native-hash calls raise.
 The default local run uses 64. Increase the replicate count for a more precise study.
 
+The coverage check passes when each coefficient's 90% interval coverage lies within
+`sqrt(ln(4000) / (2n))` of the nominal 0.90, where `n` is the replicate count. At the 32 replicates CI runs, that accepts any
+coverage from 0.54 to 1.00, so the per-PR run is a smoke check that catches only gross
+miscalibration. At the local default of 64 the accepted band is about 0.65 to 1.00, and
+256 replicates narrow it to about 0.77 to 1.00. The band reaches 1.00 at every one of
+these counts, so over-wide intervals are not caught at all. The report records the
+tolerance it used as `coverage_tolerance`.
+
 Neither gate samples at the shipped default `target_accept=0.8`. The fixed
 reference cases above run at `target_accept=0.95`, and the Rust recovery tests in
 `rust_core/tests/recovery_suite.rs` run every case at 0.999.
