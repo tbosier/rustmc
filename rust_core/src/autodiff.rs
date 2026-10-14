@@ -676,10 +676,7 @@ impl Evaluator {
     }
 
     /// Read the i-th element of a vector node after `compute()`.
-    ///
-    /// The evaluator owns every value it reads, so `_graph` is unused; it is
-    /// kept so existing callers need not change.
-    pub fn vec_elem(&self, node: NodeId, i: usize, _graph: &Graph) -> f64 {
+    pub fn vec_elem(&self, node: NodeId, i: usize) -> f64 {
         self.read_vec(node.0, i)
     }
 
@@ -1998,7 +1995,7 @@ mod tests {
         forward.forward(&g, &[0.7]);
         assert_eq!(forward.total_logp, full.total_logp);
         for i in 0..3 {
-            assert_eq!(forward.vec_elem(mu, i, &g), full.vec_elem(mu, i, &g));
+            assert_eq!(forward.vec_elem(mu, i), full.vec_elem(mu, i));
         }
         // No reverse pass ran, so the gradient buffer is untouched.
         assert_eq!(forward.grad, vec![0.0]);
@@ -2330,7 +2327,7 @@ mod tests {
             ];
             for (i, expected_value) in expected.into_iter().enumerate() {
                 assert!(
-                    (evaluator.vec_elem(mu, i, &g) - expected_value).abs() < 1e-12,
+                    (evaluator.vec_elem(mu, i) - expected_value).abs() < 1e-12,
                     "transform {:?}, row {}",
                     transform,
                     i

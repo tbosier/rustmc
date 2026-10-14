@@ -268,7 +268,7 @@ impl ModelFit {
             for (block, head) in values.iter_mut().zip(&heads) {
                 let aux = head.aux.map(|node| evaluator.scalar_at(node));
                 for i in 0..head.n_obs {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
+                    let eta = evaluator.vec_elem(head.linpred, i);
                     block.push(
                         if expected {
                             crate::observation::mean(head.family, eta, aux)
@@ -322,7 +322,7 @@ impl ModelFit {
         let values = self.evaluate_chunks(graph, lens.len(), |evaluator, blocks| {
             for ((block, (_, node)), len) in blocks.iter_mut().zip(&graph.deterministics).zip(&lens)
             {
-                block.extend((0..(*len).max(1)).map(|i| evaluator.vec_elem(*node, i, graph)));
+                block.extend((0..(*len).max(1)).map(|i| evaluator.vec_elem(*node, i)));
             }
             Ok(())
         })?;
@@ -421,7 +421,7 @@ fn pointwise_log_likelihood(
             crate::observation::log_density(
                 head.family,
                 observed,
-                evaluator.vec_elem(head.linpred, i, graph),
+                evaluator.vec_elem(head.linpred, i),
                 aux,
             )
             .map_err(ModelError::invalid)?,

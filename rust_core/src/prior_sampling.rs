@@ -387,7 +387,7 @@ pub fn prior_predictive<R: Rng + ?Sized>(
         // otherwise successful result.
         for (j, (name, node)) in graph.deterministics.iter().enumerate() {
             for i in 0..deterministic_lens[j].max(1) {
-                let value = evaluator.vec_elem(*node, i, graph);
+                let value = evaluator.vec_elem(*node, i);
                 if !value.is_finite() {
                     return Err(ModelError::invalid(format!(
                         "deterministic '{name}' is nonfinite in a prior predictive draw"
@@ -398,7 +398,7 @@ pub fn prior_predictive<R: Rng + ?Sized>(
         }
         for (li, head) in heads.iter().enumerate() {
             for i in 0..head.n_obs {
-                let eta = evaluator.vec_elem(head.linpred, i, graph);
+                let eta = evaluator.vec_elem(head.linpred, i);
                 let aux = head.aux.map(|node| evaluator.scalar_at(node));
                 predictions[li].push(
                     observation::sample(head.family, eta, aux, rng).map_err(ModelError::invalid)?,
