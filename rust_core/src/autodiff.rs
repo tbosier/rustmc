@@ -1,5 +1,5 @@
 use crate::data::DataBinding;
-use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
+use crate::graph::{Graph, GraphShapeError, NodeId, ObsFamily, Op, ParamTransform};
 
 /// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
 pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
@@ -145,13 +145,61 @@ pub(crate) fn validate_slot_coverage(
 /// position. Every pass below indexes per-node buffers by those ids in
 /// declaration order, so each of these is an out-of-bounds read or a value read
 /// before it is computed.
+///
+/// The parameter metadata is public too, so it is checked against
+/// `param_count` here: the evaluator reads `param_transforms[k]` for every
+/// parameter a node reaches, and the samplers read names and transforms per
+/// parameter and the metric per span. An observation op's auxiliary node is
+/// checked against its family for the same reason: the evaluator reads the
+/// scale or dispersion of the families that have one without re-checking it.
 fn validate_topology(graph: &Graph) -> Result<(), GraphShapeError> {
+    let count = graph.param_count;
+    if graph.param_names.len() != count || graph.param_transforms.len() != count {
+        return Err(GraphShapeError::new(format!(
+            "graph declares {count} parameters but has {} names and {} transforms",
+            graph.param_names.len(),
+            graph.param_transforms.len()
+        )));
+    }
+    let mut next_start = 0usize;
+    for span in &graph.param_spans {
+        let end = span.start.checked_add(span.len);
+        if span.start != next_start || end.is_none_or(|end| end > count) {
+            return Err(GraphShapeError::new(format!(
+                "parameter spans must tile 0..{count} in order; found {}..{} where {next_start} was next",
+                span.start,
+                span.start.saturating_add(span.len)
+            )));
+        }
+        next_start = span.start + span.len;
+    }
+    if next_start != count {
+        return Err(GraphShapeError::new(format!(
+            "parameter spans cover 0..{next_start} of {count} parameters"
+        )));
+    }
     for (position, node) in graph.nodes.iter().enumerate() {
         if node.id.0 != position {
             return Err(GraphShapeError::new(format!(
                 "node at position {position} carries id {}",
                 node.id.0
             )));
+        }
+        if let Op::ObsLogP { family, aux, .. } = &node.op {
+            let needs_aux = matches!(
+                family,
+                ObsFamily::Normal | ObsFamily::LogNormal | ObsFamily::NegativeBinomialLog
+            );
+            if needs_aux != aux.is_some() {
+                let requirement = if needs_aux {
+                    "requires an auxiliary scale node"
+                } else {
+                    "takes no auxiliary node"
+                };
+                return Err(GraphShapeError::new(format!(
+                    "{family:?} observation at node {position} {requirement}"
+                )));
+            }
         }
         let mut later_node = None;
         let mut bad_span = None;
