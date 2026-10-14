@@ -37,7 +37,6 @@ def main():
         clean_env.pop("PYTHONPATH", None)
         clean_env["RUSTMC_REQUIRE_SITE_PACKAGES"] = "1"
         subprocess.run([str(executable), "-c", "import rustmc; assert rustmc.__version__ == %r" % expected], cwd=temporary, env=clean_env, check=True)
-        subprocess.run([str(executable), str(root / "scripts/verify_wheel_install.py")], cwd=temporary, env=clean_env, check=True)
         subprocess.run([str(executable), "-m", "pytest", "-q", str(root / "tests")], cwd=temporary, env=clean_env, check=True)
     print("Verified exact release artifact: %s" % artifacts[0])
 

@@ -18,6 +18,9 @@ import numpy as np
 import pytest
 
 
+# Hand-written on purpose. test_namespace derives its expectations from the
+# extension's own exports and `__all__`, so it cannot notice a name removed from
+# both; this list is the guard against that. Add each new public name here.
 EXPECTED_API = {
     "ModelBuilder",
     "ModelSpec",
@@ -57,6 +60,19 @@ EXPECTED_API = {
     "sample",
     "batch_sample",
     "sample_prior_predictive",
+    "GaussianCoefficientPrior",
+    "BayesianRegressionFit",
+    "BayesianRegressionForecast",
+    "fourier_design",
+    "ForecastBatchFit",
+    "ForecastBatchForecast",
+    "forecast_cell_seed",
+    "DirichletMultinomialRunoff",
+    "RunoffFit",
+    "BayesianHurdleLogNormal",
+    "BayesianHurdleLogNormalFit",
+    "BayesianHurdleLogNormalForecast",
+    "hurdle_lognormal_logp",
 }
 
 
