@@ -222,6 +222,8 @@ pub(crate) fn run_chain_with_evaluator(
         }
         let is_warmup = iter < config.num_warmup;
         let step_size_used = step_size;
+        #[cfg(feature = "fault-injection")]
+        let step_size_used = crate::fault_injection::begin_transition(step_size_used, is_warmup);
 
         mass.sample_momentum_into(rng, &mut current.p, &mut scratch);
 
@@ -232,7 +234,7 @@ pub(crate) fn run_chain_with_evaluator(
             graph,
             evaluator,
             &current,
-            step_size,
+            step_size_used,
             &mass,
             h0,
             config.max_tree_depth,
@@ -424,7 +426,10 @@ fn build_tree_iterative(
             log_sum_weight: sub_log_sum_weight,
             ..
         } = subtree;
-        if rng.gen::<f64>() < accept_prob {
+        let take_subtree = rng.gen::<f64>() < accept_prob;
+        #[cfg(feature = "fault-injection")]
+        let take_subtree = take_subtree || crate::fault_injection::favours_new_subtree();
+        if take_subtree {
             pool.give(std::mem::replace(&mut proposal, sub_proposal));
         } else {
             pool.give(sub_proposal);
@@ -499,6 +504,8 @@ fn build_subtree(
         } else {
             -delta_h
         };
+        #[cfg(feature = "fault-injection")]
+        let log_weight = crate::fault_injection::leaf_log_weight(log_weight);
 
         return TreeResult {
             left: pool.copy_of(&next),
@@ -564,7 +571,10 @@ fn build_subtree(
     // Combine proposals via multinomial weighting
     let log_sum = log_sum_exp(inner.log_sum_weight, outer.log_sum_weight);
     let accept_outer = normalized_selection_prob(outer.log_sum_weight, log_sum);
-    let proposal = if rng.gen::<f64>() < accept_outer {
+    let take_outer = rng.gen::<f64>() < accept_outer;
+    #[cfg(feature = "fault-injection")]
+    let take_outer = take_outer || crate::fault_injection::favours_new_subtree();
+    let proposal = if take_outer {
         pool.give(inner.proposal);
         outer.proposal
     } else {

@@ -24,3 +24,10 @@ rand_distr = "0.4"
 faer = { version = "0.19", features = ["rayon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[features]
+# Test-only. Compiles in hooks that deliberately break the NUTS kernel, so the
+# exactness tests (rust_core/tests/exactness_power.rs) can show that they fail
+# when the sampler is wrong. The hooks do nothing until a test selects a fault.
+# Never enable this in a build anyone samples with.
+fault-injection = []
