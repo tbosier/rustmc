@@ -141,10 +141,10 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     """
     Full round trip: `maturin build`, install the resulting wheel into a
     brand-new venv created outside the repo (tmp_path, a pytest tmp
-    directory under the system temp dir), and run tests/test_smoke.py with
-    that venv's interpreter from that same directory -- so the only
-    `rustmc` importable is the one just installed from the wheel.
-    RUSTMC_REQUIRE_SITE_PACKAGES makes the smoke tests assert exactly that.
+    directory under the system temp dir), and run the test suite with that
+    venv's interpreter from that same directory -- so the only `rustmc`
+    importable is the one just installed from the wheel.
+    RUSTMC_REQUIRE_SITE_PACKAGES makes tests/test_smoke.py assert exactly that.
     """
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
@@ -165,9 +165,11 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     env_python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     # Without PYTHONPATH, so a rustmc on it (scripts/dev_pytest.sh puts this
-    # checkout's build there) can neither satisfy the install nor be imported.
+    # checkout's build there) can neither satisfy the install nor be imported,
+    # and without the source-provenance flag, which no installed wheel meets.
     env = {**os.environ, "RUSTMC_REQUIRE_SITE_PACKAGES": "1"}
     env.pop("PYTHONPATH", None)
+    env.pop("RUSTMC_REQUIRE_SOURCE_ROOT", None)
     subprocess.run(
         [
             str(env_python), "-m", "pip", "install", "--quiet",
@@ -180,7 +182,7 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     result = subprocess.run(
         [
             str(env_python), "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
-            str(REPO_ROOT / "tests" / "test_smoke.py"),
+            str(REPO_ROOT / "tests"),
         ],
         cwd=str(tmp_path),
         capture_output=True,
@@ -189,7 +191,7 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     )
     print(result.stdout)
     print(result.stderr, file=sys.stderr)
-    assert result.returncode == 0, "tests/test_smoke.py failed against the clean install"
+    assert result.returncode == 0, "the test suite failed against the clean install"
     # The location check skips, rather than fails, unless
     # RUSTMC_REQUIRE_SITE_PACKAGES reached it; -rs prints the skip reason.
     assert "skipping strict location check" not in result.stdout, result.stdout
