@@ -1712,8 +1712,10 @@ pub(crate) use reference::{eval_logp, grad_logp};
 /// The parallelism a `MatVecMul` hands faer.
 ///
 /// Both of its products have a single column, and faer 0.19 routes every
-/// single-column product to its serial `matvec` kernel without reading this
-/// argument (`linalg::matmul::matmul_with_conj`, the `n == 1` branch). The
+/// single-column product to a serial kernel without reading this argument:
+/// `linalg::matmul::matmul` calls `matmul_with_conj_gemm_dispatch`, whose
+/// `m == 1 && n == 1`, `k == 1` and `n == 1` branches return before the
+/// parallel gemm path (`src/linalg/matmul/mod.rs` in faer 0.19.4). The
 /// `Rayon(0)` that designs of 100,000 or more elements used to request
 /// therefore never ran anything in parallel; chains already do, on the Rayon
 /// pool. Revisit this on a faer upgrade, where
