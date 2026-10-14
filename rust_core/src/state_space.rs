@@ -202,6 +202,13 @@ impl LinearGaussianStateSpace {
         }
         check_symmetric("process covariance", &process_covariance, dimension)?;
         check_symmetric("initial covariance", &initial_covariance, dimension)?;
+        // `positive_semidefinite_factor` reads only the lower triangle, so
+        // store the matrix it validates: mirror that triangle over any
+        // asymmetry inside the tolerance. Otherwise the filter's
+        // `process_root`, which reads the whole matrix, can reject a
+        // covariance this constructor accepted.
+        let mut process_covariance = process_covariance;
+        mirror_lower_triangle(&mut process_covariance, dimension);
         let process_factor =
             positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
                 StateSpaceError::NotPositiveSemidefinite(
@@ -1355,6 +1362,20 @@ fn check_symmetric(name: &str, matrix: &[f64], d: usize) -> Result<(), StateSpac
     Ok(())
 }
 
+/// Copy each lower-triangle entry over its upper-triangle mirror where the two
+/// differ. Entries that compare equal, including `0.0` and `-0.0`, are left
+/// untouched, so a symmetric matrix keeps its exact bits.
+fn mirror_lower_triangle(matrix: &mut [f64], d: usize) {
+    for i in 0..d {
+        for j in 0..i {
+            let lower = matrix[i * d + j];
+            if matrix[j * d + i] != lower {
+                matrix[j * d + i] = lower;
+            }
+        }
+    }
+}
+
 /// Check a proper Gaussian prior: a nonempty finite mean and a matching
 /// finite, symmetric, strictly positive-definite row-major covariance.
 pub(crate) fn validate_gaussian_prior(
@@ -1806,12 +1827,10 @@ mod tests {
     #[test]
     fn representative_accepted_process_covariances_have_a_square_root_for_the_filter() {
         // `new` validates with `positive_semidefinite_factor`; the filter
-        // factors with `process_root`. These covariances, full-rank,
-        // rank-deficient and heteroscaled, pass both. The two routines are
-        // not equivalent in general: `new` reads only the lower triangle, so
-        // an asymmetry inside the symmetry tolerance, such as
-        // [[1, 1.5 + 5e-11], [1.5, 2.25]], is accepted as a rank-one matrix
-        // that `process_root`, which reads the whole matrix, then rejects.
+        // factors the stored covariance with `process_root`. These
+        // covariances, full-rank, rank-deficient and heteroscaled, pass both.
+        // The two routines use different pivoting and tolerances, so this is
+        // a check of representative cases, not a proof of equivalence.
         let covariances: [(usize, Vec<f64>); 5] = [
             (2, vec![1.0, 0.5, 0.5, 1.0]),
             (2, vec![1.0, 1.0, 1.0, 1.0]),
@@ -1820,7 +1839,7 @@ mod tests {
             (3, vec![4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0]),
         ];
         for (d, covariance) in covariances {
-            LinearGaussianStateSpace::new(
+            let model = LinearGaussianStateSpace::new(
                 d,
                 identity(d),
                 vec![1.0; d],
@@ -1830,8 +1849,36 @@ mod tests {
                 identity(d),
             )
             .unwrap();
+            // A symmetric input is stored exactly as given.
+            assert_eq!(model.process_covariance, covariance);
             assert!(process_root(&covariance, d).is_ok(), "{covariance:?}");
         }
+    }
+
+    #[test]
+    fn a_process_covariance_asymmetric_within_tolerance_is_stored_as_validated_and_filters() {
+        // The upper entry exceeds the lower by about 5e-11, inside the
+        // symmetry tolerance of 1e-10 * 1.5. `positive_semidefinite_factor`
+        // reads the lower triangle, so `new` accepts this as the rank-one
+        // matrix [[1, 1.5], [1.5, 2.25]]. Taken as given, the whole matrix
+        // has a negative Schur complement that `process_root` rejects.
+        let covariance = vec![1.0, 1.500_000_000_05, 1.5, 2.25];
+        assert!(process_root(&covariance, 2).is_err());
+        let model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1.0, 0.0],
+            covariance,
+            1.0,
+            vec![0.0; 2],
+            identity(2),
+        )
+        .unwrap();
+        assert_eq!(model.process_covariance, vec![1.0, 1.5, 1.5, 2.25]);
+        assert!(process_root(&model.process_covariance, 2).is_ok());
+        let filtered = model.filter(&[0.4, f64::NAN, -0.2, 1.1]).unwrap();
+        assert!(filtered.log_likelihood.is_finite());
+        model.smooth(&[0.4, f64::NAN, -0.2, 1.1]).unwrap();
     }
 
     /// Observations shared by the exact-reference tests, with three missing.
