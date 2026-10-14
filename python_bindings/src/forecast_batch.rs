@@ -77,9 +77,9 @@ enum CellFit {
     Hurdle(PyHurdleFit),
     Regression(Box<PyBayesianRegressionFit>),
 }
-#[derive(Clone)]
 /// Payloads are shared with the Python objects built from them, so handing a
 /// cell to Python does not copy its paths.
+#[derive(Clone)]
 enum CellForecast {
     Local(Arc<CorePosteriorPredictiveForecast>),
     Seasonal(Arc<CoreSeasonalPosteriorPredictiveForecast>),
@@ -414,21 +414,15 @@ fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Co
 ///
 /// AR draws are exact and independent, so an all-AR batch has no warmup or
 /// thinning; silently dropping the settings would let a caller believe they
-/// had changed the fit. A cell that failed to build may have been a Gibbs
-/// model, so a batch with one is not known to be all-AR and is not refused.
+/// had changed the fit. `all_ar` comes from each cell's model kind, which does
+/// not depend on whether its observations or exog converted; only a cell with
+/// an invalid `models` entry has no known kind, and it counts as possibly Gibbs.
 fn reject_unused_schedule(
-    cells: &[(String, CellInput)],
+    all_ar: bool,
     warmup: Option<usize>,
     thin: Option<usize>,
 ) -> PyResult<()> {
-    if warmup.is_none() && thin.is_none() {
-        return Ok(());
-    }
-    let all_ar = !cells.is_empty()
-        && cells
-            .iter()
-            .all(|(_, input)| matches!(input, Ok((_, Config::Ar(_), _))));
-    if all_ar {
+    if all_ar && (warmup.is_some() || thin.is_some()) {
         return Err(PyValueError::new_err(
             "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
              draws are exact and independent; leave them unset",
@@ -520,21 +514,22 @@ pub(crate) fn fit_batch(
     let designs = aligned_optional(exog, ids.len(), "exog")?;
     let priors = aligned_optional(coefficient_priors, ids.len(), "coefficient_priors")?;
     let mut cells = Vec::with_capacity(ids.len());
+    let mut all_ar = !rows.is_empty();
     for (index, row) in rows.iter().enumerate() {
+        // The cell's model is resolved before its input, so its kind is known
+        // even when the input fails; the observations error still comes first.
+        let config = match &models {
+            Some(models) if !models[index].is_none() => {
+                batch_model_config(&models[index], schedule)
+            }
+            _ => Some(default.clone()),
+        };
+        all_ar &= matches!(config, Some(Config::Ar(_)));
         let input = (|| -> CellInput {
             let y = cell_input(py, real_vector(row, "observations"))?;
-            let config = if let Some(models) = &models {
-                let model = &models[index];
-                if model.is_none() {
-                    default.clone()
-                } else {
-                    batch_model_config(model, schedule).ok_or(
-                        "invalid configuration: models entries must be forecasting models or None",
-                    )?
-                }
-            } else {
-                default.clone()
-            };
+            let config = config.ok_or(
+                "invalid configuration: models entries must be forecasting models or None",
+            )?;
             let design = designs
                 .as_ref()
                 .map(|items| &items[index])
@@ -568,7 +563,7 @@ pub(crate) fn fit_batch(
         })();
         cells.push((ids[index].clone(), input));
     }
-    reject_unused_schedule(&cells, warmup, thin)?;
+    reject_unused_schedule(all_ar, warmup, thin)?;
     check_total_retention(
         cells
             .iter()

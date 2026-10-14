@@ -254,11 +254,22 @@ def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     assert ar.fit_batch([y], ["ar"], draws=8)["ar"].draws == 8
     mixed = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8, warmup=10, thin=2)
     assert (mixed["ar"].draws, mixed["level"].warmup, mixed["level"].thin) == (8, 10, 2)
-    # A cell that failed to build may have been a Gibbs model, so its batch is
-    # not known to be all-AR and keeps the rest of its results.
+    # A cell's kind comes from its model, not from whether its input built: a
+    # mixed batch whose Gibbs cell has bad observations keeps its AR fit...
     partial = ar.fit_batch([y, ["invalid"]], ["ar", "level"], models=[None, local], draws=8,
                            warmup=500, errors="collect")
     assert partial["ar"].draws == 8 and "level" in partial.errors
+    # ...an all-AR batch with bad observations in one cell is still refused...
+    for schedule in ({"warmup": 10}, {"thin": 2}):
+        with pytest.raises(ValueError, match="exact and independent"):
+            ar.fit_batch([y, ["invalid"]], ["a", "b"], draws=8, errors="collect", **schedule)
+        with pytest.raises(ValueError, match="exact and independent"):
+            local.fit_batch([y, ["invalid"]], ["a", "b"], models=[ar, ar], draws=8,
+                            errors="collect", **schedule)
+    # ...and an invalid models entry has no known kind, so it may be Gibbs.
+    unknown = ar.fit_batch([y, y], ["ar", "bad"], models=[None, "not a model"], draws=8,
+                           warmup=10, errors="collect")
+    assert unknown["ar"].draws == 8 and "invalid configuration" in unknown.errors["bad"]
     # Omitted, they take the Gibbs defaults.
     defaulted = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8)
     assert (defaulted["level"].warmup, defaulted["level"].thin) == (500, 1)
