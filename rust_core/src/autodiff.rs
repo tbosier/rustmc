@@ -744,7 +744,10 @@ impl Evaluator {
     }
 
     /// Compute log-probability and its gradient. Results are stored in
-    /// `self.total_logp` and `self.grad`. No heap allocations occur.
+    /// `self.total_logp` and `self.grad`. No heap allocations occur on the
+    /// graph the evaluator was built for or last rebound to; a graph changed
+    /// since then to add a LogNormal term allocates once for that term's
+    /// `ln(y)` cache (see `ensure_log_observations`).
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         self.forward(graph, params);
         self.backward(graph, params);
