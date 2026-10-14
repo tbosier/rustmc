@@ -1751,7 +1751,7 @@ mod tests {
     }
 
     #[test]
-    fn correlated_transitions_reuse_the_factor_the_covariance_was_validated_with() {
+    fn correlated_transitions_draw_from_the_cached_factor_kept_in_step_by_set_variances() {
         let mut model = LinearGaussianStateSpace::new(
             3,
             identity(3),
@@ -1767,6 +1767,11 @@ mod tests {
             if let Some(variance) = variance {
                 model.set_variances(&[1], &[variance], 1.0);
             }
+            // The cache is the factor of the covariance as it now stands.
+            assert_eq!(
+                model.process_factor,
+                positive_semidefinite_factor(&model.process_covariance, 3).ok()
+            );
             let mean = mat_vec(&model.transition, &state, 3);
             let mut cached = ChaCha8Rng::seed_from_u64(9);
             let mut fresh = ChaCha8Rng::seed_from_u64(9);
@@ -1785,13 +1790,28 @@ mod tests {
                 );
             }
         }
+        // And the draw comes from the cache rather than a fresh factorisation:
+        // with a planted identity factor the innovations are the raw normals.
+        let mut planted = model.clone();
+        planted.process_factor = Some(identity(3));
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let mut normals = ChaCha8Rng::seed_from_u64(4);
+        let draw = planted.simulate_transition(&state, &mut rng).unwrap();
+        for (value, mean) in draw.iter().zip(mat_vec(&planted.transition, &state, 3)) {
+            let z: f64 = StandardNormal.sample(&mut normals);
+            assert_eq!(*value, mean + z);
+        }
     }
 
     #[test]
-    fn every_accepted_process_covariance_has_a_square_root_for_the_filter() {
+    fn representative_accepted_process_covariances_have_a_square_root_for_the_filter() {
         // `new` validates with `positive_semidefinite_factor`; the filter
-        // factors with `process_root`. A covariance the first accepts must not
-        // make the second fail later.
+        // factors with `process_root`. These covariances, full-rank,
+        // rank-deficient and heteroscaled, pass both. The two routines are
+        // not equivalent in general: `new` reads only the lower triangle, so
+        // an asymmetry inside the symmetry tolerance, such as
+        // [[1, 1.5 + 5e-11], [1.5, 2.25]], is accepted as a rank-one matrix
+        // that `process_root`, which reads the whole matrix, then rejects.
         let covariances: [(usize, Vec<f64>); 5] = [
             (2, vec![1.0, 0.5, 0.5, 1.0]),
             (2, vec![1.0, 1.0, 1.0, 1.0]),
