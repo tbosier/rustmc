@@ -8,6 +8,12 @@ use crate::hmc::TransitionStats;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
+pub(crate) mod warnings;
+pub use warnings::{
+    fit_warnings, FitWarning, SamplerTelemetry, WarningCode, WarningStatus, ESS_THRESHOLD,
+    E_BFMI_THRESHOLD, R_HAT_THRESHOLD,
+};
+
 /// The fewest retained draws per chain for which R-hat, bulk/tail ESS and the
 /// MCSE are reported, for every engine. Defined next to the forecasting
 /// samplers' diagnostics, which is a crate-private module.
@@ -2216,7 +2222,11 @@ mod tests {
     fn e_bfmi_is_the_arviz_ratio() {
         let energies = [3.0, 5.0, 4.0, 8.0, 6.0];
         let arviz = (25.0 / 4.0) / (14.8 / 4.0);
-        assert!((e_bfmi(&energies) - arviz).abs() < 1e-14, "{}", e_bfmi(&energies));
+        assert!(
+            (e_bfmi(&energies) - arviz).abs() < 1e-14,
+            "{}",
+            e_bfmi(&energies)
+        );
         for undefined in [
             &[][..],
             &[1.0][..],
@@ -2277,7 +2287,10 @@ mod tests {
         assert_eq!(report.max_tree_depth_limit, Some(5));
 
         // A larger limit was not reached.
-        let deeper = compute_transition_diagnostics_with_max_tree_depth(&[nuts.clone()], Some(6));
+        let deeper = compute_transition_diagnostics_with_max_tree_depth(
+            std::slice::from_ref(&nuts),
+            Some(6),
+        );
         assert_eq!(deeper.total_tree_depth_saturation, Some(0));
 
         // Without the limit, saturation is unknown rather than zero.
