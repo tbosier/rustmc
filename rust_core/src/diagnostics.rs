@@ -365,7 +365,7 @@ impl TransitionDiagnosticsReport {
     }
 }
 
-/// Compute full diagnostics from samples[chain][draw][param].
+/// Compute full diagnostics from `samples[chain][draw][param]`.
 pub fn compute_diagnostics(
     samples: &[Vec<Vec<f64>>],
     param_names: &[String],
