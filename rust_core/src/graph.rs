@@ -548,8 +548,14 @@ impl ParamTransform {
 /// The computational graph representing a probabilistic model.
 ///
 /// Stores nodes in topological order (each node only references earlier nodes).
-/// Data vectors and observed values are stored separately from the graph
-/// structure so the graph itself stays lightweight and shareable across threads.
+///
+/// A graph built with the `add_data`/`store_*` methods also carries one
+/// dataset in `data_vectors`, `obs_vectors` and `data_matrices`. The evaluator
+/// never reads those fields: it reads a [`DataBinding`], built from them by
+/// [`DataBinding::from_graph`] or supplied separately against a
+/// [`Self::structure_only`] graph, which is how one structure is shared across
+/// threads and datasets. [`Self::with_binding`] goes the other way and copies
+/// a binding's payloads back into the fields.
 #[derive(Debug, Clone)]
 pub struct Graph {
     pub nodes: Vec<Node>,

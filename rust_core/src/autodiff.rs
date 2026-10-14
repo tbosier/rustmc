@@ -19,7 +19,7 @@ pub(crate) use crate::numerics::softplus;
 #[derive(Clone, Copy)]
 enum NodeKind {
     Scalar,
-    /// References graph.data_vectors[idx] directly — no copy needed.
+    /// Reads `binding.vectors[idx]` in place; no copy is made.
     DataRef(usize),
     /// Computed vector stored at byte offset `off` in the flat vec_buf.
     ComputedVec(usize),

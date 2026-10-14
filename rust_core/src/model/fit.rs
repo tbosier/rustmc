@@ -368,10 +368,18 @@ impl ModelFit {
         let n_draws = self.num_draws();
         let total = self.num_chains() * n_draws;
         let starts: Vec<usize> = (0..total).step_by(EVALUATION_CHUNK).collect();
+        if starts.is_empty() {
+            return Ok(vec![Vec::new(); n_outputs]);
+        }
+        // Split the graph's data into a binding once, not once per chunk: each
+        // chunk's evaluator then shares its `Arc`s instead of copying every
+        // data vector and design matrix again.
+        let binding = DataBinding::from_graph(graph)
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
         let chunks = starts
             .into_par_iter()
             .map(|start| {
-                let mut evaluator = Evaluator::try_new(graph)
+                let mut evaluator = Evaluator::try_with_binding(graph, binding.clone())
                     .map_err(|error| ModelError::invalid(error.to_string()))?;
                 let mut out = vec![Vec::new(); n_outputs];
                 for flat in start..(start + EVALUATION_CHUNK).min(total) {
