@@ -4,6 +4,16 @@
 //! any transforms and Jacobians. Return `Ok(NEG_INFINITY)` for points outside the
 //! target support; return `Err` for an evaluation failure. Prediction is a separate
 //! model operation and is deliberately not inferred from a log density.
+//!
+//! Only `Err` ends a fit. A density that is NaN or `+inf`, or a gradient element
+//! that is non-finite or was never written, makes that point unusable, as `-inf`
+//! does: inside a trajectory the kernels record it as a divergence or a rejected
+//! proposal, as they do for graph models, and a random start retries elsewhere.
+//! An explicit `init` must be usable, so there it is an error.
+//!
+//! A custom target's parameters are all scalars, so `MetricKind::Dense` and
+//! `MetricKind::Auto`, which only estimate dense blocks within vector
+//! parameters, give it a diagonal metric.
 
 use crate::autodiff::Evaluator;
 use crate::graph::Graph;
@@ -54,35 +64,44 @@ struct TargetEvaluator<'a, T: LogDensity + ?Sized> {
     failure: Option<String>,
 }
 
+impl<T: LogDensity + ?Sized> TargetEvaluator<'_, T> {
+    /// Call the target at `position`, leaving its gradient in `self.gradient`.
+    /// Elements the target did not write are NaN.
+    fn evaluate(&mut self, position: &[f64]) -> Result<f64, String> {
+        self.gradient.fill(f64::NAN);
+        self.target
+            .log_density_gradient(position, &mut self.gradient)
+    }
+
+    /// Whether the last [`Self::evaluate`] returned `value` with a finite
+    /// density and a finite, fully written gradient.
+    fn usable(&self, value: f64) -> bool {
+        value.is_finite() && self.gradient.iter().all(|g| g.is_finite())
+    }
+
+    fn mark_outside_support(&mut self) {
+        self.log_density = f64::NEG_INFINITY;
+        self.gradient.fill(0.0);
+    }
+}
+
 impl<T: LogDensity + ?Sized> GradientEvaluator for TargetEvaluator<'_, T> {
     fn compute(&mut self, _graph: &Graph, position: &[f64]) {
         if self.failure.is_some() {
             return;
         }
-        self.gradient.fill(f64::NAN);
         if position.iter().any(|x| !x.is_finite()) {
-            self.log_density = f64::NEG_INFINITY;
-            self.gradient.fill(0.0);
+            self.mark_outside_support();
             return;
         }
-        match self
-            .target
-            .log_density_gradient(position, &mut self.gradient)
-        {
-            Ok(value) if value == f64::NEG_INFINITY => {
-                self.log_density = value;
-                self.gradient.fill(0.0);
-            }
-            Ok(value) if value.is_finite() && self.gradient.iter().all(|g| g.is_finite()) => {
-                self.log_density = value;
-            }
-            result => {
-                self.failure.get_or_insert_with(|| match result {
-                    Err(message) => message,
-                    _ => "custom target returned a nonfinite density or incomplete/nonfinite gradient".into(),
-                });
-                self.log_density = f64::NEG_INFINITY;
-                self.gradient.fill(0.0);
+        match self.evaluate(position) {
+            Ok(value) if self.usable(value) => self.log_density = value,
+            // NaN, +inf or a bad gradient is treated like -inf: the kernels
+            // see a point they cannot move to, not a failed fit.
+            Ok(_) => self.mark_outside_support(),
+            Err(message) => {
+                self.failure = Some(message);
+                self.mark_outside_support();
             }
         }
     }
@@ -100,6 +119,10 @@ impl<T: LogDensity + ?Sized> GradientEvaluator for TargetEvaluator<'_, T> {
 /// Sample a custom target. Initial positions are raw, with one row per chain;
 /// `None` draws each chain's start uniformly from (-2, 2) as graph fits do.
 /// Result draws remain raw; apply the model's transforms for presentation.
+///
+/// Every parameter is a scalar here, so `MetricKind::Dense` and
+/// `MetricKind::Auto` adapt a diagonal metric; see the module docs for how
+/// non-finite values are treated.
 pub fn sample_target<T: LogDensity + ?Sized>(
     target: &T,
     config: SamplerConfig,
@@ -134,34 +157,35 @@ pub fn sample_target<T: LogDensity + ?Sized>(
                     failure: None,
                 };
                 let position = match &positions {
+                    // A supplied start must be usable; unlike a random one,
+                    // there is no other point to try.
                     Some(positions) => {
                         let position = positions[chain].clone();
-                        evaluator.compute(&graph, &position);
-                        if let Some(failure) = evaluator.failure.take() {
-                            return Err(format!("chain {chain}: {failure}"));
-                        }
-                        if !evaluator.log_density.is_finite() {
+                        let value = evaluator
+                            .evaluate(&position)
+                            .map_err(|message| format!("chain {chain}: {message}"))?;
+                        if !value.is_finite() {
                             return Err(format!(
                                 "chain {chain}: initial log density is not finite"
                             ));
                         }
+                        if !evaluator.usable(value) {
+                            return Err(format!(
+                                "chain {chain}: custom target returned an incomplete or \
+                                 nonfinite gradient at the initial point"
+                            ));
+                        }
                         position
                     }
-                    // Called directly rather than through the evaluator, whose
-                    // failure latch would turn one unlucky point into a failed
-                    // fit: a non-finite density or gradient only rules out this
+                    // A non-finite density or gradient only rules out this
                     // point, as it does for graph models. An `Err` is the
                     // target reporting that it cannot evaluate at all, which
                     // another point will not fix.
                     None => random_initial_position(config.seed, chain, dimension, |position| {
-                        let gradient = &mut evaluator.gradient;
-                        gradient.fill(f64::NAN);
-                        match target.log_density_gradient(position, gradient) {
-                            Ok(value) => {
-                                Ok(value.is_finite() && gradient.iter().all(|g| g.is_finite()))
-                            }
-                            Err(message) => Err(format!("chain {chain}: {message}")),
-                        }
+                        let value = evaluator
+                            .evaluate(position)
+                            .map_err(|message| format!("chain {chain}: {message}"))?;
+                        Ok(evaluator.usable(value))
                     })?,
                 };
                 let mut rng = chain_rng(config.seed, chain);
@@ -322,6 +346,52 @@ mod boundary_tests {
             let error = sample_target(&target, config, None).unwrap_err();
             assert!(error.contains("backend unavailable"));
             assert_eq!(target.calls.load(Ordering::Relaxed), 3);
+        }
+    }
+
+    /// A standard normal whose density overflows to `+inf`, with an infinite
+    /// gradient, beyond |x| = 3: a tail a large early step reaches.
+    struct OverflowingTail {
+        tail: AtomicUsize,
+    }
+    impl LogDensity for OverflowingTail {
+        fn dimension(&self) -> usize {
+            1
+        }
+        fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
+            if q[0].abs() > 3.0 {
+                self.tail.fetch_add(1, Ordering::Relaxed);
+                gradient[0] = f64::INFINITY;
+                return Ok(f64::INFINITY);
+            }
+            gradient[0] = -q[0];
+            Ok(-0.5 * q[0] * q[0])
+        }
+    }
+
+    #[test]
+    fn non_finite_values_inside_a_trajectory_are_rejections_not_errors() {
+        for sampler in [SamplerType::Hmc, SamplerType::Nuts] {
+            let target = OverflowingTail {
+                tail: AtomicUsize::new(0),
+            };
+            let config = SamplerConfig {
+                sampler,
+                num_chains: 2,
+                num_draws: 200,
+                num_warmup: 100,
+                num_threads: 1,
+                show_progress: false,
+                ..Default::default()
+            };
+            let fit = sample_target(&target, config.clone(), None)
+                .expect("a non-finite density inside a trajectory must not fail the fit");
+            assert!(target.tail.load(Ordering::Relaxed) > 0, "{sampler:?}");
+            assert!(fit.samples.iter().flatten().all(|q| q[0].abs() <= 3.0));
+            // A supplied start in that tail is still refused.
+            let error =
+                sample_target(&target, config, Some(vec![vec![4.0], vec![0.0]])).unwrap_err();
+            assert!(error.contains("initial log density"), "{error}");
         }
     }
 
