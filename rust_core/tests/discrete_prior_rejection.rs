@@ -22,8 +22,9 @@ use rustmc_core::graph::{ElementwiseOp, Graph};
 use rustmc_core::hmc::{self, HmcConfig};
 use rustmc_core::nuts::{self, NutsConfig};
 use rustmc_core::sampler::{
-    batch_sample_graphs, sample, sample_batch_bound_with_initial, sample_bound,
-    sample_bound_with_init, BatchSampleConfig, BoundBatchOptions, SamplerConfig,
+    sample, sample_batch_bound_with_initial, sample_batch_cells, sample_bound,
+    sample_bound_with_init, BatchCell, BatchSampleConfig, BatchSeedPolicy, BoundBatchOptions,
+    SamplerConfig,
 };
 
 fn config() -> SamplerConfig {
@@ -121,8 +122,7 @@ fn each_sampler_entry_point_rejects_a_discrete_latent() {
             .contains("'flag'")
     );
 
-    // The independent-graph batch path checks its graphs itself rather than
-    // passing through `sample_bound_with_init`.
+    // The independent-graph batch path, which fits cells of any structure.
     let batch = BatchSampleConfig {
         num_chains: 1,
         num_draws: 20,
@@ -131,9 +131,22 @@ fn each_sampler_entry_point_rejects_a_discrete_latent() {
         show_progress: false,
         ..Default::default()
     };
-    assert!(batch_sample_graphs(vec![build()], batch.clone())
-        .expect_err("batch_sample_graphs must reject")
-        .contains("'flag'"));
+    let graph = build();
+    let error = sample_batch_cells(
+        vec![BatchCell {
+            id: "0".into(),
+            graph: Arc::new(graph.structure_only()),
+            binding: DataBinding::from_graph(&graph).map_err(|error| error.to_string()),
+            initial: None,
+        }],
+        batch.clone(),
+        BoundBatchOptions {
+            seed_policy: BatchSeedPolicy::PositionV0,
+            ..Default::default()
+        },
+    )
+    .expect_err("sample_batch_cells must reject");
+    assert!(error.contains("'flag'"), "{error}");
 
     // The shared-structure batch path, which re-enters `sample_bound_with_init`
     // per cell.

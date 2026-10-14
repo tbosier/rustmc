@@ -8,6 +8,7 @@ pub use crate::mass_matrix::MetricKind;
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
 use crate::seeding::{chain_seed, SAMPLER_FIT_SEED_DOMAIN, SAMPLER_INIT_SEED_DOMAIN};
+use crate::target::GradientEvaluator;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
@@ -104,6 +105,14 @@ impl Default for SamplerConfig {
     }
 }
 
+/// Settings for a batch of independent fits: [`SamplerConfig`] without
+/// `num_threads`, since the batch's own pool runs every chain.
+///
+/// The defaults are smaller than a single fit's on purpose (one chain of 300
+/// warmup and 500 draws, tree depth 8): a batch of many small series trades
+/// per-fit diagnostics for throughput. They match the Python `batch_sample`
+/// defaults, which the bindings' signature writes out separately, so a change
+/// here has to be made there too.
 #[derive(Debug, Clone)]
 pub struct BatchSampleConfig {
     pub sampler: SamplerType,
@@ -141,22 +150,20 @@ impl Default for BatchSampleConfig {
 impl SamplerConfig {
     /// Validate controls at the Rust boundary before any allocation or execution.
     pub fn validate(&self) -> Result<(), String> {
-        if self.num_chains == 0 || self.num_draws == 0 {
-            return Err("chains and draws must be positive".into());
+        if self.num_chains == 0 {
+            return Err("chains must be >= 1".into());
+        }
+        if self.num_draws == 0 {
+            return Err("draws must be >= 1".into());
         }
         if self.num_warmup == 0 {
-            return Err("warmup must be positive".into());
+            return Err("warmup must be >= 1".into());
         }
-        if !self.step_size.is_finite() || self.step_size < 0.0 {
-            return Err("step_size must be finite and nonnegative".into());
-        }
+        // Both kernels' settings are checked whichever sampler is selected.
+        validate_step_size(self.step_size)?;
         validate_target_accept(self.target_accept)?;
-        if !(1..=63).contains(&self.max_tree_depth) {
-            return Err("max_tree_depth must be between 1 and 63".into());
-        }
-        if self.num_leapfrog_steps == 0 {
-            return Err("num_leapfrog_steps must be positive".into());
-        }
+        validate_max_tree_depth(self.max_tree_depth)?;
+        validate_leapfrog_steps(self.num_leapfrog_steps)?;
         // Every iteration keeps a transition record; refuse a run whose
         // records alone could not be allocated before any chain starts.
         check_request_size(
@@ -172,13 +179,46 @@ impl SamplerConfig {
         check_retained_draws(self.num_chains, self.num_draws, 1)?;
         Ok(())
     }
+
+    /// The NUTS kernel's share of this configuration.
+    pub(crate) fn nuts_config(&self) -> NutsConfig {
+        NutsConfig {
+            step_size: self.step_size,
+            target_accept: self.target_accept,
+            max_tree_depth: self.max_tree_depth,
+            num_draws: self.num_draws,
+            num_warmup: self.num_warmup,
+            metric: self.metric,
+        }
+    }
+
+    /// The HMC kernel's share of this configuration.
+    pub(crate) fn hmc_config(&self) -> HmcConfig {
+        HmcConfig {
+            step_size: self.step_size,
+            target_accept: self.target_accept,
+            num_leapfrog_steps: self.num_leapfrog_steps,
+            num_draws: self.num_draws,
+            num_warmup: self.num_warmup,
+            metric: self.metric,
+        }
+    }
 }
 
 impl BatchSampleConfig {
+    /// The checks [`SamplerConfig::validate`] applies, with the same messages.
     pub fn validate(&self) -> Result<(), String> {
         self.sampler_config(self.seed).validate()
     }
-    fn sampler_config(&self, seed: u64) -> SamplerConfig {
+
+    /// The single-fit configuration with these settings, `seed`, a pool of
+    /// `num_threads` workers (0 for the ambient one) and `show_progress`.
+    pub fn to_sampler_config(
+        &self,
+        seed: u64,
+        num_threads: usize,
+        show_progress: bool,
+    ) -> SamplerConfig {
         SamplerConfig {
             sampler: self.sampler,
             num_chains: self.num_chains,
@@ -190,9 +230,15 @@ impl BatchSampleConfig {
             num_leapfrog_steps: self.num_leapfrog_steps,
             max_tree_depth: self.max_tree_depth,
             seed,
-            num_threads: 0,
-            show_progress: false,
+            num_threads,
+            show_progress,
         }
+    }
+
+    /// One cell's fit: it runs on the batch's pool and under the batch's
+    /// progress bar, if any.
+    fn sampler_config(&self, seed: u64) -> SamplerConfig {
+        self.to_sampler_config(seed, 0, false)
     }
 }
 
@@ -289,6 +335,71 @@ pub(crate) fn kernel_initial_position(
     }
 }
 
+/// The checks and setup the public raw kernels (`nuts::run_chain(_bound)`,
+/// `hmc::run_chain(_bound)`) share, before `run` drives the chain.
+///
+/// These kernels do not pass through any other entry point in this module, so
+/// the discrete-latent check and the request-size checks `SamplerConfig::validate`
+/// and [`checked_initial`] make have to happen here or not at all. `binding` is
+/// `None` when the data are still embedded in `graph`.
+pub(crate) fn run_raw_kernel(
+    graph: &Graph,
+    binding: Option<DataBinding>,
+    (num_warmup, num_draws): (usize, usize),
+    init: Option<Vec<f64>>,
+    run: impl FnOnce(Vec<f64>, &mut Evaluator) -> ChainResult,
+) -> Result<ChainResult, String> {
+    // A chain keeps a record of every iteration and a vector per draw; refuse
+    // a request whose buffers could not be allocated rather than abort.
+    check_request_size(
+        "sampling's transition records",
+        &[num_warmup.saturating_add(num_draws)],
+        MAX_MATERIALIZED_VALUES,
+        "reduce warmup or draws",
+    )?;
+    check_retained_draws(1, num_draws, graph.param_count)?;
+    reject_discrete_latent_parameters(graph)?;
+    let binding = match binding {
+        Some(binding) => binding,
+        None => DataBinding::from_graph(graph).map_err(|error| error.to_string())?,
+    };
+    let mut evaluator =
+        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
+    let position = kernel_initial_position(init, graph.param_count)?;
+    Ok(run(position, &mut evaluator))
+}
+
+/// Run one chain of the kernel `config` selects from a start the caller has
+/// already checked. `sample*` and `target::sample_target` both run chains
+/// through here.
+pub(crate) fn run_kernel(
+    config: &SamplerConfig,
+    graph: &Graph,
+    rng: &mut ChaCha8Rng,
+    init: Vec<f64>,
+    progress: Option<&ProgressState>,
+    evaluator: &mut impl GradientEvaluator,
+) -> ChainResult {
+    match config.sampler {
+        SamplerType::Nuts => nuts::run_chain_with_evaluator(
+            graph,
+            &config.nuts_config(),
+            rng,
+            init,
+            progress,
+            evaluator,
+        ),
+        SamplerType::Hmc => hmc::run_chain_with_evaluator(
+            graph,
+            &config.hmc_config(),
+            rng,
+            init,
+            progress,
+            evaluator,
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SampleResult {
     pub samples: Vec<Vec<Vec<f64>>>,
@@ -304,6 +415,28 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
+    /// Gather the kernels' per-chain output, moving each chain's draws and
+    /// telemetry rather than copying them.
+    pub(crate) fn from_chains(chains: Vec<ChainResult>, param_names: Vec<String>) -> Self {
+        let mut result = Self {
+            samples: Vec::with_capacity(chains.len()),
+            unconstrained_samples: None,
+            accept_rates: Vec::with_capacity(chains.len()),
+            step_sizes: Vec::with_capacity(chains.len()),
+            divergences: Vec::with_capacity(chains.len()),
+            transitions: Vec::with_capacity(chains.len()),
+            param_names,
+        };
+        for chain in chains {
+            result.samples.push(chain.samples);
+            result.accept_rates.push(chain.accept_rate);
+            result.step_sizes.push(chain.step_size);
+            result.divergences.push(chain.divergences);
+            result.transitions.push(chain.transitions);
+        }
+        result
+    }
+
     /// Posterior mean per parameter, from the same implementation the summary
     /// table uses.
     ///
@@ -361,9 +494,8 @@ impl SampleResult {
     /// Every draw of parameter `index`, chain-major. Requires
     /// [`Self::is_rectangular`].
     ///
-    /// The order is the order the naive loop accumulated in, and it is the
-    /// order `BatchModelResult` accumulates in, so the two keep reporting the
-    /// same value for the same draws.
+    /// The order is the order the naive loop accumulated in; the summation
+    /// order is part of the reported value.
     fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
         self.samples
             .iter()
@@ -372,6 +504,12 @@ impl SampleResult {
 
     pub fn total_divergences(&self) -> usize {
         self.divergences.iter().sum()
+    }
+
+    /// Mean of the chains' acceptance rates (0 with no chains), the figure
+    /// the summary table reports.
+    pub fn mean_accept_rate(&self) -> f64 {
+        diagnostics::mean_accept_rate(&self.accept_rates)
     }
 
     pub fn diagnostics(&self) -> DiagnosticsReport {
@@ -466,10 +604,11 @@ fn validate_initial_target(
 /// which funnels here.
 ///
 /// The raw kernels `nuts::run_chain`, `nuts::run_chain_bound`, `hmc::run_chain`
-/// and `hmc::run_chain_bound` are `pub` and do not pass through this module, so
-/// they call this directly. That is why they return a `Result` rather than a
-/// bare `ChainResult`. `sampler`'s own call sites use the `_unguarded` variants
-/// instead, having already run this once at their boundary.
+/// and `hmc::run_chain_bound` are `pub` and do not pass through the `sample*`
+/// entry points, so they call this through [`run_raw_kernel`]. That is why they
+/// return a `Result` rather than a bare `ChainResult`. `sampler`'s own chains
+/// go through [`run_kernel`] instead, having already run this once at their
+/// boundary.
 ///
 /// Observed data is never rejected, and not by a heuristic: the observation
 /// likelihoods (`obs_logp_bernoulli_logit`, `obs_logp_poisson_log`) are a
@@ -543,11 +682,45 @@ pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), Str
     ))
 }
 
-fn validate_target_accept(target_accept: f64) -> Result<(), String> {
+// The rules every sampler configuration shares, written once: the
+// `SamplerConfig` checks above and the raw kernels' `NutsConfig::validate` and
+// `HmcConfig::validate` all call these.
+
+/// The step size warmup starts adapting from (and samples with when there is
+/// no warmup), or 0 to have warmup search for one.
+pub(crate) fn validate_step_size(step_size: f64) -> Result<(), String> {
+    if step_size.is_finite() && step_size >= 0.0 {
+        Ok(())
+    } else {
+        Err("step_size must be finite and >= 0 (0 enables adaptation)".to_string())
+    }
+}
+
+pub(crate) fn validate_target_accept(target_accept: f64) -> Result<(), String> {
     if target_accept.is_finite() && target_accept > 0.0 && target_accept < 1.0 {
         Ok(())
     } else {
         Err("target_accept must be finite and strictly between 0 and 1".to_string())
+    }
+}
+
+/// At depth 0 NUTS never expands a tree, so every transition would return its
+/// start; past 63 the leaf count overflows.
+pub(crate) fn validate_max_tree_depth(max_tree_depth: usize) -> Result<(), String> {
+    if (1..=63).contains(&max_tree_depth) {
+        Ok(())
+    } else {
+        Err("max_tree_depth must be between 1 and 63".to_string())
+    }
+}
+
+/// With no leapfrog step an HMC proposal is its own start, with a stale
+/// gradient.
+pub(crate) fn validate_leapfrog_steps(num_leapfrog_steps: usize) -> Result<(), String> {
+    if num_leapfrog_steps > 0 {
+        Ok(())
+    } else {
+        Err("num_leapfrog_steps must be >= 1".to_string())
     }
 }
 
@@ -640,17 +813,13 @@ fn sample_checked(
     initial: Option<&[Vec<f64>]>,
     progress: Option<&ProgressState>,
 ) -> Result<SampleResult, String> {
-    let results = run_chains(graph, binding, config, initial, progress)?;
-    let (samples, unconstrained_samples) = constrain_chains(graph, &results)?;
-    Ok(SampleResult {
-        samples,
-        unconstrained_samples,
-        accept_rates: results.iter().map(|r| r.accept_rate).collect(),
-        step_sizes: results.iter().map(|r| r.step_size).collect(),
-        divergences: results.iter().map(|r| r.divergences).collect(),
-        transitions: results.into_iter().map(|r| r.transitions).collect(),
-        param_names: graph.param_names.clone(),
-    })
+    let chains = run_chains(graph, binding, config, initial, progress)?;
+    let mut result = SampleResult::from_chains(chains, graph.param_names.clone());
+    let (samples, unconstrained_samples) =
+        constrain_chains(graph, std::mem::take(&mut result.samples))?;
+    result.samples = samples;
+    result.unconstrained_samples = unconstrained_samples;
+    Ok(result)
 }
 
 /// Run every chain of one fit on the current Rayon pool.
@@ -672,38 +841,16 @@ fn run_chains(
                 None => random_graph_initial_position(graph, binding, config.seed, chain)?,
             };
             let mut rng = chain_rng(config.seed, chain);
-            match config.sampler {
-                SamplerType::Nuts => nuts::run_chain_bound_unguarded(
-                    graph,
-                    binding.clone(),
-                    &NutsConfig {
-                        step_size: config.step_size,
-                        target_accept: config.target_accept,
-                        max_tree_depth: config.max_tree_depth,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                        metric: config.metric,
-                    },
-                    &mut rng,
-                    Some(position),
-                    progress,
-                ),
-                SamplerType::Hmc => hmc::run_chain_bound_unguarded(
-                    graph,
-                    binding.clone(),
-                    &HmcConfig {
-                        step_size: config.step_size,
-                        target_accept: config.target_accept,
-                        num_leapfrog_steps: config.num_leapfrog_steps,
-                        num_draws: config.num_draws,
-                        num_warmup: config.num_warmup,
-                        metric: config.metric,
-                    },
-                    &mut rng,
-                    Some(position),
-                    progress,
-                ),
-            }
+            let mut evaluator = Evaluator::try_with_binding(graph, binding.clone())
+                .map_err(|error| error.to_string())?;
+            Ok(run_kernel(
+                config,
+                graph,
+                &mut rng,
+                position,
+                progress,
+                &mut evaluator,
+            ))
         })
         .collect()
 }
@@ -726,48 +873,41 @@ type ChainDraws = Vec<Vec<Vec<f64>>>;
 
 /// Back-transform every chain's draws to the constrained scale, keeping the
 /// raw positions too when any parameter is transformed.
+///
+/// `raw` is moved, not copied: into the result's raw draws when any parameter
+/// is transformed, and into the constrained draws when none is, since the
+/// identity transform returns its input unchanged.
 fn constrain_chains(
     graph: &Graph,
-    results: &[ChainResult],
+    raw: ChainDraws,
 ) -> Result<(ChainDraws, Option<Arc<ChainDraws>>), String> {
     let transforms = &graph.param_transforms;
-    let samples: ChainDraws = results
+    let transformed = transforms
         .iter()
-        .map(|r| {
-            r.samples
-                .iter()
-                .map(|draw| {
-                    draw.iter()
-                        .enumerate()
-                        .map(|(i, &raw)| transforms[i].apply(raw))
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
+        .any(|t| !matches!(t, ParamTransform::Identity));
+    let (samples, unconstrained) = if transformed {
+        let samples: ChainDraws = raw
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        draw.iter()
+                            .enumerate()
+                            .map(|(i, &raw)| transforms[i].apply(raw))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        (samples, Some(Arc::new(raw)))
+    } else {
+        (raw, None)
+    };
     for draw in samples.iter().flatten() {
         validate_constrained_draw(draw, &graph.param_names)?;
     }
-    let unconstrained = transforms
-        .iter()
-        .any(|t| !matches!(t, ParamTransform::Identity))
-        .then(|| Arc::new(results.iter().map(|r| r.samples.clone()).collect()));
     Ok((samples, unconstrained))
-}
-
-/// Result for a single model in a batch run, with flattened constrained draws.
-#[derive(Debug, Clone)]
-pub struct BatchModelResult {
-    pub samples: Vec<Vec<f64>>,
-    /// Exact positions in chain/draw/parameter order for transformed graphs.
-    pub unconstrained_samples: Option<Arc<Vec<Vec<Vec<f64>>>>>,
-    pub param_names: Vec<String>,
-    pub num_chains: usize,
-    pub num_draws: usize,
-    pub accept_rates: Vec<f64>,
-    pub step_sizes: Vec<f64>,
-    pub divergences: Vec<usize>,
-    pub transitions: Vec<Vec<TransitionStats>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -917,127 +1057,6 @@ pub fn sample_batch_cells(
     }
 }
 
-impl BatchModelResult {
-    /// Posterior mean per parameter; see [`SampleResult::mean`].
-    pub fn mean(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        if !self.is_rectangular() {
-            return vec![f64::NAN; n_params];
-        }
-        (0..n_params)
-            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).0)
-            .collect()
-    }
-
-    /// Posterior standard deviation per parameter; see [`SampleResult::std`].
-    pub fn std(&self) -> Vec<f64> {
-        let n_params = self.param_names.len();
-        if !self.is_rectangular() {
-            return vec![f64::NAN; n_params];
-        }
-        (0..n_params)
-            .map(|i| diagnostics::scaled_moments(|| self.draws_of(i)).1)
-            .collect()
-    }
-
-    /// Whether every draw carries every parameter; see
-    /// [`SampleResult::is_rectangular`].
-    fn is_rectangular(&self) -> bool {
-        !self.samples.is_empty()
-            && self
-                .samples
-                .iter()
-                .all(|draw| draw.len() == self.param_names.len())
-    }
-
-    /// Every draw of parameter `index`. `samples` is already chain-major, so
-    /// this is the same sequence `SampleResult::draws_of` yields.
-    fn draws_of(&self, index: usize) -> impl Iterator<Item = f64> + '_ {
-        self.samples.iter().map(move |draw| draw[index])
-    }
-
-    pub fn quantile(&self, param_idx: usize, q: f64) -> f64 {
-        let mut vals: Vec<f64> = self.samples.iter().map(|d| d[param_idx]).collect();
-        vals.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-        let idx = (q * (vals.len() - 1) as f64) as usize;
-        vals[idx.min(vals.len() - 1)]
-    }
-
-    pub fn mean_accept_rate(&self) -> f64 {
-        if self.accept_rates.is_empty() {
-            0.0
-        } else {
-            self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
-        }
-    }
-
-    pub fn total_divergences(&self) -> usize {
-        self.divergences.iter().sum()
-    }
-}
-
-/// Fit independent data-owning graphs, one per entry, through one Rayon pool.
-///
-/// Each model gets `num_chains` chains, seeded as a single fit seeded
-/// `config.seed + (model_index << 32)` would be, and starting from random
-/// initial points. Prefer [`sample_batch_bound_with_initial`] when the models
-/// share one structure.
-pub fn batch_sample_graphs(
-    models: Vec<Graph>,
-    config: BatchSampleConfig,
-) -> Result<Vec<BatchModelResult>, String> {
-    config.validate()?;
-    let mut bindings = Vec::with_capacity(models.len());
-    for graph in &models {
-        graph.validate_shapes().map_err(|e| e.to_string())?;
-        reject_discrete_latent_parameters(graph)?;
-        check_retained_draws(config.num_chains, config.num_draws, graph.param_count)?;
-        bindings.push(DataBinding::from_graph(graph).map_err(|e| e.to_string())?);
-    }
-
-    let progress_state = config.show_progress.then(|| {
-        Arc::new(ProgressState::new(
-            models.len() * config.num_chains,
-            config.num_draws,
-            config.num_warmup,
-            8, // approximate leapfrog for progress display
-        ))
-    });
-    let _progress_guard = progress_state
-        .as_ref()
-        .map(|ps| ProgressGuard::spawn(Arc::clone(ps)));
-
-    with_thread_pool(0, || {
-        models
-            .into_par_iter()
-            .zip(bindings)
-            .enumerate()
-            .map(|(model_index, (graph, binding))| {
-                let seed = config.seed.wrapping_add((model_index as u64) << 32);
-                let chains = run_chains(
-                    &graph,
-                    &binding,
-                    &config.sampler_config(seed),
-                    None,
-                    progress_state.as_deref(),
-                )?;
-                let (samples, unconstrained_samples) = constrain_chains(&graph, &chains)?;
-                Ok(BatchModelResult {
-                    samples: samples.into_iter().flatten().collect(),
-                    unconstrained_samples,
-                    param_names: graph.param_names.clone(),
-                    num_chains: config.num_chains,
-                    num_draws: config.num_draws,
-                    accept_rates: chains.iter().map(|c| c.accept_rate).collect(),
-                    step_sizes: chains.iter().map(|c| c.step_size).collect(),
-                    divergences: chains.iter().map(|c| c.divergences).collect(),
-                    transitions: chains.into_iter().map(|c| c.transitions).collect(),
-                })
-            })
-            .collect()
-    })?
-}
-
 fn validate_constrained_draw(draw: &[f64], names: &[String]) -> Result<(), String> {
     if let Some(index) = draw.iter().position(|value| !value.is_finite()) {
         return Err(format!(
@@ -1140,9 +1159,15 @@ mod tests {
             show_progress: false,
             ..Default::default()
         };
-        let legacy = batch_sample_graphs(vec![graph.clone()], config.clone()).unwrap();
-        // The position policy seeds dataset `i` as `seed + (i << 32)`, the
-        // same seed the per-graph batch gives model `i`.
+        // The position policy seeds dataset `i` as `seed + (i << 32)`, so
+        // dataset 0 is fitted exactly as a single fit seeded `seed` is.
+        let single = sample_bound_with_init(
+            Arc::new(graph.structure_only()),
+            DataBinding::from_graph(&graph).unwrap(),
+            config.sampler_config(config.seed),
+            None,
+        )
+        .unwrap();
         let bound = sample_batch_bound_with_initial(
             Arc::new(graph.structure_only()),
             vec![("0".into(), Ok(DataBinding::from_graph(&graph).unwrap()))],
@@ -1155,12 +1180,152 @@ mod tests {
         )
         .unwrap();
         let bound = bound[0].as_ref().unwrap();
-        let raw = legacy[0].unconstrained_samples.as_ref().unwrap();
+        let raw = bound.unconstrained_samples.as_ref().unwrap();
         assert_eq!(raw.len(), 2);
         assert_eq!(raw[0].len(), 20);
-        assert_eq!(raw, bound.unconstrained_samples.as_ref().unwrap());
-        for (position, constrained) in raw.iter().flatten().zip(&legacy[0].samples) {
+        assert_eq!(raw, single.unconstrained_samples.as_ref().unwrap());
+        assert_eq!(bound.samples, single.samples);
+        for (position, constrained) in raw.iter().flatten().zip(bound.samples.iter().flatten()) {
             assert_eq!(graph.param_transforms[0].apply(position[0]), constrained[0]);
+        }
+    }
+
+    #[test]
+    fn kernel_configs_forward_every_setting_unchanged() {
+        // Every value distinct, so a swapped or shifted field shows.
+        let config = SamplerConfig {
+            num_draws: 11,
+            num_warmup: 13,
+            step_size: 0.25,
+            target_accept: 0.7,
+            num_leapfrog_steps: 17,
+            max_tree_depth: 5,
+            metric: MetricKind::Dense,
+            ..Default::default()
+        };
+        let nuts = config.nuts_config();
+        assert_eq!(
+            (
+                nuts.num_draws,
+                nuts.num_warmup,
+                nuts.step_size,
+                nuts.target_accept,
+                nuts.max_tree_depth,
+                nuts.metric,
+            ),
+            (11, 13, 0.25, 0.7, 5, MetricKind::Dense)
+        );
+        let hmc = config.hmc_config();
+        assert_eq!(
+            (
+                hmc.num_draws,
+                hmc.num_warmup,
+                hmc.step_size,
+                hmc.target_accept,
+                hmc.num_leapfrog_steps,
+                hmc.metric,
+            ),
+            (11, 13, 0.25, 0.7, 17, MetricKind::Dense)
+        );
+    }
+
+    #[test]
+    fn batch_configs_convert_and_validate_as_single_fits() {
+        let batch = BatchSampleConfig {
+            sampler: SamplerType::Hmc,
+            num_chains: 3,
+            step_size: 0.2,
+            seed: 7,
+            metric: MetricKind::Dense,
+            ..Default::default()
+        };
+        let single = batch.to_sampler_config(9, 2, true);
+        assert_eq!(
+            (
+                single.sampler,
+                single.num_chains,
+                single.num_draws,
+                single.num_warmup,
+                single.step_size,
+                single.target_accept,
+                single.num_leapfrog_steps,
+                single.max_tree_depth,
+                single.metric,
+            ),
+            (
+                batch.sampler,
+                batch.num_chains,
+                batch.num_draws,
+                batch.num_warmup,
+                batch.step_size,
+                batch.target_accept,
+                batch.num_leapfrog_steps,
+                batch.max_tree_depth,
+                batch.metric,
+            )
+        );
+        assert_eq!(
+            (single.seed, single.num_threads, single.show_progress),
+            (9, 2, true)
+        );
+        // The wording the Python bindings have always used for these.
+        let refused = [
+            (
+                BatchSampleConfig {
+                    num_chains: 0,
+                    ..batch.clone()
+                },
+                "chains must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    num_draws: 0,
+                    ..batch.clone()
+                },
+                "draws must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    num_warmup: 0,
+                    ..batch.clone()
+                },
+                "warmup must be >= 1",
+            ),
+            (
+                BatchSampleConfig {
+                    step_size: -1.0,
+                    ..batch.clone()
+                },
+                "step_size must be finite and >= 0 (0 enables adaptation)",
+            ),
+            (
+                BatchSampleConfig {
+                    target_accept: 0.0,
+                    ..batch.clone()
+                },
+                "target_accept must be finite and strictly between 0 and 1",
+            ),
+            (
+                BatchSampleConfig {
+                    max_tree_depth: 0,
+                    ..batch.clone()
+                },
+                "max_tree_depth must be between 1 and 63",
+            ),
+            (
+                BatchSampleConfig {
+                    num_leapfrog_steps: 0,
+                    ..batch.clone()
+                },
+                "num_leapfrog_steps must be >= 1",
+            ),
+        ];
+        for (config, message) in refused {
+            assert_eq!(config.validate(), Err(message.to_string()));
+            assert_eq!(
+                config.to_sampler_config(1, 1, false).validate(),
+                Err(message.to_string())
+            );
         }
     }
 
@@ -1260,6 +1425,16 @@ mod tests {
             ]],
             param_names: vec!["x".to_string()],
         };
+
+        assert_eq!(result.mean_accept_rate(), 0.8);
+        assert_eq!(
+            SampleResult {
+                accept_rates: vec![],
+                ..result.clone()
+            }
+            .mean_accept_rate(),
+            0.0
+        );
 
         let report = result.transition_diagnostics();
         assert_eq!(report.total_transitions, 2);

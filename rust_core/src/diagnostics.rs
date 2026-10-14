@@ -1,3 +1,9 @@
+//! MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
+//!
+//! All algorithms follow the definitions in:
+//!   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
+//!   An improved R-hat for assessing convergence of MCMC"
+
 use crate::hmc::TransitionStats;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -22,11 +28,6 @@ const NAME_COLUMN_MIN_WIDTH: usize = 12;
 /// abbreviation from ever making two distinct parameters print identically.
 const NAME_COLUMN_MAX_WIDTH: usize = 48;
 
-/// MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
-///
-/// All algorithms follow the definitions in:
-///   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
-///   An improved R-hat for assessing convergence of MCMC"
 /// Per-parameter diagnostic summary.
 #[derive(Debug, Clone)]
 pub struct ParamDiagnostics {
@@ -53,8 +54,11 @@ pub struct DiagnosticsReport {
 
 /// Per-chain transition telemetry summary.
 ///
-/// Divergence and acceptance fields describe posterior draws only. Energy and
-/// integrator-work fields summarize every retained transition, including warmup.
+/// Divergence, acceptance, energy and step-size fields describe the draw
+/// (post-warmup) transitions only, so early-warmup blow-ups and the step sizes
+/// dual averaging tried do not leak into a fit's summary. `max_tree_depth`
+/// and `total_leapfrog_steps` count the integrator work of every transition,
+/// warmup included.
 #[derive(Debug, Clone)]
 pub struct ChainTransitionDiagnostics {
     pub chain_index: usize,
@@ -62,10 +66,15 @@ pub struct ChainTransitionDiagnostics {
     pub num_warmup_transitions: usize,
     pub num_draw_transitions: usize,
     pub divergences: usize,
+    /// Draw transitions with `TransitionStats::accepted` set. For HMC that is
+    /// an accepted Metropolis proposal; NUTS has no accept step, so for NUTS
+    /// it counts the draw transitions that did not diverge.
     pub accepted_transitions: usize,
     pub mean_accept_prob: f64,
     pub mean_energy_error: f64,
     pub max_abs_energy_error: f64,
+    /// Mean step size over the draw transitions, which all use one step size:
+    /// the one warmup settled on, or with no warmup the starting one.
     pub mean_step_size: f64,
     pub max_tree_depth: Option<usize>,
     pub total_leapfrog_steps: usize,
@@ -73,8 +82,8 @@ pub struct ChainTransitionDiagnostics {
 
 /// Aggregated telemetry across all chains for one sampling run.
 ///
-/// `total_divergences` and `mean_accept_prob` describe posterior draws only;
-/// energy and leapfrog fields summarize all retained transitions.
+/// Divergence, acceptance and energy fields describe the draw transitions
+/// only; `total_leapfrog_steps` counts every transition, warmup included.
 #[derive(Debug, Clone)]
 pub struct TransitionDiagnosticsReport {
     pub chains: Vec<ChainTransitionDiagnostics>,
@@ -264,11 +273,7 @@ impl DiagnosticsReport {
         if let Some(sampler) = sampler {
             lines.push(sampler.to_string());
         } else {
-            let avg_accept: f64 = if self.accept_rates.is_empty() {
-                0.0
-            } else {
-                self.accept_rates.iter().sum::<f64>() / self.accept_rates.len() as f64
-            };
+            let avg_accept = mean_accept_rate(&self.accept_rates);
             lines.push(format!(
                 "Mean accept rate: {:.2}  │  Divergences: {}",
                 avg_accept, self.divergences
@@ -365,7 +370,7 @@ impl TransitionDiagnosticsReport {
     }
 }
 
-/// Compute full diagnostics from samples[chain][draw][param].
+/// Compute full diagnostics from `samples[chain][draw][param]`.
 pub fn compute_diagnostics(
     samples: &[Vec<Vec<f64>>],
     param_names: &[String],
@@ -440,7 +445,7 @@ fn parameter_diagnostics(samples: &[Vec<Vec<f64>>], pidx: usize, name: &str) -> 
         hdi_3,
         hdi_97,
         ess_bulk: ess_bulk_chains(&chains),
-        ess_tail: ess_tail_chains(&chains),
+        ess_tail: ess_tail_sorted(&chains, &all),
         r_hat: r_hat_chains(&chains),
         mcse_mean,
     }
@@ -457,6 +462,15 @@ fn unavailable_parameter(name: String) -> ParamDiagnostics {
         ess_tail: f64::NAN,
         r_hat: f64::NAN,
         mcse_mean: f64::NAN,
+    }
+}
+
+/// Mean of per-chain acceptance rates, or 0 for no chains.
+pub(crate) fn mean_accept_rate(accept_rates: &[f64]) -> f64 {
+    if accept_rates.is_empty() {
+        0.0
+    } else {
+        accept_rates.iter().sum::<f64>() / accept_rates.len() as f64
     }
 }
 
@@ -487,17 +501,18 @@ pub fn compute_transition_diagnostics(
         } else {
             0.0
         };
-        let mean_energy_error = if num_transitions > 0 {
-            chain.iter().map(|t| t.energy_error).sum::<f64>() / num_transitions as f64
+        let chain_sum_energy_error = draws.iter().map(|t| t.energy_error).sum::<f64>();
+        let mean_energy_error = if num_draw_transitions > 0 {
+            chain_sum_energy_error / num_draw_transitions as f64
         } else {
             0.0
         };
-        let chain_max_abs_energy_error = chain
+        let chain_max_abs_energy_error = draws
             .iter()
             .map(|t| t.energy_error.abs())
             .fold(0.0, f64::max);
-        let mean_step_size = if num_transitions > 0 {
-            chain.iter().map(|t| t.step_size).sum::<f64>() / num_transitions as f64
+        let mean_step_size = if num_draw_transitions > 0 {
+            draws.iter().map(|t| t.step_size).sum::<f64>() / num_draw_transitions as f64
         } else {
             0.0
         };
@@ -510,8 +525,8 @@ pub fn compute_transition_diagnostics(
         total_divergences += divergences;
         total_leapfrog_steps += chain_leapfrog_steps;
         sum_accept_prob += draws.iter().map(|t| t.accept_prob).sum::<f64>();
-        sum_energy_error += chain.iter().map(|t| t.energy_error).sum::<f64>();
-        n_energy_error += num_transitions;
+        sum_energy_error += chain_sum_energy_error;
+        n_energy_error += num_draw_transitions;
         max_abs_energy_error = max_abs_energy_error.max(chain_max_abs_energy_error);
 
         chains.push(ChainTransitionDiagnostics {
@@ -523,7 +538,7 @@ pub fn compute_transition_diagnostics(
             accepted_transitions,
             mean_accept_prob,
             mean_energy_error,
-            max_abs_energy_error,
+            max_abs_energy_error: chain_max_abs_energy_error,
             mean_step_size,
             max_tree_depth,
             total_leapfrog_steps: chain_leapfrog_steps,
@@ -558,9 +573,9 @@ pub fn compute_transition_diagnostics(
 /// draws' own units and without an intermediate that leaves the exponent range.
 ///
 /// This is the single definition of both moments. `compute_diagnostics` uses it
-/// for the summary table, and `SampleResult::mean`/`std` and
-/// `BatchModelResult::mean`/`std` use it for the values they report directly,
-/// so a fit cannot describe its own posterior two different ways.
+/// for the summary table, and `SampleResult::mean`/`std` use it for the values
+/// they report directly, so a fit cannot describe its own posterior two
+/// different ways.
 ///
 /// `draws` is a factory rather than a slice because the two callers hold the
 /// draws in different shapes — chain-major `Vec<Vec<f64>>` per parameter, and a
@@ -639,7 +654,7 @@ where
 // scaling to preserve small differences around a large common offset; fall
 // back to scaling without centering if the finite endpoints span an
 // unrepresentable difference. Inputs here have already been shape/finite checked.
-fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
+fn normalize_chains(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut origin = chains[0][0];
     let mut scale = chains
         .iter()
@@ -651,11 +666,10 @@ fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
         scale = chains.iter().flatten().map(|x| x.abs()).fold(0.0, f64::max);
     }
     let divisor = if scale > 0.0 { scale } else { 1.0 };
-    let normalized = chains
+    chains
         .iter()
         .map(|chain| chain.iter().map(|x| (x - origin) / divisor).collect())
-        .collect();
-    (origin, scale, normalized)
+        .collect()
 }
 
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
@@ -751,14 +765,23 @@ fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
     ess_split(&rank_normalize(&split))
 }
 
+/// [`ess_tail_sorted`] for tests, which sorts the pooled draws itself.
+#[cfg(test)]
+fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
+    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ess_tail_sorted(chains, &all)
+}
+
 /// Tail ESS: minimum of ESS for the lower and upper tail indicators.
+///
+/// `all` is every draw of `chains`, pooled and sorted, as
+/// [`parameter_diagnostics`] already has it for the HDI.
 ///
 /// Both indicators are `x <= q`, as in ArviZ and Stan. The upper one could as
 /// well be its complement, which has the same ESS, but `x >= q` is not that
 /// complement when a draw sits exactly on the quantile.
-fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
-    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
-    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+fn ess_tail_sorted(chains: &[Vec<f64>], all: &[f64]) -> f64 {
     if all.first() == all.last() {
         // A parameter that never moved has no tail, as it has no bulk.
         return f64::NAN;
@@ -769,8 +792,8 @@ fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
             .map(|c| c.iter().map(|&x| if x <= q { 1.0 } else { 0.0 }).collect())
             .collect()
     };
-    let ess_lo = indicator_ess(&below(quantile_sorted(&all, 0.05)));
-    let ess_hi = indicator_ess(&below(quantile_sorted(&all, 0.95)));
+    let ess_lo = indicator_ess(&below(quantile_sorted(all, 0.05)));
+    let ess_hi = indicator_ess(&below(quantile_sorted(all, 0.95)));
     ess_lo.min(ess_hi)
 }
 
@@ -848,7 +871,7 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
 /// ESS of chains that are already split, by Geyer's initial monotone sequence
 /// estimator exactly as Stan and ArviZ implement it.
 fn ess_split(split: &[Vec<f64>]) -> f64 {
-    let (_, _, split) = normalize_chains(split);
+    let split = normalize_chains(split);
     let m = split.len();
     let n = split[0].len();
     let m_f = m as f64;
@@ -1748,6 +1771,10 @@ mod tests {
         assert_eq!(report.chains[1].max_tree_depth, None);
         assert_eq!(report.mean_accept_prob, 0.75);
         assert!(report.max_abs_energy_error >= 0.4);
+        // Each chain reports its own largest energy error, not the largest
+        // seen in the chains before it.
+        assert_eq!(report.chains[0].max_abs_energy_error, 0.4);
+        assert_eq!(report.chains[1].max_abs_energy_error, 0.2);
     }
 
     #[test]
@@ -1767,10 +1794,41 @@ mod tests {
         assert_eq!(report.total_divergences, 0);
         assert_eq!(report.mean_accept_prob, 0.0);
         assert_eq!(report.total_leapfrog_steps, 9);
-        assert_eq!(report.mean_energy_error, 0.25);
+        // Energy and step-size summaries describe draws too, and there are
+        // none; integrator work still counts warmup.
+        assert_eq!(report.mean_energy_error, 0.0);
+        assert_eq!(report.max_abs_energy_error, 0.0);
         assert_eq!(report.chains[0].accepted_transitions, 0);
-        assert_eq!(report.chains[0].mean_step_size, 0.5);
+        assert_eq!(report.chains[0].mean_step_size, 0.0);
         assert_eq!(report.chains[0].max_tree_depth, Some(4));
+    }
+
+    #[test]
+    fn transition_energy_and_step_size_summaries_describe_draws_only() {
+        let transition = |is_warmup, energy_error, step_size| TransitionStats {
+            is_warmup,
+            accepted: true,
+            accept_prob: 0.8,
+            energy_error,
+            divergent: false,
+            step_size,
+            num_leapfrog_steps: 3,
+            tree_depth: Some(2),
+        };
+        // An early-warmup blow-up at a step size dual averaging abandoned.
+        let transitions = vec![vec![
+            transition(true, 400.0, 8.0),
+            transition(false, -0.25, 0.5),
+            transition(false, 0.75, 0.5),
+        ]];
+        let report = compute_transition_diagnostics(&transitions);
+        let chain = &report.chains[0];
+        assert_eq!(chain.mean_energy_error, 0.25);
+        assert_eq!(chain.max_abs_energy_error, 0.75);
+        assert_eq!(chain.mean_step_size, 0.5);
+        assert_eq!(report.mean_energy_error, 0.25);
+        assert_eq!(report.max_abs_energy_error, 0.75);
+        assert_eq!(chain.total_leapfrog_steps, 9);
     }
 
     // ---- table layout ---------------------------------------------------

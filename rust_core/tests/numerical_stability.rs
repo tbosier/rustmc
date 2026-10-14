@@ -15,7 +15,7 @@ use rustmc_core::graph::{bounded_sigmoid_adjoint, ElementwiseOp, Graph, NodeId, 
 use rustmc_core::model::{
     compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec, MuExpr, PriorSpec, SigmaSpec,
 };
-use rustmc_core::sampler::{sample, BatchModelResult, SampleResult, SamplerConfig};
+use rustmc_core::sampler::{sample, SampleResult, SamplerConfig};
 use std::collections::HashMap;
 
 fn evaluate(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
@@ -2057,41 +2057,6 @@ fn posterior_moments_survive_draws_near_the_representable_maximum() {
     let report = result.diagnostics();
     assert_eq!(mean, report.params[0].mean, "mean() vs diagnostics()");
     assert_eq!(std, report.params[0].std, "std() vs diagnostics()");
-}
-
-/// `BatchModelResult` carries its draws flattened rather than per chain, so it
-/// is a second implementation of the same traversal and needs its own check.
-/// Reverting only its moments would leave every other test here passing.
-#[test]
-fn batch_posterior_moments_survive_draws_near_the_representable_maximum() {
-    let result = BatchModelResult {
-        samples: [9e307, 8e307, 7e307, 6e307, 5e307, 4e307, 3e307, 2e307]
-            .iter()
-            .map(|&v| vec![v])
-            .collect(),
-        unconstrained_samples: None,
-        param_names: vec!["theta".to_string()],
-        num_chains: 2,
-        num_draws: 4,
-        accept_rates: vec![1.0, 1.0],
-        step_sizes: vec![0.1, 0.1],
-        divergences: vec![0, 0],
-        transitions: vec![Vec::new(), Vec::new()],
-    };
-
-    // Same eight f64 draws, so the same exact rational moments as above.
-    assert_close(result.mean()[0], 5.5e307, "batch mean near f64::MAX");
-    assert_close(
-        result.std()[0],
-        2.4494897427831783e307,
-        "batch std near f64::MAX",
-    );
-
-    // And the same NaN for a draw too short to carry the parameter.
-    let mut ragged = result;
-    ragged.samples[2] = Vec::new();
-    assert!(ragged.mean()[0].is_nan(), "batch mean for a ragged draw");
-    assert!(ragged.std()[0].is_nan(), "batch std for a ragged draw");
 }
 
 /// The two paths agree on malformed input too, rather than one panicking and

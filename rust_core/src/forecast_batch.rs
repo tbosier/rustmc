@@ -1,4 +1,8 @@
-//! Independent forecasting execution with stable cell identity and bounded workers.
+//! Independent batch execution with stable cell identity and bounded workers.
+//!
+//! The forecasting batches and the generic-model batch
+//! (`sampler::sample_batch_cells`) both run their cells through these
+//! executors.
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -22,6 +26,25 @@ pub fn stable_cell_seed(seed: u64, id: &str, domain: &str) -> u64 {
     hash
 }
 
+/// The checks both executors make before any work, and the pool they run on.
+fn batch_pool<T>(
+    cells: &[(String, T)],
+    threads: usize,
+    chunk_size: usize,
+) -> Result<rayon::ThreadPool, String> {
+    if threads == 0 || chunk_size == 0 {
+        return Err("threads and chunk_size must be positive".into());
+    }
+    let mut ids = HashSet::with_capacity(cells.len());
+    if cells.iter().any(|(id, _)| !ids.insert(id)) {
+        return Err("cell IDs must be unique".into());
+    }
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(threads)
+        .build()
+        .map_err(|error| format!("could not build batch worker pool: {error}"))
+}
+
 /// Run cells in input order on one private pool, also used by nested chain work.
 /// At most `chunk_size` cells are dispatched together. Outputs are retained; for
 /// bounded total retention, call this on caller-managed chunks and persist/drop
@@ -34,17 +57,7 @@ pub fn execute_batch<T: Sync, R: Send, E: Send>(
     chunk_size: usize,
     fit: impl Fn(&T, u64) -> Result<R, E> + Sync,
 ) -> Result<Vec<Result<R, E>>, String> {
-    if threads == 0 || chunk_size == 0 {
-        return Err("threads and chunk_size must be positive".into());
-    }
-    let mut ids = HashSet::with_capacity(cells.len());
-    if cells.iter().any(|(id, _)| !ids.insert(id)) {
-        return Err("cell IDs must be unique".into());
-    }
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|error| format!("could not build batch worker pool: {error}"))?;
+    let pool = batch_pool(cells, threads, chunk_size)?;
     let mut results = Vec::with_capacity(cells.len());
     for chunk in cells.chunks(chunk_size) {
         let output = pool.install(|| {
@@ -74,21 +87,7 @@ pub fn execute_batch_fail_fast<T: Sync, R: Send, E: Send>(
     chunk_size: usize,
     fit: impl Fn(&T, u64) -> Result<R, E> + Sync,
 ) -> Result<Vec<R>, BatchError<E>> {
-    if threads == 0 || chunk_size == 0 {
-        return Err(BatchError::Configuration(
-            "threads and chunk_size must be positive".into(),
-        ));
-    }
-    let mut ids = HashSet::with_capacity(cells.len());
-    if cells.iter().any(|(id, _)| !ids.insert(id)) {
-        return Err(BatchError::Configuration("cell IDs must be unique".into()));
-    }
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(threads)
-        .build()
-        .map_err(|error| {
-            BatchError::Configuration(format!("could not build batch worker pool: {error}"))
-        })?;
+    let pool = batch_pool(cells, threads, chunk_size).map_err(BatchError::Configuration)?;
     let mut results = Vec::with_capacity(cells.len());
     for chunk in cells.chunks(chunk_size) {
         let output = pool.install(|| {
@@ -168,6 +167,21 @@ mod tests {
         });
         assert!(matches!(result, Err(BatchError::Cell { id, .. }) if id == "bad"));
         assert_eq!(calls.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn both_executors_refuse_the_same_options_before_work() {
+        let duplicate = [("x".to_string(), ()), ("x".to_string(), ())];
+        for (cells, threads, chunk) in [(&duplicate[..], 1, 1), (&[], 0, 1), (&[], 1, 0)] {
+            let collected = execute_batch(cells, 1, threads, chunk, |_, _| Ok::<_, ()>(()));
+            let fail_fast =
+                execute_batch_fail_fast(cells, 1, threads, chunk, |_, _| Ok::<_, ()>(()));
+            match (collected, fail_fast) {
+                (Err(collected), Err(BatchError::Configuration(fail_fast))) => {
+                    assert_eq!(collected, fail_fast);
+                }
+                other => panic!("expected configuration errors, got {other:?}"),
+            }
+        }
     }
     #[test]
     fn version_one_seed_encoding_is_fixed() {
