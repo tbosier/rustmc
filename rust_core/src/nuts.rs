@@ -18,7 +18,9 @@
 use crate::adaptation::WarmupAdapter;
 use crate::data::DataBinding;
 use crate::graph::Graph;
-use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
+use crate::hmc::{
+    acceptance_probability, ChainRecorder, ChainResult, TransitionStats, MAX_DELTA_H,
+};
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
 use crate::sampler::{
@@ -178,11 +180,7 @@ pub(crate) fn run_chain_with_evaluator(
     let total_iters = config.num_warmup + config.num_draws;
 
     let q = init;
-    let mut samples = Vec::with_capacity(config.num_draws);
-    let mut transitions = Vec::with_capacity(total_iters);
-    let mut n_divergences = 0usize;
-    let mut sum_accept_prob = 0.0f64;
-    let mut total_iters_done = 0u64;
+    let mut recorder = ChainRecorder::new(config.num_warmup, config.num_draws, progress);
 
     let mut mass = MassMatrix::identity(graph);
     let mut scratch = vec![0.0f64; dim];
@@ -248,22 +246,6 @@ pub(crate) fn run_chain_with_evaluator(
         pool.give(proposal);
 
         let accept_stat = tree_stats.mean_accept_prob;
-        // Retain warmup telemetry, but report posterior-draw diagnostics only.
-        if !is_warmup {
-            if tree_stats.diverging {
-                n_divergences += 1;
-            }
-            sum_accept_prob += accept_stat;
-            total_iters_done += 1;
-        }
-
-        if let Some(p) = progress {
-            p.increment();
-            if !is_warmup && tree_stats.diverging {
-                p.add_divergence();
-            }
-        }
-
         if is_warmup {
             step_size = adapter.after_transition(
                 iter,
@@ -277,35 +259,24 @@ pub(crate) fn run_chain_with_evaluator(
             );
         }
 
-        if !is_warmup {
-            samples.push(current.q.clone());
-        }
-
-        transitions.push(TransitionStats {
-            is_warmup,
-            accepted: !tree_stats.diverging,
-            accept_prob: accept_stat,
-            energy_error: tree_stats.energy_error,
-            divergent: tree_stats.diverging,
-            step_size: step_size_used,
-            num_leapfrog_steps: tree_stats.n_leapfrog,
-            tree_depth: Some(tree_stats.tree_depth),
-        });
+        // NUTS's acceptance rate is the mean acceptance statistic.
+        recorder.record(
+            &current.q,
+            TransitionStats {
+                is_warmup,
+                accepted: !tree_stats.diverging,
+                accept_prob: accept_stat,
+                energy_error: tree_stats.energy_error,
+                divergent: tree_stats.diverging,
+                step_size: step_size_used,
+                num_leapfrog_steps: tree_stats.n_leapfrog,
+                tree_depth: Some(tree_stats.tree_depth),
+            },
+            accept_stat,
+        );
     }
 
-    let accept_rate = if total_iters_done > 0 {
-        sum_accept_prob / total_iters_done as f64
-    } else {
-        0.0
-    };
-
-    ChainResult {
-        samples,
-        accept_rate,
-        step_size,
-        divergences: n_divergences,
-        transitions,
-    }
+    recorder.finish(step_size)
 }
 
 struct TreeStats {

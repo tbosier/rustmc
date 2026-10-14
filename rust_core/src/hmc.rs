@@ -82,10 +82,79 @@ impl HmcConfig {
 #[derive(Debug, Clone)]
 pub struct ChainResult {
     pub samples: Vec<Vec<f64>>,
+    /// HMC: the fraction of draw transitions whose proposal was accepted.
+    /// NUTS: the mean acceptance statistic over draw transitions.
     pub accept_rate: f64,
     pub step_size: f64,
     pub divergences: usize,
     pub transitions: Vec<TransitionStats>,
+}
+
+/// The per-transition bookkeeping HMC and NUTS share: retained draws,
+/// telemetry, posterior-only counters and the progress bar.
+///
+/// Warmup transitions are kept in `transitions` for auditability but do not
+/// count towards divergences, the acceptance rate or the draws.
+pub(crate) struct ChainRecorder<'a> {
+    samples: Vec<Vec<f64>>,
+    transitions: Vec<TransitionStats>,
+    divergences: usize,
+    accept_sum: f64,
+    draws: u64,
+    progress: Option<&'a ProgressState>,
+}
+
+impl<'a> ChainRecorder<'a> {
+    pub(crate) fn new(
+        num_warmup: usize,
+        num_draws: usize,
+        progress: Option<&'a ProgressState>,
+    ) -> Self {
+        Self {
+            samples: Vec::with_capacity(num_draws),
+            transitions: Vec::with_capacity(num_warmup + num_draws),
+            divergences: 0,
+            accept_sum: 0.0,
+            draws: 0,
+            progress,
+        }
+    }
+
+    /// Record a transition that left the chain at `q`. `accept` is this
+    /// transition's contribution to [`ChainResult::accept_rate`], which is
+    /// the mean of `accept` over draw transitions.
+    pub(crate) fn record(&mut self, q: &[f64], stats: TransitionStats, accept: f64) {
+        if !stats.is_warmup {
+            self.draws += 1;
+            if stats.divergent {
+                self.divergences += 1;
+            }
+            self.accept_sum += accept;
+            self.samples.push(q.to_vec());
+        }
+        if let Some(progress) = self.progress {
+            progress.increment();
+            if !stats.is_warmup && stats.divergent {
+                progress.add_divergence();
+            }
+        }
+        self.transitions.push(stats);
+    }
+
+    /// The chain's result, sampled at the final step size `step_size`.
+    pub(crate) fn finish(self, step_size: f64) -> ChainResult {
+        ChainResult {
+            samples: self.samples,
+            accept_rate: if self.draws > 0 {
+                self.accept_sum / self.draws as f64
+            } else {
+                0.0
+            },
+            step_size,
+            divergences: self.divergences,
+            transitions: self.transitions,
+        }
+    }
 }
 
 /// Run a single HMC chain with block-structured mass matrix adaptation.
@@ -162,11 +231,7 @@ pub(crate) fn run_chain_with_evaluator(
     let mut grad = vec![0.0; dim];
     let mut velocity = vec![0.0; dim];
     let mut scratch = vec![0.0; dim];
-    let mut samples = Vec::with_capacity(config.num_draws);
-    let mut transitions = Vec::with_capacity(total_iters);
-    let mut accepted = 0u64;
-    let mut total = 0u64;
-    let mut n_divergences = 0usize;
+    let mut recorder = ChainRecorder::new(config.num_warmup, config.num_draws, progress);
 
     let mut mass = MassMatrix::identity(graph);
     // The same windowed schedule, dual averaging and step-size search as NUTS.
@@ -251,25 +316,6 @@ pub(crate) fn run_chain_with_evaluator(
             accepted_transition = true;
         }
 
-        // Warmup transitions are retained in `transitions` for auditability,
-        // but must not affect posterior-sampling diagnostics.
-        if !is_warmup {
-            total += 1;
-            if divergent {
-                n_divergences += 1;
-            }
-            if accepted_transition {
-                accepted += 1;
-            }
-        }
-
-        if let Some(pbar) = progress {
-            pbar.increment();
-            if !is_warmup && divergent {
-                pbar.add_divergence();
-            }
-        }
-
         if is_warmup {
             step_size = adapter.after_transition(
                 iter,
@@ -283,33 +329,25 @@ pub(crate) fn run_chain_with_evaluator(
             );
         }
 
-        if !is_warmup {
-            samples.push(q.clone());
-        }
-
-        transitions.push(TransitionStats {
-            is_warmup,
-            accepted: accepted_transition,
-            accept_prob,
-            energy_error,
-            divergent,
-            step_size: step_size_used,
-            num_leapfrog_steps: config.num_leapfrog_steps,
-            tree_depth: None,
-        });
+        // HMC's acceptance rate is the fraction of accepted proposals.
+        let accept = if accepted_transition { 1.0 } else { 0.0 };
+        recorder.record(
+            &q,
+            TransitionStats {
+                is_warmup,
+                accepted: accepted_transition,
+                accept_prob,
+                energy_error,
+                divergent,
+                step_size: step_size_used,
+                num_leapfrog_steps: config.num_leapfrog_steps,
+                tree_depth: None,
+            },
+            accept,
+        );
     }
 
-    ChainResult {
-        samples,
-        accept_rate: if total > 0 {
-            accepted as f64 / total as f64
-        } else {
-            0.0
-        },
-        step_size,
-        divergences: n_divergences,
-        transitions,
-    }
+    recorder.finish(step_size)
 }
 
 #[cfg(test)]
