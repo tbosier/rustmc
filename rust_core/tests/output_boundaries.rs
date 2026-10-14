@@ -173,7 +173,7 @@ fn empty_data_vectors_are_rejected_by_the_graph_path() {
     let mu = graph.scalar_mul_data(beta, x);
     let one = graph.add_constant(1.0);
     let obs = graph.add_obs_data(Vec::new());
-    graph.normal_obs_logp(mu, one, obs);
+    graph.obs_logp_normal(mu, one, obs);
     let error = sample(graph, SamplerConfig::default()).expect_err("empty data must not sample");
     assert!(error.contains("must not be empty"), "{error}");
 
@@ -383,7 +383,7 @@ fn regression_graph() -> Graph {
     let one = graph.add_constant(1.0);
     let y: Vec<f64> = (0..rows).map(|i| (i as f64 * 0.11).cos()).collect();
     let obs = graph.add_obs_data(y);
-    graph.normal_obs_logp(mu, one, obs);
+    graph.obs_logp_normal(mu, one, obs);
     graph
 }
 

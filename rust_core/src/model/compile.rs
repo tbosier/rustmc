@@ -74,7 +74,7 @@ pub fn build_likelihood_into_graph(
                 ModelError::invalid(format!("Normal likelihood '{}' is missing sigma", lik.name))
             })?;
             let sigma_node = resolve_sigma(sigma_spec, graph, value_node_map)?;
-            graph.normal_obs_logp(linpred_node, sigma_node, obs_idx);
+            graph.obs_logp_normal(linpred_node, sigma_node, obs_idx);
         }
         LikelihoodFamily::BernoulliLogit => {
             validate_binary_observations(&obs_vec, &lik.name)?;

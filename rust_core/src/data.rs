@@ -794,7 +794,7 @@ mod tests {
         let x = graph.add_data("x", vec![1.0]);
         let mu = graph.scalar_mul_data(beta, x);
         let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
-        graph.normal_obs_logp(mu, one, obs);
+        graph.obs_logp_normal(mu, one, obs);
         let structure = Arc::new(graph.structure_only());
         let shared = Arc::clone(&structure);
 
@@ -844,7 +844,7 @@ mod tests {
         let x = graph.add_data("x", vec![1.0]);
         let mu = graph.scalar_mul_data(beta, x);
         let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
-        graph.normal_obs_logp(mu, one, obs);
+        graph.obs_logp_normal(mu, one, obs);
         let structure = graph.structure_only();
 
         let foreign_schema = DataSchema {

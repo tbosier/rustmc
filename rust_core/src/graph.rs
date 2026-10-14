@@ -762,7 +762,11 @@ impl Graph {
         node
     }
 
-    /// Backward-compatible alias for the Normal observation op.
+    /// Alias of [`Self::obs_logp_normal`], kept for existing callers.
+    ///
+    /// Every other family is spelled `obs_logp_<family>`; new code should use
+    /// [`Self::obs_logp_normal`]. This is due to be marked `#[deprecated]`
+    /// once the remaining in-repository callers have moved over.
     pub fn normal_obs_logp(
         &mut self,
         linpred_vec: NodeId,

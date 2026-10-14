@@ -1990,7 +1990,7 @@ mod tests {
         let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
         let mu = g.scalar_mul_data(beta, x_data);
         let obs = g.add_obs_data(vec![2.5, 5.0, 7.5]);
-        g.normal_obs_logp(mu, one, obs);
+        g.obs_logp_normal(mu, one, obs);
 
         let mut full = Evaluator::new(&g);
         full.compute(&g, &[0.7]);
@@ -2016,7 +2016,7 @@ mod tests {
         let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
         let mu_vec = g.scalar_mul_data(beta, x_data);
         let obs_idx = g.add_obs_data(vec![2.5, 5.0, 7.5]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![2.4];
         let (_, grad) = grad_logp(&g, &params);
@@ -2054,7 +2054,7 @@ mod tests {
         let mu_vec = g.scalar_broadcast_add(b0, v12);
 
         let obs_idx = g.add_obs_data(vec![3.0, 7.0, 11.0, 15.0]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![0.5, 1.8, 1.2];
         let (_, grad) = grad_logp(&g, &params);
@@ -2095,7 +2095,7 @@ mod tests {
         let v12 = g.vector_add(v1, v2);
         let mu_vec = g.scalar_broadcast_add(b0, v12);
         let obs_idx = g.add_obs_data(vec![3.0, 7.0, 11.0, 15.0]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![0.5, 1.8, 1.2];
         let (logp_old, grad_old) = grad_logp(&g, &params);
@@ -2245,7 +2245,7 @@ mod tests {
         // likelihood
         let sigma1 = g.add_constant(1.0);
         let obs_idx = g.add_obs_data(obs);
-        g.normal_obs_logp(mu_node, sigma1, obs_idx);
+        g.obs_logp_normal(mu_node, sigma1, obs_idx);
 
         // params = [intercept, beta[0..5]] = 6 total
         let params = vec![0.5, 0.1, 0.2, -0.1, 0.3, -0.2];
@@ -2314,7 +2314,7 @@ mod tests {
             let mu = g.mat_vec_mul(matrix_idx, start, 2, None);
             let sigma = g.add_constant(1.3);
             let obs_idx = g.add_obs_data(vec![0.5, -1.0, 2.0]);
-            g.normal_obs_logp(mu, sigma, obs_idx);
+            g.obs_logp_normal(mu, sigma, obs_idx);
 
             let params = vec![-0.4, 0.7];
             full_finite_diff_check(&g, &params, 2e-5);
@@ -2450,7 +2450,7 @@ mod expression_tests {
         let mu = g.elementwise(E::Tanh, grouped, None);
         let y = g.add_named_obs_data("y", "amount", vec![1.0, 2.0, 3.0]);
         let sigma = g.add_constant(1.0);
-        g.normal_obs_logp(mu, sigma, y);
+        g.obs_logp_normal(mu, sigma, y);
         let z = g.add_named_obs_data("z", "other", vec![0.0; 5]);
         g.schema.observations[1].dim = "other".into();
         let c = g.add_constant(0.3);
@@ -2778,7 +2778,7 @@ mod extreme_scale_regressions {
                 if log_normal {
                     graph.obs_logp_lognormal(predictor, scale, obs);
                 } else {
-                    graph.normal_obs_logp(predictor, scale, obs);
+                    graph.obs_logp_normal(predictor, scale, obs);
                 }
                 check(
                     &graph,
