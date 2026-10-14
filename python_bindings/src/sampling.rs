@@ -10,12 +10,9 @@ use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use rustmc_core::data::DataBinding as CoreDataBinding;
 use rustmc_core::model::DisplayParamSpec;
 use rustmc_core::sampler::{BatchSampleConfig, MetricKind, SamplerConfig, SamplerType};
-use rustmc_core::seeding::{stream_seed, PRIOR_PREDICT_SEED_DOMAIN};
 
 fn validate_sample_config(
     chains: usize,
@@ -232,18 +229,17 @@ pub(crate) fn sample_prior_predictive<'py>(
     let graph = &compiled.graph;
     let heads = graph.observation_heads();
 
-    // The generator itself lives in the core so a `GraphModel` loaded outside
-    // Python simulates from exactly the same code.
+    // The generator and its seeding both live in the core, so a `GraphModel`
+    // loaded outside Python simulates the same draws for the same seed.
     let mut draws = py
         .allow_threads(|| {
-            let mut rng = ChaCha8Rng::seed_from_u64(stream_seed(seed, PRIOR_PREDICT_SEED_DOMAIN));
-            rustmc_core::prior_sampling::prior_predictive(
+            rustmc_core::prior_sampling::prior_predictive_seeded(
                 graph,
                 &model_spec.priors,
                 &compiled.display_params,
                 &compiled.auto_vector_params,
                 n_samples,
-                &mut rng,
+                seed,
             )
         })
         .map_err(model_error)?;

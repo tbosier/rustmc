@@ -416,6 +416,32 @@ pub fn prior_predictive<R: Rng + ?Sized>(
     })
 }
 
+/// [`prior_predictive`] on the generator the Python `sample_prior_predictive`
+/// uses for `seed`: `ChaCha8Rng` keyed by
+/// `stream_seed(seed, PRIOR_PREDICT_SEED_DOMAIN)`. A Rust caller that passes
+/// the same seed gets the same draws as Python.
+pub fn prior_predictive_seeded(
+    graph: &Graph,
+    priors: &[PriorSpec],
+    display_params: &[DisplayParamSpec],
+    auto_vector_params: &HashMap<String, usize>,
+    n_samples: usize,
+    seed: u64,
+) -> ModelResult<PriorPredictive> {
+    use crate::seeding::{stream_seed, PRIOR_PREDICT_SEED_DOMAIN};
+    use rand::SeedableRng;
+    let mut rng =
+        rand_chacha::ChaCha8Rng::seed_from_u64(stream_seed(seed, PRIOR_PREDICT_SEED_DOMAIN));
+    prior_predictive(
+        graph,
+        priors,
+        display_params,
+        auto_vector_params,
+        n_samples,
+        &mut rng,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
