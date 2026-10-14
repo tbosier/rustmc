@@ -84,9 +84,10 @@ innovation variance. Historical latent states are not retained by these models.
 Gibbs/FFBS and exact conjugate sampling have no Hamiltonian divergences or Metropolis
 acceptance rate: both statistics are `None`. `numerical_failures=0` describes a successful
 fit; numerical failures terminate the affected cell and appear separately in batch
-errors. Nonfinite or constant traces, and chains of fewer than four draws, have
-unavailable convergence metrics (`None` in Python), the same rule HMC/NUTS fits follow.
-Infinite R-hat is retained when it detects separated constant chains. A one-chain fit
+errors. Nonfinite traces, parameters whose draws never move, and chains of fewer than
+four draws have unavailable convergence metrics (`None` in Python), the same rule
+HMC/NUTS fits follow. Chains that each sit still at a different value are not hidden:
+they report an infinite R-hat and a small ESS. A one-chain fit
 can have split diagnostics, but `independent_chain_comparison=False` makes clear that it
 cannot compare independent chains. Finite diagnostics do not prove convergence,
 identification, or model adequacy.
