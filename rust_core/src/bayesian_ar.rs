@@ -31,16 +31,15 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile};
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, cholesky, path_means, path_quantiles, run_chains,
-    sample_inverse_gamma, simulate_draws, solve_lower, solve_lower_transpose, split_paths,
+    check_forecast_size, checked_value_count, cholesky, dot, invalid_config, path_means,
+    path_quantiles, run_chains, sample_inverse_gamma, simulate_draws, solve_lower,
+    solve_lower_transpose, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
+    AR_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, AR_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
     MAX_MATERIALIZED_VALUES,
 };
-#[cfg(test)]
-use crate::seeding::chain_seed;
-use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
+use crate::forecast_diagnostics::parameter_diagnostics;
 
 /// Explicit Normal-Inverse-Gamma prior for an AR(p) regression.
 #[derive(Debug, Clone, PartialEq)]
@@ -75,13 +74,13 @@ impl NormalInverseGammaPrior {
         };
         let dimension = prior.coefficient_mean.len();
         if dimension < 2 {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "coefficient prior must include an intercept and at least one lag",
             ));
         }
-        dimension.checked_mul(dimension).ok_or_else(|| {
-            invalid_configuration("coefficient prior precision dimensions overflow")
-        })?;
+        dimension
+            .checked_mul(dimension)
+            .ok_or_else(|| invalid_config("coefficient prior precision dimensions overflow"))?;
         validate_prior(&prior, dimension)?;
         Ok(prior)
     }
@@ -116,6 +115,27 @@ pub struct BayesianArPosterior {
 }
 
 impl BayesianArPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let mut names = vec!["intercept".into()];
+        names.extend((1..=self.order).map(|i| format!("lag_{i}")));
+        names.push("innovation_variance".into());
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| {
+                        let mut values = d.coefficients.clone();
+                        values.push(d.innovation_variance);
+                        values
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     /// Simulate coherent recursive conditional-mean and observation paths.
     ///
     /// At each horizon the conditional mean uses the already simulated
@@ -127,10 +147,10 @@ impl BayesianArPosterior {
         seed: u64,
     ) -> Result<BayesianArForecast, BayesianForecastError> {
         if horizon == 0 {
-            return Err(invalid_configuration("forecast horizon must be positive"));
+            return Err(invalid_config("forecast horizon must be positive"));
         }
         if self.order == 0 {
-            return Err(invalid_configuration("AR order must be positive"));
+            return Err(invalid_config("AR order must be positive"));
         }
         if self.terminal_observations.len() != self.order
             || self
@@ -138,22 +158,23 @@ impl BayesianArPosterior {
                 .iter()
                 .any(|value| !value.is_finite())
         {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "posterior terminal observations must contain one finite value per lag",
             ));
         }
         if self.chains.is_empty() || self.chains.iter().any(Vec::is_empty) {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "every posterior chain must contain at least one draw",
             ));
         }
 
-        let expected_coefficients = self.order.checked_add(1).ok_or_else(|| {
-            invalid_configuration("AR order is too large to represent its coefficients")
-        })?;
+        let expected_coefficients = self
+            .order
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("AR order is too large to represent its coefficients"))?;
         self.order
             .checked_add(horizon)
-            .ok_or_else(|| invalid_configuration("AR forecast history length overflows"))?;
+            .ok_or_else(|| invalid_config("AR forecast history length overflows"))?;
         check_forecast_size("AR forecast", &self.chains, horizon, 2)?;
         let per_draw = simulate_draws(
             &self.chains,
@@ -163,7 +184,7 @@ impl BayesianArPosterior {
                 if draw.coefficients.len() != expected_coefficients
                     || draw.coefficients.iter().any(|value| !value.is_finite())
                 {
-                    return Err(invalid_configuration(
+                    return Err(invalid_config(
                         "each posterior draw must contain finite intercept and lag coefficients",
                     ));
                 }
@@ -304,28 +325,35 @@ pub fn fit_bayesian_ar(
     validate_positive_finite("posterior variance shape", posterior_shape)?;
     validate_positive_finite("posterior variance scale", posterior_scale)?;
 
-    let chains = run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
-        let mut chain = Vec::with_capacity(config.num_draws);
-        for _ in 0..config.num_draws {
-            let innovation_variance = sample_inverse_gamma(posterior_shape, posterior_scale, rng)?;
-            let standard_draw: Vec<f64> = (0..dimension).map(|_| standard_normal(rng)).collect();
-            let precision_scaled_draw =
-                solve_lower_transpose(&posterior_cholesky, dimension, &standard_draw);
-            ensure_finite_vector("linear solve", &precision_scaled_draw)?;
-            let innovation_sd = innovation_variance.sqrt();
-            let coefficients: Vec<f64> = posterior_mean
-                .iter()
-                .zip(precision_scaled_draw)
-                .map(|(mean, draw)| mean + innovation_sd * draw)
-                .collect();
-            ensure_finite_vector("sampled coefficients", &coefficients)?;
-            chain.push(BayesianArPosteriorDraw {
-                coefficients,
-                innovation_variance,
-            });
-        }
-        Ok::<_, BayesianForecastError>(chain)
-    })?;
+    let chains = run_chains(
+        config.num_chains,
+        config.seed,
+        FIT_SEED_DOMAIN,
+        |_, _, rng| {
+            let mut chain = Vec::with_capacity(config.num_draws);
+            for _ in 0..config.num_draws {
+                let innovation_variance =
+                    sample_inverse_gamma(posterior_shape, posterior_scale, rng)?;
+                let standard_draw: Vec<f64> =
+                    (0..dimension).map(|_| standard_normal(rng)).collect();
+                let precision_scaled_draw =
+                    solve_lower_transpose(&posterior_cholesky, dimension, &standard_draw);
+                ensure_finite_vector("linear solve", &precision_scaled_draw)?;
+                let innovation_sd = innovation_variance.sqrt();
+                let coefficients: Vec<f64> = posterior_mean
+                    .iter()
+                    .zip(precision_scaled_draw)
+                    .map(|(mean, draw)| mean + innovation_sd * draw)
+                    .collect();
+                ensure_finite_vector("sampled coefficients", &coefficients)?;
+                chain.push(BayesianArPosteriorDraw {
+                    coefficients,
+                    innovation_variance,
+                });
+            }
+            Ok::<_, BayesianForecastError>(chain)
+        },
+    )?;
 
     Ok(BayesianArPosterior {
         order: config.order,
@@ -339,14 +367,15 @@ fn validate_inputs(
     config: &BayesianArConfig,
 ) -> Result<usize, BayesianForecastError> {
     if config.order == 0 {
-        return Err(invalid_configuration("AR order must be at least one"));
+        return Err(invalid_config("AR order must be at least one"));
     }
-    let dimension = config.order.checked_add(1).ok_or_else(|| {
-        invalid_configuration("AR order is too large to represent its coefficients")
-    })?;
+    let dimension = config
+        .order
+        .checked_add(1)
+        .ok_or_else(|| invalid_config("AR order is too large to represent its coefficients"))?;
     dimension
         .checked_mul(dimension)
-        .ok_or_else(|| invalid_configuration("AR coefficient precision dimensions overflow"))?;
+        .ok_or_else(|| invalid_config("AR coefficient precision dimensions overflow"))?;
     if observations.len() <= config.order {
         return Err(BayesianForecastError::InvalidObservations(format!(
             "AR({}) requires more than {} observations for its conditional likelihood",
@@ -359,12 +388,10 @@ fn validate_inputs(
         ));
     }
     if config.num_chains == 0 {
-        return Err(invalid_configuration("number of chains must be positive"));
+        return Err(invalid_config("number of chains must be positive"));
     }
     if config.num_draws == 0 {
-        return Err(invalid_configuration(
-            "number of posterior draws must be positive",
-        ));
+        return Err(invalid_config("number of posterior draws must be positive"));
     }
     checked_value_count(
         "AR posterior",
@@ -380,7 +407,7 @@ fn validate_prior(
     dimension: usize,
 ) -> Result<(), BayesianForecastError> {
     if prior.coefficient_mean.len() != dimension {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "coefficient prior mean must have length {dimension}"
         )));
     }
@@ -389,7 +416,7 @@ fn validate_prior(
         .iter()
         .any(|value| !value.is_finite())
     {
-        return Err(invalid_configuration(
+        return Err(invalid_config(
             "coefficient prior mean must contain only finite values",
         ));
     }
@@ -399,7 +426,7 @@ fn validate_prior(
             .iter()
             .any(|row| row.len() != dimension)
     {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "coefficient prior precision must have shape {dimension} by {dimension}"
         )));
     }
@@ -409,7 +436,7 @@ fn validate_prior(
         .flatten()
         .any(|value| !value.is_finite())
     {
-        return Err(invalid_configuration(
+        return Err(invalid_config(
             "coefficient prior precision must contain only finite values",
         ));
     }
@@ -446,7 +473,7 @@ fn validate_symmetric(matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> 
             .max(value.abs())
             .max(transposed.abs());
             if (value - transposed).abs() > 1e-12 * scale {
-                return Err(invalid_configuration(
+                return Err(invalid_config(
                     "coefficient prior precision must be symmetric",
                 ));
             }
@@ -467,7 +494,7 @@ fn factor_positive_definite(
     name: &str,
 ) -> Result<Vec<f64>, BayesianForecastError> {
     cholesky(matrix, dimension)
-        .map_err(|()| invalid_configuration(format!("{name} must be positive definite")))
+        .map_err(|()| invalid_config(format!("{name} must be positive definite")))
 }
 
 fn matrix_vector_product(
@@ -490,17 +517,6 @@ fn quadratic_form(matrix: &[Vec<f64>], vector: &[f64]) -> Result<f64, BayesianFo
     Ok(value.max(0.0))
 }
 
-fn dot(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
-
 fn ensure_finite_vector(name: &str, values: &[f64]) -> Result<(), BayesianForecastError> {
     if values.iter().any(|value| !value.is_finite()) {
         return Err(BayesianForecastError::NumericalFailure(format!(
@@ -512,21 +528,18 @@ fn ensure_finite_vector(name: &str, values: &[f64]) -> Result<(), BayesianForeca
 
 fn validate_positive_finite(name: &str, value: f64) -> Result<(), BayesianForecastError> {
     if !value.is_finite() || value <= 0.0 {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "{name} must be finite and strictly positive"
         )));
     }
     Ok(())
 }
 
-fn invalid_configuration(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn prior_precision_symmetry_is_independent_of_coefficient_units() {
@@ -538,14 +551,6 @@ mod tests {
         }
         let heteroscaled = vec![vec![1e-14, 5e-8], vec![5e-8, 1.0]];
         NormalInverseGammaPrior::new(vec![0.0; 2], heteroscaled, 3.0, 1.0).unwrap();
-    }
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
     }
 
     #[test]

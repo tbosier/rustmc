@@ -9,25 +9,21 @@
 //! Occurrence is static and independent of severity a priori. This factorization
 //! permits exact Beta occurrence draws and conjugate Gaussian severity FFBS/Gibbs.
 
-use crate::bayesian_forecast::{
-    sample_levels_ffbs, BayesianForecastError, ForecastQuantile, InverseGammaPrior,
-    PosteriorPredictiveForecast,
-};
+use crate::bayesian_forecast::sample_levels_ffbs;
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, inverse_gamma_conditional, overdispersed_positive,
-    path_means, path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths,
-    GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    check_forecast_size, checked_value_count, invalid_config, inverse_gamma_conditional, numerical,
+    overdispersed_positive, path_means, path_quantiles, run_chains, run_gibbs_chains,
+    simulate_draws, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
+    GibbsSchedule, InverseGammaPrior, PosteriorPredictiveForecast,
+    HURDLE_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, HURDLE_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
+    MAX_MATERIALIZED_VALUES,
 };
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Beta, Distribution, StandardNormal};
+use rand_distr::{Beta, Distribution};
 
 const MAX_TRUNCATION_ATTEMPTS: usize = 100_000;
-/// `"HURDFIT"` followed by a version byte.
-const FIT_SEED_DOMAIN: u64 = 0x4855_5244_4649_5401;
-/// `"HURDPRE"` followed by a version byte.
-const FORECAST_SEED_DOMAIN: u64 = 0x4855_5244_5052_4501;
 
 #[derive(Debug, Clone)]
 pub struct HurdleLogNormalConfig {
@@ -65,14 +61,16 @@ impl HurdleLogNormalConfig {
             ),
         ] {
             if !value.is_finite() || value <= 0.0 {
-                return Err(invalid(format!("{name} must be finite and positive")));
+                return Err(invalid_config(format!(
+                    "{name} must be finite and positive"
+                )));
             }
         }
         if !self.initial_log_level.is_finite() {
-            return Err(invalid("initial log level must be finite"));
+            return Err(invalid_config("initial log level must be finite"));
         }
         if !(self.occurrence_alpha + self.occurrence_beta).is_finite() {
-            return Err(invalid("occurrence prior shape sum must be finite"));
+            return Err(invalid_config("occurrence prior shape sum must be finite"));
         }
         InverseGammaPrior::new(
             self.process_variance_prior.shape,
@@ -166,7 +164,7 @@ pub fn hurdle_lognormal_logp(
         || !log_variance.is_finite()
         || log_variance <= 0.0
     {
-        return Err(invalid("hurdle density needs nonnegative finite y, probability in [0,1], finite log level and positive log variance"));
+        return Err(invalid_config("hurdle density needs nonnegative finite y, probability in [0,1], finite log level and positive log variance"));
     }
     if y == 0.0 {
         return Ok((-probability).ln_1p());
@@ -222,33 +220,38 @@ pub fn fit_hurdle_lognormal(
     // With no positive amounts the severity posterior equals its prior.
     // Direct independent draws avoid an uninformative augmented Gibbs chain.
     let chains = if positive_count == 0 {
-        run_chains(config.num_chains, config.seed, FIT_SEED_DOMAIN, |_, rng| {
-            let mut draws = Vec::with_capacity(config.num_draws);
-            for _ in 0..config.num_draws {
-                let q = inverse_gamma(
-                    config.process_variance_prior,
-                    config.process_variance_upper,
-                    rng,
-                )?;
-                let r = inverse_gamma(
-                    config.observation_variance_prior,
-                    config.observation_variance_upper,
-                    rng,
-                )?;
-                let variance = config.initial_variance + observations.len() as f64 * q;
-                let level = config.initial_log_level + normal(rng) * variance.sqrt();
-                if !level.is_finite() {
-                    return Err(numerical("prior terminal level overflowed"));
+        run_chains(
+            config.num_chains,
+            config.seed,
+            FIT_SEED_DOMAIN,
+            |_, _, rng| {
+                let mut draws = Vec::with_capacity(config.num_draws);
+                for _ in 0..config.num_draws {
+                    let q = inverse_gamma(
+                        config.process_variance_prior,
+                        config.process_variance_upper,
+                        rng,
+                    )?;
+                    let r = inverse_gamma(
+                        config.observation_variance_prior,
+                        config.observation_variance_upper,
+                        rng,
+                    )?;
+                    let variance = config.initial_variance + observations.len() as f64 * q;
+                    let level = config.initial_log_level + standard_normal(rng) * variance.sqrt();
+                    if !level.is_finite() {
+                        return Err(numerical("prior terminal level overflowed"));
+                    }
+                    draws.push(HurdleLogNormalDraw {
+                        payment_probability: probability_draw(&occurrence, rng)?,
+                        process_variance: q,
+                        observation_variance: r,
+                        terminal_log_level: level,
+                    });
                 }
-                draws.push(HurdleLogNormalDraw {
-                    payment_probability: probability_draw(&occurrence, rng)?,
-                    process_variance: q,
-                    observation_variance: r,
-                    terminal_log_level: level,
-                });
-            }
-            Ok(draws)
-        })?
+                Ok(draws)
+            },
+        )?
     } else {
         run_gibbs_chains(
             &schedule,
@@ -379,7 +382,7 @@ impl HurdleLogNormalPosterior {
             || self.chains[0].is_empty()
             || self.chains.iter().any(|c| c.len() != self.chains[0].len())
         {
-            return Err(invalid(
+            return Err(invalid_config(
                 "positive horizon and nonempty equal-length posterior chains required",
             ));
         }
@@ -397,18 +400,19 @@ impl HurdleLogNormalPosterior {
                     || !draw.observation_variance.is_finite()
                     || draw.observation_variance <= 0.0
                 {
-                    return Err(invalid("invalid hurdle posterior draw"));
+                    return Err(invalid_config("invalid hurdle posterior draw"));
                 }
                 let mut level = draw.terminal_log_level;
                 let mut means = Vec::with_capacity(horizon);
                 let mut positive_means = Vec::with_capacity(horizon);
                 let mut observations = Vec::with_capacity(horizon);
                 for _ in 0..horizon {
-                    level += normal(rng) * draw.process_variance.sqrt();
+                    level += standard_normal(rng) * draw.process_variance.sqrt();
                     let positive_mean = (level + draw.observation_variance / 2.0).exp();
                     // Draw severity even when the indicator is zero so the two RNG
                     // streams' consumption does not depend on payment probability.
-                    let amount = (level + normal(rng) * draw.observation_variance.sqrt()).exp();
+                    let amount =
+                        (level + standard_normal(rng) * draw.observation_variance.sqrt()).exp();
                     let paid = rng.gen::<f64>() < draw.payment_probability;
                     if !positive_mean.is_finite()
                         || !amount.is_finite()
@@ -491,30 +495,10 @@ fn probability_draw(beta: &Beta<f64>, rng: &mut ChaCha8Rng) -> Result<f64, Bayes
     }
     Ok(value)
 }
-fn normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-fn invalid(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-fn numerical(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seeding::chain_seed;
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        for chain in 0..4 {
-            assert_ne!(
-                chain_seed(42, chain, FIT_SEED_DOMAIN),
-                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
-            );
-        }
-    }
     use rand::SeedableRng;
     use rand_distr::Gamma;
     /// `P(G >= t)` for `G ~ Gamma(k, 1)` at integer `k`, where the upper
@@ -889,8 +873,8 @@ mod tests {
         let mut level = 1.;
         let mut observations = Vec::new();
         for _ in 0..1200 {
-            level += normal(&mut rng) * 0.01_f64.sqrt();
-            let amount = (level + normal(&mut rng) * 0.1_f64.sqrt()).exp();
+            level += standard_normal(&mut rng) * 0.01_f64.sqrt();
+            let amount = (level + standard_normal(&mut rng) * 0.1_f64.sqrt()).exp();
             observations.push(if rng.gen::<f64>() < 0.6 { amount } else { 0. });
         }
         let mut cfg = config();

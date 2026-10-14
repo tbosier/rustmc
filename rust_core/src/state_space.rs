@@ -14,7 +14,7 @@ use std::fmt;
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::forecast_common::cholesky;
+use crate::forecast_common::{cholesky, dot};
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 const LOG_2_PI: f64 = 1.8378770664093453;
@@ -52,9 +52,9 @@ impl fmt::Display for StateSpaceError {
 
 impl Error for StateSpaceError {}
 
-impl From<crate::bayesian_forecast::BayesianForecastError> for StateSpaceError {
-    fn from(error: crate::bayesian_forecast::BayesianForecastError) -> Self {
-        use crate::bayesian_forecast::BayesianForecastError as Source;
+impl From<crate::forecast_common::BayesianForecastError> for StateSpaceError {
+    fn from(error: crate::forecast_common::BayesianForecastError) -> Self {
+        use crate::forecast_common::BayesianForecastError as Source;
         match error {
             Source::InvalidConfiguration(message) | Source::InvalidObservations(message) => {
                 Self::InvalidParameter(message)
@@ -154,6 +154,12 @@ pub struct LinearGaussianStateSpace {
     observation_rows: Option<Vec<Vec<f64>>>,
     process_covariance: Vec<f64>,
     diagonal_process: bool,
+    /// For a non-diagonal process covariance, its `positive_semidefinite_factor`,
+    /// computed whenever the covariance is set so that simulating a transition
+    /// does not refactor it at every step. `None` for a diagonal covariance,
+    /// which is simulated coordinate by coordinate, or for one that
+    /// `set_variances` has made unfactorable.
+    process_factor: Option<Vec<f64>>,
     observation_variance: f64,
     observation_variances: Option<Vec<f64>>,
     initial_mean: Vec<f64>,
@@ -196,11 +202,19 @@ impl LinearGaussianStateSpace {
         }
         check_symmetric("process covariance", &process_covariance, dimension)?;
         check_symmetric("initial covariance", &initial_covariance, dimension)?;
-        positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
-            StateSpaceError::NotPositiveSemidefinite(
-                "process covariance must be positive semidefinite".into(),
-            )
-        })?;
+        // `positive_semidefinite_factor` reads only the lower triangle, so
+        // store the matrix it validates: mirror that triangle over any
+        // asymmetry inside the tolerance. Otherwise the filter's
+        // `process_root`, which reads the whole matrix, can reject a
+        // covariance this constructor accepted.
+        let mut process_covariance = process_covariance;
+        mirror_lower_triangle(&mut process_covariance, dimension);
+        let process_factor =
+            positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
+                StateSpaceError::NotPositiveSemidefinite(
+                    "process covariance must be positive semidefinite".into(),
+                )
+            })?;
         cholesky(&initial_covariance, dimension).map_err(|_| {
             StateSpaceError::NotPositiveDefinite(
                 "initial covariance must be strictly positive definite".into(),
@@ -218,6 +232,7 @@ impl LinearGaussianStateSpace {
             observation_rows: None,
             process_covariance,
             diagonal_process,
+            process_factor: (!diagonal_process).then_some(process_factor),
             observation_variance,
             observation_variances: None,
             initial_mean,
@@ -430,17 +445,15 @@ impl LinearGaussianStateSpace {
         Ok(self)
     }
 
-    /// Set per-time Gaussian noise variances, e.g. conditional Student-t mixtures.
+    /// Set per-time Gaussian noise variances for the training series, e.g.
+    /// conditional Student-t mixtures. They apply to filtering, smoothing and
+    /// FFBS only: [`forecast`](Self::forecast) adds the constant base
+    /// observation variance to every future step.
     pub fn with_observation_variances(
         mut self,
         variances: Vec<f64>,
     ) -> Result<Self, StateSpaceError> {
-        if variances.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(StateSpaceError::InvalidVariance(
-                "observation variances must be finite and positive".into(),
-            ));
-        }
-        self.observation_variances = Some(variances);
+        self.set_observation_variances(variances)?;
         Ok(self)
     }
 
@@ -491,13 +504,11 @@ impl LinearGaussianStateSpace {
             check_finite("simulated state", &draw)?;
             Ok(draw)
         } else {
-            sample_multivariate_normal(
-                "process covariance",
-                &mean,
-                &self.process_covariance,
-                self.dimension,
-                rng,
-            )
+            let factor = self
+                .process_factor
+                .as_deref()
+                .ok_or_else(|| not_positive_semidefinite("process covariance"))?;
+            sample_with_factor("process covariance", &mean, factor, self.dimension, rng)
         }
     }
 
@@ -532,6 +543,12 @@ impl LinearGaussianStateSpace {
     pub(crate) fn set_variances(&mut self, indices: &[usize], variances: &[f64], observation: f64) {
         for (&index, &variance) in indices.iter().zip(variances) {
             self.process_covariance[index * self.dimension + index] = variance;
+        }
+        // Writing diagonal entries keeps a diagonal covariance diagonal; a
+        // correlated one needs its cached factor refreshed.
+        if !self.diagonal_process {
+            self.process_factor =
+                positive_semidefinite_factor(&self.process_covariance, self.dimension).ok();
         }
         self.observation_variance = observation;
     }
@@ -1345,6 +1362,20 @@ fn check_symmetric(name: &str, matrix: &[f64], d: usize) -> Result<(), StateSpac
     Ok(())
 }
 
+/// Copy each lower-triangle entry over its upper-triangle mirror where the two
+/// differ. Entries that compare equal, including `0.0` and `-0.0`, are left
+/// untouched, so a symmetric matrix keeps its exact bits.
+fn mirror_lower_triangle(matrix: &mut [f64], d: usize) {
+    for i in 0..d {
+        for j in 0..i {
+            let lower = matrix[i * d + j];
+            if matrix[j * d + i] != lower {
+                matrix[j * d + i] = lower;
+            }
+        }
+    }
+}
+
 /// Check a proper Gaussian prior: a nonempty finite mean and a matching
 /// finite, symmetric, strictly positive-definite row-major covariance.
 pub(crate) fn validate_gaussian_prior(
@@ -1389,10 +1420,6 @@ fn check_computed(
         )));
     }
     Ok(())
-}
-
-fn dot(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
 }
 
 fn identity(d: usize) -> Vec<f64> {
@@ -1555,9 +1582,23 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
     d: usize,
     rng: &mut R,
 ) -> Result<Vec<f64>, StateSpaceError> {
-    let factor = positive_semidefinite_factor(covariance, d).map_err(|_| {
-        StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
-    })?;
+    let factor =
+        positive_semidefinite_factor(covariance, d).map_err(|_| not_positive_semidefinite(name))?;
+    sample_with_factor(name, mean, &factor, d, rng)
+}
+
+fn not_positive_semidefinite(name: &str) -> StateSpaceError {
+    StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
+}
+
+/// Draw from `N(mean, factor factor')` for a dense row-major `d x d` factor.
+fn sample_with_factor<R: Rng + ?Sized>(
+    name: &str,
+    mean: &[f64],
+    factor: &[f64],
+    d: usize,
+    rng: &mut R,
+) -> Result<Vec<f64>, StateSpaceError> {
     let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
     let mut draw = mean.to_vec();
     for row in 0..d {
@@ -1728,6 +1769,120 @@ mod tests {
             .to_string();
         assert!(message.contains("process covariance"), "{message}");
         assert!(!message.contains("smoothing"), "{message}");
+    }
+
+    #[test]
+    fn correlated_transitions_draw_from_the_cached_factor_kept_in_step_by_set_variances() {
+        let mut model = LinearGaussianStateSpace::new(
+            3,
+            identity(3),
+            vec![1.0, 0.0, 0.0],
+            vec![1.0, 0.5, 0.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+            vec![0.0; 3],
+            identity(3),
+        )
+        .unwrap();
+        let state = [0.3, -1.0, 2.0];
+        for variance in [None, Some(4.0)] {
+            if let Some(variance) = variance {
+                model.set_variances(&[1], &[variance], 1.0);
+            }
+            // The cache is the factor of the covariance as it now stands.
+            assert_eq!(
+                model.process_factor,
+                positive_semidefinite_factor(&model.process_covariance, 3).ok()
+            );
+            let mean = mat_vec(&model.transition, &state, 3);
+            let mut cached = ChaCha8Rng::seed_from_u64(9);
+            let mut fresh = ChaCha8Rng::seed_from_u64(9);
+            for _ in 0..5 {
+                let expected = sample_multivariate_normal(
+                    "process covariance",
+                    &mean,
+                    &model.process_covariance,
+                    3,
+                    &mut fresh,
+                )
+                .unwrap();
+                assert_eq!(
+                    model.simulate_transition(&state, &mut cached).unwrap(),
+                    expected
+                );
+            }
+        }
+        // And the draw comes from the cache rather than a fresh factorisation:
+        // with a planted identity factor the innovations are the raw normals.
+        let mut planted = model.clone();
+        planted.process_factor = Some(identity(3));
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let mut normals = ChaCha8Rng::seed_from_u64(4);
+        let draw = planted.simulate_transition(&state, &mut rng).unwrap();
+        for (value, mean) in draw.iter().zip(mat_vec(&planted.transition, &state, 3)) {
+            let z: f64 = StandardNormal.sample(&mut normals);
+            assert_eq!(*value, mean + z);
+        }
+    }
+
+    #[test]
+    fn representative_accepted_process_covariances_have_a_square_root_for_the_filter() {
+        // `new` validates with `positive_semidefinite_factor`; the filter
+        // factors the stored covariance with `process_root`. These
+        // covariances, full-rank, rank-deficient and heteroscaled, pass both.
+        // The two routines use different pivoting and tolerances, so this is
+        // a check of representative cases, not a proof of equivalence.
+        let covariances: [(usize, Vec<f64>); 6] = [
+            (2, vec![1.0, 0.5, 0.5, 1.0]),
+            (2, vec![1.0, 1.0, 1.0, 1.0]),
+            (2, vec![1e-14, 5e-8, 5e-8, 1.0]),
+            (2, vec![1e20, 0.0, 0.0, 0.0]),
+            (3, vec![4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0]),
+            // Symmetric by value but not by bits.
+            (2, vec![1.0, -0.0, 0.0, 1.0]),
+        ];
+        for (d, covariance) in covariances {
+            let model = LinearGaussianStateSpace::new(
+                d,
+                identity(d),
+                vec![1.0; d],
+                covariance.clone(),
+                1.0,
+                vec![0.0; d],
+                identity(d),
+            )
+            .unwrap();
+            // A symmetric input is stored bit for bit as given, signed zeros
+            // included.
+            let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&model.process_covariance), bits(&covariance));
+            assert!(process_root(&covariance, d).is_ok(), "{covariance:?}");
+        }
+    }
+
+    #[test]
+    fn a_process_covariance_asymmetric_within_tolerance_is_stored_as_validated_and_filters() {
+        // The upper entry exceeds the lower by about 5e-11, inside the
+        // symmetry tolerance of 1e-10 * 1.5. `positive_semidefinite_factor`
+        // reads the lower triangle, so `new` accepts this as the rank-one
+        // matrix [[1, 1.5], [1.5, 2.25]]. Taken as given, the whole matrix
+        // has a negative Schur complement that `process_root` rejects.
+        let covariance = vec![1.0, 1.500_000_000_05, 1.5, 2.25];
+        assert!(process_root(&covariance, 2).is_err());
+        let model = LinearGaussianStateSpace::new(
+            2,
+            identity(2),
+            vec![1.0, 0.0],
+            covariance,
+            1.0,
+            vec![0.0; 2],
+            identity(2),
+        )
+        .unwrap();
+        assert_eq!(model.process_covariance, vec![1.0, 1.5, 1.5, 2.25]);
+        assert!(process_root(&model.process_covariance, 2).is_ok());
+        let filtered = model.filter(&[0.4, f64::NAN, -0.2, 1.1]).unwrap();
+        assert!(filtered.log_likelihood.is_finite());
+        model.smooth(&[0.4, f64::NAN, -0.2, 1.1]).unwrap();
     }
 
     /// Observations shared by the exact-reference tests, with three missing.

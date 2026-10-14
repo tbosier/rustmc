@@ -7,16 +7,169 @@
 //! they have in common: the size guard in front of every large allocation, the
 //! inverse-gamma conditional, the chain driver with its warmup/thinning
 //! schedule and overdispersed starting points, the per-chain forecast loop,
-//! and the empirical path summaries.
+//! the empirical path summaries, and the error, prior and forecast types they
+//! share. [`crate::bayesian_forecast`] re-exports those types under their
+//! original paths.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile};
 use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma};
+use rand_distr::{Distribution, Gamma, StandardNormal};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BayesianForecastError {
+    InvalidConfiguration(String),
+    InvalidObservations(String),
+    NumericalFailure(String),
+}
+
+impl fmt::Display for BayesianForecastError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfiguration(message) => write!(f, "invalid configuration: {message}"),
+            Self::InvalidObservations(message) => write!(f, "invalid observations: {message}"),
+            Self::NumericalFailure(message) => write!(f, "numerical failure: {message}"),
+        }
+    }
+}
+
+impl Error for BayesianForecastError {}
+
+/// A [`BayesianForecastError::InvalidConfiguration`] with this message.
+pub(crate) fn invalid_config(message: impl Into<String>) -> BayesianForecastError {
+    BayesianForecastError::InvalidConfiguration(message.into())
+}
+
+/// A [`BayesianForecastError::NumericalFailure`] with this message.
+pub(crate) fn numerical(message: impl Into<String>) -> BayesianForecastError {
+    BayesianForecastError::NumericalFailure(message.into())
+}
+
+/// Reject a variance that is not finite and strictly positive, naming it.
+pub(crate) fn validate_positive_variance(
+    name: &str,
+    variance: f64,
+) -> Result<(), BayesianForecastError> {
+    if !variance.is_finite() || variance <= 0.0 {
+        return Err(numerical(format!(
+            "{name} variance must be finite and strictly positive"
+        )));
+    }
+    Ok(())
+}
+
+/// One standard normal draw.
+pub(crate) fn standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+    StandardNormal.sample(rng)
+}
+
+/// The inner product of two equal-length slices, summed in index order.
+pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
+
+/// Inverse-gamma prior parameterized by shape and scale.
+///
+/// Its density is proportional to `x^(-shape - 1) * exp(-scale / x)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InverseGammaPrior {
+    pub shape: f64,
+    pub scale: f64,
+}
+
+impl InverseGammaPrior {
+    pub fn new(shape: f64, scale: f64) -> Result<Self, BayesianForecastError> {
+        let prior = Self { shape, scale };
+        prior.validate("inverse-gamma")?;
+        Ok(prior)
+    }
+
+    pub(crate) fn validate(&self, name: &str) -> Result<(), BayesianForecastError> {
+        if !self.shape.is_finite() || self.shape <= 0.0 {
+            return Err(BayesianForecastError::InvalidConfiguration(format!(
+                "{name} shape must be finite and strictly positive"
+            )));
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(BayesianForecastError::InvalidConfiguration(format!(
+                "{name} scale must be finite and strictly positive"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mode(self) -> f64 {
+        self.scale / (self.shape + 1.0)
+    }
+
+    /// One draw of a variance from its conjugate full conditional under this
+    /// prior, given `count` Gaussian residuals with sum of squares
+    /// `sum_of_squares`: `InverseGamma(shape + count / 2, scale +
+    /// sum_of_squares / 2)`. Every Gaussian state-space sampler's variance
+    /// update goes through here.
+    pub(crate) fn conditional_draw<R: Rng + ?Sized>(
+        self,
+        count: usize,
+        sum_of_squares: f64,
+        rng: &mut R,
+    ) -> Result<f64, BayesianForecastError> {
+        sample_inverse_gamma(
+            self.shape + count as f64 / 2.0,
+            self.scale + sum_of_squares / 2.0,
+            rng,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastQuantile {
+    pub probability: f64,
+    pub values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PosteriorPredictiveForecast {
+    /// Coherent latent-level paths indexed as `[chain][draw][forecast_step]`.
+    pub state_paths: Vec<Vec<Vec<f64>>>,
+    /// Coherent observation paths indexed as `[chain][draw][forecast_step]`.
+    pub observation_paths: Vec<Vec<Vec<f64>>>,
+}
+
+impl PosteriorPredictiveForecast {
+    pub fn horizon(&self) -> usize {
+        self.observation_paths
+            .first()
+            .and_then(|chain| chain.first())
+            .map_or(0, Vec::len)
+    }
+
+    pub fn state_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.state_paths)
+    }
+
+    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.observation_paths)
+    }
+
+    /// Compute empirical latent-state quantiles at every horizon.
+    pub fn state_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.state_paths, probabilities)
+    }
+
+    /// Compute empirical posterior-predictive observation quantiles.
+    pub fn observation_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.observation_paths, probabilities)
+    }
+}
 
 /// Largest number of `f64` values one checked request may materialize: a
 /// forecast's paths, a fit's retained draws, or one chain's FFBS working
@@ -118,7 +271,14 @@ pub(crate) fn check_forecast_size<D>(
     }
 }
 
-/// Require enough finite observations to inform every inferred variance.
+/// Reject infinite observations, then require enough finite observations to
+/// inform every inferred variance.
+///
+/// `NaN` marks a missing observation and keeps its time position; an infinity
+/// is an error. Both are reported as
+/// [`BayesianForecastError::InvalidObservations`], which the regression and
+/// structural fits convert to `StateSpaceError::InvalidParameter` with the
+/// same message.
 ///
 /// With proper inverse-gamma priors the posterior exists whatever the data,
 /// so this is not a condition for the maths to be defined. It is the point
@@ -138,6 +298,11 @@ pub(crate) fn require_finite_observations(
     inferred_variances: usize,
     model: &str,
 ) -> Result<usize, BayesianForecastError> {
+    if observations.iter().any(|value| value.is_infinite()) {
+        return Err(BayesianForecastError::InvalidObservations(
+            "observations may be finite or NaN, but not infinite".into(),
+        ));
+    }
     let finite = observations
         .iter()
         .filter(|value| value.is_finite())
@@ -204,8 +369,45 @@ pub(crate) fn sample_inverse_gamma<R: Rng + ?Sized>(
 /// seventh to seven times its reference value.
 const START_HALF_WIDTH: f64 = 2.0;
 
+// Seed domains of the forecasting samplers, one per sampling stage, keyed
+// through `crate::seeding::chain_seed`. They live together so that one test
+// can check them, with the HMC/NUTS domains in `seeding`, for collisions: two
+// stages sharing a domain would draw correlated streams from one caller seed.
+// The values are fixed; changing one changes every seeded draw of its stage.
+
 /// Separates a chain's starting-point stream from its sampling stream.
 const START_SEED_DOMAIN: u64 = 0x5354_4152_545F_5054;
+pub(crate) const LOCAL_LEVEL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
+pub(crate) const LOCAL_LEVEL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
+pub(crate) const TREND_FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
+pub(crate) const TREND_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
+pub(crate) const SEASONAL_FIT_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4954;
+pub(crate) const SEASONAL_FORECAST_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4353;
+pub(crate) const AR_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
+pub(crate) const AR_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
+/// `"\0REG_FIT"`.
+pub(crate) const REGRESSION_FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
+/// `"REG_PRED"`.
+pub(crate) const REGRESSION_FORECAST_SEED_DOMAIN: u64 = 0x5245_475F_5052_4544;
+pub(crate) const STRUCTURAL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
+pub(crate) const STRUCTURAL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
+pub(crate) const STRUCTURAL_PRIOR_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
+/// `"HURDFIT"` followed by a version byte.
+pub(crate) const HURDLE_FIT_SEED_DOMAIN: u64 = 0x4855_5244_4649_5401;
+/// `"HURDPRE"` followed by a version byte.
+pub(crate) const HURDLE_FORECAST_SEED_DOMAIN: u64 = 0x4855_5244_5052_4501;
+pub(crate) const HIERARCHICAL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4849_4552;
+pub(crate) const HIERARCHICAL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_5F48_4945;
+/// `"FIT_DGLM"`.
+pub(crate) const DYNAMIC_GLM_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4447_4C4D;
+/// `"FCSTDGLM"`.
+pub(crate) const DYNAMIC_GLM_FORECAST_SEED_DOMAIN: u64 = 0x4643_5354_4447_4C4D;
+/// `"PRIRDGLM"`.
+pub(crate) const DYNAMIC_GLM_PRIOR_SEED_DOMAIN: u64 = 0x5052_4952_4447_4C4D;
+/// `"PPFCDGLM"`.
+pub(crate) const DYNAMIC_GLM_PRIOR_FORECAST_SEED_DOMAIN: u64 = 0x5050_4643_4447_4C4D;
+/// `"RUNOFF_F"`.
+pub(crate) const RUNOFF_FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46;
 
 /// An overdispersed starting value for a positive parameter: `reference`
 /// scaled by `exp(U(-2, 2))`.
@@ -293,34 +495,50 @@ impl GibbsSchedule {
         Ok(())
     }
 
-    /// Whether the state after `iteration` (zero-based) is retained: every
-    /// `thinning`-th iteration after warmup, ending on the last one.
+    /// Whether the state after `iteration` (zero-based) is retained.
     fn retains(&self, iteration: usize) -> bool {
-        iteration >= self.warmup && (iteration + 1 - self.warmup).is_multiple_of(self.thinning)
+        retains(self.warmup, self.thinning, iteration)
     }
+}
+
+/// Whether the state after `iteration` (zero-based) is retained under
+/// `warmup` and `thinning`: every `thinning`-th iteration after warmup,
+/// ending on the last one. Shared by [`GibbsSchedule`] and the samplers that
+/// keep their own schedule.
+pub(crate) fn retains(warmup: usize, thinning: usize, iteration: usize) -> bool {
+    iteration >= warmup && (iteration + 1 - warmup).is_multiple_of(thinning)
 }
 
 /// Run `chains` independent chains on the active Rayon pool, each with its
 /// own ChaCha stream keyed by `(seed, chain, domain)`, and collect them in
 /// chain order so the result does not depend on the pool size.
+///
+/// `chain` receives the chain index, its key and its stream, and returns that
+/// chain's result. When several chains fail, the error of the first failing
+/// chain in chain order is returned, whatever order the pool ran them in: the
+/// results are gathered into a `Vec` before the first error is picked, because
+/// collecting a parallel iterator straight into a `Result` keeps whichever
+/// error a worker records first.
 pub(crate) fn run_chains<T, E, F>(
     chains: usize,
     seed: u64,
     domain: u64,
     chain: F,
-) -> Result<Vec<Vec<T>>, E>
+) -> Result<Vec<T>, E>
 where
     T: Send,
     E: Send,
-    F: Fn(u64, &mut ChaCha8Rng) -> Result<Vec<T>, E> + Sync,
+    F: Fn(usize, u64, &mut ChaCha8Rng) -> Result<T, E> + Sync,
 {
     (0..chains)
         .into_par_iter()
         .map(|index| {
             let key = chain_seed(seed, index, domain);
             let mut rng = ChaCha8Rng::seed_from_u64(key);
-            chain(key, &mut rng)
+            chain(index, key, &mut rng)
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -345,7 +563,7 @@ where
     Start: Fn(&mut ChaCha8Rng) -> Result<S, E> + Sync,
     Step: Fn(&mut S, &mut ChaCha8Rng, bool) -> Result<Option<T>, E> + Sync,
 {
-    run_chains(schedule.chains, seed, fit_domain, |key, rng| {
+    run_chains(schedule.chains, seed, fit_domain, |_, key, rng| {
         let mut start_rng = ChaCha8Rng::seed_from_u64(chain_seed(key, 0, START_SEED_DOMAIN));
         let mut state = start(&mut start_rng)?;
         let mut draws = Vec::with_capacity(schedule.draws);
@@ -361,6 +579,8 @@ where
 
 /// Pair every posterior draw with one simulated result, one ChaCha stream per
 /// chain keyed by `(seed, chain, domain)`, preserving `[chain][draw]` order.
+/// As in [`run_chains`], an error is that of the first failing chain in chain
+/// order.
 pub(crate) fn simulate_draws<D, P, E, F>(
     chains: &[Vec<D>],
     seed: u64,
@@ -384,6 +604,8 @@ where
                 .map(|(draw_index, draw)| simulate(chain_index, draw_index, draw, &mut rng))
                 .collect()
         })
+        .collect::<Vec<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -493,9 +715,14 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
     Ok(horizon)
 }
 
-/// The `probability` quantile of the non-empty ascending `ordered`,
-/// interpolated linearly between the order statistics either side of
-/// position `(n - 1) * probability`.
+/// The `probability` quantile of the ascending `ordered`, interpolated
+/// linearly between the order statistics either side of position
+/// `(n - 1) * probability`.
+///
+/// The function is total: an empty `ordered`, or a `probability` that is not
+/// finite or lies outside `[0, 1]`, has no quantile and returns `NaN` rather
+/// than panicking or extrapolating. Callers that report these cases as errors
+/// check them first.
 ///
 /// This is the one empirical-quantile rule behind every forecast interval
 /// and quantile, native or in `rustmc.evaluation`. On finite draws it
@@ -513,6 +740,9 @@ pub fn validate_paths(paths: &[Vec<Vec<f64>>]) -> Result<usize, BayesianForecast
 /// or NaN. The convex form `lower * (1 - w) + upper * w` cannot overflow and
 /// is used instead.
 pub fn sorted_quantile(ordered: &[f64], probability: f64) -> f64 {
+    if ordered.is_empty() || !(0.0..=1.0).contains(&probability) {
+        return f64::NAN;
+    }
     let last = ordered.len() - 1;
     let index = last as f64 * probability;
     if index >= last as f64 {
@@ -709,6 +939,87 @@ mod tests {
     }
 
     #[test]
+    fn every_seed_domain_in_the_crate_is_distinct() {
+        // `chain_seed` is a bijection in the domain for a fixed seed and
+        // chain, so distinct domains give every stage its own stream for any
+        // caller seed and chain index.
+        use crate::seeding::{
+            POSTERIOR_PREDICT_SEED_DOMAIN, PRIOR_PREDICT_SEED_DOMAIN, SAMPLER_FIT_SEED_DOMAIN,
+            SAMPLER_INIT_SEED_DOMAIN,
+        };
+        let domains = [
+            SAMPLER_FIT_SEED_DOMAIN,
+            SAMPLER_INIT_SEED_DOMAIN,
+            POSTERIOR_PREDICT_SEED_DOMAIN,
+            PRIOR_PREDICT_SEED_DOMAIN,
+            START_SEED_DOMAIN,
+            LOCAL_LEVEL_FIT_SEED_DOMAIN,
+            LOCAL_LEVEL_FORECAST_SEED_DOMAIN,
+            TREND_FIT_SEED_DOMAIN,
+            TREND_FORECAST_SEED_DOMAIN,
+            SEASONAL_FIT_SEED_DOMAIN,
+            SEASONAL_FORECAST_SEED_DOMAIN,
+            AR_FIT_SEED_DOMAIN,
+            AR_FORECAST_SEED_DOMAIN,
+            REGRESSION_FIT_SEED_DOMAIN,
+            REGRESSION_FORECAST_SEED_DOMAIN,
+            STRUCTURAL_FIT_SEED_DOMAIN,
+            STRUCTURAL_FORECAST_SEED_DOMAIN,
+            STRUCTURAL_PRIOR_SEED_DOMAIN,
+            HURDLE_FIT_SEED_DOMAIN,
+            HURDLE_FORECAST_SEED_DOMAIN,
+            HIERARCHICAL_FIT_SEED_DOMAIN,
+            HIERARCHICAL_FORECAST_SEED_DOMAIN,
+            DYNAMIC_GLM_FIT_SEED_DOMAIN,
+            DYNAMIC_GLM_FORECAST_SEED_DOMAIN,
+            DYNAMIC_GLM_PRIOR_SEED_DOMAIN,
+            DYNAMIC_GLM_PRIOR_FORECAST_SEED_DOMAIN,
+            RUNOFF_FIT_SEED_DOMAIN,
+        ];
+        let unique: std::collections::HashSet<u64> = domains.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            domains.len(),
+            "two stages share a seed domain"
+        );
+        for chain in 0..4 {
+            let keys: std::collections::HashSet<u64> = domains
+                .iter()
+                .map(|&domain| chain_seed(42, chain, domain))
+                .collect();
+            assert_eq!(keys.len(), domains.len(), "chain {chain}");
+        }
+    }
+
+    #[test]
+    fn the_first_failing_chain_in_chain_order_is_reported_whatever_the_pool() {
+        // Every chain fails with its own index; chain 0 fails last in wall
+        // time, so a driver that kept the first error a worker recorded would
+        // report another chain's on a multi-thread pool.
+        let failing = |index: usize| {
+            if index == 0 {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+            }
+            Err::<(), usize>(index)
+        };
+        for threads in [1, 4] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap();
+            let fitted = pool.install(|| run_chains(8, 1, 0x1234, |index, _, _| failing(index)));
+            assert_eq!(fitted, Err(0), "{threads} threads");
+            let draws: Vec<Vec<u8>> = vec![vec![0]; 8];
+            let simulated = pool.install(|| {
+                simulate_draws(&draws, 1, 0x1234, |chain, _, _, _| {
+                    failing(chain).map(|()| 0u8)
+                })
+            });
+            assert_eq!(simulated, Err(0), "{threads} threads");
+        }
+    }
+
+    #[test]
     fn finite_observation_requirement_names_the_model_and_the_shortfall() {
         assert_eq!(
             require_finite_observations(&[1.0, f64::NAN, 2.0], 2, "local-level"),
@@ -718,6 +1029,14 @@ mod tests {
         assert!(error.to_string().contains("at least 2 finite observations"));
         assert!(require_finite_observations(&[f64::NAN], 0, "structural").is_err());
         assert_eq!(require_finite_observations(&[0.0], 0, "structural"), Ok(1));
+        for infinity in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                require_finite_observations(&[1.0, 2.0, infinity], 0, "structural"),
+                Err(BayesianForecastError::InvalidObservations(
+                    "observations may be finite or NaN, but not infinite".into()
+                ))
+            );
+        }
     }
 
     #[test]
@@ -733,6 +1052,14 @@ mod tests {
         assert_eq!(sorted_quantile(&ordered, 0.125), 1.5);
         assert_eq!(sorted_quantile(&ordered, 0.875), 12.0);
         assert_eq!(sorted_quantile(&[3.0], 0.3), 3.0);
+        // Total: no quantile is NaN, never a panic or an extrapolation.
+        assert!(sorted_quantile(&[], 0.5).is_nan());
+        for probability in [-0.1, 1.1, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                sorted_quantile(&ordered, probability).is_nan(),
+                "{probability}"
+            );
+        }
         // A span wider than f64::MAX interpolates without overflowing.
         let extremes = [-f64::MAX, f64::MAX];
         assert_eq!(sorted_quantile(&extremes, 0.5), 0.0);

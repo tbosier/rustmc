@@ -138,6 +138,16 @@ def test_diagnostics_and_sampler_metadata(rustmc_module, model_index):
     for item in short.diagnostics():
         for key in ["r_hat", "ess_bulk", "ess_tail", "mcse_mean"]:
             assert item[key] is None
+    # Four retained draws per chain (two per split half) is the engine-wide
+    # floor, the same one HMC/NUTS fits use.
+    floor_kwargs = dict(chains=2, draws=4, seed=154)
+    if model_index != 3:
+        floor_kwargs["warmup"] = 4
+    floor = model.fit(y, **floor_kwargs)
+    assert floor.sampler_stats["diagnostics_available"]
+    for item in floor.diagnostics():
+        for key in ["r_hat", "ess_bulk", "ess_tail", "mcse_mean"]:
+            assert item[key] is not None, (item["name"], key)
 
 
 def test_diagnostics_match_arviz_for_identical_retained_chains(rustmc_module):

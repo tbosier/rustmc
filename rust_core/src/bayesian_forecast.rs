@@ -17,52 +17,20 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
-    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, GibbsSchedule,
+    check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
+    simulate_draws, split_paths, standard_normal, validate_positive_variance, GibbsSchedule,
+    LOCAL_LEVEL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    LOCAL_LEVEL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
-#[cfg(test)]
-use crate::seeding::chain_seed;
+/// The types every forecasting sampler shares, defined in
+/// [`crate::forecast_common`] and re-exported here under their original paths.
+pub use crate::forecast_common::{
+    BayesianForecastError, ForecastQuantile, InverseGammaPrior, PosteriorPredictiveForecast,
+};
+use crate::forecast_diagnostics::parameter_diagnostics;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
-use std::error::Error;
-use std::fmt;
-
-/// Inverse-gamma prior parameterized by shape and scale.
-///
-/// Its density is proportional to `x^(-shape - 1) * exp(-scale / x)`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InverseGammaPrior {
-    pub shape: f64,
-    pub scale: f64,
-}
-
-impl InverseGammaPrior {
-    pub fn new(shape: f64, scale: f64) -> Result<Self, BayesianForecastError> {
-        let prior = Self { shape, scale };
-        prior.validate("inverse-gamma")?;
-        Ok(prior)
-    }
-
-    pub(crate) fn validate(&self, name: &str) -> Result<(), BayesianForecastError> {
-        if !self.shape.is_finite() || self.shape <= 0.0 {
-            return Err(BayesianForecastError::InvalidConfiguration(format!(
-                "{name} shape must be finite and strictly positive"
-            )));
-        }
-        if !self.scale.is_finite() || self.scale <= 0.0 {
-            return Err(BayesianForecastError::InvalidConfiguration(format!(
-                "{name} scale must be finite and strictly positive"
-            )));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn mode(self) -> f64 {
-        self.scale / (self.shape + 1.0)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct BayesianLocalLevelConfig {
@@ -117,6 +85,22 @@ pub struct LocalLevelPosterior {
 }
 
 impl LocalLevelPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let names =
+            ["process_variance", "observation_variance", "terminal_level"].map(String::from);
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| vec![d.process_variance, d.observation_variance, d.terminal_level])
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     /// Draw future observations, pairing each posterior draw with one path.
     pub fn forecast(
         &self,
@@ -177,79 +161,13 @@ impl LocalLevelPosterior {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ForecastQuantile {
-    pub probability: f64,
-    pub values: Vec<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PosteriorPredictiveForecast {
-    /// Coherent latent-level paths indexed as `[chain][draw][forecast_step]`.
-    pub state_paths: Vec<Vec<Vec<f64>>>,
-    /// Coherent observation paths indexed as `[chain][draw][forecast_step]`.
-    pub observation_paths: Vec<Vec<Vec<f64>>>,
-}
-
-impl PosteriorPredictiveForecast {
-    pub fn horizon(&self) -> usize {
-        self.observation_paths
-            .first()
-            .and_then(|chain| chain.first())
-            .map_or(0, Vec::len)
-    }
-
-    pub fn state_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
-        path_means(&self.state_paths)
-    }
-
-    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
-        path_means(&self.observation_paths)
-    }
-
-    /// Compute empirical latent-state quantiles at every horizon.
-    pub fn state_quantiles(
-        &self,
-        probabilities: &[f64],
-    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-        path_quantiles(&self.state_paths, probabilities)
-    }
-
-    /// Compute empirical posterior-predictive observation quantiles.
-    pub fn observation_quantiles(
-        &self,
-        probabilities: &[f64],
-    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-        path_quantiles(&self.observation_paths, probabilities)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BayesianForecastError {
-    InvalidConfiguration(String),
-    InvalidObservations(String),
-    NumericalFailure(String),
-}
-
-impl fmt::Display for BayesianForecastError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidConfiguration(message) => write!(f, "invalid configuration: {message}"),
-            Self::InvalidObservations(message) => write!(f, "invalid observations: {message}"),
-            Self::NumericalFailure(message) => write!(f, "numerical failure: {message}"),
-        }
-    }
-}
-
-impl Error for BayesianForecastError {}
-
 /// Fit the local-level model with a seeded conjugate Gibbs sampler.
 pub fn fit_bayesian_local_level(
     observations: &[f64],
     config: &BayesianLocalLevelConfig,
 ) -> Result<LocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = validate_observations(observations)?;
+    let observed_count = require_finite_observations(observations, 2, "local-level")?;
     // Three values per draw; the filter and the level path each hold T + 1.
     schedule.check_fit_size("local-level fit", &[3], &[observations.len() + 1, 3])?;
 
@@ -281,9 +199,9 @@ pub fn fit_bayesian_local_level(
                     difference * difference
                 })
                 .sum();
-            *process_variance = sample_inverse_gamma(
-                config.process_variance_prior.shape + observations.len() as f64 / 2.0,
-                config.process_variance_prior.scale + process_sum_sq / 2.0,
+            *process_variance = config.process_variance_prior.conditional_draw(
+                observations.len(),
+                process_sum_sq,
                 rng,
             )?;
 
@@ -296,9 +214,9 @@ pub fn fit_bayesian_local_level(
                     residual * residual
                 })
                 .sum();
-            *observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+            *observation_variance = config.observation_variance_prior.conditional_draw(
+                observed_count,
+                observation_sum_sq,
                 rng,
             )?;
 
@@ -311,15 +229,6 @@ pub fn fit_bayesian_local_level(
     )?;
 
     Ok(LocalLevelPosterior { chains })
-}
-
-fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
-    if observations.iter().any(|value| value.is_infinite()) {
-        return Err(BayesianForecastError::InvalidObservations(
-            "observations may be finite or NaN, but not infinite".into(),
-        ));
-    }
-    require_finite_observations(observations, 2, "local-level")
 }
 
 /// One forward-filtering pass of the local-level Kalman recursion.
@@ -356,9 +265,9 @@ pub struct LocalLevelFilter {
 /// rounded result everywhere and never returns zero or an infinity, where the
 /// two single-ordering forms are wrong by up to 8e15 ulp and fail outright on
 /// about 22% of the pairs for `a * b` first, which loses both ends of the
-/// range, and about 11% for dividing first, which loses only the lower one. The scalar collapse of the Joseph
-/// form that `state_space.rs` uses, `(1 - k)^2 a + k^2 b`, scores the same two
-/// ulp for more arithmetic and without the interval argument.
+/// range, and about 11% for dividing first, which loses only the lower one.
+/// The scalar collapse of the Joseph form, `(1 - k)^2 a + k^2 b`, scores the
+/// same two ulp for more arithmetic and without the interval argument.
 ///
 /// `sum` is passed in because both callers have already formed `a + b` for the
 /// gain. A non-finite sum is not rescued here: it yields a zero or non-finite
@@ -494,34 +403,10 @@ fn sample_normal(
     Ok(draw)
 }
 
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn validate_positive_variance(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
-    if !variance.is_finite() || variance <= 0.0 {
-        return Err(BayesianForecastError::NumericalFailure(format!(
-            "{name} variance must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
-    }
 
     fn compact_config(seed: u64) -> BayesianLocalLevelConfig {
         BayesianLocalLevelConfig {
