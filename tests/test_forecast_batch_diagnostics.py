@@ -244,7 +244,8 @@ def test_huge_batch_allocations_return_errors_instead_of_panicking(rustmc_module
 def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     local, _, _, ar = models(rustmc_module)
     y = np.random.default_rng(5).normal(size=12)
-    for schedule in ({"warmup": 10}, {"thin": 2}):
+    # An explicit value is refused even when it equals the Gibbs default.
+    for schedule in ({"warmup": 10}, {"thin": 2}, {"warmup": 500}, {"thin": 1}):
         with pytest.raises(ValueError, match="exact and independent"):
             ar.fit_batch([y], ["ar"], draws=8, **schedule)
         with pytest.raises(ValueError, match="exact and independent"):
@@ -253,3 +254,6 @@ def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     assert ar.fit_batch([y], ["ar"], draws=8)["ar"].draws == 8
     mixed = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8, warmup=10, thin=2)
     assert (mixed["ar"].draws, mixed["level"].warmup, mixed["level"].thin) == (8, 10, 2)
+    # Omitted, they take the Gibbs defaults.
+    defaulted = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8)
+    assert (defaulted["level"].warmup, defaulted["level"].thin) == (500, 1)

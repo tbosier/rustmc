@@ -406,17 +406,17 @@ fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Co
         .or_else(|| config::<PyBayesianAutoRegression>(model, schedule))
 }
 
-/// Refuse a non-default `warmup` or `thin` that no cell would use.
+/// Refuse a `warmup` or `thin` that no cell would use.
 ///
 /// AR draws are exact and independent, so an all-AR batch has no warmup or
 /// thinning; silently dropping the settings would let a caller believe they
 /// had changed the fit.
 fn reject_unused_schedule(
     cells: &[(String, CellInput)],
-    warmup: usize,
-    thin: usize,
+    warmup: Option<usize>,
+    thin: Option<usize>,
 ) -> PyResult<()> {
-    if (warmup, thin) == (Schedule::DEFAULT.warmup, Schedule::DEFAULT.thin) {
+    if warmup.is_none() && thin.is_none() {
         return Ok(());
     }
     let mut configs = cells
@@ -425,12 +425,10 @@ fn reject_unused_schedule(
         .map(|(_, config, _)| config)
         .peekable();
     if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
-        return Err(PyValueError::new_err(format!(
+        return Err(PyValueError::new_err(
             "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
-             draws are exact and independent; leave them at {} and {}",
-            Schedule::DEFAULT.warmup,
-            Schedule::DEFAULT.thin
-        )));
+             draws are exact and independent; leave them unset",
+        ));
     }
     Ok(())
 }
@@ -492,8 +490,8 @@ pub(crate) fn fit_batch(
     coefficient_priors: Option<&Bound<'_, PyAny>>,
     chains: usize,
     draws: usize,
-    warmup: usize,
-    thin: usize,
+    warmup: Option<usize>,
+    thin: Option<usize>,
     seed: u64,
     threads: usize,
     chunk_size: usize,
@@ -503,8 +501,8 @@ pub(crate) fn fit_batch(
     let schedule = Schedule {
         chains,
         draws,
-        warmup,
-        thin,
+        warmup: warmup.unwrap_or(Schedule::DEFAULT.warmup),
+        thin: thin.unwrap_or(Schedule::DEFAULT.thin),
         seed,
     };
     let default = model.batch_config(schedule);

@@ -26,7 +26,7 @@ impl PyHurdleLogNormal {
     /// Fit independent sparse-amount cells with stable IDs on one native worker pool.
     /// Optional models permit per-cell priors and mixed forecasting model families.
     /// Hurdle cells do not support exog; regression cells in a mixed batch may use it.
-    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=None, thin=None, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -38,8 +38,8 @@ impl PyHurdleLogNormal {
         coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
-        warmup: usize,
-        thin: usize,
+        warmup: Option<usize>,
+        thin: Option<usize>,
         seed: u64,
         threads: usize,
         chunk_size: usize,
