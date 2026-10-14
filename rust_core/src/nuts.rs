@@ -1,12 +1,19 @@
 //! No-U-Turn Sampler (NUTS) — Hoffman & Gelman (2014) with multinomial
 //! sampling (Betancourt 2017).
 //!
-//! This follows the core NUTS design used by PyMC and Stan:
+//! It shares the core of the NUTS design PyMC and Stan use:
 //!   - Iterative tree doubling (extend trajectory forward or backward)
-//!   - Endpoint-momentum U-turn checks on subtrees
 //!   - Multinomial candidate selection weighted by exp(-H)
 //!   - Divergence detection via energy error threshold
 //!   - Max tree depth cap (default 10)
+//!
+//! The U-turn criterion is Hoffman and Gelman's original endpoint test,
+//! applied to each subtree and to the whole trajectory. Stan (since about
+//! 2.23) and PyMC also test the two spans that straddle each merge of
+//! subtrees, which can stop a trajectory earlier on near-periodic targets;
+//! this implementation does not, so it can build deeper trees there. Either
+//! way the stopping rule is symmetric, so the draws are valid; the difference
+//! is in efficiency.
 
 use crate::adaptation::WarmupAdapter;
 use crate::data::DataBinding;
