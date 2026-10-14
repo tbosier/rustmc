@@ -141,22 +141,20 @@ impl Default for BatchSampleConfig {
 impl SamplerConfig {
     /// Validate controls at the Rust boundary before any allocation or execution.
     pub fn validate(&self) -> Result<(), String> {
-        if self.num_chains == 0 || self.num_draws == 0 {
-            return Err("chains and draws must be positive".into());
+        if self.num_chains == 0 {
+            return Err("chains must be >= 1".into());
+        }
+        if self.num_draws == 0 {
+            return Err("draws must be >= 1".into());
         }
         if self.num_warmup == 0 {
-            return Err("warmup must be positive".into());
+            return Err("warmup must be >= 1".into());
         }
-        if !self.step_size.is_finite() || self.step_size < 0.0 {
-            return Err("step_size must be finite and nonnegative".into());
-        }
+        // Both kernels' settings are checked whichever sampler is selected.
+        validate_step_size(self.step_size)?;
         validate_target_accept(self.target_accept)?;
-        if !(1..=63).contains(&self.max_tree_depth) {
-            return Err("max_tree_depth must be between 1 and 63".into());
-        }
-        if self.num_leapfrog_steps == 0 {
-            return Err("num_leapfrog_steps must be positive".into());
-        }
+        validate_max_tree_depth(self.max_tree_depth)?;
+        validate_leapfrog_steps(self.num_leapfrog_steps)?;
         // Every iteration keeps a transition record; refuse a run whose
         // records alone could not be allocated before any chain starts.
         check_request_size(
@@ -542,11 +540,44 @@ pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), Str
     ))
 }
 
-fn validate_target_accept(target_accept: f64) -> Result<(), String> {
+// The rules every sampler configuration shares, written once: the
+// `SamplerConfig` checks above and the raw kernels' `NutsConfig::validate` and
+// `HmcConfig::validate` all call these.
+
+/// A fixed step size, or 0 to have warmup search for one.
+pub(crate) fn validate_step_size(step_size: f64) -> Result<(), String> {
+    if step_size.is_finite() && step_size >= 0.0 {
+        Ok(())
+    } else {
+        Err("step_size must be finite and >= 0 (0 enables adaptation)".to_string())
+    }
+}
+
+pub(crate) fn validate_target_accept(target_accept: f64) -> Result<(), String> {
     if target_accept.is_finite() && target_accept > 0.0 && target_accept < 1.0 {
         Ok(())
     } else {
         Err("target_accept must be finite and strictly between 0 and 1".to_string())
+    }
+}
+
+/// At depth 0 NUTS never expands a tree, so every transition would return its
+/// start; past 63 the leaf count overflows.
+pub(crate) fn validate_max_tree_depth(max_tree_depth: usize) -> Result<(), String> {
+    if (1..=63).contains(&max_tree_depth) {
+        Ok(())
+    } else {
+        Err("max_tree_depth must be between 1 and 63".to_string())
+    }
+}
+
+/// With no leapfrog step an HMC proposal is its own start, with a stale
+/// gradient.
+pub(crate) fn validate_leapfrog_steps(num_leapfrog_steps: usize) -> Result<(), String> {
+    if num_leapfrog_steps > 0 {
+        Ok(())
+    } else {
+        Err("num_leapfrog_steps must be >= 1".to_string())
     }
 }
 

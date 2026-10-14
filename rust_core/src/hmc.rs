@@ -4,7 +4,10 @@ use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
-use crate::sampler::{kernel_initial_position, reject_discrete_latent_parameters};
+use crate::sampler::{
+    kernel_initial_position, reject_discrete_latent_parameters, validate_leapfrog_steps, validate_step_size,
+    validate_target_accept,
+};
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -66,6 +69,18 @@ impl Default for HmcConfig {
     }
 }
 
+impl HmcConfig {
+    /// Check the settings the kernel cannot run with: a non-finite or negative
+    /// step size (0 asks warmup to find one), `target_accept` outside (0, 1),
+    /// and no leapfrog steps. `num_warmup` may be 0, which samples
+    /// with the given step size and the unit metric.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_step_size(self.step_size)?;
+        validate_target_accept(self.target_accept)?;
+        validate_leapfrog_steps(self.num_leapfrog_steps)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChainResult {
     pub samples: Vec<Vec<f64>>,
@@ -87,7 +102,8 @@ pub struct ChainResult {
 /// metric-estimation window also allocates the new metric and accumulator.
 /// # Errors
 ///
-/// Returns the rejection message from
+/// Returns an error when `config` fails [`HmcConfig::validate`], and the
+/// rejection message from
 /// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
 /// discrete latent. This entry point does not go through `sampler`, so the
 /// check has to happen here or not at all — see [`run_chain_bound`]. Also
@@ -100,6 +116,7 @@ pub fn run_chain(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
+    config.validate()?;
     reject_discrete_latent_parameters(graph)?;
     let binding = DataBinding::from_graph(graph).map_err(|error| error.to_string())?;
     run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
@@ -121,6 +138,7 @@ pub fn run_chain_bound(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
+    config.validate()?;
     reject_discrete_latent_parameters(graph)?;
     run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
 }
@@ -446,6 +464,48 @@ mod tests {
         )
         .expect("continuous test model must run");
         assert!(!stable.transitions[0].divergent);
+    }
+
+    #[test]
+    fn raw_kernel_refuses_settings_it_cannot_run_with() {
+        let graph = simple_gaussian_graph();
+        let base = HmcConfig {
+            num_draws: 2,
+            num_warmup: 0,
+            step_size: 0.1,
+            ..HmcConfig::default()
+        };
+        assert!(base.validate().is_ok());
+        for (config, field) in [
+            (
+                HmcConfig {
+                    num_leapfrog_steps: 0,
+                    ..base.clone()
+                },
+                "num_leapfrog_steps",
+            ),
+            (
+                HmcConfig {
+                    step_size: -0.1,
+                    ..base.clone()
+                },
+                "step_size",
+            ),
+            (
+                HmcConfig {
+                    target_accept: 1.0,
+                    ..base.clone()
+                },
+                "target_accept",
+            ),
+        ] {
+            let mut rng = ChaCha8Rng::seed_from_u64(1);
+            let error = run_chain(&graph, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+            let binding = DataBinding::from_graph(&graph).unwrap();
+            let error = run_chain_bound(&graph, binding, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+        }
     }
 
     #[test]
