@@ -52,9 +52,9 @@ impl fmt::Display for StateSpaceError {
 
 impl Error for StateSpaceError {}
 
-impl From<crate::bayesian_forecast::BayesianForecastError> for StateSpaceError {
-    fn from(error: crate::bayesian_forecast::BayesianForecastError) -> Self {
-        use crate::bayesian_forecast::BayesianForecastError as Source;
+impl From<crate::forecast_common::BayesianForecastError> for StateSpaceError {
+    fn from(error: crate::forecast_common::BayesianForecastError) -> Self {
+        use crate::forecast_common::BayesianForecastError as Source;
         match error {
             Source::InvalidConfiguration(message) | Source::InvalidObservations(message) => {
                 Self::InvalidParameter(message)

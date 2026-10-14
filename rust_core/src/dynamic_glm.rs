@@ -3,7 +3,7 @@
 //! Group coefficients equal an uncertain population coefficient plus a Gaussian
 //! deviation; group random walks can additionally share a common random walk.
 use crate::autodiff::softplus;
-use crate::bayesian_forecast::BayesianForecastError as Error;
+use crate::forecast_common::BayesianForecastError as Error;
 use crate::forecast_common::{checked_value_count, retains, run_chains, MAX_MATERIALIZED_VALUES};
 use crate::observation::sigmoid;
 use rand::Rng;

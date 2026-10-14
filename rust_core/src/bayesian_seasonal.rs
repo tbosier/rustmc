@@ -9,12 +9,13 @@
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, path_means, path_quantiles,
     require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, GibbsSchedule,
+    split_paths, BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
 };
+use crate::forecast_diagnostics::parameter_diagnostics;
 use crate::state_space::LinearGaussianStateSpace;
 
 #[derive(Debug, Clone)]
@@ -117,6 +118,35 @@ pub struct SeasonalPosteriorPredictiveForecast {
 }
 
 impl SeasonalLocalLevelPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let mut names = vec![
+            "level_variance".into(),
+            "seasonal_variance".into(),
+            "observation_variance".into(),
+            "terminal_level".into(),
+        ];
+        names.extend((1..self.period).map(|i| format!("terminal_seasonal[{}]", i - 1)));
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| {
+                        let mut values = vec![
+                            d.level_variance,
+                            d.seasonal_variance,
+                            d.observation_variance,
+                        ];
+                        values.extend_from_slice(&d.terminal_state);
+                        values
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     pub fn forecast(
         &self,
         horizon: usize,

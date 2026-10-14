@@ -9,15 +9,13 @@
 //! Occurrence is static and independent of severity a priori. This factorization
 //! permits exact Beta occurrence draws and conjugate Gaussian severity FFBS/Gibbs.
 
-use crate::bayesian_forecast::{
-    sample_levels_ffbs, BayesianForecastError, ForecastQuantile, InverseGammaPrior,
-    PosteriorPredictiveForecast,
-};
+use crate::bayesian_forecast::sample_levels_ffbs;
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, checked_value_count, inverse_gamma_conditional, overdispersed_positive,
     path_means, path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths,
-    GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    PosteriorPredictiveForecast, MAX_MATERIALIZED_VALUES,
 };
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;

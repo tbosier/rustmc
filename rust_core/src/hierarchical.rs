@@ -24,12 +24,12 @@
 //! Series may have different lengths; `NaN` values are retained as missing
 //! positions and ignored by the likelihood.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     checked_value_count, overdispersed_location, overdispersed_positive, path_means,
     path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
-    GibbsSchedule, Paths, MAX_MATERIALIZED_VALUES,
+    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior, Paths,
+    MAX_MATERIALIZED_VALUES,
 };
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};

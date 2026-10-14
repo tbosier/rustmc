@@ -17,12 +17,13 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, overdispersed_positive, path_means, path_quantiles,
     require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, GibbsSchedule,
+    split_paths, BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
 };
+use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
@@ -85,6 +86,36 @@ pub struct LocalLinearTrendPosterior {
 }
 
 impl LocalLinearTrendPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let names = [
+            "level_variance",
+            "slope_variance",
+            "observation_variance",
+            "terminal_level",
+            "terminal_slope",
+        ]
+        .map(String::from);
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| {
+                        vec![
+                            d.level_variance,
+                            d.slope_variance,
+                            d.observation_variance,
+                            d.terminal_level,
+                            d.terminal_slope,
+                        ]
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     /// Pair every posterior draw with one coherent future state/observation path.
     pub fn forecast(
         &self,

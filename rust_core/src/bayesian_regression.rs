@@ -3,10 +3,9 @@
 //! Proper Gaussian coefficient priors are independent of variance priors.
 //! Coefficients are static latent states with exactly zero innovation variance;
 //! every forecast path retains one joint coefficient/state/variance draw.
-use crate::bayesian_forecast::InverseGammaPrior;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule, InverseGammaPrior,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand_chacha::ChaCha8Rng;
@@ -319,6 +318,35 @@ pub fn fit_regression(
 }
 
 impl RegressionPosterior {
+    /// Variances, regression coefficients and every terminal structural state.
+    pub fn diagnostics(&self) -> crate::diagnostics::DiagnosticsReport {
+        let mut names = self.config.variance_names.clone();
+        names.push("observation_variance".into());
+        names.extend(
+            (0..self.config.coefficient_prior.mean.len()).map(|i| format!("coefficient[{i}]")),
+        );
+        names.extend(
+            (0..self.config.structural_model.dimension()).map(|i| format!("terminal_state[{i}]")),
+        );
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        let mut values = draw.variances.clone();
+                        values.push(draw.observation_variance);
+                        values.extend_from_slice(&draw.coefficients);
+                        values.extend_from_slice(&draw.terminal_state);
+                        values
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        crate::forecast_diagnostics::parameter_diagnostics(&samples, &names)
+    }
+
     pub fn forecast(
         &self,
         design: &[Vec<f64>],

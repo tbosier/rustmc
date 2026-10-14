@@ -31,12 +31,13 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile};
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, checked_value_count, cholesky, path_means, path_quantiles, run_chains,
     sample_inverse_gamma, simulate_draws, solve_lower, solve_lower_transpose, split_paths,
-    MAX_MATERIALIZED_VALUES,
+    BayesianForecastError, ForecastQuantile, MAX_MATERIALIZED_VALUES,
 };
+use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
@@ -116,6 +117,27 @@ pub struct BayesianArPosterior {
 }
 
 impl BayesianArPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let mut names = vec!["intercept".into()];
+        names.extend((1..=self.order).map(|i| format!("lag_{i}")));
+        names.push("innovation_variance".into());
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| {
+                        let mut values = d.coefficients.clone();
+                        values.push(d.innovation_variance);
+                        values
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     /// Simulate coherent recursive conditional-mean and observation paths.
     ///
     /// At each horizon the conditional mean uses the already simulated

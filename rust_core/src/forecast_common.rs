@@ -7,9 +7,10 @@
 //! they have in common: the size guard in front of every large allocation, the
 //! inverse-gamma conditional, the chain driver with its warmup/thinning
 //! schedule and overdispersed starting points, the per-chain forecast loop,
-//! and the empirical path summaries.
+//! the empirical path summaries, and the error, prior and forecast types they
+//! share. [`crate::bayesian_forecast`] re-exports those types under their
+//! original paths.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile};
 use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -17,6 +18,107 @@ use rand_distr::{Distribution, Gamma};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BayesianForecastError {
+    InvalidConfiguration(String),
+    InvalidObservations(String),
+    NumericalFailure(String),
+}
+
+impl fmt::Display for BayesianForecastError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidConfiguration(message) => write!(f, "invalid configuration: {message}"),
+            Self::InvalidObservations(message) => write!(f, "invalid observations: {message}"),
+            Self::NumericalFailure(message) => write!(f, "numerical failure: {message}"),
+        }
+    }
+}
+
+impl Error for BayesianForecastError {}
+
+/// Inverse-gamma prior parameterized by shape and scale.
+///
+/// Its density is proportional to `x^(-shape - 1) * exp(-scale / x)`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InverseGammaPrior {
+    pub shape: f64,
+    pub scale: f64,
+}
+
+impl InverseGammaPrior {
+    pub fn new(shape: f64, scale: f64) -> Result<Self, BayesianForecastError> {
+        let prior = Self { shape, scale };
+        prior.validate("inverse-gamma")?;
+        Ok(prior)
+    }
+
+    pub(crate) fn validate(&self, name: &str) -> Result<(), BayesianForecastError> {
+        if !self.shape.is_finite() || self.shape <= 0.0 {
+            return Err(BayesianForecastError::InvalidConfiguration(format!(
+                "{name} shape must be finite and strictly positive"
+            )));
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(BayesianForecastError::InvalidConfiguration(format!(
+                "{name} scale must be finite and strictly positive"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn mode(self) -> f64 {
+        self.scale / (self.shape + 1.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ForecastQuantile {
+    pub probability: f64,
+    pub values: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PosteriorPredictiveForecast {
+    /// Coherent latent-level paths indexed as `[chain][draw][forecast_step]`.
+    pub state_paths: Vec<Vec<Vec<f64>>>,
+    /// Coherent observation paths indexed as `[chain][draw][forecast_step]`.
+    pub observation_paths: Vec<Vec<Vec<f64>>>,
+}
+
+impl PosteriorPredictiveForecast {
+    pub fn horizon(&self) -> usize {
+        self.observation_paths
+            .first()
+            .and_then(|chain| chain.first())
+            .map_or(0, Vec::len)
+    }
+
+    pub fn state_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.state_paths)
+    }
+
+    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
+        path_means(&self.observation_paths)
+    }
+
+    /// Compute empirical latent-state quantiles at every horizon.
+    pub fn state_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.state_paths, probabilities)
+    }
+
+    /// Compute empirical posterior-predictive observation quantiles.
+    pub fn observation_quantiles(
+        &self,
+        probabilities: &[f64],
+    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
+        path_quantiles(&self.observation_paths, probabilities)
+    }
+}
 
 /// Largest number of `f64` values one checked request may materialize: a
 /// forecast's paths, a fit's retained draws, or one chain's FFBS working

@@ -17,52 +17,21 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
+use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
-    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, GibbsSchedule,
+    check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
 };
+/// The types every forecasting sampler shares, defined in
+/// [`crate::forecast_common`] and re-exported here under their original paths.
+pub use crate::forecast_common::{
+    BayesianForecastError, ForecastQuantile, InverseGammaPrior, PosteriorPredictiveForecast,
+};
+use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, StandardNormal};
-use std::error::Error;
-use std::fmt;
-
-/// Inverse-gamma prior parameterized by shape and scale.
-///
-/// Its density is proportional to `x^(-shape - 1) * exp(-scale / x)`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct InverseGammaPrior {
-    pub shape: f64,
-    pub scale: f64,
-}
-
-impl InverseGammaPrior {
-    pub fn new(shape: f64, scale: f64) -> Result<Self, BayesianForecastError> {
-        let prior = Self { shape, scale };
-        prior.validate("inverse-gamma")?;
-        Ok(prior)
-    }
-
-    pub(crate) fn validate(&self, name: &str) -> Result<(), BayesianForecastError> {
-        if !self.shape.is_finite() || self.shape <= 0.0 {
-            return Err(BayesianForecastError::InvalidConfiguration(format!(
-                "{name} shape must be finite and strictly positive"
-            )));
-        }
-        if !self.scale.is_finite() || self.scale <= 0.0 {
-            return Err(BayesianForecastError::InvalidConfiguration(format!(
-                "{name} scale must be finite and strictly positive"
-            )));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn mode(self) -> f64 {
-        self.scale / (self.shape + 1.0)
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct BayesianLocalLevelConfig {
@@ -117,6 +86,22 @@ pub struct LocalLevelPosterior {
 }
 
 impl LocalLevelPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let names =
+            ["process_variance", "observation_variance", "terminal_level"].map(String::from);
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| vec![d.process_variance, d.observation_variance, d.terminal_level])
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
     /// Draw future observations, pairing each posterior draw with one path.
     pub fn forecast(
         &self,
@@ -176,72 +161,6 @@ impl LocalLevelPosterior {
         })
     }
 }
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ForecastQuantile {
-    pub probability: f64,
-    pub values: Vec<f64>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct PosteriorPredictiveForecast {
-    /// Coherent latent-level paths indexed as `[chain][draw][forecast_step]`.
-    pub state_paths: Vec<Vec<Vec<f64>>>,
-    /// Coherent observation paths indexed as `[chain][draw][forecast_step]`.
-    pub observation_paths: Vec<Vec<Vec<f64>>>,
-}
-
-impl PosteriorPredictiveForecast {
-    pub fn horizon(&self) -> usize {
-        self.observation_paths
-            .first()
-            .and_then(|chain| chain.first())
-            .map_or(0, Vec::len)
-    }
-
-    pub fn state_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
-        path_means(&self.state_paths)
-    }
-
-    pub fn observation_means(&self) -> Result<Vec<f64>, BayesianForecastError> {
-        path_means(&self.observation_paths)
-    }
-
-    /// Compute empirical latent-state quantiles at every horizon.
-    pub fn state_quantiles(
-        &self,
-        probabilities: &[f64],
-    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-        path_quantiles(&self.state_paths, probabilities)
-    }
-
-    /// Compute empirical posterior-predictive observation quantiles.
-    pub fn observation_quantiles(
-        &self,
-        probabilities: &[f64],
-    ) -> Result<Vec<ForecastQuantile>, BayesianForecastError> {
-        path_quantiles(&self.observation_paths, probabilities)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BayesianForecastError {
-    InvalidConfiguration(String),
-    InvalidObservations(String),
-    NumericalFailure(String),
-}
-
-impl fmt::Display for BayesianForecastError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::InvalidConfiguration(message) => write!(f, "invalid configuration: {message}"),
-            Self::InvalidObservations(message) => write!(f, "invalid observations: {message}"),
-            Self::NumericalFailure(message) => write!(f, "numerical failure: {message}"),
-        }
-    }
-}
-
-impl Error for BayesianForecastError {}
 
 /// Fit the local-level model with a seeded conjugate Gibbs sampler.
 pub fn fit_bayesian_local_level(
