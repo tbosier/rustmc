@@ -40,8 +40,6 @@ use crate::forecast_common::{
     MAX_MATERIALIZED_VALUES,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
-#[cfg(test)]
-use rand_chacha::ChaCha8Rng;
 
 /// Explicit Normal-Inverse-Gamma prior for an AR(p) regression.
 #[derive(Debug, Clone, PartialEq)]
@@ -541,6 +539,7 @@ fn validate_positive_finite(name: &str, value: f64) -> Result<(), BayesianForeca
 mod tests {
     use super::*;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn prior_precision_symmetry_is_independent_of_coefficient_units() {
