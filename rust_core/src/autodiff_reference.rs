@@ -487,11 +487,16 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 }
             }
             Op::StudentTLogP { x, nu, mu, sigma } => {
+                let (nu_value, sigma_value) =
+                    (values[nu.0].as_scalar(), values[sigma.0].as_scalar());
+                if !student_t_args_valid(nu_value, sigma_value) {
+                    continue;
+                }
                 let (dx, dsigma, dnu) = student_t_derivatives(
                     values[x.0].as_scalar(),
-                    values[nu.0].as_scalar(),
+                    nu_value,
                     values[mu.0].as_scalar(),
-                    values[sigma.0].as_scalar(),
+                    sigma_value,
                 );
                 adj_scalar[x.0] += a_s * dx;
                 adj_scalar[mu.0] -= a_s * dx;

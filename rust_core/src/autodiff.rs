@@ -1345,11 +1345,19 @@ impl Evaluator {
                     }
                 }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
+                    // As for every other density: where `nu` or `sigma` is
+                    // outside its support the density is a constant -inf, so
+                    // nothing it reads gets a slope. Unguarded, `ln` of the
+                    // invalid argument made every adjoint NaN.
+                    let (nu_value, sigma_value) = (self.scalars[nu.0], self.scalars[sigma.0]);
+                    if !student_t_args_valid(nu_value, sigma_value) {
+                        continue;
+                    }
                     let (dx, dsigma, dnu) = student_t_derivatives(
                         self.scalars[x.0],
-                        self.scalars[nu.0],
+                        nu_value,
                         self.scalars[mu.0],
-                        self.scalars[sigma.0],
+                        sigma_value,
                     );
                     self.adj_scalars[x.0] += a_s * dx;
                     self.adj_scalars[mu.0] -= a_s * dx;
@@ -2265,6 +2273,48 @@ mod tests {
         let sigma = g.add_constant(2.0);
         g.student_t_logp(x, nu, mu, sigma);
         finite_diff_check(&g, &[1.8], 1e-4);
+    }
+
+    /// `nu` and `sigma` as learned parameters, so the `dnu` and `dsigma`
+    /// branches of the score are checked too; the test above holds them
+    /// constant.
+    #[test]
+    fn student_t_gradient_in_learned_nu_and_sigma_matches_finite_differences() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let raw_nu = g.add_param("raw_nu");
+        let raw_sigma = g.add_param("raw_sigma");
+        let mu = g.add_constant(0.4);
+        let nu = g.exp(raw_nu);
+        let sigma = g.exp(raw_sigma);
+        g.student_t_logp(x, nu, mu, sigma);
+        for params in [[1.8, 1.2, 0.3], [-0.7, -0.5, -1.1], [6.0, 2.5, 0.0]] {
+            full_finite_diff_check(&g, &params, 1e-5);
+        }
+    }
+
+    /// Outside the support of `nu` or `sigma` the density is a constant -inf,
+    /// and its score is zero rather than NaN.
+    #[test]
+    fn student_t_outside_its_support_has_a_zero_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let nu = g.add_param("nu");
+        let sigma = g.add_param("sigma");
+        let mu = g.add_constant(0.0);
+        g.student_t_logp(x, nu, mu, sigma);
+        for params in [
+            [0.5, 3.0, -1.0],
+            [0.5, 3.0, 0.0],
+            [0.5, -2.0, 1.0],
+            [0.5, 0.0, 1.0],
+        ] {
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &params);
+            assert_eq!(evaluator.total_logp, f64::NEG_INFINITY, "{params:?}");
+            assert_eq!(evaluator.grad, vec![0.0; 3], "{params:?}");
+            assert_eq!(grad_logp(&g, &params), (f64::NEG_INFINITY, vec![0.0; 3]));
+        }
     }
 
     #[test]
