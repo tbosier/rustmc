@@ -55,16 +55,16 @@ pub struct Evaluator {
     param_scratch: Vec<f64>,
 }
 
-fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
+/// The payload checks of [`DataBinding::validate_for`], as a shape error.
+fn validate_binding_payload(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
     binding
         .validate_for(graph)
-        .map_err(|error| GraphShapeError::new(error.to_string()))?;
-    validate_slot_coverage(graph, binding)
+        .map_err(|error| GraphShapeError::new(error.to_string()))
 }
 
 /// Check that `binding` provides every slot the graph indexes by raw index.
 ///
-/// Separate from [`validate_binding_slots`] because it has to run before
+/// Separate from [`validate_binding_payload`] because it has to run before
 /// [`validate_node_lengths`], which reads those slots directly, and
 /// `validate_node_lengths` has a second caller in [`Graph::validate_shapes`]
 /// that has no evaluator and no reason to re-run the payload validation.
@@ -359,9 +359,14 @@ pub(crate) fn validate_node_lengths(
                 let Op::Data(di) = graph.nodes[indices.0].op else {
                     return Err(GraphShapeError::new("group indices must be data"));
                 };
-                if binding.vectors[di].iter().any(|x| {
-                    !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
-                }) {
+                // `DataBinding::validate_for` makes the same check with a
+                // better message, but only for a binding it is given; this one
+                // guards the `as usize` index in the forward pass whatever the
+                // caller validated.
+                if binding.vectors[di]
+                    .iter()
+                    .any(|x| !crate::data::is_group_index(*x, *n_params))
+                {
                     return Err(GraphShapeError::new(format!(
                         "group indices must be integers in [0, {n_params})"
                     )));
@@ -562,14 +567,16 @@ pub(crate) fn validate_node_lengths(
 
 impl Evaluator {
     pub fn try_new(graph: &Graph) -> Result<Self, GraphShapeError> {
+        // `from_graph` has already run the payload validation.
         let binding =
             DataBinding::from_graph(graph).map_err(|e| GraphShapeError::new(e.to_string()))?;
-        Self::try_with_binding(graph, binding)
+        validate_slot_coverage(graph, &binding)?;
+        let node_lengths = validate_node_lengths(graph, &binding)?;
+        Ok(Self::from_checked(graph, binding, node_lengths))
     }
 
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
-        let n = graph.nodes.len();
         // Coverage first: the length pass reads `binding.vectors[i]`,
         // `binding.observations[i]` and `binding.matrices[i]` at the raw indices
         // the graph carries, so a missing slot is an out-of-bounds index there
@@ -578,8 +585,15 @@ impl Evaluator {
         // it always did.
         validate_slot_coverage(graph, &binding)?;
         let node_lengths = validate_node_lengths(graph, &binding)?;
-        validate_binding_slots(graph, &binding)?;
+        validate_binding_payload(graph, &binding)?;
+        Ok(Self::from_checked(graph, binding, node_lengths))
+    }
 
+    /// Lay out the buffers for a graph and binding that have passed slot
+    /// coverage, the length pass (which produced `node_lengths`) and the
+    /// payload validation. Each constructor runs those checks exactly once.
+    fn from_checked(graph: &Graph, binding: DataBinding, node_lengths: Vec<usize>) -> Self {
+        let n = graph.nodes.len();
         let mut node_kind = Vec::with_capacity(n);
         let mut vec_buffer_len = 0usize;
         for node in &graph.nodes {
@@ -603,7 +617,7 @@ impl Evaluator {
             }
         }
 
-        Ok(Self {
+        Self {
             binding,
             node_lengths,
             node_kind,
@@ -615,7 +629,7 @@ impl Evaluator {
             total_logp: 0.0,
             param_node_ids,
             param_scratch: vec![0.0; graph.param_count],
-        })
+        }
     }
 
     /// [`Self::try_new`] for graphs already known to be valid.
@@ -639,11 +653,12 @@ impl Evaluator {
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
         validate_slot_coverage(graph, &binding)?;
-        validate_binding_slots(graph, &binding)?;
-        if validate_node_lengths(graph, &binding)? == self.node_lengths {
+        validate_binding_payload(graph, &binding)?;
+        let node_lengths = validate_node_lengths(graph, &binding)?;
+        if node_lengths == self.node_lengths {
             self.binding = binding;
         } else {
-            *self = Self::try_with_binding(graph, binding)?;
+            *self = Self::from_checked(graph, binding, node_lengths);
         }
         Ok(())
     }

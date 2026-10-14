@@ -215,6 +215,13 @@ impl Display for BindError {
 
 impl std::error::Error for BindError {}
 
+/// Whether `x` can index one of `n_groups` groups: a finite, non-negative
+/// integer below `n_groups`. The binding and the evaluator's shape pass both
+/// check `Gather` indices with this, so they cannot disagree about one.
+pub(crate) fn is_group_index(x: f64, n_groups: usize) -> bool {
+    x.is_finite() && x >= 0.0 && x.fract() == 0.0 && x < n_groups as f64
+}
+
 impl DataBinding {
     /// Compatibility bridge for legacy graphs that still carry one dataset.
     pub fn from_graph(graph: &crate::graph::Graph) -> Result<Self, BindError> {
@@ -602,9 +609,12 @@ impl DataBinding {
             let Some(values) = self.vectors.get(*data_index) else {
                 continue;
             };
-            if let Some((index, value)) = values.iter().copied().enumerate().find(|(_, x)| {
-                !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
-            }) {
+            if let Some((index, value)) = values
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, x)| !is_group_index(*x, *n_params))
+            {
                 return Err(BindError::InvalidGroupIndex {
                     key: slot_key(&self.schema.vectors, *data_index, "data vector"),
                     index,
