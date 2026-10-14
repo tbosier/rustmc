@@ -1,4 +1,5 @@
-//! Sampler exactness on targets whose moments are known in closed form.
+//! Sampler exactness at the shipped defaults, on targets whose moments are
+//! known in closed form.
 //!
 //! The recovery suite compares posterior means with the parameters that
 //! generated the data, under hand-picked tolerances. That cannot see a small
@@ -8,287 +9,105 @@
 //! only error left is Monte Carlo error, and every check is scaled by the
 //! sampler's own Monte Carlo standard error (MCSE) for that coordinate.
 //!
-//! Every run uses the shipped defaults (`SamplerConfig::default()`: 4 chains,
-//! 500 warmup, 1000 draws, target acceptance 0.80, 15 leapfrog steps for HMC)
-//! and is checked, per coordinate:
+//! Every run uses the shipped defaults (`SamplerConfig::default()`: NUTS,
+//! 4 chains, 500 warmup, 1000 draws, target acceptance 0.80, metric auto,
+//! tree depth 10) apart from the seed, and is checked per coordinate as
+//! `exactness_support` describes: no divergences, bulk ESS at least 400, mean
+//! within 4 MCSE, and variance within 4 MCSE of the squared deviations; and
+//! once per fit, the mean squared norm of the whitened draws within 4 MCSE of
+//! the dimension.
 //!
-//! - the bulk ESS is at least 400, the release gate's floor, so that the
-//!   MCSE below is small and estimated from enough draws to trust;
-//! - the mean: `|mean - exact mean| < 4 * mcse_mean`;
-//! - the variance: the draws of `(x - exact mean)^2` have expectation exactly
-//!   the exact variance, so their mean is held to the same 4-MCSE bound,
-//!   with an MCSE estimated from those squared draws' own autocorrelation.
+//! The targets, each through the paths it is run on:
 //!
-//! NUTS passes all of it. Static HMC does not, and its two cases are ignored
-//! reproducers rather than checks loosened until they pass. On these
-//! well-conditioned targets the adapted step size puts 15 leapfrog steps at an
-//! integration time of 5.4 to 6.2 per chain (seed 2102), close to the 2*pi
-//! period of a standardized Gaussian coordinate, so a transition returns
-//! almost to where it started: from 4000 draws the worst coordinate's bulk
-//! ESS is 7, and the median 170. With 10 steps the same run's worst bulk ESS
-//! is 2164. The standardized errors of the coordinates that do mix were also
-//! wider than a correct MCSE allows: on the correlated target, over seeds
-//! 9200 to 9205 at 10,000 draws per chain, their spread reached 2.8 times the
-//! expected one. The ignored independent-normals test below prints the worst
-//! bulk ESS of 7; the integration times, the median and the 10-step and
-//! 10,000-draw figures come from one-off runs with the settings stated.
+//! - 100 independent normals, through `target::sample_target` (custom target,
+//!   diagonal metric) and through a graph (one vector parameter, where the
+//!   auto metric may choose a dense block);
+//! - a 50-dimensional Gaussian with AR(1) correlation 0.95 (correlation
+//!   matrix condition number 989, covariance 1481), through both paths;
+//! - a 10-coefficient Bayesian linear regression with known noise, whose
+//!   posterior is computed in closed form, through a graph written as a user
+//!   would write it.
 //!
-//! Each run also prints the leapfrog steps spent per unit of bulk ESS (the
-//! smallest across coordinates), so a change to tree building or adaptation
-//! can be measured, not only pass or fail.
-use rustmc_core::diagnostics::compute_diagnostics;
-use rustmc_core::sampler::{SampleResult, SamplerConfig, SamplerType};
-use rustmc_core::target::{sample_target, LogDensity};
+//! `exactness_power.rs` runs the same gate against deliberately broken NUTS
+//! kernels (the `fault-injection` feature) and requires it to fail.
+//!
+//! The ignored `false_alarm_rate_over_seeds` measures how often the correct
+//! sampler fails the gate, and `exactness_cost_report` writes the leapfrog
+//! steps per bulk ESS, warmup included, as JSON. Both are described, with
+//! their results, in docs/statistical-validation.md.
+//!
+//! Static HMC does not pass, and its two cases are ignored reproducers rather
+//! than checks loosened until they pass. On these well-conditioned targets
+//! the adapted step size puts the default 15 leapfrog steps at an integration
+//! time close to the 2*pi period of a standardized Gaussian coordinate, so a
+//! transition returns almost to where it started. The ignored tests print
+//! what they find; the figures quoted in docs/statistical-validation.md come
+//! from those runs or from the one-off runs that page names.
+#[path = "exactness_support/mod.rs"]
+mod exactness_support;
 
-/// Bound on every standardized error, in MCSEs. A correct sampler with a
-/// correct MCSE crosses it on about one check in sixteen thousand.
-const MAX_MCSE: f64 = 4.0;
+use exactness_support::{
+    check, fit, fit_with, gate_cases, label, nominal_false_alarm_rate, with_sampler, Check,
+    GaussianTarget, Outcome, Path, MAX_MCSE, NOMINAL_EXCEEDANCE,
+};
+use rayon::prelude::*;
+use rustmc_core::sampler::SamplerType;
+use std::collections::BTreeMap;
 
-/// Minimum bulk ESS for every coordinate, as in the release gate.
-const MIN_ESS_BULK: f64 = 400.0;
-
-/// Independent normals with distinct means and scales, so a sampler that
-/// mixes up coordinates, or adapts one shared scale, is caught.
-struct IndependentNormals {
-    means: Vec<f64>,
-    sds: Vec<f64>,
-}
-
-impl IndependentNormals {
-    fn new(dimension: usize) -> Self {
-        let means = (0..dimension)
-            .map(|i| (i as f64 * 0.37).sin() * 3.0)
-            .collect();
-        // Scales from 0.5 to 2.0: a four-fold spread the metric must adapt to.
-        let sds = (0..dimension)
-            .map(|i| 0.5 + 1.5 * i as f64 / (dimension - 1) as f64)
-            .collect();
-        Self { means, sds }
-    }
-}
-
-impl LogDensity for IndependentNormals {
-    fn dimension(&self) -> usize {
-        self.means.len()
-    }
-
-    fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
-        let mut log_density = 0.0;
-        for i in 0..q.len() {
-            let z = (q[i] - self.means[i]) / self.sds[i];
-            log_density -= 0.5 * z * z;
-            gradient[i] = -z / self.sds[i];
-        }
-        Ok(log_density)
-    }
-}
-
-/// A Gaussian whose correlation matrix is `rho^|i - j|` (a stationary AR(1)
-/// correlation) with per-coordinate scales. Its precision is tridiagonal, so
-/// the density and gradient are exact and cheap; the marginal variance of
-/// coordinate `i` is `sds[i]^2`. A diagonal metric cannot remove this
-/// correlation, so the sampler has to cope with it.
-struct CorrelatedGaussian {
-    means: Vec<f64>,
-    sds: Vec<f64>,
-    rho: f64,
-}
-
-impl CorrelatedGaussian {
-    fn new(dimension: usize, rho: f64) -> Self {
-        let means = (0..dimension).map(|i| 1.0 - 0.05 * i as f64).collect();
-        let sds = (0..dimension).map(|i| 1.0 + 0.5 * (i % 3) as f64).collect();
-        Self { means, sds, rho }
-    }
-}
-
-impl LogDensity for CorrelatedGaussian {
-    fn dimension(&self) -> usize {
-        self.means.len()
-    }
-
-    fn log_density_gradient(&self, q: &[f64], gradient: &mut [f64]) -> Result<f64, String> {
-        // With z = D^-1 (q - mean), the AR(1) correlation inverse is
-        // (1 / (1 - rho^2)) * tridiag(-rho, [1, 1 + rho^2, ..., 1 + rho^2, 1], -rho).
-        let n = q.len();
-        let rho = self.rho;
-        let z: Vec<f64> = (0..n)
-            .map(|i| (q[i] - self.means[i]) / self.sds[i])
-            .collect();
-        let scale = 1.0 / (1.0 - rho * rho);
-        let mut quadratic = 0.0;
-        for i in 0..n {
-            let diagonal = if i == 0 || i == n - 1 {
-                1.0
-            } else {
-                1.0 + rho * rho
-            };
-            let mut precision_z = diagonal * z[i];
-            if i > 0 {
-                precision_z -= rho * z[i - 1];
-            }
-            if i + 1 < n {
-                precision_z -= rho * z[i + 1];
-            }
-            precision_z *= scale;
-            quadratic += z[i] * precision_z;
-            gradient[i] = -precision_z / self.sds[i];
-        }
-        Ok(-0.5 * quadratic)
-    }
-}
-
-/// The shipped defaults, apart from the seed, a single worker thread and no
-/// progress bar.
-fn default_config(sampler: SamplerType, seed: u64) -> SamplerConfig {
-    SamplerConfig {
-        sampler,
-        seed,
-        num_threads: 1,
-        show_progress: false,
-        ..Default::default()
-    }
-}
-
-/// Draws of `f(chain, coordinate, value)` in the `[chain][draw][param]` layout
-/// the diagnostics take.
-fn map_draws(fit: &SampleResult, f: impl Fn(usize, f64) -> f64) -> Vec<Vec<Vec<f64>>> {
-    fit.samples
-        .iter()
-        .map(|chain| {
-            chain
-                .iter()
-                .map(|draw| draw.iter().enumerate().map(|(i, &x)| f(i, x)).collect())
-                .collect()
-        })
-        .collect()
-}
-
-/// Whether `candidate` is worse than `current` when larger is worse and NaN is
-/// worst of all.
-fn worse(candidate: f64, current: f64) -> bool {
-    !current.is_nan() && (candidate.is_nan() || candidate > current)
-}
-
-fn check_moments(label: &str, fit: &SampleResult, means: &[f64], sds: &[f64]) {
-    let report = fit.diagnostics();
-    let squared = map_draws(fit, |i, x| (x - means[i]).powi(2));
-    let squared_report = compute_diagnostics(
-        &squared,
-        &fit.param_names,
-        &report.accept_rates,
-        report.divergences,
-    );
-
-    let (mut worst_mean, mut worst_variance) = ((0.0_f64, 0), (0.0_f64, 0));
-    let mut weakest_ess = (f64::INFINITY, 0);
-    for i in 0..means.len() {
-        let (param, squared_param) = (&report.params[i], &squared_report.params[i]);
-        // A NaN diagnostic counts as the worst value and stays the worst, so
-        // the assertions below catch it.
-        if worse(-param.ess_bulk, -weakest_ess.0) {
-            weakest_ess = (param.ess_bulk, i);
-        }
-        let mean_error = (param.mean - means[i]).abs() / param.mcse_mean;
-        if worse(mean_error, worst_mean.0) {
-            worst_mean = (mean_error, i);
-        }
-        let variance_error = (squared_param.mean - sds[i] * sds[i]).abs() / squared_param.mcse_mean;
-        if worse(variance_error, worst_variance.0) {
-            worst_variance = (variance_error, i);
-        }
-    }
-    let draw_leapfrog_steps: usize = fit
-        .transitions
-        .iter()
-        .flatten()
-        .filter(|transition| !transition.is_warmup)
-        .map(|transition| transition.num_leapfrog_steps)
-        .sum();
-    // Printed before the assertions, so a failing run still reports it.
-    println!(
-        "{label}: worst mean error {:.2} MCSE, worst variance error {:.2} MCSE, \
-         {:.1} leapfrog steps per bulk ESS (min bulk ESS {:.0})",
-        worst_mean.0,
-        worst_variance.0,
-        draw_leapfrog_steps as f64 / weakest_ess.0,
-        weakest_ess.0
-    );
-
-    assert_eq!(report.divergences, 0, "{label}: divergent transitions");
-    assert!(
-        weakest_ess.0 >= MIN_ESS_BULK,
-        "{label}: coordinate {} has bulk ESS {:.1}, below {MIN_ESS_BULK}",
-        weakest_ess.1,
-        weakest_ess.0
-    );
-    assert!(
-        worst_mean.0 < MAX_MCSE,
-        "{label}: coordinate {} mean {} is {:.2} MCSE (MCSE {}) from the exact {}",
-        worst_mean.1,
-        report.params[worst_mean.1].mean,
-        worst_mean.0,
-        report.params[worst_mean.1].mcse_mean,
-        means[worst_mean.1]
-    );
-    assert!(
-        worst_variance.0 < MAX_MCSE,
-        "{label}: coordinate {} variance {} is {:.2} MCSE (MCSE {}) from the exact {}",
-        worst_variance.1,
-        squared_report.params[worst_variance.1].mean,
-        worst_variance.0,
-        squared_report.params[worst_variance.1].mcse_mean,
-        sds[worst_variance.1].powi(2)
-    );
-}
-
-fn run(label: &str, sampler: SamplerType, seed: u64, target: &impl Moments) {
-    let fit = sample_target(target, default_config(sampler, seed), None).expect("sampling failed");
-    check_moments(label, &fit, target.means(), target.sds());
-}
-
-/// The exact moments a target's draws are checked against.
-trait Moments: LogDensity {
-    fn means(&self) -> &[f64];
-    fn sds(&self) -> &[f64];
-}
-
-impl Moments for IndependentNormals {
-    fn means(&self) -> &[f64] {
-        &self.means
-    }
-    fn sds(&self) -> &[f64] {
-        &self.sds
-    }
-}
-
-impl Moments for CorrelatedGaussian {
-    fn means(&self) -> &[f64] {
-        &self.means
-    }
-    fn sds(&self) -> &[f64] {
-        &self.sds
-    }
+fn gate(target: GaussianTarget, path: Path, seed: u64) {
+    let outcome = check(&label(&target, path), &fit(&target, path, seed), &target);
+    println!("{}", outcome.summary());
+    outcome.assert_passed();
 }
 
 #[test]
 fn nuts_matches_the_exact_moments_of_a_hundred_independent_normals() {
-    run(
-        "NUTS, 100 independent normals",
-        SamplerType::Nuts,
-        2101,
-        &IndependentNormals::new(100),
-    );
+    gate(GaussianTarget::independent_normals(100), Path::Custom, 2101);
+}
+
+#[test]
+fn nuts_matches_the_exact_moments_of_a_hundred_independent_normals_in_a_graph() {
+    gate(GaussianTarget::independent_normals(100), Path::Graph, 2111);
 }
 
 #[test]
 fn nuts_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
-    run(
-        "NUTS, 50 correlated Gaussian coordinates",
-        SamplerType::Nuts,
-        2201,
-        &CorrelatedGaussian::new(50, 0.8),
-    );
+    gate(GaussianTarget::correlated(50, 0.95), Path::Custom, 2201);
+}
+
+#[test]
+fn nuts_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian_in_a_graph() {
+    gate(GaussianTarget::correlated(50, 0.95), Path::Graph, 2211);
+}
+
+#[test]
+fn nuts_matches_the_exact_posterior_of_a_conjugate_regression() {
+    gate(GaussianTarget::conjugate_regression(), Path::Graph, 2301);
+}
+
+/// The study and the cost report below take their cases from `gate_cases`;
+/// this keeps that list identical to the tests above.
+#[test]
+fn the_gate_cases_are_the_tested_ones() {
+    let cases: Vec<(String, u64)> = gate_cases()
+        .iter()
+        .map(|(target, path, seed)| (label(target, *path), *seed))
+        .collect();
+    let expected = [
+        (
+            "independent normals (100 dimensions), custom target path",
+            2101,
+        ),
+        ("independent normals (100 dimensions), graph path", 2111),
+        (
+            "correlated Gaussian (50 dimensions), custom target path",
+            2201,
+        ),
+        ("correlated Gaussian (50 dimensions), graph path", 2211),
+        ("conjugate regression (10 dimensions), graph path", 2301),
+    ]
+    .map(|(l, s)| (l.to_string(), s));
+    assert_eq!(cases, expected);
 }
 
 /// Reproducer for an open finding (see the module documentation): at the
@@ -297,26 +116,301 @@ fn nuts_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
 #[test]
 #[ignore = "open finding: default static HMC nearly resonates on well-conditioned Gaussians"]
 fn hmc_matches_the_exact_moments_of_a_hundred_independent_normals() {
-    run(
-        "HMC, 100 independent normals",
-        SamplerType::Hmc,
-        2102,
-        &IndependentNormals::new(100),
-    );
+    let target = GaussianTarget::independent_normals(100);
+    let fit = fit_with(&target, Path::Custom, with_sampler(2102, SamplerType::Hmc));
+    let outcome = check("HMC, 100 independent normals", &fit, &target);
+    println!("{}", outcome.summary());
+    outcome.assert_passed();
 }
 
-/// Reproducer for the same open finding on the correlated target. At this seed
-/// and the default draws it fails on the bulk ESS floor (worst coordinate about
-/// 212). The wider-than-MCSE spread of the coordinates that do mix is not what
-/// this run shows: it comes from the one-off 10,000-draw runs the module
-/// documentation describes.
+/// Reproducer for the same open finding on the correlated target.
 #[test]
 #[ignore = "open finding: default static HMC nearly resonates on well-conditioned Gaussians"]
 fn hmc_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
-    run(
-        "HMC, 50 correlated Gaussian coordinates",
-        SamplerType::Hmc,
-        2202,
-        &CorrelatedGaussian::new(50, 0.8),
+    let target = GaussianTarget::correlated(50, 0.95);
+    let fit = fit_with(&target, Path::Custom, with_sampler(2202, SamplerType::Hmc));
+    let outcome = check("HMC, 50 correlated Gaussian coordinates", &fit, &target);
+    println!("{}", outcome.summary());
+    outcome.assert_passed();
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name).map_or(default, |v| {
+        v.parse()
+            .unwrap_or_else(|_| panic!("{name} must be a whole number, not {v:?}"))
+    })
+}
+
+/// Fraction of `values` whose magnitude is at least `bound` (NaN counts).
+fn exceedance(values: &[f64], bound: f64) -> f64 {
+    values.iter().filter(|z| !(z.abs() < bound)).count() as f64 / values.len() as f64
+}
+
+fn standard_deviation(values: &[f64]) -> f64 {
+    let mean = values.iter().sum::<f64>() / values.len() as f64;
+    (values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64).sqrt()
+}
+
+/// The false-alarm rate of the gate on the correct sampler.
+///
+/// Runs every gate case at the shipped defaults over `RUSTMC_EXACTNESS_SEEDS`
+/// seeds (default 200, from 10,000 up, none of them a gate seed) and prints,
+/// per case: how many fits failed the gate and on which check, against the
+/// rate the moment checks alone would have if every standardized error were
+/// an independent standard normal (two checks per coordinate and one on the
+/// squared norm, each crossing 4 MCSE with probability 6.3e-5); and, pooled
+/// over coordinates and seeds,
+/// the fraction of standardized errors beyond 2, 3 and 4 MCSE and their
+/// standard deviation, which a correct MCSE puts near 4.55%, 0.27%, 0.0063%
+/// and 1. With `RUSTMC_EXACTNESS_JSON` set, also writes the tallies there.
+///
+/// ```text
+/// RUSTMC_EXACTNESS_SEEDS=1000 cargo test --release -p rustmc_core \
+///     --test exactness -- --ignored --nocapture false_alarm_rate_over_seeds
+/// ```
+#[test]
+#[ignore = "study: hundreds of fits; run by hand, see the doc comment"]
+fn false_alarm_rate_over_seeds() {
+    let seeds = env_usize("RUSTMC_EXACTNESS_SEEDS", 200);
+    let started = std::time::Instant::now();
+    let mut records = Vec::new();
+    for (target, path, _) in gate_cases() {
+        let case_started = std::time::Instant::now();
+        let name = label(&target, path);
+        let outcomes: Vec<Outcome> = (0..seeds as u64)
+            .into_par_iter()
+            .map(|k| {
+                let seed = 10_000 + k;
+                check(
+                    &format!("{name}, seed {seed}"),
+                    &fit(&target, path, seed),
+                    &target,
+                )
+            })
+            .collect();
+        let failed = outcomes.iter().filter(|o| !o.passed()).count();
+        let mut by_check: BTreeMap<String, usize> = BTreeMap::new();
+        for check in [
+            Check::Divergences,
+            Check::BulkEss,
+            Check::Mean,
+            Check::Variance,
+            Check::SquaredNorm,
+        ] {
+            by_check.insert(
+                format!("{check:?}"),
+                outcomes.iter().filter(|o| o.failed(check)).count(),
+            );
+        }
+        let moment_failures = outcomes
+            .iter()
+            .filter(|o| {
+                o.failed(Check::Mean) || o.failed(Check::Variance) || o.failed(Check::SquaredNorm)
+            })
+            .count();
+        let mean_z: Vec<f64> = outcomes.iter().flat_map(|o| o.mean_z.clone()).collect();
+        let variance_z: Vec<f64> = outcomes.iter().flat_map(|o| o.variance_z.clone()).collect();
+        let squared_norm_z: Vec<f64> = outcomes.iter().map(|o| o.squared_norm_z).collect();
+        let nominal = nominal_false_alarm_rate(target.dimension());
+        println!(
+            "{name}: {failed}/{seeds} fits failed the gate ({:.2}%); moment checks failed in \
+             {moment_failures} ({:.2}%), nominal {:.2}%; by check {by_check:?}",
+            100.0 * failed as f64 / seeds as f64,
+            100.0 * moment_failures as f64 / seeds as f64,
+            100.0 * nominal
+        );
+        for (which, z) in [
+            ("mean", &mean_z),
+            ("variance", &variance_z),
+            ("squared norm", &squared_norm_z),
+        ] {
+            println!(
+                "    {which} errors: {} values, beyond 2 MCSE {:.3}%, beyond 3 {:.4}%, \
+                 beyond 4 {:.4}%, sd {:.3}",
+                z.len(),
+                100.0 * exceedance(z, 2.0),
+                100.0 * exceedance(z, 3.0),
+                100.0 * exceedance(z, MAX_MCSE),
+                standard_deviation(z)
+            );
+        }
+        for outcome in outcomes.iter().filter(|o| !o.passed()) {
+            println!("    {}", outcome.summary());
+        }
+        let z_summary = |z: &Vec<f64>| {
+            serde_json::json!({
+                "count": z.len(),
+                "fraction_beyond_2": exceedance(z, 2.0),
+                "fraction_beyond_3": exceedance(z, 3.0),
+                "fraction_beyond_4": exceedance(z, MAX_MCSE),
+                "standard_deviation": standard_deviation(z),
+            })
+        };
+        records.push(serde_json::json!({
+            "case": name,
+            "dimension": target.dimension(),
+            "seeds": seeds,
+            "first_seed": 10_000,
+            "fits_failed": failed,
+            "fits_failed_by_check": by_check,
+            "fits_failed_on_moments": moment_failures,
+            "nominal_moment_false_alarm_rate": nominal,
+            "mean_errors": z_summary(&mean_z),
+            "variance_errors": z_summary(&variance_z),
+            "squared_norm_errors": z_summary(&squared_norm_z),
+            "wall_seconds": case_started.elapsed().as_secs_f64(),
+        }));
+    }
+    println!(
+        "{} fits in {:.1} s",
+        seeds * records.len(),
+        started.elapsed().as_secs_f64()
     );
+    if let Ok(path) = std::env::var("RUSTMC_EXACTNESS_JSON") {
+        let report = serde_json::json!({
+            "nominal_exceedance_per_check": NOMINAL_EXCEEDANCE,
+            "cases": records,
+            "wall_seconds": started.elapsed().as_secs_f64(),
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&report).unwrap() + "\n").unwrap();
+    }
+}
+
+/// Leapfrog steps per unit of bulk ESS, warmup included, for every gate case.
+///
+/// Fits each case at the shipped defaults for `RUSTMC_EXACTNESS_COST_SEEDS`
+/// seeds (default 10: the gate's own seed and the ones after it) and writes,
+/// to the path in `RUSTMC_EXACTNESS_JSON` (required), each fit's leapfrog
+/// steps in warmup and in draws (from the transition records; the step-size
+/// searches warmup runs are not transitions and are not counted), its
+/// smallest bulk ESS, their ratios, and the machine and command.
+///
+/// ```text
+/// RUSTMC_EXACTNESS_JSON=benchmarks/results/<date>-exactness.json \
+///     cargo test --release -p rustmc_core --test exactness -- --ignored \
+///     --nocapture exactness_cost_report
+/// ```
+#[test]
+#[ignore = "writes a benchmark record; run by hand, see the doc comment"]
+fn exactness_cost_report() {
+    let output = std::env::var("RUSTMC_EXACTNESS_JSON")
+        .expect("set RUSTMC_EXACTNESS_JSON to the file to write");
+    let seeds = env_usize("RUSTMC_EXACTNESS_COST_SEEDS", 10) as u64;
+    let mut cases = Vec::new();
+    for (target, path, gate_seed) in gate_cases() {
+        let name = label(&target, path);
+        let mut runs = Vec::new();
+        for seed in gate_seed..gate_seed + seeds {
+            let started = std::time::Instant::now();
+            let fit = fit(&target, path, seed);
+            let seconds = started.elapsed().as_secs_f64();
+            let outcome = check(&name, &fit, &target);
+            let total = outcome.warmup_leapfrog_steps + outcome.draw_leapfrog_steps;
+            runs.push(serde_json::json!({
+                "seed": seed,
+                "passed_gate": outcome.passed(),
+                "warmup_leapfrog_steps": outcome.warmup_leapfrog_steps,
+                "draw_leapfrog_steps": outcome.draw_leapfrog_steps,
+                "min_bulk_ess": outcome.min_ess_bulk(),
+                "leapfrog_steps_per_min_bulk_ess_with_warmup":
+                    total as f64 / outcome.min_ess_bulk(),
+                "leapfrog_steps_per_min_bulk_ess_draws_only":
+                    outcome.draw_leapfrog_steps as f64 / outcome.min_ess_bulk(),
+                "divergences": outcome.divergences,
+                "max_r_hat": outcome.max_r_hat,
+                "worst_mean_error_mcse": outcome.worst_mean_z(),
+                "worst_variance_error_mcse": outcome.worst_variance_z(),
+                "squared_norm_error_mcse": outcome.squared_norm_z,
+                "fit_wall_seconds": seconds,
+            }));
+        }
+        let mut ratios: Vec<f64> = runs
+            .iter()
+            .map(|r| {
+                r["leapfrog_steps_per_min_bulk_ess_with_warmup"]
+                    .as_f64()
+                    .unwrap()
+            })
+            .collect();
+        ratios.sort_by(f64::total_cmp);
+        let middle = ratios.len() / 2;
+        let median = if ratios.len() % 2 == 1 {
+            ratios[middle]
+        } else {
+            0.5 * (ratios[middle - 1] + ratios[middle])
+        };
+        println!(
+            "{name}: leapfrog steps per min bulk ESS, warmup included: median {median:.1}, \
+             range {:.1} to {:.1} over {seeds} seeds",
+            ratios[0],
+            ratios[ratios.len() - 1]
+        );
+        cases.push(serde_json::json!({
+            "case": name,
+            "target": target.name,
+            "dimension": target.dimension(),
+            "path": path.name(),
+            "median_leapfrog_steps_per_min_bulk_ess_with_warmup": median,
+            "runs": runs,
+        }));
+    }
+    let report = serde_json::json!({
+        "format": "rustmc.exactness-cost",
+        "version": 1,
+        "date": command_output("date", &["-u", "+%Y-%m-%d"]),
+        "rustmc_core": env!("CARGO_PKG_VERSION"),
+        "revision": command_output("git", &["rev-parse", "HEAD"]),
+        "dirty": command_output("git", &["status", "--porcelain"]).map(|s| !s.is_empty()),
+        "machine": {
+            "cpu_model": cpu_model(),
+            "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).ok(),
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+            "kernel": command_output("uname", &["-r"]),
+            "rustc": command_output("rustc", &["--version"]),
+            "RAYON_NUM_THREADS": std::env::var("RAYON_NUM_THREADS").ok(),
+        },
+        "command": "RUSTMC_EXACTNESS_JSON=<path> cargo test --release -p rustmc_core \
+                    --test exactness -- --ignored --nocapture exactness_cost_report",
+        "sampling": {
+            "sampler": "NUTS",
+            "chains": 4,
+            "warmup": 500,
+            "draws": 1000,
+            "target_accept": 0.8,
+            "metric": "auto",
+            "max_tree_depth": 10,
+            "threads_per_fit": 1,
+        },
+        "definition": "leapfrog steps recorded in every transition of all four chains, \
+                       warmup and draws, divided by the smallest bulk ESS over \
+                       coordinates; the step-size searches at the start of warmup and \
+                       after each metric update are not transitions and are not counted",
+        "cases": cases,
+    });
+    std::fs::write(
+        &output,
+        serde_json::to_string_pretty(&report).unwrap() + "\n",
+    )
+    .unwrap();
+}
+
+fn command_output(program: &str, args: &[&str]) -> Option<String> {
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn cpu_model() -> Option<String> {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()?
+        .lines()
+        .find(|line| line.starts_with("model name"))
+        .and_then(|line| line.split(':').nth(1))
+        .map(|model| model.trim().to_string())
 }
