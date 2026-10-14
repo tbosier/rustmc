@@ -61,6 +61,10 @@ pub struct Evaluator {
     log_observations: Vec<Vec<f64>>,
 }
 
+/// Panic message for an evaluator used with a graph whose observation terms
+/// differ from those of the graph it was built for.
+const STALE_GRAPH: &str = "evaluator used with a graph other than the one it was built for";
+
 /// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
 /// reusing its allocations.
 fn fill_log_observations(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
@@ -940,6 +944,10 @@ impl Evaluator {
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let log_obs = &self.log_observations[*obs_data_idx];
+                            // Filled for every LogNormal term of the graph this
+                            // evaluator was built for; empty here means it was
+                            // handed a different graph.
+                            assert_eq!(log_obs.len(), obs.len(), "{STALE_GRAPH}");
                             let mut sum = 0.0f64;
                             for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
@@ -1462,6 +1470,10 @@ impl Evaluator {
                                 _ => None,
                             };
                             let log_obs = &self.log_observations[*obs_data_idx];
+                            // Filled for every LogNormal term of the graph this
+                            // evaluator was built for; empty here means it was
+                            // handed a different graph.
+                            assert_eq!(log_obs.len(), obs.len(), "{STALE_GRAPH}");
                             let mut dsigma = 0.0f64;
                             for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
@@ -2709,6 +2721,26 @@ mod tests {
                 assert!(result.is_ok(), "{name} at {params:?}");
             }
         }
+    }
+
+    /// The `ln(y)` cache is built from the graph an evaluator was constructed
+    /// for. A graph changed afterwards so that a term becomes LogNormal must
+    /// not be evaluated against the empty cache, which would silently drop
+    /// the likelihood.
+    #[test]
+    #[should_panic(expected = "evaluator used with a graph other than the one it was built for")]
+    fn lognormal_term_added_after_construction_is_refused() {
+        let mut g = Graph::new();
+        let mu = g.add_param("mu");
+        let one = g.add_constant(1.0);
+        let obs = g.add_obs_data(vec![2.0]);
+        let linpred = g.broadcast_observation(mu, obs);
+        let term = g.obs_logp_normal(linpred, one, obs);
+        let mut evaluator = Evaluator::new(&g);
+        if let Op::ObsLogP { family, .. } = &mut g.nodes[term.0].op {
+            *family = ObsFamily::LogNormal;
+        }
+        evaluator.compute(&g, &[0.0]);
     }
 
     /// Helper: check both grad_logp and Evaluator against finite differences.
