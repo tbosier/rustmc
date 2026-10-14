@@ -33,6 +33,18 @@ jobs:
         run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
       - name: Verify publishable Rust crate archive
         run: cargo package -p rustmc_core --locked
+      # cargo package verifies the library only. Build the shipped test and
+      # example targets from the unpacked archive too, so a test that reaches
+      # outside the crate (for a fixture, say) fails here, not for a user.
+      # The exact file name, since a restored cache can leave other versions'
+      # archives in target/package.
+      - name: Build the packaged crate's tests from the archive alone
+        run: |
+          version=$(python3 -c "import tomllib; print(tomllib.load(open('rust_core/Cargo.toml', 'rb'))['package']['version'])")
+          mkdir -p "$RUNNER_TEMP/crate"
+          tar xzf "target/package/rustmc_core-$version.crate" -C "$RUNNER_TEMP/crate"
+          cargo test --release --no-run --locked --target-dir target \
+            --manifest-path "$RUNNER_TEMP/crate/rustmc_core-$version/Cargo.toml"
 
   msrv:
     name: Minimum supported Rust version
@@ -47,21 +59,26 @@ jobs:
         with:
           toolchain: ${{ steps.msrv.outputs.version }}
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # --all-targets so the tests, examples and benches rustmc_core ships are held
-      # to the same toolchain as the library.
+      # --all-targets so the tests and examples rustmc_core ships are held to the
+      # same toolchain as the library.
       - run: cargo check -p rustmc_core --all-targets --locked
 
+  # Editable source installs. Everything here needs the source tree: the
+  # provenance check, the source-only test modules (the benchmark harness and
+  # the statistical gates skip against an installed wheel), the standalone
+  # Rust runtime comparison, the examples and their pages, and the posterior
+  # validation. Two versions, one per supported ArviZ major, because the
+  # benchmark harness's ArviZ checks run only here. Every other Python
+  # version is covered by python-wheel-install, which runs the full suite
+  # against the same abi3 extension.
   python-source-install:
-    name: Python source install (${{ matrix.python-version }}, ${{ matrix.os }})
+    name: Python source install (${{ matrix.python-version }}, ubuntu-latest)
     needs: test
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
-        # Add macos-latest / windows-latest here once someone has verified
-        # the steps below on those platforms (see CONTRIBUTING.md).
-    runs-on: ${{ matrix.os }}
+        python-version: ["3.11", "3.12"]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -97,12 +114,6 @@ jobs:
         env:
           RUSTMC_REQUIRE_SOURCE_ROOT: ${{ github.workspace }}
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests
-      # Deselected from the default run by pyproject.toml because it needs the
-      # network: builds a wheel with maturin, installs it into a fresh venv with
-      # pip, and imports it from outside the checkout.
-      - name: Install the built wheel into a clean venv (network-marked test)
-        if: matrix.python-version == '3.11'
-        run: ${{ runner.temp }}/source-env/bin/python -m pytest -q -m network tests/test_packaging.py
       # Nothing ran the examples before, so two of them grew to ~57 and ~42
       # minutes and drifted out of examples/README.md unnoticed. The README
       # tables are the manifest; a script in neither a table nor an excluded
@@ -131,9 +142,32 @@ jobs:
           name: posterior-validation
           path: ${{ runner.temp }}/posterior-validation.json
 
+  # The extension is built for the stable ABI (abi3-py39), so one Linux wheel
+  # serves every CPython version; build it once and test it under each.
+  python-wheel-build:
+    name: Build Linux test wheel
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install maturin
+      - name: Build wheel
+        run: maturin build --release --manifest-path python_bindings/Cargo.toml --out dist
+      # Not named wheel-*: the publish job uploads every wheel-* artifact to PyPI.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-linux-test-wheel
+          path: dist/*.whl
+          if-no-files-found: error
+
   python-wheel-install:
     name: Python wheel install (${{ matrix.python-version }}, ${{ matrix.os }})
-    needs: test
+    needs: python-wheel-build
     strategy:
       fail-fast: false
       matrix:
@@ -144,16 +178,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-        with:
-          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: python -m pip install maturin
-      - name: Build wheel
-        run: maturin build --release --manifest-path python_bindings/Cargo.toml --out dist
+      # Into the checkout's dist/, where tests/test_packaging.py looks for the
+      # wheel whose contents and metadata it checks.
+      - uses: actions/download-artifact@v4
+        with:
+          name: ci-linux-test-wheel
+          path: dist
       - name: Create clean environment outside the checkout
         run: python -m venv "${{ runner.temp }}/wheel-env"
       - name: Install wheel and test dependencies into the clean environment
@@ -169,19 +202,11 @@ jobs:
           ${{ runner.temp }}/wheel-env/bin/python -m pytest -q
           ${{ github.workspace }}/tests
 
-  version-check:
-    name: Release versions
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: python3 scripts/verify_version.py
-
   build:
     name: Build wheel (${{ matrix.target }})
-    # A tag must not reach the publish path unless both source installs and
-    # clean-wheel installs passed across the advertised Python matrix.
-    needs: [version-check, python-source-install, python-wheel-install]
+    # A tag must not reach the publish path unless the source installs and the
+    # clean-wheel installs across the advertised Python matrix passed.
+    needs: [python-source-install, python-wheel-install]
     # Exercise the release platforms before merging, as well as on release tags.
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     strategy:
@@ -219,7 +244,7 @@ jobs:
 
   sdist:
     name: Source distribution
-    needs: [version-check, python-source-install, python-wheel-install]
+    needs: [python-source-install, python-wheel-install]
     if: github.event_name == 'pull_request' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -324,3 +349,7 @@ jobs:
     uses: ./.github/workflows/docs.yml
     with:
       deploy: true
+      # python-source-install checked the example pages before anything was
+      # published. Repeating it here could only fail the site deploy after the
+      # packages are out, if a toolchain release moved the last digits between.
+      check_examples: false

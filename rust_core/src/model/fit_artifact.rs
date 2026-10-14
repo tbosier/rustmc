@@ -163,7 +163,7 @@ fn invalid(message: &str) -> ModelError {
 /// straddles zero the absolute disagreement between two correct formulations
 /// stays of order `EPSILON * span` while `EPSILON * |value|` collapses, and a
 /// value-relative budget rejects artifacts this library itself wrote:
-/// `Uniform(-2, 3)` is enough, and `tests/fixtures/graph_fit_v2_uniform.json`
+/// `Uniform(-2, 3)` is enough, and `rust_core/tests/fixtures/graph_fit_v2_uniform.json`
 /// is a real one, written before the bounded transform was re-associated to
 /// evaluate its density at the point it reports.
 ///

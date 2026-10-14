@@ -34,12 +34,11 @@ classifiers = [
 [project.optional-dependencies]
 viz = ["arviz", "matplotlib"]
 benchmark = ["arviz", "pymc", "nutpie", "numpyro"]
-# NOTE: deliberately not using a [dependency-groups] (PEP 735) table here --
-# `maturin develop` auto-installs dependency groups via `pip install
-# --group`, which requires pip >=25.1. Older pip (as ships with several
-# actions/setup-python versions and plain `python -m venv`) errors out with
-# "no such option: --group". Keep dev/test deps as a normal extra instead.
-test = ["pytest>=7", "maturin>=1.9.3,<2.0", "numpy"]
+# Development and test dependencies are installed directly (CONTRIBUTING.md).
+# Do not move them into a [dependency-groups] (PEP 735) table: `maturin develop`
+# installs those with `pip install --group`, which needs pip >= 25.1, and older
+# pip (as several actions/setup-python versions and plain `python -m venv` ship)
+# fails with "no such option: --group".
 
 [project.urls]
 Changelog = "https://github.com/tbosier/rustmc/blob/main/CHANGELOG.md"

@@ -127,7 +127,10 @@ def test_global_and_batch_entrypoints_retain_raw_graph_coordinates():
 # verbatim. It must not be regenerated with the current code: an artifact the
 # current writer produces agrees with the current reader by construction, which
 # is exactly why the existing round-trip tests missed this.
-OLD_WRITER_UNIFORM = pathlib.Path(__file__).parent / "fixtures" / "graph_fit_v2_uniform.json"
+OLD_WRITER_UNIFORM = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "rust_core" / "tests" / "fixtures" / "graph_fit_v2_uniform.json"
+)
 
 
 def _previous_bounded_sigmoid(raw, lower, upper):

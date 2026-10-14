@@ -4,10 +4,18 @@ Per-class arguments, output shapes, and stated limits. This is a lookup page, no
 tutorial: it assumes you have already fitted something in
 [Get started](getting-started.md) and now need the exact behaviour of one call.
 
-Coverage is not complete. `StructuralModel`, `BayesianDynamicGLM`, `VarianceParameter`
-and `ForecastSession` are public but documented only in their guides —
-[structural composition](structural-forecasting.md) and
-[dynamic GLMs](dynamic-glm.md).
+Coverage is not complete. These public names are documented only in their guides:
+
+- [Structural composition](structural-forecasting.md): `StructuralModel` and
+  `VarianceParameter`.
+- [Dynamic counts, amounts, and pooling](dynamic-glm.md): `BayesianDynamicGLM`,
+  `BayesianDynamicPoisson`, `BayesianDynamicNegativeBinomial`,
+  `BayesianDynamicHurdleLogNormal` and `DynamicGLMFit`.
+- [Evaluation and workflows](forecasting-workflows.md): `ForecastSession`, `backtest`,
+  `forecast_scenarios`, `naive_forecast`, `seasonal_naive`, `score_forecast`, `crps`,
+  `interval_score` and `weighted_interval_score`.
+- [Independent batches and diagnostics](forecast-batches.md): `forecast_cell_seed`.
+- [Sparse amounts](sparse-amounts.md): `hurdle_lognormal_logp`.
 
 Each section states what a model does not do as well as what it does. Those limits are
 deliberate and current; where a thing is not supported, it says so next to the thing.
@@ -36,8 +44,8 @@ Construct a general model with NumPy arrays, or use the `local_level()`,
 constructors. `filter(y)` returns predicted and filtered state means/covariances plus
 the observed-data log likelihood. `smooth(y)` returns the filtered and smoothed state
 moments and the same log likelihood; it does not carry the predicted moments, so keep
-the `filter(y)` result if you need those. `forecast(y, steps)` returns future
-latent-state and observation means/variances. A `NaN` observation is treated as missing
+the `filter(y)` result if you need those. `forecast(y, steps)` returns a
+`ForecastResult` holding future latent-state and observation means/variances. A `NaN` observation is treated as missing
 and causes a prediction-only step; infinities are rejected.
 
 `forecast.observation_covariance` contains the joint covariance across future scalar
@@ -723,9 +731,9 @@ Fitting and forecasting calls return named types, and each guide describes the m
 of the types it returns. `FitResult`, `BatchResult`, `BatchFit`,
 `StructuralFit`/`StructuralForecast`, `RunoffFit`,
 `ForecastBatchFit`/`ForecastBatchForecast`, `DynamicGLMForecast`,
-`KalmanFilterResult`/`KalmanSmootherResult`, and one fit type plus one forecast type
-per specialized model come from those calls and are not constructed directly. The
-forecast type is not reliably named after the fit type:
+`KalmanFilterResult`/`KalmanSmootherResult`/`ForecastResult`, and one fit type plus
+one forecast type per specialized model come from those calls and are not constructed
+directly. The forecast type is not reliably named after the fit type:
 `BayesianLocalLevelFit.forecast()` returns `BayesianForecastResult`,
 `BayesianLocalLinearTrendFit.forecast()` returns `BayesianTrendForecast`,
 `BayesianSeasonalLocalLevelFit.forecast()` returns `BayesianSeasonalForecast`, and

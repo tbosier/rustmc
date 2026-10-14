@@ -8,12 +8,10 @@ stays hermetic by default.
 
 The full round trip (`test_wheel_installs_in_clean_environment`) is marked
 `network` and deselected by default (see `addopts` in pyproject.toml)
-because it builds a wheel with maturin and creates a fresh venv, which
-needs network access this sandbox only grants when explicitly
-unsandboxed. CI exercises the equivalent path directly as dedicated
-workflow jobs (see .github/workflows/ci.yml) using
-scripts/verify_wheel_install.py, which is the same script this test
-shells out to.
+because it builds a wheel with maturin and creates a fresh venv, which needs
+network access to fetch build dependencies. CI exercises the same path
+directly in its wheel-install jobs (see .github/workflows/ci.yml), which
+install a built wheel into a clean environment and run the whole suite.
 """
 import glob
 import os
@@ -143,9 +141,10 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     """
     Full round trip: `maturin build`, install the resulting wheel into a
     brand-new venv created outside the repo (tmp_path, a pytest tmp
-    directory under the system temp dir), and run
-    scripts/verify_wheel_install.py from that same directory -- so the
-    only `rustmc` importable is the one just installed from the wheel.
+    directory under the system temp dir), and run the test suite with that
+    venv's interpreter from that same directory -- so the only `rustmc`
+    importable is the one just installed from the wheel.
+    RUSTMC_REQUIRE_SITE_PACKAGES makes tests/test_smoke.py assert exactly that.
     """
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()
@@ -165,24 +164,34 @@ def test_wheel_installs_in_clean_environment(tmp_path):
     venv.EnvBuilder(with_pip=True, symlinks=os.name != "nt").create(env_dir)
     env_python = env_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
+    # Without PYTHONPATH, so a rustmc on it (scripts/dev_pytest.sh puts this
+    # checkout's build there) can neither satisfy the install nor be imported,
+    # and without the source-provenance flag, which no installed wheel meets.
+    env = {**os.environ, "RUSTMC_REQUIRE_SITE_PACKAGES": "1"}
+    env.pop("PYTHONPATH", None)
+    env.pop("RUSTMC_REQUIRE_SOURCE_ROOT", None)
     subprocess.run(
-        [str(env_python), "-m", "pip", "install", "--quiet", str(wheels[0]), "numpy"],
+        [
+            str(env_python), "-m", "pip", "install", "--quiet",
+            str(wheels[0]), "numpy", "pytest",
+        ],
         check=True,
+        env=env,
     )
 
-    script_src = REPO_ROOT / "scripts" / "verify_wheel_install.py"
-    script_dst = tmp_path / "verify_wheel_install.py"
-    script_dst.write_text(script_src.read_text())
-
     result = subprocess.run(
-        [str(env_python), str(script_dst)],
+        [
+            str(env_python), "-m", "pytest", "-q", "-rs", "-p", "no:cacheprovider",
+            str(REPO_ROOT / "tests"),
+        ],
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
-        env={**os.environ, "RUSTMC_REQUIRE_SITE_PACKAGES": "1"},
+        env=env,
     )
     print(result.stdout)
     print(result.stderr, file=sys.stderr)
-    assert result.returncode == 0, "verify_wheel_install.py failed against the clean install"
-    assert "site-packages" in result.stdout
-    assert str(REPO_ROOT) not in result.stdout
+    assert result.returncode == 0, "the test suite failed against the clean install"
+    # The location check skips, rather than fails, unless
+    # RUSTMC_REQUIRE_SITE_PACKAGES reached it; -rs prints the skip reason.
+    assert "skipping strict location check" not in result.stdout, result.stdout

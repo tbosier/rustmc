@@ -192,7 +192,7 @@ def test_continuous_fit_artifacts_still_round_trip():
     rustmc.CompiledModel.from_json(builder.compile().to_json())
 
 
-FIXTURES = __import__('pathlib').Path(__file__).parent / 'fixtures'
+FIXTURES = __import__('pathlib').Path(__file__).resolve().parents[1] / 'rust_core' / 'tests' / 'fixtures'
 
 
 def test_python_and_rust_write_the_same_bytes():
