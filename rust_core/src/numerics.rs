@@ -4,7 +4,10 @@
 //! range somewhere a sampler can reach: a sigmoid at raw -710, a bounded
 //! transform spanning 1e308, a quotient or power whose factors overflow while
 //! the product does not. They were defined beside `Op` in `graph.rs`; the
-//! public ones are still re-exported from there.
+//! public ones are still re-exported from there. The scalar special functions
+//! (`softplus`, `ln_gamma`, `digamma`) used to live in `autodiff.rs`; the
+//! forecasting samplers call them too, so they belong here, and `autodiff`
+//! re-exports them at their old paths.
 
 use crate::graph::ElementwiseOp;
 
@@ -551,4 +554,144 @@ fn scaled_power_product(factors: &[f64], a: f64, exponent: f64) -> Option<f64> {
         binary_exponent += e;
     }
     Some(apply_exponent(mantissa, binary_exponent))
+}
+
+/// `ln(1 + exp(x))`, without overflow for large `x`.
+///
+/// This is the single softplus: the graph's `ElementwiseOp::Softplus`, the
+/// Beta, Uniform and Student-t densities, and the count and Bernoulli kernels
+/// all call it.
+pub(crate) fn softplus(x: f64) -> f64 {
+    if x > 0.0 {
+        x + (-x).exp().ln_1p()
+    } else {
+        x.exp().ln_1p()
+    }
+}
+
+/// Lanczos approximation to ln(Γ(x)) for x > 0.
+pub fn ln_gamma(x: f64) -> f64 {
+    if x <= 0.0 {
+        return f64::INFINITY;
+    }
+    let coeffs = [
+        76.18009172947146,
+        -86.50532032941677,
+        24.01409824083091,
+        -1.231739572450155,
+        0.001208650973866179,
+        -0.000005395239384953,
+    ];
+    let y = x;
+    let tmp = y + 5.5;
+    let tmp = tmp - (y + 0.5) * tmp.ln();
+    let mut ser = 1.000000000190015f64;
+    for (i, &c) in coeffs.iter().enumerate() {
+        ser += c / (y + 1.0 + i as f64);
+    }
+    (std::f64::consts::TAU.sqrt() * ser / y).ln() - tmp
+}
+
+/// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
+pub(crate) fn digamma(mut x: f64) -> f64 {
+    // The recurrence below steps x up by one until it reaches 8, which never
+    // terminates for -inf or for x <= -2^53 (where x + 1 == x) and takes |x|
+    // steps for any large negative x. Poles and non-finite arguments have no
+    // value; other negative arguments go through the reflection formula
+    // psi(x) = psi(1 - x) - pi / tan(pi x).
+    if x.is_nan() || x == f64::NEG_INFINITY {
+        return f64::NAN;
+    }
+    if x == f64::INFINITY {
+        return f64::INFINITY;
+    }
+    if x <= 0.0 {
+        if x == x.floor() {
+            return f64::NAN;
+        }
+        return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
+    }
+    let mut result = 0.0;
+    while x < 8.0 {
+        result -= 1.0 / x;
+        x += 1.0;
+    }
+    // Asymptotic expansion for large x
+    result += x.ln() - 0.5 / x;
+    let x2 = 1.0 / (x * x);
+    result -= x2 * (1.0 / 12.0 - x2 * (1.0 / 120.0 - x2 / 252.0));
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `ElementwiseOp::Softplus` used its own branch-free spelling,
+    /// `max(a, 0) + ln1p(exp(-|a|))`. It is the same value to the bit, which
+    /// is what let it be replaced by [`softplus`] without moving any output.
+    #[test]
+    fn softplus_matches_the_branch_free_form_bit_for_bit() {
+        let branch_free = |a: f64| a.max(0.0) + (-a.abs()).exp().ln_1p();
+        let mut values = vec![
+            0.0,
+            -0.0,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            5e-324,
+            -5e-324,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+            36.7,
+            -36.7,
+            709.5,
+            -745.2,
+        ];
+        let mut x = -800.0;
+        while x <= 800.0 {
+            values.push(x);
+            x += 0.173;
+        }
+        for a in values {
+            assert_eq!(softplus(a).to_bits(), branch_free(a).to_bits(), "{a}");
+        }
+        assert!(softplus(f64::NAN).is_nan() && branch_free(f64::NAN).is_nan());
+    }
+
+    #[test]
+    fn digamma_terminates_and_reflects_for_negative_arguments() {
+        let euler = 0.577_215_664_901_532_9;
+        assert!((digamma(1.0) + euler).abs() < 1e-9);
+        // psi(-2.5) = psi(3.5) - pi / tan(-2.5 pi) = psi(3.5), since
+        // tan(-2.5 pi) is infinite: 1.1031566406452432.
+        assert!((digamma(-2.5) - 1.103_156_640_645_243).abs() < 1e-9);
+        // psi(-0.5) = 0.03648997397857652.
+        assert!((digamma(-0.5) - 0.036_489_973_978_576_5).abs() < 1e-9);
+        // These used to loop forever: x + 1 == x below -2^53, and -inf + 1
+        // is -inf.
+        for pole in [0.0, -1.0, -1e300, f64::MIN, f64::NEG_INFINITY, f64::NAN] {
+            assert!(digamma(pole).is_nan(), "{pole}");
+        }
+        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
+    }
+
+    #[test]
+    fn ln_gamma_matches_known_values() {
+        let cases = [
+            (0.5, 0.5 * std::f64::consts::PI.ln()),
+            (1.0, 0.0),
+            (5.0, 24.0_f64.ln()),
+            (10.0, 362_880.0_f64.ln()),
+        ];
+
+        for (x, expected) in cases {
+            let actual = ln_gamma(x);
+            assert!(
+                (actual - expected).abs() < 1e-10,
+                "ln_gamma({x}) = {actual}, expected {expected}"
+            );
+        }
+    }
 }

@@ -73,7 +73,7 @@ pub use crate::numerics::{
     stable_sigmoid_derivative,
 };
 use crate::numerics::{
-    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, tanh_slope,
+    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, softplus, tanh_slope,
 };
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
@@ -108,7 +108,7 @@ impl ElementwiseOp {
             Self::Sigmoid => stable_sigmoid(a),
             Self::Sqrt => a.sqrt(),
             Self::Tanh => a.tanh(),
-            Self::Softplus => a.max(0.0) + (-a.abs()).exp().ln_1p(),
+            Self::Softplus => softplus(a),
             Self::Sin => a.sin(),
             Self::Cos => a.cos(),
         }

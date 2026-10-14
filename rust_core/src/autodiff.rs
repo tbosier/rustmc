@@ -1,9 +1,15 @@
 use crate::data::DataBinding;
 use crate::graph::{Graph, GraphShapeError, NodeId, ObsFamily, Op, ParamTransform};
 
-/// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
-pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
-use crate::graph::{bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid_derivative};
+use crate::graph::{
+    bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid, stable_sigmoid_derivative,
+};
+use crate::numerics::digamma;
+/// The special functions moved to the crate-private `numerics` module.
+/// `ln_gamma` is re-exported here so `rustmc_core::autodiff::ln_gamma` keeps
+/// working; `softplus` stays reachable at this path for in-crate callers.
+pub use crate::numerics::ln_gamma;
+pub(crate) use crate::numerics::softplus;
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -744,7 +750,7 @@ impl Evaluator {
                 Op::Add(a, b) => self.scalars[idx] = self.scalars[a.0] + self.scalars[b.0],
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
-                Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
+                Op::Sigmoid(a) => self.scalars[idx] = stable_sigmoid(self.scalars[a.0]),
                 Op::BoundedSigmoid { raw, lower, upper } => {
                     self.scalars[idx] = bounded_sigmoid(self.scalars[raw.0], *lower, *upper);
                 }
@@ -1573,10 +1579,10 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = sigmoid_stable(raw);
+                        let s = stable_sigmoid(raw);
                         // d/draw = α·(1-s) - β·s
                         self.grad[param_start + k] +=
-                            a_s * (alpha * sigmoid_stable(-raw) - beta * s);
+                            a_s * (alpha * stable_sigmoid(-raw) - beta * s);
                     }
                 }
                 Op::VectorUniformLogP {
@@ -1590,7 +1596,7 @@ impl Evaluator {
                     }
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = sigmoid_stable(raw);
+                        let s = stable_sigmoid(raw);
                         // d/draw = 1 - 2s
                         self.grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                     }
@@ -1741,7 +1747,7 @@ fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64
     let log_abs_diff = diff.abs().ln();
     let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
     let log_tail = softplus(log_ratio);
-    let weight = sigmoid_stable(log_ratio);
+    let weight = stable_sigmoid(log_ratio);
     let dx = if diff == 0.0 {
         0.0
     } else {
@@ -1861,14 +1867,6 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     (x - lam) / (lam + 0.0)
 }
 
-pub(crate) fn softplus(x: f64) -> f64 {
-    if x > 0.0 {
-        x + (-x).exp().ln_1p()
-    } else {
-        x.exp().ln_1p()
-    }
-}
-
 /// log P(y | eta) for a Bernoulli observation with logit `eta`.
 ///
 /// `y * eta - softplus(eta)` is the same quantity and cancels catastrophically
@@ -1902,66 +1900,12 @@ pub(crate) fn bernoulli_logit_logp(y: f64, eta: f64) -> f64 {
 /// subtraction.
 pub(crate) fn bernoulli_logit_grad(y: f64, eta: f64) -> f64 {
     if y == 1.0 {
-        sigmoid_stable(-eta)
+        stable_sigmoid(-eta)
     } else if y == 0.0 {
-        -sigmoid_stable(eta)
+        -stable_sigmoid(eta)
     } else {
-        y - sigmoid_stable(eta)
+        y - stable_sigmoid(eta)
     }
-}
-
-/// Lanczos approximation to ln(Γ(x)) for x > 0.
-pub fn ln_gamma(x: f64) -> f64 {
-    if x <= 0.0 {
-        return f64::INFINITY;
-    }
-    let coeffs = [
-        76.18009172947146,
-        -86.50532032941677,
-        24.01409824083091,
-        -1.231739572450155,
-        0.001208650973866179,
-        -0.000005395239384953,
-    ];
-    let y = x;
-    let tmp = y + 5.5;
-    let tmp = tmp - (y + 0.5) * tmp.ln();
-    let mut ser = 1.000000000190015f64;
-    for (i, &c) in coeffs.iter().enumerate() {
-        ser += c / (y + 1.0 + i as f64);
-    }
-    (std::f64::consts::TAU.sqrt() * ser / y).ln() - tmp
-}
-
-/// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
-fn digamma(mut x: f64) -> f64 {
-    // The recurrence below steps x up by one until it reaches 8, which never
-    // terminates for -inf or for x <= -2^53 (where x + 1 == x) and takes |x|
-    // steps for any large negative x. Poles and non-finite arguments have no
-    // value; other negative arguments go through the reflection formula
-    // psi(x) = psi(1 - x) - pi / tan(pi x).
-    if x.is_nan() || x == f64::NEG_INFINITY {
-        return f64::NAN;
-    }
-    if x == f64::INFINITY {
-        return f64::INFINITY;
-    }
-    if x <= 0.0 {
-        if x == x.floor() {
-            return f64::NAN;
-        }
-        return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
-    }
-    let mut result = 0.0;
-    while x < 8.0 {
-        result -= 1.0 / x;
-        x += 1.0;
-    }
-    // Asymptotic expansion for large x
-    result += x.ln() - 0.5 / x;
-    let x2 = 1.0 / (x * x);
-    result -= x2 * (1.0 / 12.0 - x2 * (1.0 / 120.0 - x2 / 252.0));
-    result
 }
 
 #[cfg(test)]
@@ -1999,23 +1943,6 @@ mod tests {
     }
 
     #[test]
-    fn digamma_terminates_and_reflects_for_negative_arguments() {
-        let euler = 0.577_215_664_901_532_9;
-        assert!((digamma(1.0) + euler).abs() < 1e-9);
-        // psi(-2.5) = psi(3.5) - pi / tan(-2.5 pi) = psi(3.5), since
-        // tan(-2.5 pi) is infinite: 1.1031566406452432.
-        assert!((digamma(-2.5) - 1.103_156_640_645_243).abs() < 1e-9);
-        // psi(-0.5) = 0.03648997397857652.
-        assert!((digamma(-0.5) - 0.036_489_973_978_576_5).abs() < 1e-9);
-        // These used to loop forever: x + 1 == x below -2^53, and -inf + 1
-        // is -inf.
-        for pole in [0.0, -1.0, -1e300, f64::MIN, f64::NEG_INFINITY, f64::NAN] {
-            assert!(digamma(pole).is_nan(), "{pole}");
-        }
-        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
-    }
-
-    #[test]
     fn observation_scales_outside_their_support_give_zero_density() {
         for (lognormal, sigma) in [(false, 0.0), (false, -1.0), (true, 0.0), (true, -2.0)] {
             let mut g = Graph::new();
@@ -2036,24 +1963,6 @@ mod tests {
             assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
             assert!(evaluator.grad.iter().all(|g| g.is_finite()));
             assert_eq!(eval_logp(&g, &[sigma]), f64::NEG_INFINITY);
-        }
-    }
-
-    #[test]
-    fn ln_gamma_matches_known_values() {
-        let cases = [
-            (0.5, 0.5 * std::f64::consts::PI.ln()),
-            (1.0, 0.0),
-            (5.0, 24.0_f64.ln()),
-            (10.0, 362_880.0_f64.ln()),
-        ];
-
-        for (x, expected) in cases {
-            let actual = ln_gamma(x);
-            assert!(
-                (actual - expected).abs() < 1e-10,
-                "ln_gamma({x}) = {actual}, expected {expected}"
-            );
         }
     }
 

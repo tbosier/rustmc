@@ -80,7 +80,7 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::Add(a, b) => Value::Scalar(values[a.0].as_scalar() + values[b.0].as_scalar()),
             Op::Mul(a, b) => Value::Scalar(values[a.0].as_scalar() * values[b.0].as_scalar()),
             Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
-            Op::Sigmoid(a) => Value::Scalar(sigmoid_stable(values[a.0].as_scalar())),
+            Op::Sigmoid(a) => Value::Scalar(stable_sigmoid(values[a.0].as_scalar())),
             Op::BoundedSigmoid { raw, lower, upper } => Value::Scalar(
                 crate::graph::bounded_sigmoid(values[raw.0].as_scalar(), *lower, *upper),
             ),
@@ -723,8 +723,8 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = sigmoid_stable(raw);
-                    grad[param_start + k] += a_s * (alpha * sigmoid_stable(-raw) - beta * s);
+                    let s = stable_sigmoid(raw);
+                    grad[param_start + k] += a_s * (alpha * stable_sigmoid(-raw) - beta * s);
                 }
             }
             Op::VectorUniformLogP {
@@ -738,7 +738,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 }
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = sigmoid_stable(raw);
+                    let s = stable_sigmoid(raw);
                     grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                 }
             }
