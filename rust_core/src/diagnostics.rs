@@ -49,8 +49,11 @@ pub struct DiagnosticsReport {
 
 /// Per-chain transition telemetry summary.
 ///
-/// Divergence and acceptance fields describe posterior draws only. Energy and
-/// integrator-work fields summarize every retained transition, including warmup.
+/// Divergence, acceptance, energy and step-size fields describe the draw
+/// (post-warmup) transitions only, so early-warmup blow-ups and the step sizes
+/// dual averaging tried do not leak into a fit's summary. `max_tree_depth`
+/// and `total_leapfrog_steps` count the integrator work of every transition,
+/// warmup included.
 #[derive(Debug, Clone)]
 pub struct ChainTransitionDiagnostics {
     pub chain_index: usize,
@@ -58,10 +61,15 @@ pub struct ChainTransitionDiagnostics {
     pub num_warmup_transitions: usize,
     pub num_draw_transitions: usize,
     pub divergences: usize,
+    /// Draw transitions with `TransitionStats::accepted` set. For HMC that is
+    /// an accepted Metropolis proposal; NUTS has no accept step, so for NUTS
+    /// it counts the draw transitions that did not diverge.
     pub accepted_transitions: usize,
     pub mean_accept_prob: f64,
     pub mean_energy_error: f64,
     pub max_abs_energy_error: f64,
+    /// Mean step size over the draw transitions, which all use the step size
+    /// warmup settled on.
     pub mean_step_size: f64,
     pub max_tree_depth: Option<usize>,
     pub total_leapfrog_steps: usize,
@@ -69,8 +77,8 @@ pub struct ChainTransitionDiagnostics {
 
 /// Aggregated telemetry across all chains for one sampling run.
 ///
-/// `total_divergences` and `mean_accept_prob` describe posterior draws only;
-/// energy and leapfrog fields summarize all retained transitions.
+/// Divergence, acceptance and energy fields describe the draw transitions
+/// only; `total_leapfrog_steps` counts every transition, warmup included.
 #[derive(Debug, Clone)]
 pub struct TransitionDiagnosticsReport {
     pub chains: Vec<ChainTransitionDiagnostics>,
@@ -483,17 +491,18 @@ pub fn compute_transition_diagnostics(
         } else {
             0.0
         };
-        let mean_energy_error = if num_transitions > 0 {
-            chain.iter().map(|t| t.energy_error).sum::<f64>() / num_transitions as f64
+        let chain_sum_energy_error = draws.iter().map(|t| t.energy_error).sum::<f64>();
+        let mean_energy_error = if num_draw_transitions > 0 {
+            chain_sum_energy_error / num_draw_transitions as f64
         } else {
             0.0
         };
-        let chain_max_abs_energy_error = chain
+        let chain_max_abs_energy_error = draws
             .iter()
             .map(|t| t.energy_error.abs())
             .fold(0.0, f64::max);
-        let mean_step_size = if num_transitions > 0 {
-            chain.iter().map(|t| t.step_size).sum::<f64>() / num_transitions as f64
+        let mean_step_size = if num_draw_transitions > 0 {
+            draws.iter().map(|t| t.step_size).sum::<f64>() / num_draw_transitions as f64
         } else {
             0.0
         };
@@ -506,8 +515,8 @@ pub fn compute_transition_diagnostics(
         total_divergences += divergences;
         total_leapfrog_steps += chain_leapfrog_steps;
         sum_accept_prob += draws.iter().map(|t| t.accept_prob).sum::<f64>();
-        sum_energy_error += chain.iter().map(|t| t.energy_error).sum::<f64>();
-        n_energy_error += num_transitions;
+        sum_energy_error += chain_sum_energy_error;
+        n_energy_error += num_draw_transitions;
         max_abs_energy_error = max_abs_energy_error.max(chain_max_abs_energy_error);
 
         chains.push(ChainTransitionDiagnostics {
@@ -519,7 +528,7 @@ pub fn compute_transition_diagnostics(
             accepted_transitions,
             mean_accept_prob,
             mean_energy_error,
-            max_abs_energy_error,
+            max_abs_energy_error: chain_max_abs_energy_error,
             mean_step_size,
             max_tree_depth,
             total_leapfrog_steps: chain_leapfrog_steps,
@@ -1752,6 +1761,10 @@ mod tests {
         assert_eq!(report.chains[1].max_tree_depth, None);
         assert_eq!(report.mean_accept_prob, 0.75);
         assert!(report.max_abs_energy_error >= 0.4);
+        // Each chain reports its own largest energy error, not the largest
+        // seen in the chains before it.
+        assert_eq!(report.chains[0].max_abs_energy_error, 0.4);
+        assert_eq!(report.chains[1].max_abs_energy_error, 0.2);
     }
 
     #[test]
@@ -1771,10 +1784,41 @@ mod tests {
         assert_eq!(report.total_divergences, 0);
         assert_eq!(report.mean_accept_prob, 0.0);
         assert_eq!(report.total_leapfrog_steps, 9);
-        assert_eq!(report.mean_energy_error, 0.25);
+        // Energy and step-size summaries describe draws too, and there are
+        // none; integrator work still counts warmup.
+        assert_eq!(report.mean_energy_error, 0.0);
+        assert_eq!(report.max_abs_energy_error, 0.0);
         assert_eq!(report.chains[0].accepted_transitions, 0);
-        assert_eq!(report.chains[0].mean_step_size, 0.5);
+        assert_eq!(report.chains[0].mean_step_size, 0.0);
         assert_eq!(report.chains[0].max_tree_depth, Some(4));
+    }
+
+    #[test]
+    fn transition_energy_and_step_size_summaries_describe_draws_only() {
+        let transition = |is_warmup, energy_error, step_size| TransitionStats {
+            is_warmup,
+            accepted: true,
+            accept_prob: 0.8,
+            energy_error,
+            divergent: false,
+            step_size,
+            num_leapfrog_steps: 3,
+            tree_depth: Some(2),
+        };
+        // An early-warmup blow-up at a step size dual averaging abandoned.
+        let transitions = vec![vec![
+            transition(true, 400.0, 8.0),
+            transition(false, -0.25, 0.5),
+            transition(false, 0.75, 0.5),
+        ]];
+        let report = compute_transition_diagnostics(&transitions);
+        let chain = &report.chains[0];
+        assert_eq!(chain.mean_energy_error, 0.25);
+        assert_eq!(chain.max_abs_energy_error, 0.75);
+        assert_eq!(chain.mean_step_size, 0.5);
+        assert_eq!(report.mean_energy_error, 0.25);
+        assert_eq!(report.max_abs_energy_error, 0.75);
+        assert_eq!(chain.total_leapfrog_steps, 9);
     }
 
     // ---- table layout ---------------------------------------------------
