@@ -29,7 +29,9 @@ use crate::forecast_common::{
     checked_value_count, invalid_config, numerical, overdispersed_location, overdispersed_positive,
     path_means, path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
     split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
-    ForecastQuantile, GibbsSchedule, InverseGammaPrior, Paths, MAX_MATERIALIZED_VALUES,
+    ForecastQuantile, GibbsSchedule, InverseGammaPrior, Paths,
+    HIERARCHICAL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    HIERARCHICAL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN, MAX_MATERIALIZED_VALUES,
 };
 use rand_chacha::ChaCha8Rng;
 
@@ -618,9 +620,6 @@ fn normal_moments_from_precision(
 fn invalid_observations(message: impl Into<String>) -> BayesianForecastError {
     BayesianForecastError::InvalidObservations(message.into())
 }
-
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4849_4552;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_5F48_4945;
 
 #[cfg(test)]
 mod tests {

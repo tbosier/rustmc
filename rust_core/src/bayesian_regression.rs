@@ -6,13 +6,10 @@
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
     simulate_draws, split_paths, standard_normal, GibbsSchedule, InverseGammaPrior,
+    REGRESSION_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    REGRESSION_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
-
-/// `"\0REG_FIT"`.
-const FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
-/// `"REG_PRED"`.
-const FORECAST_SEED_DOMAIN: u64 = 0x5245_475F_5052_4544;
 
 #[derive(Clone, Debug)]
 pub struct GaussianCoefficientPrior {
@@ -473,7 +470,6 @@ pub fn fourier_design(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seeding::chain_seed;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
 
@@ -504,15 +500,6 @@ mod tests {
         assert!(fourier_width(1, 1).is_err());
     }
 
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        for chain in 0..4 {
-            assert_ne!(
-                chain_seed(42, chain, FIT_SEED_DOMAIN),
-                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
-            );
-        }
-    }
     #[test]
     fn joint_static_regression_matches_analytic_posterior_and_future_covariance() {
         let y = vec![1.0, 2.0, f64::NAN, 4.0];

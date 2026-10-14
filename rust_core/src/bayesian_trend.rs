@@ -22,11 +22,10 @@ use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
     path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
     split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
-    ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    ForecastQuantile, GibbsSchedule, InverseGammaPrior, TREND_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    TREND_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
-#[cfg(test)]
-use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
@@ -541,9 +540,6 @@ fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
     [matrix[0], off_diagonal, off_diagonal, matrix[3]]
 }
 
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -564,14 +560,6 @@ mod tests {
         let mut config = config(12);
         config.initial_covariance = [1e-14, 5e-8, 5e-8, 1.0];
         config.validate().unwrap();
-    }
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
     }
 
     fn config(seed: u64) -> BayesianLocalLinearTrendConfig {

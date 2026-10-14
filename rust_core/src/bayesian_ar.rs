@@ -36,11 +36,10 @@ use crate::forecast_common::{
     check_forecast_size, checked_value_count, cholesky, dot, invalid_config, path_means,
     path_quantiles, run_chains, sample_inverse_gamma, simulate_draws, solve_lower,
     solve_lower_transpose, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
+    AR_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, AR_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
     MAX_MATERIALIZED_VALUES,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
-#[cfg(test)]
-use crate::seeding::chain_seed;
 #[cfg(test)]
 use rand_chacha::ChaCha8Rng;
 
@@ -520,9 +519,6 @@ fn quadratic_form(matrix: &[Vec<f64>], vector: &[f64]) -> Result<f64, BayesianFo
     Ok(value.max(0.0))
 }
 
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
-
 fn ensure_finite_vector(name: &str, values: &[f64]) -> Result<(), BayesianForecastError> {
     if values.iter().any(|value| !value.is_finite()) {
         return Err(BayesianForecastError::NumericalFailure(format!(
@@ -556,14 +552,6 @@ mod tests {
         }
         let heteroscaled = vec![vec![1e-14, 5e-8], vec![5e-8, 1.0]];
         NormalInverseGammaPrior::new(vec![0.0; 2], heteroscaled, 3.0, 1.0).unwrap();
-    }
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
     }
 
     #[test]

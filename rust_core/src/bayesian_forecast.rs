@@ -21,6 +21,8 @@ use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
     simulate_draws, split_paths, standard_normal, validate_positive_variance, GibbsSchedule,
+    LOCAL_LEVEL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    LOCAL_LEVEL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 /// The types every forecasting sampler shares, defined in
 /// [`crate::forecast_common`] and re-exported here under their original paths.
@@ -28,8 +30,6 @@ pub use crate::forecast_common::{
     BayesianForecastError, ForecastQuantile, InverseGammaPrior, PosteriorPredictiveForecast,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
-#[cfg(test)]
-use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Debug, Clone)]
@@ -403,21 +403,10 @@ fn sample_normal(
     Ok(draw)
 }
 
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use rand::SeedableRng;
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
-    }
 
     fn compact_config(seed: u64) -> BayesianLocalLevelConfig {
         BayesianLocalLevelConfig {

@@ -11,7 +11,8 @@ use crate::forecast_common::{
     check_forecast_size, invalid_config, numerical, overdispersed_positive, path_means,
     path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws, split_paths,
     standard_normal, validate_positive_variance, BayesianForecastError, ForecastQuantile,
-    GibbsSchedule, InverseGammaPrior,
+    GibbsSchedule, InverseGammaPrior, SEASONAL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    SEASONAL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 use crate::state_space::LinearGaussianStateSpace;
@@ -358,9 +359,6 @@ pub fn fit_bayesian_seasonal_local_level(
         chains,
     })
 }
-
-const FIT_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4954;
-const FORECAST_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4353;
 
 #[cfg(test)]
 mod tests {

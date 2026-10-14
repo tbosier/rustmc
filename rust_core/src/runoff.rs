@@ -11,9 +11,10 @@ use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Binomial, Distribution, Gamma};
 
 use crate::count_sampling::MAX_EXACT_COUNT;
-use crate::forecast_common::{checked_value_count, run_chains, MAX_MATERIALIZED_VALUES};
-
-const FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46; // "RUNOFF_F"
+use crate::forecast_common::{
+    checked_value_count, run_chains, MAX_MATERIALIZED_VALUES,
+    RUNOFF_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+};
 
 /// Why a runoff fit or query failed. The message is the whole explanation.
 #[derive(Debug, Clone, PartialEq, Eq)]

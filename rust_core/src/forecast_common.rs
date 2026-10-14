@@ -369,8 +369,45 @@ pub(crate) fn sample_inverse_gamma<R: Rng + ?Sized>(
 /// seventh to seven times its reference value.
 const START_HALF_WIDTH: f64 = 2.0;
 
+// Seed domains of the forecasting samplers, one per sampling stage, keyed
+// through `crate::seeding::chain_seed`. They live together so that one test
+// can check them, with the HMC/NUTS domains in `seeding`, for collisions: two
+// stages sharing a domain would draw correlated streams from one caller seed.
+// The values are fixed; changing one changes every seeded draw of its stage.
+
 /// Separates a chain's starting-point stream from its sampling stream.
 const START_SEED_DOMAIN: u64 = 0x5354_4152_545F_5054;
+pub(crate) const LOCAL_LEVEL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;
+pub(crate) const LOCAL_LEVEL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4C4C;
+pub(crate) const TREND_FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
+pub(crate) const TREND_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
+pub(crate) const SEASONAL_FIT_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4954;
+pub(crate) const SEASONAL_FORECAST_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4353;
+pub(crate) const AR_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
+pub(crate) const AR_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
+/// `"\0REG_FIT"`.
+pub(crate) const REGRESSION_FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
+/// `"REG_PRED"`.
+pub(crate) const REGRESSION_FORECAST_SEED_DOMAIN: u64 = 0x5245_475F_5052_4544;
+pub(crate) const STRUCTURAL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
+pub(crate) const STRUCTURAL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
+pub(crate) const STRUCTURAL_PRIOR_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
+/// `"HURDFIT"` followed by a version byte.
+pub(crate) const HURDLE_FIT_SEED_DOMAIN: u64 = 0x4855_5244_4649_5401;
+/// `"HURDPRE"` followed by a version byte.
+pub(crate) const HURDLE_FORECAST_SEED_DOMAIN: u64 = 0x4855_5244_5052_4501;
+pub(crate) const HIERARCHICAL_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4849_4552;
+pub(crate) const HIERARCHICAL_FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_5F48_4945;
+/// `"FIT_DGLM"`.
+pub(crate) const DYNAMIC_GLM_FIT_SEED_DOMAIN: u64 = 0x4649_545F_4447_4C4D;
+/// `"FCSTDGLM"`.
+pub(crate) const DYNAMIC_GLM_FORECAST_SEED_DOMAIN: u64 = 0x4643_5354_4447_4C4D;
+/// `"PRIRDGLM"`.
+pub(crate) const DYNAMIC_GLM_PRIOR_SEED_DOMAIN: u64 = 0x5052_4952_4447_4C4D;
+/// `"PPFCDGLM"`.
+pub(crate) const DYNAMIC_GLM_PRIOR_FORECAST_SEED_DOMAIN: u64 = 0x5050_4643_4447_4C4D;
+/// `"RUNOFF_F"`.
+pub(crate) const RUNOFF_FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46;
 
 /// An overdispersed starting value for a positive parameter: `reference`
 /// scaled by `exp(U(-2, 2))`.
@@ -899,6 +936,59 @@ mod tests {
         assert_eq!(first, again, "starts must depend only on the seed");
         let other: Vec<f64> = starts(8, 1).into_iter().flatten().collect();
         assert_ne!(first[0], other[0], "chain 0's start must follow the seed");
+    }
+
+    #[test]
+    fn every_seed_domain_in_the_crate_is_distinct() {
+        // `chain_seed` is a bijection in the domain for a fixed seed and
+        // chain, so distinct domains give every stage its own stream for any
+        // caller seed and chain index.
+        use crate::seeding::{
+            POSTERIOR_PREDICT_SEED_DOMAIN, PRIOR_PREDICT_SEED_DOMAIN, SAMPLER_FIT_SEED_DOMAIN,
+            SAMPLER_INIT_SEED_DOMAIN,
+        };
+        let domains = [
+            SAMPLER_FIT_SEED_DOMAIN,
+            SAMPLER_INIT_SEED_DOMAIN,
+            POSTERIOR_PREDICT_SEED_DOMAIN,
+            PRIOR_PREDICT_SEED_DOMAIN,
+            START_SEED_DOMAIN,
+            LOCAL_LEVEL_FIT_SEED_DOMAIN,
+            LOCAL_LEVEL_FORECAST_SEED_DOMAIN,
+            TREND_FIT_SEED_DOMAIN,
+            TREND_FORECAST_SEED_DOMAIN,
+            SEASONAL_FIT_SEED_DOMAIN,
+            SEASONAL_FORECAST_SEED_DOMAIN,
+            AR_FIT_SEED_DOMAIN,
+            AR_FORECAST_SEED_DOMAIN,
+            REGRESSION_FIT_SEED_DOMAIN,
+            REGRESSION_FORECAST_SEED_DOMAIN,
+            STRUCTURAL_FIT_SEED_DOMAIN,
+            STRUCTURAL_FORECAST_SEED_DOMAIN,
+            STRUCTURAL_PRIOR_SEED_DOMAIN,
+            HURDLE_FIT_SEED_DOMAIN,
+            HURDLE_FORECAST_SEED_DOMAIN,
+            HIERARCHICAL_FIT_SEED_DOMAIN,
+            HIERARCHICAL_FORECAST_SEED_DOMAIN,
+            DYNAMIC_GLM_FIT_SEED_DOMAIN,
+            DYNAMIC_GLM_FORECAST_SEED_DOMAIN,
+            DYNAMIC_GLM_PRIOR_SEED_DOMAIN,
+            DYNAMIC_GLM_PRIOR_FORECAST_SEED_DOMAIN,
+            RUNOFF_FIT_SEED_DOMAIN,
+        ];
+        let unique: std::collections::HashSet<u64> = domains.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            domains.len(),
+            "two stages share a seed domain"
+        );
+        for chain in 0..4 {
+            let keys: std::collections::HashSet<u64> = domains
+                .iter()
+                .map(|&domain| chain_seed(42, chain, domain))
+                .collect();
+            assert_eq!(keys.len(), domains.len(), "chain {chain}");
+        }
     }
 
     #[test]

@@ -6,7 +6,10 @@ use crate::autodiff::softplus;
 use crate::forecast_common::BayesianForecastError as Error;
 use crate::forecast_common::{
     checked_value_count, invalid_config, numerical, retains, run_chains, standard_normal,
-    MAX_MATERIALIZED_VALUES,
+    DYNAMIC_GLM_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    DYNAMIC_GLM_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
+    DYNAMIC_GLM_PRIOR_FORECAST_SEED_DOMAIN as PRIOR_FORECAST_SEED_DOMAIN,
+    DYNAMIC_GLM_PRIOR_SEED_DOMAIN as PRIOR_SEED_DOMAIN, MAX_MATERIALIZED_VALUES,
 };
 use crate::observation::sigmoid;
 use rand::Rng;
@@ -1027,10 +1030,6 @@ fn allocation(factors: &[usize]) -> Result<(), Error> {
         .map(|_| ())
         .map_err(|error| invalid_config(error.to_string()))
 }
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4447_4C4D; // "FIT_DGLM"
-const FORECAST_SEED_DOMAIN: u64 = 0x4643_5354_4447_4C4D; // "FCSTDGLM"
-const PRIOR_SEED_DOMAIN: u64 = 0x5052_4952_4447_4C4D; // "PRIRDGLM"
-const PRIOR_FORECAST_SEED_DOMAIN: u64 = 0x5050_4643_4447_4C4D; // "PPFCDGLM"
 
 #[cfg(test)]
 mod incremental_likelihood_tests {

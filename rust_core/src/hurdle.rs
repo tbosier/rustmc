@@ -15,17 +15,15 @@ use crate::forecast_common::{
     check_forecast_size, checked_value_count, invalid_config, inverse_gamma_conditional, numerical,
     overdispersed_positive, path_means, path_quantiles, run_chains, run_gibbs_chains,
     simulate_draws, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
-    GibbsSchedule, InverseGammaPrior, PosteriorPredictiveForecast, MAX_MATERIALIZED_VALUES,
+    GibbsSchedule, InverseGammaPrior, PosteriorPredictiveForecast,
+    HURDLE_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, HURDLE_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
+    MAX_MATERIALIZED_VALUES,
 };
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Distribution};
 
 const MAX_TRUNCATION_ATTEMPTS: usize = 100_000;
-/// `"HURDFIT"` followed by a version byte.
-const FIT_SEED_DOMAIN: u64 = 0x4855_5244_4649_5401;
-/// `"HURDPRE"` followed by a version byte.
-const FORECAST_SEED_DOMAIN: u64 = 0x4855_5244_5052_4501;
 
 #[derive(Debug, Clone)]
 pub struct HurdleLogNormalConfig {
@@ -501,17 +499,6 @@ fn probability_draw(beta: &Beta<f64>, rng: &mut ChaCha8Rng) -> Result<f64, Bayes
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seeding::chain_seed;
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        for chain in 0..4 {
-            assert_ne!(
-                chain_seed(42, chain, FIT_SEED_DOMAIN),
-                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
-            );
-        }
-    }
     use rand::SeedableRng;
     use rand_distr::Gamma;
     /// `P(G >= t)` for `G ~ Gamma(k, 1)` at integer `k`, where the upper

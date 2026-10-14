@@ -5,7 +5,8 @@
 use crate::forecast_common::{
     checked_value_count, dot, overdispersed_positive, require_finite_observations,
     run_gibbs_chains, simulate_draws, standard_normal, GibbsSchedule, InverseGammaPrior,
-    MAX_MATERIALIZED_VALUES,
+    MAX_MATERIALIZED_VALUES, STRUCTURAL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    STRUCTURAL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN, STRUCTURAL_PRIOR_SEED_DOMAIN,
 };
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
@@ -469,9 +470,6 @@ fn with_variances(model: &mut LinearGaussianStateSpace, variances: &[f64], noise
     let indices: Vec<usize> = (0..variances.len()).collect();
     model.set_variances(&indices, variances, noise);
 }
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
-const STRUCTURAL_PRIOR_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
 
 pub fn fit(
     y: &[f64],
@@ -904,12 +902,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
-        // The keys the three sampling roles actually build, for one caller seed:
+    fn prior_predictive_forecasts_do_not_reuse_fit_or_forecast_streams() {
+        // The domains themselves are checked for collisions in forecast_common.
+        // These are the keys the three sampling roles actually build, for one caller seed:
         // `fit` and `forecast` key per chain, while `prior_predict` keys its
         // prior draws once and then hands that key to `forecast`.
         for seed in [0, 1, 42, 491, u64::MAX] {
