@@ -1,11 +1,13 @@
 .venv*
+/venv/
 /target
 target*/
 .env*
 .codex*
 .claude/
 nvim.log
-/*site*
+# mkdocs build output.
+/site/
 __pycache__/
 *.pyc
 *.so
