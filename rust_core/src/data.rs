@@ -846,6 +846,49 @@ mod tests {
         assert!(Arc::ptr_eq(&structure, &shared));
     }
 
+    /// The evaluator caches `ln(y)` for LogNormal observations. A rebind to
+    /// new data of the same shape keeps the buffers, and must not keep the
+    /// logarithms of the old data with them.
+    #[test]
+    fn same_shape_rebind_refreshes_cached_lognormal_logs() {
+        let mut graph = Graph::new();
+        let beta = graph.add_param("beta");
+        let one = graph.add_constant(1.0);
+        let x = graph.add_data("x", vec![1.0]);
+        let mu = graph.scalar_mul_data(beta, x);
+        let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
+        graph.obs_logp_lognormal(mu, one, obs);
+        let structure = graph.structure_only();
+        let bind = |y: Vec<f64>| {
+            DataBinding::bind(
+                &structure.schema,
+                DataInputs {
+                    vectors: HashMap::from([
+                        ("x".into(), Arc::from(vec![0.5, 1.0, 2.0])),
+                        ("y".into(), Arc::from(y)),
+                    ]),
+                    matrices: HashMap::new(),
+                },
+                "y",
+                true,
+                true,
+            )
+            .unwrap()
+        };
+        let first = bind(vec![1.0, 2.0, 3.0]);
+        let second = bind(vec![0.25, 8.0, 40.0]);
+
+        let mut fresh = Evaluator::with_binding(&structure, second.clone());
+        fresh.compute(&structure, &[0.3]);
+        let mut rebound = Evaluator::with_binding(&structure, first);
+        rebound.compute(&structure, &[0.3]);
+        assert_ne!(rebound.total_logp, fresh.total_logp);
+        rebound.rebind(&structure, second).unwrap();
+        rebound.compute(&structure, &[0.3]);
+        assert_eq!(rebound.total_logp.to_bits(), fresh.total_logp.to_bits());
+        assert_eq!(rebound.grad, fresh.grad);
+    }
+
     #[test]
     fn evaluator_rejects_a_binding_from_a_different_schema() {
         let mut graph = Graph::new();

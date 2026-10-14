@@ -53,6 +53,32 @@ pub struct Evaluator {
     param_node_ids: Vec<Option<usize>>,
     /// Reusable scratch space for constrained vector parameters and gradients.
     param_scratch: Vec<f64>,
+    /// `ln(y)` for every observation slot a LogNormal term reads, indexed like
+    /// `binding.observations` and empty for every other slot. The data never
+    /// change for a binding, so both passes read these instead of taking two
+    /// logarithms per observation per gradient. Rebuilt whenever the binding
+    /// changes, including by a same-shape [`Self::rebind`].
+    log_observations: Vec<Vec<f64>>,
+}
+
+/// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
+/// reusing its allocations.
+fn fill_log_observations(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
+    out.resize_with(binding.observations.len(), Vec::new);
+    out.iter_mut().for_each(Vec::clear);
+    for node in &graph.nodes {
+        if let Op::ObsLogP {
+            family: ObsFamily::LogNormal,
+            obs_data_idx,
+            ..
+        } = node.op
+        {
+            let cache = &mut out[obs_data_idx];
+            if cache.is_empty() {
+                cache.extend(binding.observations[obs_data_idx].iter().map(|y| y.ln()));
+            }
+        }
+    }
 }
 
 /// The payload checks of [`DataBinding::validate_for`], as a shape error.
@@ -617,7 +643,10 @@ impl Evaluator {
             }
         }
 
+        let mut log_observations = Vec::new();
+        fill_log_observations(graph, &binding, &mut log_observations);
         Self {
+            log_observations,
             binding,
             node_lengths,
             node_kind,
@@ -656,6 +685,7 @@ impl Evaluator {
         validate_binding_payload(graph, &binding)?;
         let node_lengths = validate_node_lengths(graph, &binding)?;
         if node_lengths == self.node_lengths {
+            fill_log_observations(graph, &binding, &mut self.log_observations);
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
@@ -909,11 +939,10 @@ impl Evaluator {
                             }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            let log_obs = &self.log_observations[*obs_data_idx];
                             let mut sum = 0.0f64;
-                            for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation;
+                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
-                                let ly = y.ln();
                                 let d = (ly - m) / sv;
                                 sum += log_norm - ly - 0.5 * d * d;
                             }
@@ -1429,10 +1458,9 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
+                            let log_obs = &self.log_observations[*obs_data_idx];
                             let mut dsigma = 0.0f64;
-                            for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation;
-                                let ly = y.ln();
+                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
                                 let d = (ly - m) / sv;
                                 if let Some(off) = mu_off {
