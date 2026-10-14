@@ -1831,12 +1831,14 @@ mod tests {
         // covariances, full-rank, rank-deficient and heteroscaled, pass both.
         // The two routines use different pivoting and tolerances, so this is
         // a check of representative cases, not a proof of equivalence.
-        let covariances: [(usize, Vec<f64>); 5] = [
+        let covariances: [(usize, Vec<f64>); 6] = [
             (2, vec![1.0, 0.5, 0.5, 1.0]),
             (2, vec![1.0, 1.0, 1.0, 1.0]),
             (2, vec![1e-14, 5e-8, 5e-8, 1.0]),
             (2, vec![1e20, 0.0, 0.0, 0.0]),
             (3, vec![4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0]),
+            // Symmetric by value but not by bits.
+            (2, vec![1.0, -0.0, 0.0, 1.0]),
         ];
         for (d, covariance) in covariances {
             let model = LinearGaussianStateSpace::new(
@@ -1849,8 +1851,10 @@ mod tests {
                 identity(d),
             )
             .unwrap();
-            // A symmetric input is stored exactly as given.
-            assert_eq!(model.process_covariance, covariance);
+            // A symmetric input is stored bit for bit as given, signed zeros
+            // included.
+            let bits = |values: &[f64]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
+            assert_eq!(bits(&model.process_covariance), bits(&covariance));
             assert!(process_root(&covariance, d).is_ok(), "{covariance:?}");
         }
     }
