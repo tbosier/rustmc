@@ -113,7 +113,7 @@ pub(crate) fn config(
     }
 }
 
-#[pyclass(name = "BayesianRegressionFit", module = "rustmc")]
+#[pyclass(name = "BayesianRegressionFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianRegressionFit {
     pub(crate) posterior: RegressionPosterior,
@@ -235,7 +235,7 @@ impl PyBayesianRegressionFit {
     }
 }
 
-#[pyclass(name = "BayesianRegressionForecast", module = "rustmc")]
+#[pyclass(name = "BayesianRegressionForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianRegressionForecast {
     pub(crate) inner: RegressionForecast,
     pub(crate) seasonal: bool,

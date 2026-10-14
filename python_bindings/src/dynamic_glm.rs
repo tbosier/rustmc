@@ -26,7 +26,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 /// Each input keeps a group axis, including a single series: y=[[...]].
 /// Scales and NB dispersion are fixed; regression coefficients and state paths
 /// are inferred jointly. The design automatically includes an intercept.
-#[pyclass(name = "BayesianDynamicGLM", module = "rustmc")]
+#[pyclass(name = "BayesianDynamicGLM", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyDynamicGLM {
     config: DynamicGlmConfig,
@@ -181,7 +181,7 @@ constructor!(
     "gaussian"
 );
 
-#[pyclass(name = "DynamicGLMFit", module = "rustmc")]
+#[pyclass(name = "DynamicGLMFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyDynamicGLMFit {
     posterior: DynamicGlmPosterior,
@@ -333,7 +333,7 @@ impl PyDynamicGLMFit {
     }
 }
 
-#[pyclass(name = "DynamicGLMForecast", module = "rustmc")]
+#[pyclass(name = "DynamicGLMForecast", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyDynamicGLMForecast {
     inner: DynamicGlmForecast,

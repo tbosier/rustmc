@@ -34,7 +34,7 @@ fn foreign_param_error(name: &str, context: &str) -> PyErr {
     ))
 }
 
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(crate) struct ModelSpec(pub(crate) rustmc_core::model::ModelSpec);
 impl std::ops::Deref for ModelSpec {

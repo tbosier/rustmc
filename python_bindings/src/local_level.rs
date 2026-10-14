@@ -187,7 +187,7 @@ impl PyBayesianLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianLocalLevelFit", module = "rustmc")]
+#[pyclass(name = "BayesianLocalLevelFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLevelFit {
     pub(crate) posterior: CoreLocalLevelPosterior,
@@ -314,7 +314,7 @@ impl PyBayesianLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianForecastResult", module = "rustmc")]
+#[pyclass(name = "BayesianForecastResult", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianForecastResult {
     pub(crate) inner: CorePosteriorPredictiveForecast,
 }

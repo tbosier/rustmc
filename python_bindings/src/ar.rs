@@ -211,7 +211,7 @@ impl PyBayesianAutoRegression {
     }
 }
 
-#[pyclass(name = "BayesianARFit", module = "rustmc")]
+#[pyclass(name = "BayesianARFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianArFit {
     pub(crate) posterior: CoreBayesianArPosterior,
@@ -327,7 +327,7 @@ impl PyBayesianArFit {
     }
 }
 
-#[pyclass(name = "BayesianARForecast", module = "rustmc")]
+#[pyclass(name = "BayesianARForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianArForecast {
     pub(crate) inner: CoreBayesianArForecast,
 }

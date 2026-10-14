@@ -9,7 +9,7 @@ use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
 
-#[pyclass(name = "BayesianHurdleLogNormal", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormal", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleLogNormal {
     pub(crate) config: HurdleLogNormalConfig,
@@ -153,7 +153,7 @@ impl PyHurdleLogNormal {
     }
 }
 
-#[pyclass(name = "BayesianHurdleLogNormalFit", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormalFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleFit {
     pub(crate) posterior: HurdleLogNormalPosterior,
@@ -269,7 +269,7 @@ impl PyHurdleFit {
     }
 }
 
-#[pyclass(name = "BayesianHurdleLogNormalForecast", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormalForecast", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleForecast {
     pub(crate) inner: HurdleLogNormalForecast,

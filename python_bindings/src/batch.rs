@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 /// One cell of a batch run: a fit whose posterior is shared, never copied,
 /// with the `FitResult` its `fit` property returns.
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct BatchResult {
     fit: Arc<ModelFit>,
@@ -163,7 +163,7 @@ impl BatchResult {
     }
 }
 
-#[pyclass(name = "BatchFit", module = "rustmc")]
+#[pyclass(name = "BatchFit", frozen, module = "rustmc")]
 pub(crate) struct PyBatchFit {
     pub(crate) ids: Vec<String>,
     pub(crate) results: Vec<Result<BatchResult, String>>,

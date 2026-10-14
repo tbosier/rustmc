@@ -237,7 +237,7 @@ impl PyBayesianLocalLinearTrend {
     }
 }
 
-#[pyclass(name = "BayesianLocalLinearTrendFit", module = "rustmc")]
+#[pyclass(name = "BayesianLocalLinearTrendFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLinearTrendFit {
     pub(crate) posterior: CoreLocalLinearTrendPosterior,
@@ -379,7 +379,7 @@ impl PyBayesianLocalLinearTrendFit {
     }
 }
 
-#[pyclass(name = "BayesianTrendForecast", module = "rustmc")]
+#[pyclass(name = "BayesianTrendForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianTrendForecast {
     pub(crate) inner: CoreTrendPosteriorPredictiveForecast,
 }

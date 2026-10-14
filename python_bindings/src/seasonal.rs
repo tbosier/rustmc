@@ -197,7 +197,7 @@ impl PyBayesianSeasonalLocalLevel {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalLocalLevelFit", module = "rustmc")]
+#[pyclass(name = "BayesianSeasonalLocalLevelFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianSeasonalLocalLevelFit {
     pub(crate) posterior: CoreSeasonalLocalLevelPosterior,
@@ -335,7 +335,7 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalForecast", module = "rustmc")]
+#[pyclass(name = "BayesianSeasonalForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianSeasonalForecast {
     pub(crate) inner: CoreSeasonalPosteriorPredictiveForecast,
 }
