@@ -215,6 +215,13 @@ impl Display for BindError {
 
 impl std::error::Error for BindError {}
 
+/// Whether `x` can index one of `n_groups` groups: a finite, non-negative
+/// integer below `n_groups`. The binding and the evaluator's shape pass both
+/// check `Gather` indices with this, so they cannot disagree about one.
+pub(crate) fn is_group_index(x: f64, n_groups: usize) -> bool {
+    x.is_finite() && x >= 0.0 && x.fract() == 0.0 && x < n_groups as f64
+}
+
 impl DataBinding {
     /// Compatibility bridge for legacy graphs that still carry one dataset.
     pub fn from_graph(graph: &crate::graph::Graph) -> Result<Self, BindError> {
@@ -332,11 +339,8 @@ impl DataBinding {
                 .collect();
             extras.sort_unstable();
             if let Some(key) = extras.first() {
-                let suggestion = required
-                    .iter()
-                    .copied()
-                    .find(|candidate| edit_distance(key, candidate) <= 2)
-                    .map(str::to_string);
+                let suggestion =
+                    crate::param_ref::closest(key, required.iter().copied(), 2).map(str::to_string);
                 return Err(BindError::UnexpectedKey {
                     key: (*key).to_string(),
                     did_you_mean: suggestion,
@@ -602,9 +606,12 @@ impl DataBinding {
             let Some(values) = self.vectors.get(*data_index) else {
                 continue;
             };
-            if let Some((index, value)) = values.iter().copied().enumerate().find(|(_, x)| {
-                !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
-            }) {
+            if let Some((index, value)) = values
+                .iter()
+                .copied()
+                .enumerate()
+                .find(|(_, x)| !is_group_index(*x, *n_params))
+            {
                 return Err(BindError::InvalidGroupIndex {
                     key: slot_key(&self.schema.vectors, *data_index, "data vector"),
                     index,
@@ -683,22 +690,6 @@ impl DataBinding {
         }
         Ok(())
     }
-}
-
-fn edit_distance(a: &str, b: &str) -> usize {
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.bytes().enumerate() {
-        let mut prev = row[0];
-        row[0] = i + 1;
-        for (j, cb) in b.bytes().enumerate() {
-            let old = row[j + 1];
-            row[j + 1] = (row[j + 1] + 1)
-                .min(row[j] + 1)
-                .min(prev + usize::from(ca != cb));
-            prev = old;
-        }
-    }
-    row[b.len()]
 }
 
 #[cfg(test)]
@@ -794,7 +785,7 @@ mod tests {
         let x = graph.add_data("x", vec![1.0]);
         let mu = graph.scalar_mul_data(beta, x);
         let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
-        graph.normal_obs_logp(mu, one, obs);
+        graph.obs_logp_normal(mu, one, obs);
         let structure = Arc::new(graph.structure_only());
         let shared = Arc::clone(&structure);
 
@@ -836,6 +827,82 @@ mod tests {
         assert!(Arc::ptr_eq(&structure, &shared));
     }
 
+    /// An unexpected key is matched against the closest required key, not the
+    /// first one within the edit budget: "xa" is one edit from "x" and two
+    /// from "ab", and "ab" sorts first.
+    #[test]
+    fn unexpected_key_suggests_the_closest_required_key() {
+        let mut graph = Graph::new();
+        graph.add_data("ab", vec![1.0]);
+        graph.add_data("x", vec![1.0]);
+        let column = || Arc::from(vec![1.0, 2.0]);
+        let error = DataBinding::bind(
+            &graph.schema,
+            DataInputs {
+                vectors: HashMap::from([
+                    ("ab".into(), column()),
+                    ("x".into(), column()),
+                    ("xa".into(), column()),
+                ]),
+                matrices: HashMap::new(),
+            },
+            "extra",
+            true,
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            BindError::UnexpectedKey {
+                key: "xa".into(),
+                did_you_mean: Some("x".into()),
+            }
+        );
+    }
+
+    /// The evaluator caches `ln(y)` for LogNormal observations. A rebind to
+    /// new data of the same shape keeps the buffers, and must not keep the
+    /// logarithms of the old data with them.
+    #[test]
+    fn same_shape_rebind_refreshes_cached_lognormal_logs() {
+        let mut graph = Graph::new();
+        let beta = graph.add_param("beta");
+        let one = graph.add_constant(1.0);
+        let x = graph.add_data("x", vec![1.0]);
+        let mu = graph.scalar_mul_data(beta, x);
+        let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
+        graph.obs_logp_lognormal(mu, one, obs);
+        let structure = graph.structure_only();
+        let bind = |y: Vec<f64>| {
+            DataBinding::bind(
+                &structure.schema,
+                DataInputs {
+                    vectors: HashMap::from([
+                        ("x".into(), Arc::from(vec![0.5, 1.0, 2.0])),
+                        ("y".into(), Arc::from(y)),
+                    ]),
+                    matrices: HashMap::new(),
+                },
+                "y",
+                true,
+                true,
+            )
+            .unwrap()
+        };
+        let first = bind(vec![1.0, 2.0, 3.0]);
+        let second = bind(vec![0.25, 8.0, 40.0]);
+
+        let mut fresh = Evaluator::with_binding(&structure, second.clone());
+        fresh.compute(&structure, &[0.3]);
+        let mut rebound = Evaluator::with_binding(&structure, first);
+        rebound.compute(&structure, &[0.3]);
+        assert_ne!(rebound.total_logp, fresh.total_logp);
+        rebound.rebind(&structure, second).unwrap();
+        rebound.compute(&structure, &[0.3]);
+        assert_eq!(rebound.total_logp.to_bits(), fresh.total_logp.to_bits());
+        assert_eq!(rebound.grad, fresh.grad);
+    }
+
     #[test]
     fn evaluator_rejects_a_binding_from_a_different_schema() {
         let mut graph = Graph::new();
@@ -844,7 +911,7 @@ mod tests {
         let x = graph.add_data("x", vec![1.0]);
         let mu = graph.scalar_mul_data(beta, x);
         let obs = graph.add_named_obs_data("y", "obs", vec![1.0]);
-        graph.normal_obs_logp(mu, one, obs);
+        graph.obs_logp_normal(mu, one, obs);
         let structure = graph.structure_only();
 
         let foreign_schema = DataSchema {

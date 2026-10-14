@@ -1,9 +1,15 @@
 use crate::data::DataBinding;
-use crate::graph::{Graph, GraphShapeError, NodeId, Op, ParamTransform};
+use crate::graph::{Graph, GraphShapeError, NodeId, ObsFamily, Op, ParamTransform};
 
-/// The crate's single logistic sigmoid; see [`crate::graph::stable_sigmoid`].
-pub(crate) use crate::graph::stable_sigmoid as sigmoid_stable;
-use crate::graph::{bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid_derivative};
+use crate::graph::{
+    bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid, stable_sigmoid_derivative,
+};
+use crate::numerics::digamma;
+/// The special functions moved to the crate-private `numerics` module.
+/// `ln_gamma` is re-exported here so `rustmc_core::autodiff::ln_gamma` keeps
+/// working; `softplus` stays reachable at this path for in-crate callers.
+pub use crate::numerics::ln_gamma;
+pub(crate) use crate::numerics::softplus;
 
 // ---------------------------------------------------------------------------
 // Evaluator — zero-allocation gradient computation
@@ -13,7 +19,7 @@ use crate::graph::{bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid_deri
 #[derive(Clone, Copy)]
 enum NodeKind {
     Scalar,
-    /// References graph.data_vectors[idx] directly — no copy needed.
+    /// Reads `binding.vectors[idx]` in place; no copy is made.
     DataRef(usize),
     /// Computed vector stored at byte offset `off` in the flat vec_buf.
     ComputedVec(usize),
@@ -47,18 +53,47 @@ pub struct Evaluator {
     param_node_ids: Vec<Option<usize>>,
     /// Reusable scratch space for constrained vector parameters and gradients.
     param_scratch: Vec<f64>,
+    /// `ln(y)` for every observation slot a LogNormal term reads, indexed like
+    /// `binding.observations` and empty for every other slot. The data never
+    /// change for a binding, so both passes read these instead of taking two
+    /// logarithms per observation per gradient. Rebuilt whenever the binding
+    /// changes, including by a same-shape [`Self::rebind`]. A slot is therefore
+    /// either empty or holds the logarithms of the binding's current values,
+    /// and the forward pass fills an empty one it needs: see
+    /// [`Self::ensure_log_observations`].
+    log_observations: Vec<Vec<f64>>,
 }
 
-fn validate_binding_slots(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
+/// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
+/// reusing its allocations.
+fn fill_log_observations(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
+    out.resize_with(binding.observations.len(), Vec::new);
+    out.iter_mut().for_each(Vec::clear);
+    for node in &graph.nodes {
+        if let Op::ObsLogP {
+            family: ObsFamily::LogNormal,
+            obs_data_idx,
+            ..
+        } = node.op
+        {
+            let cache = &mut out[obs_data_idx];
+            if cache.is_empty() {
+                cache.extend(binding.observations[obs_data_idx].iter().map(|y| y.ln()));
+            }
+        }
+    }
+}
+
+/// The payload checks of [`DataBinding::validate_for`], as a shape error.
+fn validate_binding_payload(graph: &Graph, binding: &DataBinding) -> Result<(), GraphShapeError> {
     binding
         .validate_for(graph)
-        .map_err(|error| GraphShapeError::new(error.to_string()))?;
-    validate_slot_coverage(graph, binding)
+        .map_err(|error| GraphShapeError::new(error.to_string()))
 }
 
 /// Check that `binding` provides every slot the graph indexes by raw index.
 ///
-/// Separate from [`validate_binding_slots`] because it has to run before
+/// Separate from [`validate_binding_payload`] because it has to run before
 /// [`validate_node_lengths`], which reads those slots directly, and
 /// `validate_node_lengths` has a second caller in [`Graph::validate_shapes`]
 /// that has no evaluator and no reason to re-run the payload validation.
@@ -145,13 +180,61 @@ pub(crate) fn validate_slot_coverage(
 /// position. Every pass below indexes per-node buffers by those ids in
 /// declaration order, so each of these is an out-of-bounds read or a value read
 /// before it is computed.
+///
+/// The parameter metadata is public too, so it is checked against
+/// `param_count` here: the evaluator reads `param_transforms[k]` for every
+/// parameter a node reaches, and the samplers read names and transforms per
+/// parameter and the metric per span. An observation op's auxiliary node is
+/// checked against its family for the same reason: the evaluator reads the
+/// scale or dispersion of the families that have one without re-checking it.
 fn validate_topology(graph: &Graph) -> Result<(), GraphShapeError> {
+    let count = graph.param_count;
+    if graph.param_names.len() != count || graph.param_transforms.len() != count {
+        return Err(GraphShapeError::new(format!(
+            "graph declares {count} parameters but has {} names and {} transforms",
+            graph.param_names.len(),
+            graph.param_transforms.len()
+        )));
+    }
+    let mut next_start = 0usize;
+    for span in &graph.param_spans {
+        let end = span.start.checked_add(span.len);
+        if span.start != next_start || end.is_none_or(|end| end > count) {
+            return Err(GraphShapeError::new(format!(
+                "parameter spans must tile 0..{count} in order; found {}..{} where {next_start} was next",
+                span.start,
+                span.start.saturating_add(span.len)
+            )));
+        }
+        next_start = span.start + span.len;
+    }
+    if next_start != count {
+        return Err(GraphShapeError::new(format!(
+            "parameter spans cover 0..{next_start} of {count} parameters"
+        )));
+    }
     for (position, node) in graph.nodes.iter().enumerate() {
         if node.id.0 != position {
             return Err(GraphShapeError::new(format!(
                 "node at position {position} carries id {}",
                 node.id.0
             )));
+        }
+        if let Op::ObsLogP { family, aux, .. } = &node.op {
+            let needs_aux = matches!(
+                family,
+                ObsFamily::Normal | ObsFamily::LogNormal | ObsFamily::NegativeBinomialLog
+            );
+            if needs_aux != aux.is_some() {
+                let requirement = if needs_aux {
+                    "requires an auxiliary scale node"
+                } else {
+                    "takes no auxiliary node"
+                };
+                return Err(GraphShapeError::new(format!(
+                    "{family:?} observation at node {position} {requirement}"
+                )));
+            }
         }
         let mut later_node = None;
         let mut bad_span = None;
@@ -305,9 +388,14 @@ pub(crate) fn validate_node_lengths(
                 let Op::Data(di) = graph.nodes[indices.0].op else {
                     return Err(GraphShapeError::new("group indices must be data"));
                 };
-                if binding.vectors[di].iter().any(|x| {
-                    !x.is_finite() || *x < 0.0 || x.fract() != 0.0 || *x >= *n_params as f64
-                }) {
+                // `DataBinding::validate_for` makes the same check with a
+                // better message, but only for a binding it is given; this one
+                // guards the `as usize` index in the forward pass whatever the
+                // caller validated.
+                if binding.vectors[di]
+                    .iter()
+                    .any(|x| !crate::data::is_group_index(*x, *n_params))
+                {
                     return Err(GraphShapeError::new(format!(
                         "group indices must be integers in [0, {n_params})"
                     )));
@@ -508,14 +596,16 @@ pub(crate) fn validate_node_lengths(
 
 impl Evaluator {
     pub fn try_new(graph: &Graph) -> Result<Self, GraphShapeError> {
+        // `from_graph` has already run the payload validation.
         let binding =
             DataBinding::from_graph(graph).map_err(|e| GraphShapeError::new(e.to_string()))?;
-        Self::try_with_binding(graph, binding)
+        validate_slot_coverage(graph, &binding)?;
+        let node_lengths = validate_node_lengths(graph, &binding)?;
+        Ok(Self::from_checked(graph, binding, node_lengths))
     }
 
     /// Construct an evaluator for immutable structure plus a validated dataset.
     pub fn try_with_binding(graph: &Graph, binding: DataBinding) -> Result<Self, GraphShapeError> {
-        let n = graph.nodes.len();
         // Coverage first: the length pass reads `binding.vectors[i]`,
         // `binding.observations[i]` and `binding.matrices[i]` at the raw indices
         // the graph carries, so a missing slot is an out-of-bounds index there
@@ -524,8 +614,15 @@ impl Evaluator {
         // it always did.
         validate_slot_coverage(graph, &binding)?;
         let node_lengths = validate_node_lengths(graph, &binding)?;
-        validate_binding_slots(graph, &binding)?;
+        validate_binding_payload(graph, &binding)?;
+        Ok(Self::from_checked(graph, binding, node_lengths))
+    }
 
+    /// Lay out the buffers for a graph and binding that have passed slot
+    /// coverage, the length pass (which produced `node_lengths`) and the
+    /// payload validation. Each constructor runs those checks exactly once.
+    fn from_checked(graph: &Graph, binding: DataBinding, node_lengths: Vec<usize>) -> Self {
+        let n = graph.nodes.len();
         let mut node_kind = Vec::with_capacity(n);
         let mut vec_buffer_len = 0usize;
         for node in &graph.nodes {
@@ -549,7 +646,10 @@ impl Evaluator {
             }
         }
 
-        Ok(Self {
+        let mut log_observations = Vec::new();
+        fill_log_observations(graph, &binding, &mut log_observations);
+        Self {
+            log_observations,
             binding,
             node_lengths,
             node_kind,
@@ -561,7 +661,7 @@ impl Evaluator {
             total_logp: 0.0,
             param_node_ids,
             param_scratch: vec![0.0; graph.param_count],
-        })
+        }
     }
 
     /// [`Self::try_new`] for graphs already known to be valid.
@@ -585,11 +685,13 @@ impl Evaluator {
     /// Reuse allocations while changing only the dataset payload and row count.
     pub fn rebind(&mut self, graph: &Graph, binding: DataBinding) -> Result<(), GraphShapeError> {
         validate_slot_coverage(graph, &binding)?;
-        validate_binding_slots(graph, &binding)?;
-        if validate_node_lengths(graph, &binding)? == self.node_lengths {
+        validate_binding_payload(graph, &binding)?;
+        let node_lengths = validate_node_lengths(graph, &binding)?;
+        if node_lengths == self.node_lengths {
+            fill_log_observations(graph, &binding, &mut self.log_observations);
             self.binding = binding;
         } else {
-            *self = Self::try_with_binding(graph, binding)?;
+            *self = Self::from_checked(graph, binding, node_lengths);
         }
         Ok(())
     }
@@ -602,6 +704,21 @@ impl Evaluator {
             NodeKind::DataRef(di) => self.binding.vectors[di][i],
             NodeKind::ComputedVec(off) => self.vec_buf[off + i],
             NodeKind::Scalar => self.scalars[node_id],
+        }
+    }
+
+    /// Make `log_observations[slot]` hold `ln(y)` for observation slot `slot`.
+    ///
+    /// Construction and every rebind fill it for each LogNormal term of the
+    /// graph they were given, so this does nothing on that graph. A graph
+    /// changed afterwards (the `Graph` fields are public) can carry a LogNormal
+    /// term on a slot nobody filled; taking the logarithms here evaluates it
+    /// exactly as before the cache existed, instead of against an empty slot,
+    /// which would silently drop the likelihood. Only that case allocates.
+    fn ensure_log_observations(&mut self, slot: usize) {
+        let observations = &self.binding.observations[slot];
+        if self.log_observations[slot].len() != observations.len() {
+            self.log_observations[slot] = observations.iter().map(|y| y.ln()).collect();
         }
     }
 
@@ -622,15 +739,15 @@ impl Evaluator {
     }
 
     /// Read the i-th element of a vector node after `compute()`.
-    ///
-    /// The evaluator owns every value it reads, so `_graph` is unused; it is
-    /// kept so existing callers need not change.
-    pub fn vec_elem(&self, node: NodeId, i: usize, _graph: &Graph) -> f64 {
+    pub fn vec_elem(&self, node: NodeId, i: usize) -> f64 {
         self.read_vec(node.0, i)
     }
 
     /// Compute log-probability and its gradient. Results are stored in
-    /// `self.total_logp` and `self.grad`. No heap allocations occur.
+    /// `self.total_logp` and `self.grad`. No heap allocations occur on the
+    /// graph the evaluator was built for or last rebound to; a graph changed
+    /// since then to add a LogNormal term allocates once for that term's
+    /// `ln(y)` cache (see `ensure_log_observations`).
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         self.forward(graph, params);
         self.backward(graph, params);
@@ -696,7 +813,7 @@ impl Evaluator {
                 Op::Add(a, b) => self.scalars[idx] = self.scalars[a.0] + self.scalars[b.0],
                 Op::Mul(a, b) => self.scalars[idx] = self.scalars[a.0] * self.scalars[b.0],
                 Op::Exp(a) => self.scalars[idx] = self.scalars[a.0].exp(),
-                Op::Sigmoid(a) => self.scalars[idx] = sigmoid_stable(self.scalars[a.0]),
+                Op::Sigmoid(a) => self.scalars[idx] = stable_sigmoid(self.scalars[a.0]),
                 Op::BoundedSigmoid { raw, lower, upper } => {
                     self.scalars[idx] = bounded_sigmoid(self.scalars[raw.0], *lower, *upper);
                 }
@@ -843,11 +960,11 @@ impl Evaluator {
                             }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            self.ensure_log_observations(*obs_data_idx);
+                            let log_obs = &self.log_observations[*obs_data_idx];
                             let mut sum = 0.0f64;
-                            for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation;
+                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
-                                let ly = y.ln();
                                 let d = (ly - m) / sv;
                                 sum += log_norm - ly - 0.5 * d * d;
                             }
@@ -893,7 +1010,7 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
+                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
@@ -924,19 +1041,13 @@ impl Evaluator {
                     };
                     let beta_col = col::from_slice::<f64>(beta_slice);
                     let out_col = col::from_slice_mut::<f64>(out);
-                    // Use Rayon threads for matrices large enough to amortise spawn cost.
-                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
-                        Parallelism::Rayon(0)
-                    } else {
-                        Parallelism::None
-                    };
                     matmul(
                         out_col.as_2d_mut(),
                         x,
                         beta_col.as_2d(),
                         Some(1.0),
                         1.0,
-                        par,
+                        MATVEC_PARALLELISM,
                     );
                 }
                 Op::VectorNormalLogP {
@@ -961,10 +1072,15 @@ impl Evaluator {
                     sigma,
                 } => {
                     // Combine density and Jacobian using the log scale ratio.
+                    if !scale_is_valid(*sigma) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let ln_sigma = sigma.ln();
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        sum += log_half_normal_logp(raw, *sigma);
+                        sum += log_half_normal_kernel(raw, ln_sigma);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -975,10 +1091,16 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
+                    if !student_t_args_valid(*nu, *sigma) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let (ln_nu, ln_sigma) = (nu.ln(), sigma.ln());
+                    let log_normaliser = student_t_log_normaliser(*nu, ln_nu, ln_sigma);
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let v = params[param_start + k];
-                        sum += student_t_logp_scalar(v, *nu, *mu, *sigma);
+                        sum += student_t_kernel(v - mu, *nu, ln_nu, ln_sigma, log_normaliser);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -989,10 +1111,15 @@ impl Evaluator {
                     beta,
                 } => {
                     // Combine density and Jacobian before exponentiation.
+                    if !gamma_args_valid(*alpha, *beta) {
+                        self.scalars[idx] = invalid_vector_logp(*n_params);
+                        continue;
+                    }
+                    let (ln_beta, ln_gamma_alpha) = (beta.ln(), ln_gamma(*alpha));
                     let mut sum = 0.0f64;
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        sum += log_gamma_logp(raw, *alpha, *beta);
+                        sum += log_gamma_kernel(raw, *alpha, ln_beta, ln_gamma_alpha);
                     }
                     self.scalars[idx] = sum;
                 }
@@ -1095,7 +1222,8 @@ impl Evaluator {
                         // derivatives leave the exponent range on their own
                         // while the product does not. See
                         // `ElementwiseOp::adjoints`.
-                        let (da, db) = operator.adjoints(upstream, av, bv);
+                        let out = self.read_vec(idx, i);
+                        let (da, db) = operator.adjoints_with_value(upstream, av, bv, out);
                         self.accumulate(*a, i, da);
                         if let Some(b) = b {
                             self.accumulate(*b, i, db);
@@ -1141,8 +1269,8 @@ impl Evaluator {
                     self.adj_scalars[b.0] += a_s * va;
                 }
                 Op::Exp(a) => {
-                    let va = self.scalars[a.0].exp();
-                    self.adj_scalars[a.0] += a_s * va;
+                    // d/da exp(a) is the node's own value.
+                    self.adj_scalars[a.0] += a_s * self.scalars[idx];
                 }
                 Op::Sigmoid(a) => {
                     self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
@@ -1233,11 +1361,19 @@ impl Evaluator {
                     }
                 }
                 Op::StudentTLogP { x, nu, mu, sigma } => {
+                    // As for every other density: where `nu` or `sigma` is
+                    // outside its support the density is a constant -inf, so
+                    // nothing it reads gets a slope. Unguarded, `ln` of the
+                    // invalid argument made every adjoint NaN.
+                    let (nu_value, sigma_value) = (self.scalars[nu.0], self.scalars[sigma.0]);
+                    if !student_t_args_valid(nu_value, sigma_value) {
+                        continue;
+                    }
                     let (dx, dsigma, dnu) = student_t_derivatives(
                         self.scalars[x.0],
-                        self.scalars[nu.0],
+                        nu_value,
                         self.scalars[mu.0],
-                        self.scalars[sigma.0],
+                        sigma_value,
                     );
                     self.adj_scalars[x.0] += a_s * dx;
                     self.adj_scalars[mu.0] -= a_s * dx;
@@ -1347,10 +1483,12 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
+                            // `backward` runs only after `forward` on the same
+                            // graph, which has filled this slot.
+                            let log_obs = &self.log_observations[*obs_data_idx];
+                            debug_assert_eq!(log_obs.len(), obs.len());
                             let mut dsigma = 0.0f64;
-                            for (i, &observation) in obs.iter().take(vl).enumerate() {
-                                let y = observation;
-                                let ly = y.ln();
+                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
                                 let d = (ly - m) / sv;
                                 if let Some(off) = mu_off {
@@ -1413,7 +1551,7 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat, Parallelism};
+                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
@@ -1431,11 +1569,6 @@ impl Evaluator {
                     let all_identity = transforms
                         .iter()
                         .all(|t| matches!(t, ParamTransform::Identity));
-                    let par = if matrix.n_rows * matrix.n_cols >= 100_000 {
-                        Parallelism::Rayon(0)
-                    } else {
-                        Parallelism::None
-                    };
                     // grad += X^T @ adj
                     if all_identity {
                         let target = &mut self.grad[*param_start..*param_start + *n_params];
@@ -1446,7 +1579,7 @@ impl Evaluator {
                             adj_col.as_2d(),
                             Some(1.0),
                             1.0,
-                            par,
+                            MATVEC_PARALLELISM,
                         );
                     } else {
                         let target =
@@ -1459,7 +1592,7 @@ impl Evaluator {
                             adj_col.as_2d(),
                             Some(1.0),
                             1.0,
-                            par,
+                            MATVEC_PARALLELISM,
                         );
                         for k in 0..*n_params {
                             self.grad[param_start + k] +=
@@ -1487,10 +1620,10 @@ impl Evaluator {
                     n_params,
                     sigma,
                 } => {
+                    let ln_sigma = sigma.ln();
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        self.grad[param_start + k] +=
-                            a_s * (1.0 - (2.0 * (raw - sigma.ln())).exp());
+                        self.grad[param_start + k] += a_s * (1.0 - (2.0 * (raw - ln_sigma)).exp());
                     }
                 }
                 Op::VectorStudentTLogP {
@@ -1500,10 +1633,13 @@ impl Evaluator {
                     mu,
                     sigma,
                 } => {
+                    // Only the location score is needed: `nu` and `sigma` are
+                    // constants of the op, so their digamma terms are never formed.
+                    let (ln_sigma, ln_nu, ln_nu1) = (sigma.ln(), nu.ln(), (nu + 1.0).ln());
                     for k in 0..*n_params {
                         let v = params[param_start + k];
                         self.grad[param_start + k] +=
-                            a_s * student_t_derivatives(v, *nu, *mu, *sigma).0;
+                            a_s * student_t_dx(v - mu, ln_sigma, ln_nu, ln_nu1);
                     }
                 }
                 Op::VectorGammaLogP {
@@ -1512,9 +1648,10 @@ impl Evaluator {
                     alpha,
                     beta,
                 } => {
+                    let ln_beta = beta.ln();
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        self.grad[param_start + k] += a_s * (alpha - (raw + beta.ln()).exp());
+                        self.grad[param_start + k] += a_s * (alpha - (raw + ln_beta).exp());
                     }
                 }
                 Op::VectorBetaLogP {
@@ -1525,10 +1662,10 @@ impl Evaluator {
                 } => {
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = sigmoid_stable(raw);
+                        let s = stable_sigmoid(raw);
                         // d/draw = α·(1-s) - β·s
                         self.grad[param_start + k] +=
-                            a_s * (alpha * sigmoid_stable(-raw) - beta * s);
+                            a_s * (alpha * stable_sigmoid(-raw) - beta * s);
                     }
                 }
                 Op::VectorUniformLogP {
@@ -1542,7 +1679,7 @@ impl Evaluator {
                     }
                     for k in 0..*n_params {
                         let raw = params[param_start + k];
-                        let s = sigmoid_stable(raw);
+                        let s = stable_sigmoid(raw);
                         // d/draw = 1 - 2s
                         self.grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                     }
@@ -1564,15 +1701,40 @@ impl Evaluator {
 // Reference evaluator — differential-testing oracle, not public API
 // ---------------------------------------------------------------------------
 
-/// Allocating re-implementation of the whole IR, used only to cross-check the
-/// zero-allocation `Evaluator`. It is deliberately not exported: it has no
-/// non-test callers and it panics on its entry points when a node's shape is
-/// not what it expected.
+/// Allocating second evaluator of the whole IR, used only to cross-check the
+/// zero-allocation `Evaluator`'s storage and adjoint plumbing; it shares the
+/// local derivative kernels, so it does not check those. It is deliberately
+/// not exported: it has no non-test callers and it panics on its entry points
+/// when a node's shape is not what it expected.
 #[cfg(test)]
 #[path = "autodiff_reference.rs"]
 mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
+
+/// The parallelism a `MatVecMul` hands faer.
+///
+/// Both of its products have a single column, and faer 0.19 routes every
+/// single-column product to a serial kernel without reading this argument:
+/// `linalg::matmul::matmul` calls `matmul_with_conj_gemm_dispatch`, whose
+/// `m == 1 && n == 1`, `k == 1` and `n == 1` branches return before the
+/// parallel gemm path (`src/linalg/matmul/mod.rs` in faer 0.19.4). The
+/// `Rayon(0)` that designs of 100,000 or more elements used to request
+/// therefore never ran anything in parallel; chains already do, on the Rayon
+/// pool. Revisit this on a faer upgrade, where
+/// `mat_vec_mul_is_bitwise_identical_across_thread_counts` is the check that
+/// a parallel product still gives seeded sampling the same bits.
+const MATVEC_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
+
+/// The summed log density of `n` elements whose constant arguments are
+/// outside their support: `-inf`, or the empty sum.
+fn invalid_vector_logp(n: usize) -> f64 {
+    if n == 0 {
+        0.0
+    } else {
+        f64::NEG_INFINITY
+    }
+}
 
 /// Whether `sigma` is a usable scale: finite and strictly positive.
 #[inline]
@@ -1658,47 +1820,113 @@ use obs_logp_sums::*;
 
 // Combined transformed densities avoid materializing exp(raw), and form
 // scale ratios in log space before squaring or multiplying extreme values.
+//
+// Each density is split into a validity check and a kernel that takes the
+// logarithms of its constant arguments, so the vector priors -- whose scale,
+// shape and rate are constants of the op -- take those logarithms once per op
+// instead of once per element. The kernels perform the same operations in the
+// same order either way, so hoisting changes no bits; see
+// `vector_priors_match_their_scalar_densities_bit_for_bit`.
 fn log_half_normal_logp(raw: f64, sigma: f64) -> f64 {
-    if !sigma.is_finite() || sigma <= 0.0 {
+    if !scale_is_valid(sigma) {
         return f64::NEG_INFINITY;
     }
-    let z = raw - sigma.ln();
+    log_half_normal_kernel(raw, sigma.ln())
+}
+
+fn log_half_normal_kernel(raw: f64, ln_sigma: f64) -> f64 {
+    let z = raw - ln_sigma;
     0.5 * (2.0 / std::f64::consts::PI).ln() + z - 0.5 * (2.0 * z).exp()
 }
 
+fn gamma_args_valid(alpha: f64, beta: f64) -> bool {
+    alpha.is_finite() && alpha > 0.0 && beta.is_finite() && beta > 0.0
+}
+
 fn log_gamma_logp(raw: f64, alpha: f64, beta: f64) -> f64 {
-    if !alpha.is_finite() || alpha <= 0.0 || !beta.is_finite() || beta <= 0.0 {
+    if !gamma_args_valid(alpha, beta) {
         return f64::NEG_INFINITY;
     }
-    let z = raw + beta.ln();
-    alpha * z - ln_gamma(alpha) - z.exp()
+    log_gamma_kernel(raw, alpha, beta.ln(), ln_gamma(alpha))
+}
+
+fn log_gamma_kernel(raw: f64, alpha: f64, ln_beta: f64, ln_gamma_alpha: f64) -> f64 {
+    let z = raw + ln_beta;
+    alpha * z - ln_gamma_alpha - z.exp()
+}
+
+fn student_t_args_valid(nu: f64, sigma: f64) -> bool {
+    nu.is_finite() && nu > 0.0 && scale_is_valid(sigma)
 }
 
 fn student_t_logp_scalar(x: f64, nu: f64, mu: f64, sigma: f64) -> f64 {
-    if !nu.is_finite() || nu <= 0.0 || !sigma.is_finite() || sigma <= 0.0 {
+    if !student_t_args_valid(nu, sigma) {
         return f64::NEG_INFINITY;
     }
-    let log_ratio = 2.0 * ((x - mu).abs().ln() - sigma.ln()) - nu.ln();
+    let (ln_nu, ln_sigma) = (nu.ln(), sigma.ln());
+    student_t_kernel(
+        x - mu,
+        nu,
+        ln_nu,
+        ln_sigma,
+        student_t_log_normaliser(nu, ln_nu, ln_sigma),
+    )
+}
+
+/// The terms of the Student-t log density that do not depend on `x`, summed
+/// left to right as [`student_t_kernel`] continues them.
+fn student_t_log_normaliser(nu: f64, ln_nu: f64, ln_sigma: f64) -> f64 {
     ln_gamma(0.5 * (nu + 1.0))
         - ln_gamma(0.5 * nu)
-        - 0.5 * (nu.ln() + std::f64::consts::PI.ln())
-        - sigma.ln()
-        - 0.5 * (nu + 1.0) * softplus(log_ratio)
+        - 0.5 * (ln_nu + std::f64::consts::PI.ln())
+        - ln_sigma
+}
+
+fn student_t_kernel(diff: f64, nu: f64, ln_nu: f64, ln_sigma: f64, log_normaliser: f64) -> f64 {
+    let log_ratio = 2.0 * (diff.abs().ln() - ln_sigma) - ln_nu;
+    log_normaliser - 0.5 * (nu + 1.0) * softplus(log_ratio)
+}
+
+/// d/dx of the Student-t log density at `x - mu == diff`, from the logs of
+/// `sigma`, `nu` and `nu + 1`. Log-ratio arithmetic retains the polynomial
+/// tails even where the squared residual overflows.
+fn student_t_dx(diff: f64, ln_sigma: f64, ln_nu: f64, ln_nu1: f64) -> f64 {
+    if diff == 0.0 {
+        return 0.0;
+    }
+    let log_abs_diff = diff.abs().ln();
+    let log_tail = softplus(2.0 * (log_abs_diff - ln_sigma) - ln_nu);
+    student_t_dx_from_logs(diff, log_abs_diff, log_tail, ln_sigma, ln_nu, ln_nu1)
+}
+
+/// [`student_t_dx`] at a nonzero `diff`, for a caller that already has
+/// `ln|diff|` and the log tail `softplus(2 (ln|diff| - ln sigma) - ln nu)`.
+fn student_t_dx_from_logs(
+    diff: f64,
+    log_abs_diff: f64,
+    log_tail: f64,
+    ln_sigma: f64,
+    ln_nu: f64,
+    ln_nu1: f64,
+) -> f64 {
+    -diff.signum() * (ln_nu1 + log_abs_diff - 2.0 * ln_sigma - ln_nu - log_tail).exp()
 }
 
 // Return derivatives with respect to x, sigma, and nu. Log-ratio arithmetic
 // retains Student-t's polynomial tails even when the squared residual overflows.
+// Each logarithm and the softplus are taken once and shared by all three.
 fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
     let diff = x - mu;
+    let (ln_sigma, ln_nu) = (sigma.ln(), nu.ln());
     let log_abs_diff = diff.abs().ln();
-    let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
+    let log_ratio = 2.0 * (log_abs_diff - ln_sigma) - ln_nu;
     let log_tail = softplus(log_ratio);
-    let weight = sigmoid_stable(log_ratio);
+    let weight = stable_sigmoid(log_ratio);
     let dx = if diff == 0.0 {
         0.0
     } else {
-        -diff.signum()
-            * ((nu + 1.0).ln() + log_abs_diff - 2.0 * sigma.ln() - nu.ln() - log_tail).exp()
+        let ln_nu1 = (nu + 1.0).ln();
+        student_t_dx_from_logs(diff, log_abs_diff, log_tail, ln_sigma, ln_nu, ln_nu1)
     };
     let scale_term = (nu + 1.0) * weight - 1.0;
     let dsigma = scale_term / sigma;
@@ -1813,14 +2041,6 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
     (x - lam) / (lam + 0.0)
 }
 
-pub(crate) fn softplus(x: f64) -> f64 {
-    if x > 0.0 {
-        x + (-x).exp().ln_1p()
-    } else {
-        x.exp().ln_1p()
-    }
-}
-
 /// log P(y | eta) for a Bernoulli observation with logit `eta`.
 ///
 /// `y * eta - softplus(eta)` is the same quantity and cancels catastrophically
@@ -1854,66 +2074,12 @@ pub(crate) fn bernoulli_logit_logp(y: f64, eta: f64) -> f64 {
 /// subtraction.
 pub(crate) fn bernoulli_logit_grad(y: f64, eta: f64) -> f64 {
     if y == 1.0 {
-        sigmoid_stable(-eta)
+        stable_sigmoid(-eta)
     } else if y == 0.0 {
-        -sigmoid_stable(eta)
+        -stable_sigmoid(eta)
     } else {
-        y - sigmoid_stable(eta)
+        y - stable_sigmoid(eta)
     }
-}
-
-/// Lanczos approximation to ln(Γ(x)) for x > 0.
-pub fn ln_gamma(x: f64) -> f64 {
-    if x <= 0.0 {
-        return f64::INFINITY;
-    }
-    let coeffs = [
-        76.18009172947146,
-        -86.50532032941677,
-        24.01409824083091,
-        -1.231739572450155,
-        0.001208650973866179,
-        -0.000005395239384953,
-    ];
-    let y = x;
-    let tmp = y + 5.5;
-    let tmp = tmp - (y + 0.5) * tmp.ln();
-    let mut ser = 1.000000000190015f64;
-    for (i, &c) in coeffs.iter().enumerate() {
-        ser += c / (y + 1.0 + i as f64);
-    }
-    (std::f64::consts::TAU.sqrt() * ser / y).ln() - tmp
-}
-
-/// Digamma function ψ(x) = d/dx ln(Γ(x)), via asymptotic series + recurrence.
-fn digamma(mut x: f64) -> f64 {
-    // The recurrence below steps x up by one until it reaches 8, which never
-    // terminates for -inf or for x <= -2^53 (where x + 1 == x) and takes |x|
-    // steps for any large negative x. Poles and non-finite arguments have no
-    // value; other negative arguments go through the reflection formula
-    // psi(x) = psi(1 - x) - pi / tan(pi x).
-    if x.is_nan() || x == f64::NEG_INFINITY {
-        return f64::NAN;
-    }
-    if x == f64::INFINITY {
-        return f64::INFINITY;
-    }
-    if x <= 0.0 {
-        if x == x.floor() {
-            return f64::NAN;
-        }
-        return digamma(1.0 - x) - std::f64::consts::PI / (std::f64::consts::PI * x).tan();
-    }
-    let mut result = 0.0;
-    while x < 8.0 {
-        result -= 1.0 / x;
-        x += 1.0;
-    }
-    // Asymptotic expansion for large x
-    result += x.ln() - 0.5 / x;
-    let x2 = 1.0 / (x * x);
-    result -= x2 * (1.0 / 12.0 - x2 * (1.0 / 120.0 - x2 / 252.0));
-    result
 }
 
 #[cfg(test)]
@@ -1951,23 +2117,6 @@ mod tests {
     }
 
     #[test]
-    fn digamma_terminates_and_reflects_for_negative_arguments() {
-        let euler = 0.577_215_664_901_532_9;
-        assert!((digamma(1.0) + euler).abs() < 1e-9);
-        // psi(-2.5) = psi(3.5) - pi / tan(-2.5 pi) = psi(3.5), since
-        // tan(-2.5 pi) is infinite: 1.1031566406452432.
-        assert!((digamma(-2.5) - 1.103_156_640_645_243).abs() < 1e-9);
-        // psi(-0.5) = 0.03648997397857652.
-        assert!((digamma(-0.5) - 0.036_489_973_978_576_5).abs() < 1e-9);
-        // These used to loop forever: x + 1 == x below -2^53, and -inf + 1
-        // is -inf.
-        for pole in [0.0, -1.0, -1e300, f64::MIN, f64::NEG_INFINITY, f64::NAN] {
-            assert!(digamma(pole).is_nan(), "{pole}");
-        }
-        assert_eq!(digamma(f64::INFINITY), f64::INFINITY);
-    }
-
-    #[test]
     fn observation_scales_outside_their_support_give_zero_density() {
         for (lognormal, sigma) in [(false, 0.0), (false, -1.0), (true, 0.0), (true, -2.0)] {
             let mut g = Graph::new();
@@ -1988,24 +2137,6 @@ mod tests {
             assert_eq!(evaluator.total_logp, f64::NEG_INFINITY);
             assert!(evaluator.grad.iter().all(|g| g.is_finite()));
             assert_eq!(eval_logp(&g, &[sigma]), f64::NEG_INFINITY);
-        }
-    }
-
-    #[test]
-    fn ln_gamma_matches_known_values() {
-        let cases = [
-            (0.5, 0.5 * std::f64::consts::PI.ln()),
-            (1.0, 0.0),
-            (5.0, 24.0_f64.ln()),
-            (10.0, 362_880.0_f64.ln()),
-        ];
-
-        for (x, expected) in cases {
-            let actual = ln_gamma(x);
-            assert!(
-                (actual - expected).abs() < 1e-10,
-                "ln_gamma({x}) = {actual}, expected {expected}"
-            );
         }
     }
 
@@ -2033,7 +2164,7 @@ mod tests {
         let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
         let mu = g.scalar_mul_data(beta, x_data);
         let obs = g.add_obs_data(vec![2.5, 5.0, 7.5]);
-        g.normal_obs_logp(mu, one, obs);
+        g.obs_logp_normal(mu, one, obs);
 
         let mut full = Evaluator::new(&g);
         full.compute(&g, &[0.7]);
@@ -2041,7 +2172,7 @@ mod tests {
         forward.forward(&g, &[0.7]);
         assert_eq!(forward.total_logp, full.total_logp);
         for i in 0..3 {
-            assert_eq!(forward.vec_elem(mu, i, &g), full.vec_elem(mu, i, &g));
+            assert_eq!(forward.vec_elem(mu, i), full.vec_elem(mu, i));
         }
         // No reverse pass ran, so the gradient buffer is untouched.
         assert_eq!(forward.grad, vec![0.0]);
@@ -2059,7 +2190,7 @@ mod tests {
         let x_data = g.add_data("x", vec![1.0, 2.0, 3.0]);
         let mu_vec = g.scalar_mul_data(beta, x_data);
         let obs_idx = g.add_obs_data(vec![2.5, 5.0, 7.5]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![2.4];
         let (_, grad) = grad_logp(&g, &params);
@@ -2097,7 +2228,7 @@ mod tests {
         let mu_vec = g.scalar_broadcast_add(b0, v12);
 
         let obs_idx = g.add_obs_data(vec![3.0, 7.0, 11.0, 15.0]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![0.5, 1.8, 1.2];
         let (_, grad) = grad_logp(&g, &params);
@@ -2138,7 +2269,7 @@ mod tests {
         let v12 = g.vector_add(v1, v2);
         let mu_vec = g.scalar_broadcast_add(b0, v12);
         let obs_idx = g.add_obs_data(vec![3.0, 7.0, 11.0, 15.0]);
-        g.normal_obs_logp(mu_vec, sigma, obs_idx);
+        g.obs_logp_normal(mu_vec, sigma, obs_idx);
 
         let params = vec![0.5, 1.8, 1.2];
         let (logp_old, grad_old) = grad_logp(&g, &params);
@@ -2192,6 +2323,48 @@ mod tests {
         let sigma = g.add_constant(2.0);
         g.student_t_logp(x, nu, mu, sigma);
         finite_diff_check(&g, &[1.8], 1e-4);
+    }
+
+    /// `nu` and `sigma` as learned parameters, so the `dnu` and `dsigma`
+    /// branches of the score are checked too; the test above holds them
+    /// constant.
+    #[test]
+    fn student_t_gradient_in_learned_nu_and_sigma_matches_finite_differences() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let raw_nu = g.add_param("raw_nu");
+        let raw_sigma = g.add_param("raw_sigma");
+        let mu = g.add_constant(0.4);
+        let nu = g.exp(raw_nu);
+        let sigma = g.exp(raw_sigma);
+        g.student_t_logp(x, nu, mu, sigma);
+        for params in [[1.8, 1.2, 0.3], [-0.7, -0.5, -1.1], [6.0, 2.5, 0.0]] {
+            full_finite_diff_check(&g, &params, 1e-5);
+        }
+    }
+
+    /// Outside the support of `nu` or `sigma` the density is a constant -inf,
+    /// and its score is zero rather than NaN.
+    #[test]
+    fn student_t_outside_its_support_has_a_zero_gradient() {
+        let mut g = Graph::new();
+        let x = g.add_param("x");
+        let nu = g.add_param("nu");
+        let sigma = g.add_param("sigma");
+        let mu = g.add_constant(0.0);
+        g.student_t_logp(x, nu, mu, sigma);
+        for params in [
+            [0.5, 3.0, -1.0],
+            [0.5, 3.0, 0.0],
+            [0.5, -2.0, 1.0],
+            [0.5, 0.0, 1.0],
+        ] {
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &params);
+            assert_eq!(evaluator.total_logp, f64::NEG_INFINITY, "{params:?}");
+            assert_eq!(evaluator.grad, vec![0.0; 3], "{params:?}");
+            assert_eq!(grad_logp(&g, &params), (f64::NEG_INFINITY, vec![0.0; 3]));
+        }
     }
 
     #[test]
@@ -2288,7 +2461,7 @@ mod tests {
         // likelihood
         let sigma1 = g.add_constant(1.0);
         let obs_idx = g.add_obs_data(obs);
-        g.normal_obs_logp(mu_node, sigma1, obs_idx);
+        g.obs_logp_normal(mu_node, sigma1, obs_idx);
 
         // params = [intercept, beta[0..5]] = 6 total
         let params = vec![0.5, 0.1, 0.2, -0.1, 0.3, -0.2];
@@ -2357,7 +2530,7 @@ mod tests {
             let mu = g.mat_vec_mul(matrix_idx, start, 2, None);
             let sigma = g.add_constant(1.3);
             let obs_idx = g.add_obs_data(vec![0.5, -1.0, 2.0]);
-            g.normal_obs_logp(mu, sigma, obs_idx);
+            g.obs_logp_normal(mu, sigma, obs_idx);
 
             let params = vec![-0.4, 0.7];
             full_finite_diff_check(&g, &params, 2e-5);
@@ -2373,12 +2546,243 @@ mod tests {
             ];
             for (i, expected_value) in expected.into_iter().enumerate() {
                 assert!(
-                    (evaluator.vec_elem(mu, i, &g) - expected_value).abs() < 1e-12,
+                    (evaluator.vec_elem(mu, i) - expected_value).abs() < 1e-12,
                     "transform {:?}, row {}",
                     transform,
                     i
                 );
             }
+        }
+    }
+
+    /// Seeded sampling must not depend on how many threads the pool has. With
+    /// faer 0.19 the products are serial whatever `MATVEC_PARALLELISM` says
+    /// (see its documentation), so today this holds by construction; it is
+    /// here for the faer upgrade that makes a parallel product possible. The
+    /// 400 x 300 design is large enough that faer would split it.
+    #[test]
+    fn mat_vec_mul_is_bitwise_identical_across_thread_counts() {
+        let (rows, cols) = (400usize, 300usize);
+        let mut state = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 - 0.5
+        };
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", cols);
+        g.vector_normal_logp(start, cols, 0.0, 1.0);
+        let one = g.add_constant(1.0);
+        let matrix: Vec<f64> = (0..rows * cols).map(|_| next()).collect();
+        let matrix_idx = g.store_matrix(matrix, rows, cols);
+        let mu = g.mat_vec_mul(matrix_idx, start, cols, None);
+        let obs = g.add_obs_data((0..rows).map(|_| next()).collect());
+        g.obs_logp_normal(mu, one, obs);
+        let params: Vec<f64> = (0..cols).map(|_| next()).collect();
+
+        let run = |threads: usize| {
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(threads)
+                .build()
+                .unwrap()
+                .install(|| {
+                    let mut evaluator = Evaluator::new(&g);
+                    evaluator.compute(&g, &params);
+                    let bits: Vec<u64> = evaluator.grad.iter().map(|x| x.to_bits()).collect();
+                    (evaluator.total_logp.to_bits(), bits)
+                })
+        };
+        let serial = run(1);
+        for threads in [2, 4, 7] {
+            assert_eq!(run(threads), serial, "{threads} threads");
+        }
+    }
+
+    /// Every density op and every elementwise operator, with each of its
+    /// inputs a parameter (through `exp` or `sigmoid` where the input has a
+    /// restricted domain), against central finite differences. The reference
+    /// evaluator shares the derivative kernels, so this is what checks them.
+    #[test]
+    fn every_density_and_operator_matches_finite_differences() {
+        use crate::graph::{ElementwiseOp as E, ParamTransform};
+        let mut cases: Vec<(String, Graph)> = Vec::new();
+        let mut case = |name: &str, build: &dyn Fn(&mut Graph)| {
+            let mut g = Graph::new();
+            build(&mut g);
+            cases.push((name.to_string(), g));
+        };
+        let positive = |g: &mut Graph, name: &str| {
+            let raw = g.add_param(name);
+            g.exp(raw)
+        };
+
+        case("NormalLogP", &|g| {
+            let (x, mu) = (g.add_param("x"), g.add_param("mu"));
+            let sigma = positive(g, "sigma");
+            g.normal_logp(x, mu, sigma);
+        });
+        case("LogHalfNormalLogP", &|g| {
+            let x = g.add_param("x");
+            let sigma = positive(g, "sigma");
+            g.log_half_normal_logp(x, sigma);
+        });
+        case("StudentTLogP", &|g| {
+            let (x, mu) = (g.add_param("x"), g.add_param("mu"));
+            let nu = positive(g, "nu");
+            let sigma = positive(g, "sigma");
+            g.student_t_logp(x, nu, mu, sigma);
+        });
+        for outcome in [0.0, 1.0] {
+            case(&format!("BernoulliLogP({outcome})"), &|g| {
+                let raw = g.add_param("p");
+                let p = g.sigmoid(raw);
+                let x = g.add_constant(outcome);
+                g.bernoulli_logp(x, p);
+            });
+        }
+        case("PoissonLogP", &|g| {
+            let lam = positive(g, "lam");
+            let x = g.add_constant(3.0);
+            g.poisson_logp(x, lam);
+        });
+        case("LogGammaLogP", &|g| {
+            let x = g.add_param("x");
+            let alpha = positive(g, "alpha");
+            let beta = positive(g, "beta");
+            g.log_gamma_logp(x, alpha, beta);
+        });
+        case("PositiveSupport", &|g| {
+            let x = positive(g, "x");
+            g.positive_support(x);
+            let zero = g.add_constant(0.0);
+            let one = g.add_constant(1.0);
+            g.normal_logp(x, zero, one);
+        });
+
+        let families: [(&str, Vec<f64>); 6] = [
+            ("Normal", vec![0.3, -1.2, 2.0, 0.7]),
+            ("BernoulliLogit", vec![1.0, 0.0, 0.0, 1.0]),
+            ("PoissonLog", vec![0.0, 2.0, 5.0, 1.0]),
+            ("ExponentialLog", vec![0.4, 1.5, 3.0, 0.2]),
+            ("LogNormal", vec![0.4, 1.5, 3.0, 0.2]),
+            ("NegativeBinomialLog", vec![0.0, 2.0, 5.0, 1.0]),
+        ];
+        for (family, y) in families {
+            case(&format!("ObsLogP({family})"), &|g| {
+                let (a, b) = (g.add_param("a"), g.add_param("b"));
+                let x = g.add_data("x", vec![0.5, -1.0, 1.5, 0.25]);
+                let bx = g.scalar_mul_data(b, x);
+                let eta = g.scalar_broadcast_add(a, bx);
+                let obs = g.add_obs_data(y.clone());
+                let aux = positive(g, "aux");
+                match family {
+                    "Normal" => g.obs_logp_normal(eta, aux, obs),
+                    "BernoulliLogit" => g.obs_logp_bernoulli_logit(eta, obs),
+                    "PoissonLog" => g.obs_logp_poisson_log(eta, obs),
+                    "ExponentialLog" => g.obs_logp_exponential_log(eta, obs),
+                    "LogNormal" => g.obs_logp_lognormal(eta, aux, obs),
+                    _ => g.obs_logp_negative_binomial_log(eta, aux, obs),
+                };
+                // The families without an auxiliary node still need a
+                // density in `aux` for the gradient to be defined.
+                let zero = g.add_constant(0.0);
+                let one = g.add_constant(1.0);
+                g.normal_logp(aux, zero, one);
+            });
+        }
+
+        case("VectorNormalLogP", &|g| {
+            let start = g.add_vector_params("v", 3);
+            g.vector_normal_logp(start, 3, 0.4, 1.7);
+        });
+        case("VectorHalfNormalLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Exp);
+            g.vector_half_normal_logp(start, 3, 1.3);
+        });
+        case("VectorStudentTLogP", &|g| {
+            let start = g.add_vector_params("v", 3);
+            g.vector_student_t_logp(start, 3, 2.5, -0.3, 0.8);
+        });
+        case("VectorGammaLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Exp);
+            g.vector_gamma_logp(start, 3, 1.5, 2.5);
+        });
+        case("VectorBetaLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Sigmoid);
+            g.vector_beta_logp(start, 3, 2.5, 1.5);
+        });
+        case("VectorUniformLogP", &|g| {
+            let transform = ParamTransform::BoundedSigmoid {
+                lower: -2.0,
+                upper: 3.0,
+            };
+            let start = g.add_vector_params_with_transform("v", 3, transform);
+            g.vector_uniform_logp(start, 3, -2.0, 3.0);
+        });
+
+        let unary = [
+            E::Neg,
+            E::Exp,
+            E::Log,
+            E::Sigmoid,
+            E::Sqrt,
+            E::Tanh,
+            E::Softplus,
+            E::Sin,
+            E::Cos,
+        ];
+        let binary = [E::Add, E::Sub, E::Mul, E::Div, E::Pow];
+        for operator in unary.into_iter().chain(binary) {
+            let is_binary = binary
+                .iter()
+                .any(|op| std::mem::discriminant(op) == std::mem::discriminant(&operator));
+            case(&format!("Elementwise({operator:?})"), &|g| {
+                // A positive left operand keeps Log, Sqrt and Pow in their
+                // domain; a positive right one keeps Div away from zero.
+                let a = positive(g, "a");
+                let b = is_binary.then(|| positive(g, "b"));
+                let value = g.elementwise(operator, a, b);
+                let mu = g.add_constant(0.2);
+                let sigma = g.add_constant(1.5);
+                g.normal_logp(value, mu, sigma);
+            });
+        }
+
+        let points = [[0.3, -0.4, 0.8], [-0.9, 0.6, 0.1], [1.1, 0.2, -0.7]];
+        for (name, g) in &cases {
+            for point in points {
+                let params: Vec<f64> = point.iter().cycle().take(g.param_count).copied().collect();
+                let result = std::panic::catch_unwind(|| full_finite_diff_check(g, &params, 1e-4));
+                assert!(result.is_ok(), "{name} at {params:?}");
+            }
+        }
+    }
+
+    /// The `ln(y)` cache is built from the graph an evaluator was constructed
+    /// for. A graph changed afterwards so that a term becomes LogNormal must
+    /// still be evaluated as LogNormal, as it was before the cache existed:
+    /// read against the empty cache, the likelihood silently dropped out
+    /// (log density and gradient both zero here).
+    #[test]
+    fn lognormal_term_added_after_construction_is_evaluated() {
+        let mut g = Graph::new();
+        let mu = g.add_param("mu");
+        let one = g.add_constant(1.0);
+        let obs = g.add_obs_data(vec![2.0, 0.5, 3.0]);
+        let linpred = g.broadcast_observation(mu, obs);
+        let term = g.obs_logp_normal(linpred, one, obs);
+        let mut evaluator = Evaluator::new(&g);
+        if let Op::ObsLogP { family, .. } = &mut g.nodes[term.0].op {
+            *family = ObsFamily::LogNormal;
+        }
+        let mut fresh = Evaluator::new(&g);
+        for params in [[0.0], [0.4]] {
+            evaluator.compute(&g, &params);
+            fresh.compute(&g, &params);
+            assert_ne!(evaluator.total_logp, 0.0);
+            assert_eq!(evaluator.total_logp.to_bits(), fresh.total_logp.to_bits());
+            assert_eq!(evaluator.grad, fresh.grad);
         }
     }
 
@@ -2477,6 +2881,126 @@ mod tests {
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);
     }
+
+    /// `student_t_derivatives` shares its logarithms and softplus with the
+    /// location score instead of letting `student_t_dx` take them again. It
+    /// must give the bits of the single expression it had before the vector
+    /// priors split that score out, which is reproduced here.
+    #[test]
+    fn student_t_derivatives_match_their_unsplit_form_bit_for_bit() {
+        fn unsplit(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
+            let diff = x - mu;
+            let log_abs_diff = diff.abs().ln();
+            let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
+            let log_tail = softplus(log_ratio);
+            let weight = stable_sigmoid(log_ratio);
+            let dx = if diff == 0.0 {
+                0.0
+            } else {
+                -diff.signum()
+                    * ((nu + 1.0).ln() + log_abs_diff - 2.0 * sigma.ln() - nu.ln() - log_tail).exp()
+            };
+            let scale_term = (nu + 1.0) * weight - 1.0;
+            let dsigma = scale_term / sigma;
+            let dnu = 0.5 * digamma(0.5 * (nu + 1.0)) - 0.5 * digamma(0.5 * nu) - 0.5 * log_tail
+                + 0.5 * scale_term / nu;
+            (dx, dsigma, dnu)
+        }
+        let same = |l: f64, r: f64| l.to_bits() == r.to_bits() || (l.is_nan() && r.is_nan());
+        let xs = [-1e300, -40.0, -2.5, -1e-12, 0.0, 1e-300, 0.7, 3.0, 1e200];
+        let nus = [1e-3, 0.5, 1.0, 4.0, 30.0, 1e8];
+        let sigmas = [1e-200, 0.01, 1.0, 2.5, 1e150];
+        for &x in &xs {
+            for &nu in &nus {
+                for &sigma in &sigmas {
+                    for mu in [0.0, 0.7, -3.25] {
+                        let (a, b, c) = student_t_derivatives(x, nu, mu, sigma);
+                        let (p, q, r) = unsplit(x, nu, mu, sigma);
+                        assert!(
+                            same(a, p) && same(b, q) && same(c, r),
+                            "x={x} nu={nu} mu={mu} sigma={sigma}"
+                        );
+                        let ln_nu1 = (nu + 1.0).ln();
+                        let dx = student_t_dx(x - mu, sigma.ln(), nu.ln(), ln_nu1);
+                        assert!(same(dx, p), "dx: x={x} nu={nu} mu={mu} sigma={sigma}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// The vector priors take the logarithms of their constant arguments once
+    /// per op rather than once per element. That is only a hoist if every
+    /// element still gets exactly the bits the per-element density and score
+    /// give it, including where an argument is outside its support.
+    #[test]
+    fn vector_priors_match_their_scalar_densities_bit_for_bit() {
+        let raws = [-3.5, -0.4, 0.0, 0.7, 2.25, 9.0];
+        let n = raws.len();
+        let bits = |x: f64| (0.0 + x).to_bits();
+        let check =
+            |g: &Graph, node: NodeId, logp: &dyn Fn(f64) -> f64, dx: &dyn Fn(f64) -> f64| {
+                let mut evaluator = Evaluator::new(g);
+                evaluator.compute(g, &raws);
+                let mut expected = 0.0f64;
+                for raw in raws {
+                    expected += logp(raw);
+                }
+                assert_eq!(bits(evaluator.scalar_at(node)), bits(expected));
+                if expected.is_finite() {
+                    for (k, raw) in raws.iter().enumerate() {
+                        assert_eq!(bits(evaluator.grad[k]), bits(dx(*raw)), "element {k}");
+                    }
+                }
+            };
+        for sigma in [0.3, 1.0, 17.5, 0.0, -1.0, f64::NAN] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_half_normal_logp(start, n, sigma);
+            check(&g, node, &|raw| log_half_normal_logp(raw, sigma), &|raw| {
+                1.0 - (2.0 * (raw - sigma.ln())).exp()
+            });
+        }
+        for (alpha, beta) in [
+            (0.5, 2.0),
+            (3.0, 0.25),
+            (40.0, 7.0),
+            (0.0, 1.0),
+            (2.0, -1.0),
+        ] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_gamma_logp(start, n, alpha, beta);
+            check(&g, node, &|raw| log_gamma_logp(raw, alpha, beta), &|raw| {
+                alpha - (raw + beta.ln()).exp()
+            });
+        }
+        for (nu, mu, sigma) in [
+            (1.0, 0.0, 1.0),
+            (3.0, 0.7, 0.2),
+            (30.0, -2.0, 5.0),
+            (0.5, 2.25, 1e-3),
+            (0.0, 0.0, 1.0),
+            (3.0, 0.0, -2.0),
+        ] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("x", n);
+            let node = g.vector_student_t_logp(start, n, nu, mu, sigma);
+            check(
+                &g,
+                node,
+                &|v| student_t_logp_scalar(v, nu, mu, sigma),
+                &|v| student_t_derivatives(v, nu, mu, sigma).0,
+            );
+        }
+        // An empty span sums to zero whatever its arguments.
+        let mut g = Graph::new();
+        let start = g.add_vector_params("x", 0);
+        let node = g.vector_gamma_logp(start, 0, -1.0, 1.0);
+        let mut evaluator = Evaluator::new(&g);
+        evaluator.compute(&g, &[]);
+        assert_eq!(evaluator.scalar_at(node).to_bits(), 0.0f64.to_bits());
+    }
 }
 
 #[cfg(test)]
@@ -2493,7 +3017,7 @@ mod expression_tests {
         let mu = g.elementwise(E::Tanh, grouped, None);
         let y = g.add_named_obs_data("y", "amount", vec![1.0, 2.0, 3.0]);
         let sigma = g.add_constant(1.0);
-        g.normal_obs_logp(mu, sigma, y);
+        g.obs_logp_normal(mu, sigma, y);
         let z = g.add_named_obs_data("z", "other", vec![0.0; 5]);
         g.schema.observations[1].dim = "other".into();
         let c = g.add_constant(0.3);
@@ -2676,7 +3200,7 @@ mod extreme_scale_regressions {
             let scaled =
                 graph.elementwise(crate::graph::ElementwiseOp::Mul, ratio, Some(scale_node));
             let term = graph.elementwise(crate::graph::ElementwiseOp::Neg, scaled, None);
-            graph.add_node_as_logp(term);
+            graph.add_logp_term(term);
 
             let mut evaluator = Evaluator::new(&graph);
             evaluator.compute(&graph, &[b]);
@@ -2821,7 +3345,7 @@ mod extreme_scale_regressions {
                 if log_normal {
                     graph.obs_logp_lognormal(predictor, scale, obs);
                 } else {
-                    graph.normal_obs_logp(predictor, scale, obs);
+                    graph.obs_logp_normal(predictor, scale, obs);
                 }
                 check(
                     &graph,

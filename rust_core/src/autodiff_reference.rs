@@ -1,4 +1,13 @@
-//! Allocating reference evaluator retained for independent checks of optimized kernels.
+//! Allocating reference evaluator, the oracle for the `Evaluator`'s graph
+//! plumbing: storage layout, broadcasting, and the accumulation of adjoints
+//! through the graph.
+//!
+//! It is not an independent check of the local derivative kernels. Its
+//! reverse pass calls the same ones the `Evaluator` does
+//! (`ElementwiseOp::adjoints`, `student_t_derivatives`, the bounded-sigmoid,
+//! Poisson, Bernoulli and negative binomial scores), so a wrong kernel is
+//! wrong identically in both. The kernels are checked against finite
+//! differences instead; see `every_density_and_operator_matches_finite_differences`.
 use super::*;
 #[derive(Debug, Clone)]
 pub enum Value {
@@ -80,7 +89,7 @@ pub fn forward(graph: &Graph, params: &[f64]) -> Vec<Value> {
             Op::Add(a, b) => Value::Scalar(values[a.0].as_scalar() + values[b.0].as_scalar()),
             Op::Mul(a, b) => Value::Scalar(values[a.0].as_scalar() * values[b.0].as_scalar()),
             Op::Exp(a) => Value::Scalar(values[a.0].as_scalar().exp()),
-            Op::Sigmoid(a) => Value::Scalar(sigmoid_stable(values[a.0].as_scalar())),
+            Op::Sigmoid(a) => Value::Scalar(stable_sigmoid(values[a.0].as_scalar())),
             Op::BoundedSigmoid { raw, lower, upper } => Value::Scalar(
                 crate::graph::bounded_sigmoid(values[raw.0].as_scalar(), *lower, *upper),
             ),
@@ -487,11 +496,16 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 }
             }
             Op::StudentTLogP { x, nu, mu, sigma } => {
+                let (nu_value, sigma_value) =
+                    (values[nu.0].as_scalar(), values[sigma.0].as_scalar());
+                if !student_t_args_valid(nu_value, sigma_value) {
+                    continue;
+                }
                 let (dx, dsigma, dnu) = student_t_derivatives(
                     values[x.0].as_scalar(),
-                    values[nu.0].as_scalar(),
+                    nu_value,
                     values[mu.0].as_scalar(),
-                    values[sigma.0].as_scalar(),
+                    sigma_value,
                 );
                 adj_scalar[x.0] += a_s * dx;
                 adj_scalar[mu.0] -= a_s * dx;
@@ -723,8 +737,8 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
             } => {
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = sigmoid_stable(raw);
-                    grad[param_start + k] += a_s * (alpha * sigmoid_stable(-raw) - beta * s);
+                    let s = stable_sigmoid(raw);
+                    grad[param_start + k] += a_s * (alpha * stable_sigmoid(-raw) - beta * s);
                 }
             }
             Op::VectorUniformLogP {
@@ -738,7 +752,7 @@ pub fn grad_logp(graph: &Graph, params: &[f64]) -> (f64, Vec<f64>) {
                 }
                 for k in 0..*n_params {
                     let raw = params[param_start + k];
-                    let s = sigmoid_stable(raw);
+                    let s = stable_sigmoid(raw);
                     grad[param_start + k] += a_s * (1.0 - 2.0 * s);
                 }
             }

@@ -173,7 +173,7 @@ fn empty_data_vectors_are_rejected_by_the_graph_path() {
     let mu = graph.scalar_mul_data(beta, x);
     let one = graph.add_constant(1.0);
     let obs = graph.add_obs_data(Vec::new());
-    graph.normal_obs_logp(mu, one, obs);
+    graph.obs_logp_normal(mu, one, obs);
     let error = sample(graph, SamplerConfig::default()).expect_err("empty data must not sample");
     assert!(error.contains("must not be empty"), "{error}");
 
@@ -202,6 +202,70 @@ fn out_of_order_and_dangling_references_are_rejected() {
     let message = graph.validate_shapes().unwrap_err().to_string();
     assert!(message.contains("parameters 5..6"), "{message}");
     assert!(Evaluator::try_new(&graph).is_err());
+}
+
+/// An observation op's auxiliary node and the parameter metadata are public
+/// fields the builders always set consistently. Set by hand they reached an
+/// `expect` or an out-of-bounds index inside a sampler worker.
+#[test]
+fn hand_built_observation_and_parameter_metadata_are_rejected() {
+    use rustmc_core::graph::{Node, NodeId, ObsFamily, Op, ParamSpan};
+    fn regression() -> (Graph, NodeId, usize) {
+        let mut graph = Graph::new();
+        let beta = Normal::prior(&mut graph, "beta", 0.0, 1.0);
+        let x = graph.add_data("x", vec![1.0, 2.0, 3.0]);
+        let mu = graph.scalar_mul_data(beta, x);
+        let obs = graph.add_obs_data(vec![1.0, 3.0, 2.0]);
+        (graph, mu, obs)
+    }
+
+    for (family, aux) in [
+        (ObsFamily::Normal, false),
+        (ObsFamily::LogNormal, false),
+        (ObsFamily::NegativeBinomialLog, false),
+        (ObsFamily::PoissonLog, true),
+    ] {
+        let (mut graph, mu, obs) = regression();
+        let scale = graph.add_constant(1.0);
+        let id = NodeId(graph.nodes.len());
+        graph.nodes.push(Node {
+            id,
+            op: Op::ObsLogP {
+                family,
+                linpred_vec: mu,
+                aux: aux.then_some(scale),
+                obs_data_idx: obs,
+            },
+            name: None,
+        });
+        graph.add_logp_term(id);
+        let message = graph.validate_shapes().unwrap_err().to_string();
+        assert!(message.contains("auxiliary"), "{family:?}: {message}");
+        assert!(Evaluator::try_new(&graph).is_err());
+        assert!(sample(graph, SamplerConfig::default()).is_err());
+    }
+
+    let (mut graph, ..) = regression();
+    graph.param_count += 1;
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("2 parameters"), "{message}");
+    assert!(sample(graph, SamplerConfig::default()).is_err());
+
+    let (mut graph, ..) = regression();
+    graph.param_transforms.clear();
+    assert!(graph.validate_shapes().is_err());
+    assert!(sample(graph, SamplerConfig::default()).is_err());
+
+    let (mut graph, ..) = regression();
+    graph.param_spans = vec![ParamSpan { start: 1, len: 1 }];
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("tile"), "{message}");
+    assert!(sample(graph, SamplerConfig::default()).is_err());
+
+    let (mut graph, ..) = regression();
+    graph.param_spans.clear();
+    let message = graph.validate_shapes().unwrap_err().to_string();
+    assert!(message.contains("cover 0..0 of 1"), "{message}");
 }
 
 /// The total log density sums node scalars, so a vector registered as a term,
@@ -319,7 +383,7 @@ fn regression_graph() -> Graph {
     let one = graph.add_constant(1.0);
     let y: Vec<f64> = (0..rows).map(|i| (i as f64 * 0.11).cos()).collect();
     let obs = graph.add_obs_data(y);
-    graph.normal_obs_logp(mu, one, obs);
+    graph.obs_logp_normal(mu, one, obs);
     graph
 }
 

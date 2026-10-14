@@ -122,10 +122,13 @@ impl GraphModel {
                 "position must match the finite unconstrained parameter axis",
             ));
         }
-        let graph = self.structure.with_binding(binding);
-        let mut evaluator =
-            Evaluator::try_new(&graph).map_err(|error| ModelError::invalid(error.to_string()))?;
-        evaluator.compute(&graph, position);
+        // The evaluator reads its data from the binding, never from the graph,
+        // so the structure is evaluated directly: hydrating a graph with
+        // `with_binding` and splitting it back into a binding copied the whole
+        // dataset twice per call. Cloning the binding clones only its `Arc`s.
+        let mut evaluator = Evaluator::try_with_binding(&self.structure, binding.clone())
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
+        evaluator.compute(&self.structure, position);
         Ok((evaluator.total_logp, evaluator.grad))
     }
     pub fn sample(
@@ -300,7 +303,7 @@ pub fn sample_model_batch(
     Ok(fits)
 }
 
-pub fn bind_prediction(
+pub(crate) fn bind_prediction(
     graph: &Graph,
     mut inputs: DataInputs,
     mut lengths: HashMap<String, usize>,
