@@ -51,7 +51,7 @@ Neither gate samples at the shipped default `target_accept=0.8`. The fixed
 reference cases above run at `target_accept=0.95`, and the Rust recovery tests in
 `rust_core/tests/recovery_suite.rs` run every case at 0.999.
 
-`rust_core/tests/analytic_posteriors.rs` does run at the defaults. It samples a
+`rust_core/tests/exactness.rs` does run at the defaults. It samples a
 100-dimensional independent Gaussian and a 50-dimensional correlated one with NUTS,
 and requires every coordinate's bulk ESS to reach 400 and its mean and variance to lie
 within four Monte Carlo standard errors of the exact values. The same checks on static
