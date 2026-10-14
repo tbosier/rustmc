@@ -300,7 +300,7 @@ pub fn sample_model_batch(
     Ok(fits)
 }
 
-pub fn bind_prediction(
+pub(crate) fn bind_prediction(
     graph: &Graph,
     mut inputs: DataInputs,
     mut lengths: HashMap<String, usize>,

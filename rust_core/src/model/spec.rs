@@ -216,7 +216,7 @@ impl MuExpr {
     }
 }
 
-pub fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
+pub(crate) fn collect_expr_param_names(expr: &MuExpr, out: &mut Vec<String>) {
     match expr {
         MuExpr::Const(_) | MuExpr::Data(_) => {}
         MuExpr::Unary(_, a) | MuExpr::Sum(a) => collect_expr_param_names(a, out),

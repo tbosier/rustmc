@@ -34,7 +34,11 @@ fn finite(value: f64) -> Result<f64, String> {
 
 /// Log of a Gamma(shape, rate) draw. For shape below one, the identity
 /// G(shape) = G(shape + 1) U^(1/shape) avoids underflow before taking the log.
-pub fn log_gamma<R: Rng + ?Sized>(shape: f64, rate: f64, rng: &mut R) -> Result<f64, String> {
+pub(crate) fn log_gamma<R: Rng + ?Sized>(
+    shape: f64,
+    rate: f64,
+    rng: &mut R,
+) -> Result<f64, String> {
     positive(shape)?;
     positive(rate)?;
     let boosted = if shape < 1.0 { shape + 1.0 } else { shape };
@@ -50,11 +54,15 @@ pub fn log_gamma<R: Rng + ?Sized>(shape: f64, rate: f64, rng: &mut R) -> Result<
 }
 
 /// The logit of a Beta draw is the difference of independent log Gamma draws.
-pub fn logit_beta<R: Rng + ?Sized>(alpha: f64, beta: f64, rng: &mut R) -> Result<f64, String> {
+pub(crate) fn logit_beta<R: Rng + ?Sized>(
+    alpha: f64,
+    beta: f64,
+    rng: &mut R,
+) -> Result<f64, String> {
     finite(log_gamma(alpha, 1.0, rng)? - log_gamma(beta, 1.0, rng)?)
 }
 
-pub fn log_half_normal<R: Rng + ?Sized>(sigma: f64, rng: &mut R) -> Result<f64, String> {
+pub(crate) fn log_half_normal<R: Rng + ?Sized>(sigma: f64, rng: &mut R) -> Result<f64, String> {
     positive(sigma)?;
     let standard: f64 = StandardNormal.sample(rng);
     finite(positive(standard.abs())?.ln() + sigma.ln())
@@ -78,7 +86,7 @@ pub fn logit_stable(p: f64) -> f64 {
 /// is what `model::compile` and every loaded `GraphModel` guarantee. It does
 /// not re-check prior parameters, so a hand-built `PriorSpec` with, say, a
 /// Bernoulli probability outside [0, 1] yields draws rather than an error.
-pub fn sample_prior_raw<R: Rng + ?Sized>(
+pub(crate) fn sample_prior_raw<R: Rng + ?Sized>(
     priors: &[PriorSpec],
     auto_vector_params: &HashMap<String, usize>,
     rng: &mut R,

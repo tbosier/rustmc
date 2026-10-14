@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::*;
 
-pub fn should_auto_noncenter(
+pub(crate) fn should_auto_noncenter(
     prior: &PriorSpec,
     auto_vector_params: &HashMap<String, usize>,
 ) -> bool {
@@ -24,7 +24,7 @@ pub fn should_auto_noncenter(
     }
 }
 
-pub fn append_raw_display_params(
+fn append_raw_display_params(
     display_params: &mut Vec<DisplayParamSpec>,
     graph: &Graph,
     start_idx: usize,
@@ -37,7 +37,7 @@ pub fn append_raw_display_params(
     }
 }
 
-pub fn build_likelihood_into_graph(
+fn build_likelihood_into_graph(
     graph: &mut Graph,
     lik: &LikelihoodSpec,
     data_map: &HashMap<String, Vec<f64>>,
@@ -114,7 +114,7 @@ pub fn build_likelihood_into_graph(
     Ok(())
 }
 
-pub fn build_prior_into_graph(
+fn build_prior_into_graph(
     prior: &PriorSpec,
     graph: &mut Graph,
     vector_param_map: &mut HashMap<String, (usize, usize)>,
@@ -341,7 +341,7 @@ pub fn build_prior_into_graph(
     Ok(())
 }
 
-pub fn resolve_sigma(
+fn resolve_sigma(
     spec: &SigmaSpec,
     graph: &mut Graph,
     value_node_map: &HashMap<String, NodeId>,
@@ -472,7 +472,10 @@ pub fn compile(
     })
 }
 
-pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> ModelResult<Vec<f64>> {
+pub(crate) fn derive_display_draw(
+    raw_draw: &[f64],
+    specs: &[DisplayParamSpec],
+) -> ModelResult<Vec<f64>> {
     let mut values = HashMap::new();
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -510,7 +513,7 @@ pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> Mode
     Ok(out)
 }
 
-pub fn derive_display_sample_result(
+fn derive_display_sample_result(
     raw_result: &SampleResult,
     specs: &[DisplayParamSpec],
 ) -> ModelResult<SampleResult> {
@@ -559,7 +562,7 @@ fn display_specs_are_identity(raw_result: &SampleResult, specs: &[DisplayParamSp
 /// no parameter is non-centred, that copy is bit-identical to the raw draws, so
 /// a retained batch cell paid for two posteriors to hold one. Sharing the `Arc`
 /// keeps the display and raw views distinguishable without duplicating them.
-pub fn display_sample_result(
+pub(crate) fn display_sample_result(
     raw_result: &Arc<SampleResult>,
     specs: &[DisplayParamSpec],
 ) -> ModelResult<Arc<SampleResult>> {
@@ -623,7 +626,7 @@ pub(super) fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<L
 
 /// Walk all likelihood MuExpr trees and collect param names used in MatVec ops.
 /// Returns a set of param names that should be auto-promoted to vector params.
-pub fn collect_matvec_params(
+pub(crate) fn collect_matvec_params(
     spec: &ModelSpec,
     matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
 ) -> Result<HashMap<String, usize>, ModelError> {
@@ -704,7 +707,7 @@ pub(super) fn lookup_param_value_node(
 /// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
 /// this emits a single FusedLinearMu op instead of individual
 /// ScalarMulData / VectorAdd / ScalarBroadcastAdd nodes.
-pub fn build_mu_expr(
+fn build_mu_expr(
     graph: &mut Graph,
     expr: &MuExpr,
     data_map: &HashMap<String, Vec<f64>>,

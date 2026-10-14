@@ -132,7 +132,7 @@ impl ModelFit {
     }
 
     /// The graph predictions are evaluated on: the training data when neither
-    /// inputs nor sizes are given, otherwise [`bind_prediction`] over them.
+    /// inputs nor sizes are given, otherwise the training structure bound to them.
     pub fn prediction_graph(
         &self,
         inputs: Option<DataInputs>,
