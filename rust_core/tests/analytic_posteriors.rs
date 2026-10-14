@@ -305,8 +305,11 @@ fn hmc_matches_the_exact_moments_of_a_hundred_independent_normals() {
     );
 }
 
-/// Reproducer for the same open finding on the correlated target, where the
-/// coordinates that do mix also have errors wider than their MCSE allows.
+/// Reproducer for the same open finding on the correlated target. At this seed
+/// and the default draws it fails on the bulk ESS floor (worst coordinate about
+/// 212). The wider-than-MCSE spread of the coordinates that do mix is not what
+/// this run shows: it comes from the one-off 10,000-draw runs the module
+/// documentation describes.
 #[test]
 #[ignore = "open finding: default static HMC nearly resonates on well-conditioned Gaussians"]
 fn hmc_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
