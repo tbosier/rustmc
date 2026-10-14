@@ -430,17 +430,15 @@ impl LinearGaussianStateSpace {
         Ok(self)
     }
 
-    /// Set per-time Gaussian noise variances, e.g. conditional Student-t mixtures.
+    /// Set per-time Gaussian noise variances for the training series, e.g.
+    /// conditional Student-t mixtures. They apply to filtering, smoothing and
+    /// FFBS only: [`forecast`](Self::forecast) adds the constant base
+    /// observation variance to every future step.
     pub fn with_observation_variances(
         mut self,
         variances: Vec<f64>,
     ) -> Result<Self, StateSpaceError> {
-        if variances.iter().any(|v| !v.is_finite() || *v <= 0.0) {
-            return Err(StateSpaceError::InvalidVariance(
-                "observation variances must be finite and positive".into(),
-            ));
-        }
-        self.observation_variances = Some(variances);
+        self.set_observation_variances(variances)?;
         Ok(self)
     }
 

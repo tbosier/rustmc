@@ -65,9 +65,10 @@ must have exactly `steps` rows. See
 [time-varying observation rows](regression-forecasting.md#fixed-parameter-time-varying-observation-rows).
 The transition matrix, the process covariance, and the initial mean and covariance are
 constant for the whole series and horizon; there is no API to vary them. In the Rust
-core the per-time observation variance can also vary, through
-`with_observation_variances`; that is used internally by the structural models and is
-not exposed in Python, where the observation variance is a single constant.
+core the per-time observation variance of the training series can also vary, through
+`with_observation_variances` (the structural Student-t fits use its in-place
+counterpart); forecasts still use the constant observation variance, and none of this
+is exposed in Python, where the observation variance is a single constant.
 
 Whether or not the rows vary, the parameters are supplied, not estimated. Noise is
 Gaussian and the observation is univariate. Process covariance may be positive
