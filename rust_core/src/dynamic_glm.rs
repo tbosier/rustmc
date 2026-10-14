@@ -151,6 +151,22 @@ struct Block {
     /// `None` for the population and shared-walk blocks, which touch every
     /// group; a group's own blocks touch only that group's observations.
     group: Option<usize>,
+    /// Random-walk innovations rather than coefficients.
+    walk: bool,
+}
+
+impl Block {
+    /// The prior scale that multiplies this block's coordinates in
+    /// [`Layout::decode`]. A block whose scale is zero cannot move the
+    /// likelihood or the decoded draw.
+    fn scale(&self, cfg: &DynamicGlmConfig) -> f64 {
+        match (self.walk, self.group) {
+            (false, None) => cfg.coefficient_sd,
+            (false, Some(_)) => cfg.group_sd,
+            (true, None) => cfg.shared_process_sd,
+            (true, Some(_)) => cfg.process_sd,
+        }
+    }
 }
 
 struct Layout {
@@ -188,12 +204,13 @@ impl Layout {
         let mut out = Vec::new();
         for component in 0..self.components {
             let mut offset = component * self.width();
-            for width in [self.k, self.times] {
+            for (width, walk) in [(self.k, false), (self.times, true)] {
                 for slot in 0..=self.groups {
                     out.push(Block {
                         range: offset..offset + width,
                         component,
                         group: slot.checked_sub(1),
+                        walk,
                     });
                     offset += width;
                 }
@@ -302,7 +319,16 @@ pub fn fit_dynamic_glm(
         config,
         layout: &layout,
     };
-    let blocks = layout.blocks();
+    // A block whose prior scale is zero (the default shared walk, or group
+    // deviations or walks switched off) is multiplied by zero in `decode`, so
+    // its coordinates never reach the likelihood or a draw. Updating it would
+    // cost a likelihood pass over every group it touches and consume random
+    // numbers for nothing; it keeps its start value instead.
+    let blocks: Vec<Block> = layout
+        .blocks()
+        .into_iter()
+        .filter(|block| block.scale(config) != 0.0)
+        .collect();
     // The chain's start is drawn from its sampling stream, not from a separate
     // start stream as in `run_gibbs_chains`, so seeded fits keep their draws.
     let results = run_chains(config.chains, config.seed, FIT_SEED_DOMAIN, |_, _, rng| {
@@ -1152,6 +1178,56 @@ mod incremental_likelihood_tests {
             layout: &layout,
         };
         assert_block_updates_keep_the_cache_fresh(&panel, 3);
+    }
+
+    #[test]
+    fn zero_scale_blocks_are_skipped_without_changing_the_posterior() {
+        let y: Panel = (0..2)
+            .map(|g| {
+                (0..10)
+                    .map(|t| g as f64 * 0.5 + (t as f64 * 0.4).sin())
+                    .collect()
+            })
+            .collect();
+        // The default shared walk has scale zero, so its block is skipped.
+        let skipped = DynamicGlmConfig {
+            family: Family::Gaussian,
+            observation_sd: 0.5,
+            chains: 2,
+            draws: 800,
+            warmup: 200,
+            seed: 31,
+            ..Default::default()
+        };
+        assert_eq!(skipped.shared_process_sd, 0.0);
+        // A scale this small moves nothing representable, but is updated.
+        let updated = DynamicGlmConfig {
+            shared_process_sd: 1e-300,
+            ..skipped.clone()
+        };
+        let skipped = fit_dynamic_glm(&y, None, None, &skipped).unwrap();
+        let updated = fit_dynamic_glm(&y, None, None, &updated).unwrap();
+        for (fewer, more) in skipped
+            .likelihood_evaluations
+            .iter()
+            .zip(&updated.likelihood_evaluations)
+        {
+            assert!(fewer < more, "{fewer} vs {more}");
+        }
+        // Same target, different random numbers: every posterior mean agrees
+        // within four Monte Carlo standard errors of the difference.
+        let (a, b) = (skipped.diagnostics(), updated.diagnostics());
+        for (a, b) in a.params.iter().zip(&b.params) {
+            assert_eq!(a.name, b.name);
+            let error = (a.std.powi(2) / a.ess_bulk + b.std.powi(2) / b.ess_bulk).sqrt();
+            assert!(
+                (a.mean - b.mean).abs() < 4.0 * error,
+                "{}: {} vs {} (se {error})",
+                a.name,
+                a.mean,
+                b.mean
+            );
+        }
     }
 
     #[test]
