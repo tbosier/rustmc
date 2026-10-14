@@ -147,7 +147,7 @@ pub struct RegressionPosterior {
     pub chains: Vec<Vec<RegressionDraw>>,
 }
 
-pub type Paths = Vec<Vec<Vec<f64>>>;
+pub use crate::forecast_common::Paths;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RegressionForecast {
     pub level_paths: Paths,
