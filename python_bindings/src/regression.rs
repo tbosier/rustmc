@@ -11,6 +11,7 @@ use rustmc_core::bayesian_regression::{
 };
 use rustmc_core::forecast_common::{path_means, path_quantiles};
 use rustmc_core::state_space::StateSpaceError;
+use std::sync::Arc;
 
 #[pyclass(name = "GaussianCoefficientPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
@@ -79,8 +80,8 @@ pub(crate) fn fit(
     Ok(Py::new(
         py,
         PyBayesianRegressionFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
         },
     )?
     .into_any())
@@ -89,8 +90,8 @@ pub(crate) fn fit(
 #[pyclass(name = "BayesianRegressionFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianRegressionFit {
-    pub(crate) posterior: RegressionPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<RegressionPosterior>,
+    pub(crate) observations: Arc<[f64]>,
 }
 impl ForecastFit for PyBayesianRegressionFit {
     fn sampler(&self) -> &'static str {
@@ -198,7 +199,7 @@ impl PyBayesianRegressionFit {
             .allow_threads(|| self.posterior.forecast(&design, seed))
             .map_err(inference_error)?;
         Ok(PyBayesianRegressionForecast {
-            inner,
+            inner: Arc::new(inner),
             seasonal: self.posterior.config.seasonal,
             dimension: self.posterior.config.structural_model.dimension(),
         })
@@ -210,7 +211,7 @@ impl PyBayesianRegressionFit {
 
 #[pyclass(name = "BayesianRegressionForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianRegressionForecast {
-    pub(crate) inner: RegressionForecast,
+    pub(crate) inner: Arc<RegressionForecast>,
     pub(crate) seasonal: bool,
     pub(crate) dimension: usize,
 }

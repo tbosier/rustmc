@@ -11,6 +11,7 @@ use rustmc_core::bayesian_forecast::{
     PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
 };
 use rustmc_core::bayesian_regression::RegressionConfig;
+use std::sync::Arc;
 
 /// Bayesian scalar Gaussian local-level model fitted with conjugate
 /// forward-filtering/backward-sampling Gibbs updates.
@@ -162,8 +163,8 @@ impl PyBayesianLocalLevel {
         Ok(Py::new(
             py,
             PyBayesianLocalLevelFit {
-                posterior,
-                observations,
+                posterior: Arc::new(posterior),
+                observations: observations.into(),
                 config,
             },
         )?
@@ -186,8 +187,8 @@ impl PyBayesianLocalLevel {
 #[pyclass(name = "BayesianLocalLevelFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLevelFit {
-    pub(crate) posterior: CoreLocalLevelPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreLocalLevelPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianLocalLevelConfig,
 }
 
@@ -291,7 +292,9 @@ impl PyBayesianLocalLevelFit {
         let forecast = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianForecastResult { inner: forecast })
+        Ok(PyBayesianForecastResult {
+            inner: Arc::new(forecast),
+        })
     }
 
     /// Export parameter draws and the fitted observations to ArviZ.
@@ -312,7 +315,7 @@ impl PyBayesianLocalLevelFit {
 
 #[pyclass(name = "BayesianForecastResult", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianForecastResult {
-    pub(crate) inner: CorePosteriorPredictiveForecast,
+    pub(crate) inner: Arc<CorePosteriorPredictiveForecast>,
 }
 
 #[pymethods]

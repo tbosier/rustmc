@@ -11,6 +11,7 @@ use rustmc_core::bayesian_ar::{
     BayesianArForecast as CoreBayesianArForecast, BayesianArPosterior as CoreBayesianArPosterior,
     NormalInverseGammaPrior as CoreNormalInverseGammaPrior,
 };
+use std::sync::Arc;
 
 /// Conjugate prior for a Gaussian autoregression.
 ///
@@ -196,8 +197,8 @@ impl PyBayesianAutoRegression {
             .allow_threads(|| fit_bayesian_ar(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(PyBayesianArFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
             config,
         })
     }
@@ -214,8 +215,8 @@ impl PyBayesianAutoRegression {
 #[pyclass(name = "BayesianARFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianArFit {
-    pub(crate) posterior: CoreBayesianArPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreBayesianArPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianArConfig,
 }
 
@@ -308,7 +309,9 @@ impl PyBayesianArFit {
         let forecast = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianArForecast { inner: forecast })
+        Ok(PyBayesianArForecast {
+            inner: Arc::new(forecast),
+        })
     }
 
     /// Export coefficient and innovation-variance draws to ArviZ.
@@ -329,7 +332,7 @@ impl PyBayesianArFit {
 
 #[pyclass(name = "BayesianARForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianArForecast {
-    pub(crate) inner: CoreBayesianArForecast,
+    pub(crate) inner: Arc<CoreBayesianArForecast>,
 }
 
 #[pymethods]

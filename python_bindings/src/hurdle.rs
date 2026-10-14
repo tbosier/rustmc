@@ -8,6 +8,7 @@ use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
 use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
+use std::sync::Arc;
 
 #[pyclass(name = "BayesianHurdleLogNormal", frozen, module = "rustmc")]
 #[derive(Clone)]
@@ -129,8 +130,8 @@ impl PyHurdleLogNormal {
             .allow_threads(|| fit_hurdle_lognormal(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(PyHurdleFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
             config,
         })
     }
@@ -153,8 +154,8 @@ impl PyHurdleLogNormal {
 #[pyclass(name = "BayesianHurdleLogNormalFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleFit {
-    pub(crate) posterior: HurdleLogNormalPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<HurdleLogNormalPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: HurdleLogNormalConfig,
 }
 
@@ -259,7 +260,9 @@ impl PyHurdleFit {
         let inner = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyHurdleForecast { inner })
+        Ok(PyHurdleForecast {
+            inner: Arc::new(inner),
+        })
     }
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         fit_to_arviz(py, self, &self.observations)
@@ -269,7 +272,7 @@ impl PyHurdleFit {
 #[pyclass(name = "BayesianHurdleLogNormalForecast", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleForecast {
-    pub(crate) inner: HurdleLogNormalForecast,
+    pub(crate) inner: Arc<HurdleLogNormalForecast>,
 }
 
 #[pymethods]

@@ -13,6 +13,7 @@ use rustmc_core::bayesian_trend::{
     LocalLinearTrendPosterior as CoreLocalLinearTrendPosterior,
     TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
+use std::sync::Arc;
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
 #[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
@@ -211,8 +212,8 @@ impl PyBayesianLocalLinearTrend {
         Ok(Py::new(
             py,
             PyBayesianLocalLinearTrendFit {
-                posterior,
-                observations,
+                posterior: Arc::new(posterior),
+                observations: observations.into(),
                 config,
             },
         )?
@@ -230,8 +231,8 @@ impl PyBayesianLocalLinearTrend {
 #[pyclass(name = "BayesianLocalLinearTrendFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLinearTrendFit {
-    pub(crate) posterior: CoreLocalLinearTrendPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreLocalLinearTrendPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianLocalLinearTrendConfig,
 }
 
@@ -351,7 +352,9 @@ impl PyBayesianLocalLinearTrendFit {
         let forecast = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianTrendForecast { inner: forecast })
+        Ok(PyBayesianTrendForecast {
+            inner: Arc::new(forecast),
+        })
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -371,7 +374,7 @@ impl PyBayesianLocalLinearTrendFit {
 
 #[pyclass(name = "BayesianTrendForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianTrendForecast {
-    pub(crate) inner: CoreTrendPosteriorPredictiveForecast,
+    pub(crate) inner: Arc<CoreTrendPosteriorPredictiveForecast>,
 }
 
 #[pymethods]

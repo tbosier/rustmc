@@ -41,6 +41,7 @@ use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
 use rustmc_core::hurdle::{fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast};
+use std::sync::Arc;
 
 // Limit each call's retained scalar values and each cell's conservative FFBS
 // workspace estimate. Larger workloads must use caller-managed chunks.
@@ -77,13 +78,15 @@ enum CellFit {
     Regression(Box<PyBayesianRegressionFit>),
 }
 #[derive(Clone)]
+/// Payloads are shared with the Python objects built from them, so handing a
+/// cell to Python does not copy its paths.
 enum CellForecast {
-    Local(CorePosteriorPredictiveForecast),
-    Seasonal(CoreSeasonalPosteriorPredictiveForecast),
-    Trend(CoreTrendPosteriorPredictiveForecast),
-    Ar(CoreBayesianArForecast),
-    Hurdle(HurdleLogNormalForecast),
-    Regression(RegressionForecast, bool, usize),
+    Local(Arc<CorePosteriorPredictiveForecast>),
+    Seasonal(Arc<CoreSeasonalPosteriorPredictiveForecast>),
+    Trend(Arc<CoreTrendPosteriorPredictiveForecast>),
+    Ar(Arc<CoreBayesianArForecast>),
+    Hurdle(Arc<HurdleLogNormalForecast>),
+    Regression(Arc<RegressionForecast>, bool, usize),
 }
 impl Config {
     fn allocation_size(&self, history: usize) -> Result<usize, String> {
@@ -154,8 +157,8 @@ impl Config {
                 let posterior = fit_hurdle_lognormal(observations, &config)
                     .map_err(|error| error.to_string())?;
                 Ok(CellFit::Hurdle(PyHurdleFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -165,8 +168,8 @@ impl Config {
                 let posterior = fit_regression(observations, design, &config)
                     .map_err(|error| error.to_string())?;
                 Ok(CellFit::Regression(Box::new(PyBayesianRegressionFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                 })))
             }
             Self::Local(base) => {
@@ -175,8 +178,8 @@ impl Config {
                 let posterior =
                     fit_bayesian_local_level(observations, &config).map_err(|e| e.to_string())?;
                 Ok(CellFit::Local(PyBayesianLocalLevelFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -186,8 +189,8 @@ impl Config {
                 let posterior = fit_bayesian_seasonal_local_level(observations, &config)
                     .map_err(|e| e.to_string())?;
                 Ok(CellFit::Seasonal(PyBayesianSeasonalLocalLevelFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -197,8 +200,8 @@ impl Config {
                 let posterior = fit_bayesian_local_linear_trend(observations, &config)
                     .map_err(|e| e.to_string())?;
                 Ok(CellFit::Trend(PyBayesianLocalLinearTrendFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -208,8 +211,8 @@ impl Config {
                 let posterior =
                     fit_bayesian_ar(observations, &config).map_err(|e| e.to_string())?;
                 Ok(CellFit::Ar(PyBayesianArFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -272,7 +275,7 @@ impl CellFit {
                     .forecast(design, seed)
                     .map(|inner| {
                         CellForecast::Regression(
-                            inner,
+                            Arc::new(inner),
                             fit.posterior.config.seasonal,
                             fit.posterior.config.structural_model.dimension(),
                         )
@@ -282,27 +285,27 @@ impl CellFit {
             Self::Hurdle(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Hurdle)
+                .map(|inner| CellForecast::Hurdle(Arc::new(inner)))
                 .map_err(|error| error.to_string()),
             Self::Local(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Local)
+                .map(|inner| CellForecast::Local(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Seasonal(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Seasonal)
+                .map(|inner| CellForecast::Seasonal(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Trend(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Trend)
+                .map(|inner| CellForecast::Trend(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Ar(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Ar)
+                .map(|inner| CellForecast::Ar(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
         }
     }

@@ -13,6 +13,7 @@ use rustmc_core::bayesian_seasonal::{
     SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
 };
 use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
+use std::sync::Arc;
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
 #[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
@@ -168,8 +169,8 @@ impl PyBayesianSeasonalLocalLevel {
         Ok(Py::new(
             py,
             PyBayesianSeasonalLocalLevelFit {
-                posterior,
-                observations,
+                posterior: Arc::new(posterior),
+                observations: observations.into(),
                 config,
             },
         )?
@@ -187,8 +188,8 @@ impl PyBayesianSeasonalLocalLevel {
 #[pyclass(name = "BayesianSeasonalLocalLevelFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianSeasonalLocalLevelFit {
-    pub(crate) posterior: CoreSeasonalLocalLevelPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreSeasonalLocalLevelPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianSeasonalLocalLevelConfig,
 }
 
@@ -307,7 +308,9 @@ impl PyBayesianSeasonalLocalLevelFit {
         let inner = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianSeasonalForecast { inner })
+        Ok(PyBayesianSeasonalForecast {
+            inner: Arc::new(inner),
+        })
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -324,7 +327,7 @@ impl PyBayesianSeasonalLocalLevelFit {
 
 #[pyclass(name = "BayesianSeasonalForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianSeasonalForecast {
-    pub(crate) inner: CoreSeasonalPosteriorPredictiveForecast,
+    pub(crate) inner: Arc<CoreSeasonalPosteriorPredictiveForecast>,
 }
 
 #[pymethods]
