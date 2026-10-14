@@ -8,9 +8,8 @@
 //!   - Max tree depth cap (default 10)
 //!
 //! The U-turn criterion is Hoffman and Gelman's original endpoint test,
-//! applied to each subtree and to the whole trajectory. Stan (since about
-//! 2.23) and PyMC also test the two spans that straddle each merge of
-//! subtrees, which can stop a trajectory earlier on near-periodic targets;
+//! applied to each subtree and to the whole trajectory. Current Stan and PyMC
+//! also test the two spans that straddle each merge of subtrees, which can stop a trajectory earlier on near-periodic targets;
 //! this implementation does not, so it can build deeper trees there. Either
 //! way the stopping rule is symmetric, so the draws are valid; the difference
 //! is in efficiency.
@@ -129,8 +128,10 @@ struct TreeResult {
 /// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
 /// discrete latent. This entry point does not go through `sampler`, so the
 /// check has to happen here or not at all — see [`run_chain_bound`]. Also
-/// returns an error when the graph's data do not bind, or when `init` is not a
-/// finite vector with one entry per parameter. `None` starts at the origin.
+/// returns an error when the draws and transition records requested would
+/// exceed the crate's allocation limits, when the graph's data do not bind, or
+/// when `init` is not a finite vector with one entry per parameter. `None`
+/// starts at the origin.
 pub fn run_chain(
     graph: &Graph,
     config: &NutsConfig,
@@ -139,7 +140,8 @@ pub fn run_chain(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     config.validate()?;
-    run_raw_kernel(graph, None, init, |position, evaluator| {
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, None, length, init, |position, evaluator| {
         run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
     })
 }
@@ -161,7 +163,8 @@ pub fn run_chain_bound(
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
     config.validate()?;
-    run_raw_kernel(graph, Some(binding), init, |position, evaluator| {
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, Some(binding), length, init, |position, evaluator| {
         run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
     })
 }
@@ -828,6 +831,20 @@ mod tests {
                     ..base.clone()
                 },
                 "target_accept",
+            ),
+            (
+                NutsConfig {
+                    num_draws: usize::MAX,
+                    ..base.clone()
+                },
+                "safety limit",
+            ),
+            (
+                NutsConfig {
+                    num_warmup: usize::MAX,
+                    ..base.clone()
+                },
+                "safety limit",
             ),
         ] {
             let mut rng = ChaCha8Rng::seed_from_u64(1);

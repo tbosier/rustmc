@@ -338,14 +338,25 @@ pub(crate) fn kernel_initial_position(
 /// `hmc::run_chain(_bound)`) share, before `run` drives the chain.
 ///
 /// These kernels do not pass through any other entry point in this module, so
-/// the discrete-latent check has to happen here or not at all. `binding` is
+/// the discrete-latent check and the request-size checks `SamplerConfig::validate`
+/// and [`checked_initial`] make have to happen here or not at all. `binding` is
 /// `None` when the data are still embedded in `graph`.
 pub(crate) fn run_raw_kernel(
     graph: &Graph,
     binding: Option<DataBinding>,
+    (num_warmup, num_draws): (usize, usize),
     init: Option<Vec<f64>>,
     run: impl FnOnce(Vec<f64>, &mut Evaluator) -> ChainResult,
 ) -> Result<ChainResult, String> {
+    // A chain keeps a record of every iteration and a vector per draw; refuse
+    // a request whose buffers could not be allocated rather than abort.
+    check_request_size(
+        "sampling's transition records",
+        &[num_warmup.saturating_add(num_draws)],
+        MAX_MATERIALIZED_VALUES,
+        "reduce warmup or draws",
+    )?;
+    check_retained_draws(1, num_draws, graph.param_count)?;
     reject_discrete_latent_parameters(graph)?;
     let binding = match binding {
         Some(binding) => binding,
@@ -674,7 +685,8 @@ pub(crate) fn reject_discrete_latent_parameters(graph: &Graph) -> Result<(), Str
 // `SamplerConfig` checks above and the raw kernels' `NutsConfig::validate` and
 // `HmcConfig::validate` all call these.
 
-/// A fixed step size, or 0 to have warmup search for one.
+/// The step size warmup starts adapting from (and samples with when there is
+/// no warmup), or 0 to have warmup search for one.
 pub(crate) fn validate_step_size(step_size: f64) -> Result<(), String> {
     if step_size.is_finite() && step_size >= 0.0 {
         Ok(())
@@ -1105,7 +1117,14 @@ mod tests {
             let mut rng = chain_rng(config.seed, chain_index);
             let expected = nuts::run_chain(
                 &graph,
-                &config.nuts_config(),
+                &NutsConfig {
+                    step_size: config.step_size,
+                    target_accept: config.target_accept,
+                    max_tree_depth: config.max_tree_depth,
+                    num_draws: config.num_draws,
+                    num_warmup: config.num_warmup,
+                    metric: config.metric,
+                },
                 &mut rng,
                 Some(vec![40.0 + 10.0 * chain_index as f64]),
                 None,
