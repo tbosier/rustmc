@@ -14,45 +14,6 @@ use rustmc_core::data::DataBinding as CoreDataBinding;
 use rustmc_core::model::DisplayParamSpec;
 use rustmc_core::sampler::{BatchSampleConfig, MetricKind, SamplerConfig, SamplerType};
 
-fn validate_sample_config(
-    chains: usize,
-    draws: usize,
-    warmup: usize,
-    step_size: f64,
-    target_accept: f64,
-    max_tree_depth: usize,
-    num_leapfrog_steps: usize,
-) -> PyResult<()> {
-    if chains == 0 {
-        return Err(PyValueError::new_err("chains must be >= 1"));
-    }
-    if draws == 0 {
-        return Err(PyValueError::new_err("draws must be >= 1"));
-    }
-    if warmup == 0 {
-        return Err(PyValueError::new_err("warmup must be >= 1"));
-    }
-    if !step_size.is_finite() || step_size < 0.0 {
-        return Err(PyValueError::new_err(
-            "step_size must be finite and >= 0 (0 enables adaptation)",
-        ));
-    }
-    if !target_accept.is_finite() || target_accept <= 0.0 || target_accept >= 1.0 {
-        return Err(PyValueError::new_err(
-            "target_accept must be finite and strictly between 0 and 1",
-        ));
-    }
-    if !(1..=63).contains(&max_tree_depth) {
-        return Err(PyValueError::new_err(
-            "max_tree_depth must be between 1 and 63",
-        ));
-    }
-    if num_leapfrog_steps == 0 {
-        return Err(PyValueError::new_err("num_leapfrog_steps must be >= 1"));
-    }
-    Ok(())
-}
-
 fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
     match sampler {
         "nuts" | "NUTS" => Ok(SamplerType::Nuts),
@@ -65,7 +26,8 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 }
 
 /// The sampler options shared by `sample`, `CompiledModel.sample` and the
-/// batch entry points, as Python passes them, checked once.
+/// batch entry points, as Python passes them, checked once by the core's
+/// `BatchSampleConfig::validate`.
 pub(crate) struct SamplerOptions<'a> {
     pub(crate) chains: usize,
     pub(crate) draws: usize,
@@ -103,16 +65,7 @@ impl SamplerOptions<'_> {
     /// Configuration for a batch of fits.
     pub(crate) fn batch(&self) -> PyResult<BatchSampleConfig> {
         let metric = MetricKind::parse(self.metric).map_err(PyValueError::new_err)?;
-        validate_sample_config(
-            self.chains,
-            self.draws,
-            self.warmup,
-            self.step_size,
-            self.target_accept,
-            self.max_tree_depth,
-            self.num_leapfrog_steps,
-        )?;
-        Ok(BatchSampleConfig {
+        let config = BatchSampleConfig {
             sampler: parse_sampler_type(self.sampler)?,
             num_chains: self.chains,
             num_draws: self.draws,
@@ -124,7 +77,9 @@ impl SamplerOptions<'_> {
             seed: self.seed,
             show_progress: self.show_progress,
             metric,
-        })
+        };
+        config.validate().map_err(PyValueError::new_err)?;
+        Ok(config)
     }
 }
 
