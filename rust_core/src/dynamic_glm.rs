@@ -4,11 +4,14 @@
 //! deviation; group random walks can additionally share a common random walk.
 use crate::autodiff::softplus;
 use crate::forecast_common::BayesianForecastError as Error;
-use crate::forecast_common::{checked_value_count, retains, run_chains, MAX_MATERIALIZED_VALUES};
+use crate::forecast_common::{
+    checked_value_count, invalid_config, numerical, retains, run_chains, standard_normal,
+    MAX_MATERIALIZED_VALUES,
+};
 use crate::observation::sigmoid;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
+use rand_distr::{Distribution, Gamma};
 use serde::{Deserialize, Serialize};
 
 pub type Panel = Vec<Vec<f64>>;
@@ -72,7 +75,9 @@ impl DynamicGlmConfig {
             ("dispersion", self.dispersion),
         ] {
             if !x.is_finite() || x <= 0. {
-                return Err(invalid(format!("{name} must be finite and positive")));
+                return Err(invalid_config(format!(
+                    "{name} must be finite and positive"
+                )));
             }
         }
         for (name, x) in [
@@ -81,7 +86,9 @@ impl DynamicGlmConfig {
             ("shared_process_sd", self.shared_process_sd),
         ] {
             if !x.is_finite() || x < 0. {
-                return Err(invalid(format!("{name} must be finite and nonnegative")));
+                return Err(invalid_config(format!(
+                    "{name} must be finite and nonnegative"
+                )));
             }
         }
         if !self.initial_mean.is_finite()
@@ -90,14 +97,14 @@ impl DynamicGlmConfig {
             || self.draws == 0
             || self.thin == 0
         {
-            return Err(invalid(
+            return Err(invalid_config(
                 "finite initial means and positive chains/draws/thin required",
             ));
         }
         self.draws
             .checked_mul(self.thin)
             .and_then(|n| n.checked_add(self.warmup))
-            .ok_or_else(|| invalid("iteration count overflow"))?;
+            .ok_or_else(|| invalid_config("iteration count overflow"))?;
         Ok(())
     }
 }
@@ -158,7 +165,7 @@ impl Layout {
                     .and_then(|width| width.checked_mul(blocks))
             })
             .and_then(|width| width.checked_mul(components))
-            .ok_or_else(|| invalid("latent layout dimension overflow"))?;
+            .ok_or_else(|| invalid_config("latent layout dimension overflow"))?;
         Ok(Self {
             groups,
             times,
@@ -248,7 +255,7 @@ pub fn fit_dynamic_glm(
     let groups = y.len();
     let times = y.first().map_or(0, Vec::len);
     if groups == 0 || times == 0 || y.iter().any(|row| row.len() != times) {
-        return Err(invalid(
+        return Err(invalid_config(
             "y must be a nonempty rectangular group-by-time panel",
         ));
     }
@@ -262,10 +269,12 @@ pub fn fit_dynamic_glm(
                 continue;
             }
             if !supported_observation(value, config.family) {
-                return Err(invalid("observations must be supported finite values or NaN; counts must be exact nonnegative integers below 2^53"));
+                return Err(invalid_config("observations must be supported finite values or NaN; counts must be exact nonnegative integers below 2^53"));
             }
             if count && exposure.is_some_and(|e| e[g][t] == 0.) && value != 0. {
-                return Err(invalid("positive counts are impossible at zero exposure"));
+                return Err(invalid_config(
+                    "positive counts are impossible at zero exposure",
+                ));
             }
             observed_count += 1;
         }
@@ -275,7 +284,7 @@ pub fn fit_dynamic_glm(
         times,
         features
             .checked_add(1)
-            .ok_or_else(|| invalid("feature count overflow"))?,
+            .ok_or_else(|| invalid_config("feature count overflow"))?,
         if config.family == Family::HurdleLogNormal {
             2
         } else {
@@ -297,7 +306,7 @@ pub fn fit_dynamic_glm(
         let mut z = vec![0.; layout.size()];
         // Independent modest starts; ESS immediately samples prior-only blocks.
         for x in &mut z {
-            *x = normal(rng) * 0.1;
+            *x = standard_normal(rng) * 0.1;
         }
         let mut cache = PanelCache::new(&panel, &z);
         if !cache.group_lp.iter().sum::<f64>().is_finite() {
@@ -523,7 +532,7 @@ fn prior_draws(
 ) -> Result<DynamicGlmPosterior, Error> {
     config.validate()?;
     if groups == 0 || steps == 0 {
-        return Err(invalid("groups and steps must be positive"));
+        return Err(invalid_config("groups and steps must be positive"));
     }
     let features = exog.and_then(|x| x.first()?.first()).map_or(0, Vec::len);
     validate_design(exog, exposure, groups, steps, features, config.family)?;
@@ -533,7 +542,7 @@ fn prior_draws(
         1,
         features
             .checked_add(1)
-            .ok_or_else(|| invalid("feature count overflow"))?,
+            .ok_or_else(|| invalid_config("feature count overflow"))?,
         if config.family == Family::HurdleLogNormal {
             2
         } else {
@@ -549,7 +558,9 @@ fn prior_draws(
             Ok::<_, Error>(
                 (0..config.draws)
                     .map(|_| {
-                        let z = (0..layout.size()).map(|_| normal(rng)).collect::<Vec<_>>();
+                        let z = (0..layout.size())
+                            .map(|_| standard_normal(rng))
+                            .collect::<Vec<_>>();
                         let mut draw = layout.decode(&z, config);
                         for component in &mut draw.states {
                             for group in component {
@@ -616,12 +627,13 @@ impl DynamicGlmPosterior {
                 .map(|g| g.iter().map(|x| x.is_finite().then_some(*x)).collect())
                 .collect(),
         })
-        .map_err(|e| invalid(e.to_string()))
+        .map_err(|e| invalid_config(e.to_string()))
     }
     pub fn from_json(json: &str) -> Result<(Self, Panel), Error> {
-        let artifact: Artifact = serde_json::from_str(json).map_err(|e| invalid(e.to_string()))?;
+        let artifact: Artifact =
+            serde_json::from_str(json).map_err(|e| invalid_config(e.to_string()))?;
         if artifact.version != 1 {
-            return Err(invalid("unsupported dynamic GLM artifact version"));
+            return Err(invalid_config("unsupported dynamic GLM artifact version"));
         }
         artifact.posterior.validate()?;
         let observations = artifact
@@ -640,7 +652,7 @@ impl DynamicGlmPosterior {
             || self.likelihood_evaluations.len() != self.chains.len()
             || self.features == usize::MAX
         {
-            return Err(invalid("invalid posterior dimensions"));
+            return Err(invalid_config("invalid posterior dimensions"));
         }
         let components = if self.config.family == Family::HurdleLogNormal {
             2
@@ -663,14 +675,14 @@ impl DynamicGlmPosterior {
         ])?;
         for chain in &self.chains {
             if chain.len() != self.config.draws {
-                return Err(invalid("invalid posterior draw count"));
+                return Err(invalid_config("invalid posterior draw count"));
             }
             for d in chain {
                 if d.population_coefficients.len() != components
                     || d.coefficients.len() != components
                     || d.states.len() != components
                 {
-                    return Err(invalid("invalid component count"));
+                    return Err(invalid_config("invalid component count"));
                 }
                 for c in 0..components {
                     if d.population_coefficients[c].len() != self.features + 1
@@ -678,7 +690,7 @@ impl DynamicGlmPosterior {
                         || d.coefficients[c].len() != self.groups
                         || d.states[c].len() != self.groups
                     {
-                        return Err(invalid("invalid population/group shape or values"));
+                        return Err(invalid_config("invalid population/group shape or values"));
                     }
                     for g in 0..self.groups {
                         if d.coefficients[c][g].len() != self.features + 1
@@ -688,23 +700,25 @@ impl DynamicGlmPosterior {
                                 .chain(&d.states[c][g])
                                 .any(|x| !x.is_finite())
                         {
-                            return Err(invalid("invalid coefficients/state shape or values"));
+                            return Err(invalid_config(
+                                "invalid coefficients/state shape or values",
+                            ));
                         }
                         if self.config.group_sd == 0.0
                             && d.coefficients[c][g] != d.population_coefficients[c]
                         {
-                            return Err(invalid("zero group_sd requires group coefficients to equal population coefficients"));
+                            return Err(invalid_config("zero group_sd requires group coefficients to equal population coefficients"));
                         }
                         if self.config.process_sd == 0.0 {
                             if self.config.shared_process_sd == 0.0
                                 && d.states[c][g].iter().any(|v| *v != 0.0)
                             {
-                                return Err(invalid(
+                                return Err(invalid_config(
                                     "zero process scales require identically zero states",
                                 ));
                             }
                             if d.states[c][g] != d.states[c][0] {
-                                return Err(invalid("zero group process_sd requires identical shared state paths across groups"));
+                                return Err(invalid_config("zero group process_sd requires identical shared state paths across groups"));
                             }
                         }
                     }
@@ -780,7 +794,7 @@ impl DynamicGlmPosterior {
     ) -> Result<DynamicGlmForecast, Error> {
         self.validate()?;
         if steps == 0 {
-            return Err(invalid("steps must be positive"));
+            return Err(invalid_config("steps must be positive"));
         }
         validate_design(
             exog,
@@ -840,9 +854,9 @@ impl DynamicGlmPosterior {
             let mut positive = mean.clone();
             for t in 0..steps {
                 for component in &mut levels {
-                    let shared = self.config.shared_process_sd * normal(rng);
+                    let shared = self.config.shared_process_sd * standard_normal(rng);
                     for level in component {
-                        *level += shared + self.config.process_sd * normal(rng);
+                        *level += shared + self.config.process_sd * standard_normal(rng);
                     }
                 }
                 for g in 0..self.groups {
@@ -855,7 +869,8 @@ impl DynamicGlmPosterior {
                     match self.config.family {
                         Family::Gaussian => {
                             mean[g][t] = eta;
-                            observation[g][t] = eta + self.config.observation_sd * normal(rng);
+                            observation[g][t] =
+                                eta + self.config.observation_sd * standard_normal(rng);
                         }
                         Family::Poisson | Family::NegativeBinomial => {
                             let mu = if e == 0. { 0. } else { (eta + e.ln()).exp() };
@@ -889,7 +904,8 @@ impl DynamicGlmPosterior {
                             positive[g][t] = positive_mean;
                             mean[g][t] = p * positive_mean;
                             observation[g][t] = if rng.gen::<f64>() < p {
-                                let amount = (eta + self.config.observation_sd * normal(rng)).exp();
+                                let amount =
+                                    (eta + self.config.observation_sd * standard_normal(rng)).exp();
                                 if amount == 0. {
                                     return Err(numerical("positive severity underflowed; no draws clipped or removed"));
                                 }
@@ -945,7 +961,9 @@ fn validate_saved_observations(y: &Panel, p: &DynamicGlmPosterior) -> Result<(),
             .flatten()
             .any(|&x| !x.is_nan() && !supported_observation(x, p.config.family))
     {
-        return Err(invalid("saved observations do not match fitted metadata"));
+        return Err(invalid_config(
+            "saved observations do not match fitted metadata",
+        ));
     }
     Ok(())
 }
@@ -959,7 +977,9 @@ fn validate_design(
     family: Family,
 ) -> Result<(), Error> {
     if features > 0 && exog.is_none() {
-        return Err(invalid("future exog required for every fitted feature"));
+        return Err(invalid_config(
+            "future exog required for every fitted feature",
+        ));
     }
     if exog.is_some_and(|x| {
         x.len() != groups
@@ -969,19 +989,21 @@ fn validate_design(
                         .any(|r| r.len() != features || r.iter().any(|x| !x.is_finite()))
             })
     }) {
-        return Err(invalid(
+        return Err(invalid_config(
             "exog must have shape [group,time,feature] with finite values",
         ));
     }
     if let Some(e) = exposure {
         if !matches!(family, Family::Poisson | Family::NegativeBinomial) {
-            return Err(invalid("exposure is supported only for count families"));
+            return Err(invalid_config(
+                "exposure is supported only for count families",
+            ));
         }
         if e.len() != groups
             || e.iter()
                 .any(|g| g.len() != times || g.iter().any(|x| !x.is_finite() || *x < 0.))
         {
-            return Err(invalid(
+            return Err(invalid_config(
                 "exposure must have shape [group,time] with finite nonnegative values",
             ));
         }
@@ -1003,21 +1025,12 @@ fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Error> {
 fn allocation(factors: &[usize]) -> Result<(), Error> {
     checked_value_count("dynamic GLM", factors, MAX_MATERIALIZED_VALUES)
         .map(|_| ())
-        .map_err(|error| invalid(error.to_string()))
-}
-fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    StandardNormal.sample(rng)
+        .map_err(|error| invalid_config(error.to_string()))
 }
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4447_4C4D; // "FIT_DGLM"
 const FORECAST_SEED_DOMAIN: u64 = 0x4643_5354_4447_4C4D; // "FCSTDGLM"
 const PRIOR_SEED_DOMAIN: u64 = 0x5052_4952_4447_4C4D; // "PRIRDGLM"
 const PRIOR_FORECAST_SEED_DOMAIN: u64 = 0x5050_4643_4447_4C4D; // "PPFCDGLM"
-fn invalid(message: impl Into<String>) -> Error {
-    Error::InvalidConfiguration(message.into())
-}
-fn numerical(message: impl Into<String>) -> Error {
-    Error::NumericalFailure(message.into())
-}
 
 #[cfg(test)]
 mod incremental_likelihood_tests {
@@ -1054,7 +1067,9 @@ mod incremental_likelihood_tests {
     fn assert_block_updates_keep_the_cache_fresh(panel: &PanelLikelihood, seed: u64) {
         let layout = panel.layout;
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
-        let mut z: Vec<f64> = (0..layout.size()).map(|_| normal(&mut rng)).collect();
+        let mut z: Vec<f64> = (0..layout.size())
+            .map(|_| standard_normal(&mut rng))
+            .collect();
         let mut cache = PanelCache::new(panel, &z);
         let blocks = layout.blocks();
         let mut covered: Vec<usize> = blocks.iter().flat_map(|b| b.range.clone()).collect();

@@ -26,13 +26,12 @@
 
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    checked_value_count, overdispersed_location, overdispersed_positive, path_means,
-    path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws, split_paths,
-    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior, Paths,
-    MAX_MATERIALIZED_VALUES,
+    checked_value_count, invalid_config, numerical, overdispersed_location, overdispersed_positive,
+    path_means, path_quantiles, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
+    split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
+    ForecastQuantile, GibbsSchedule, InverseGammaPrior, Paths, MAX_MATERIALIZED_VALUES,
 };
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 /// Retained posterior values may reach twice the forecast limit: a
 /// hierarchy with many programs is the case this model exists for.
@@ -191,7 +190,7 @@ impl HierarchicalMeanPosterior {
                 if draw.program_means.len() != program_count {
                     return Err(numerical("posterior program dimension is inconsistent"));
                 }
-                validate_variance(draw.observation_variance, "observation")?;
+                validate_positive_variance("observation", draw.observation_variance)?;
                 let observation_sd = draw.observation_variance.sqrt();
                 let draw_len = program_count * horizon;
                 let mut draw_observations = Vec::new();
@@ -616,30 +615,8 @@ fn normal_moments_from_precision(
     }
 }
 
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn validate_variance(value: f64, name: &str) -> Result<(), BayesianForecastError> {
-    if value.is_finite() && value > 0.0 {
-        Ok(())
-    } else {
-        Err(numerical(format!(
-            "{name} variance must be finite and strictly positive"
-        )))
-    }
-}
-
-fn invalid_config(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-
 fn invalid_observations(message: impl Into<String>) -> BayesianForecastError {
     BayesianForecastError::InvalidObservations(message.into())
-}
-
-fn numerical(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
 }
 
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4849_4552;

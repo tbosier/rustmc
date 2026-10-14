@@ -14,7 +14,7 @@
 use crate::seeding::chain_seed;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma};
+use rand_distr::{Distribution, Gamma, StandardNormal};
 use rayon::prelude::*;
 use std::error::Error;
 use std::fmt;
@@ -37,6 +37,39 @@ impl fmt::Display for BayesianForecastError {
 }
 
 impl Error for BayesianForecastError {}
+
+/// A [`BayesianForecastError::InvalidConfiguration`] with this message.
+pub(crate) fn invalid_config(message: impl Into<String>) -> BayesianForecastError {
+    BayesianForecastError::InvalidConfiguration(message.into())
+}
+
+/// A [`BayesianForecastError::NumericalFailure`] with this message.
+pub(crate) fn numerical(message: impl Into<String>) -> BayesianForecastError {
+    BayesianForecastError::NumericalFailure(message.into())
+}
+
+/// Reject a variance that is not finite and strictly positive, naming it.
+pub(crate) fn validate_positive_variance(
+    name: &str,
+    variance: f64,
+) -> Result<(), BayesianForecastError> {
+    if !variance.is_finite() || variance <= 0.0 {
+        return Err(numerical(format!(
+            "{name} variance must be finite and strictly positive"
+        )));
+    }
+    Ok(())
+}
+
+/// One standard normal draw.
+pub(crate) fn standard_normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
+    StandardNormal.sample(rng)
+}
+
+/// The inner product of two equal-length slices, summed in index order.
+pub(crate) fn dot(left: &[f64], right: &[f64]) -> f64 {
+    left.iter().zip(right).map(|(a, b)| a * b).sum()
+}
 
 /// Inverse-gamma prior parameterized by shape and scale.
 ///
@@ -220,7 +253,14 @@ pub(crate) fn check_forecast_size<D>(
     }
 }
 
-/// Require enough finite observations to inform every inferred variance.
+/// Reject infinite observations, then require enough finite observations to
+/// inform every inferred variance.
+///
+/// `NaN` marks a missing observation and keeps its time position; an infinity
+/// is an error. Both are reported as
+/// [`BayesianForecastError::InvalidObservations`], which the regression and
+/// structural fits convert to `StateSpaceError::InvalidParameter` with the
+/// same message.
 ///
 /// With proper inverse-gamma priors the posterior exists whatever the data,
 /// so this is not a condition for the maths to be defined. It is the point
@@ -240,6 +280,11 @@ pub(crate) fn require_finite_observations(
     inferred_variances: usize,
     model: &str,
 ) -> Result<usize, BayesianForecastError> {
+    if observations.iter().any(|value| value.is_infinite()) {
+        return Err(BayesianForecastError::InvalidObservations(
+            "observations may be finite or NaN, but not infinite".into(),
+        ));
+    }
     let finite = observations
         .iter()
         .filter(|value| value.is_finite())
@@ -876,6 +921,14 @@ mod tests {
         assert!(error.to_string().contains("at least 2 finite observations"));
         assert!(require_finite_observations(&[f64::NAN], 0, "structural").is_err());
         assert_eq!(require_finite_observations(&[0.0], 0, "structural"), Ok(1));
+        for infinity in [f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                require_finite_observations(&[1.0, 2.0, infinity], 0, "structural"),
+                Err(BayesianForecastError::InvalidObservations(
+                    "observations may be finite or NaN, but not infinite".into()
+                ))
+            );
+        }
     }
 
     #[test]

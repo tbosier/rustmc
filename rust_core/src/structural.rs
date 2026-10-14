@@ -3,14 +3,15 @@
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
 use crate::forecast_common::{
-    checked_value_count, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    checked_value_count, dot, overdispersed_positive, require_finite_observations,
+    run_gibbs_chains, sample_inverse_gamma, simulate_draws, standard_normal, GibbsSchedule,
+    MAX_MATERIALIZED_VALUES,
 };
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
+use rand_distr::{Distribution, Gamma};
 use serde::{Deserialize, Serialize};
 type Result<T> = std::result::Result<T, StateSpaceError>;
 fn invalid(s: &str) -> StateSpaceError {
@@ -460,12 +461,6 @@ impl StructuralConfig {
         .forecast(steps, design, prior_seed)
     }
 }
-fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    StandardNormal.sample(rng)
-}
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
 /// Overwrite a [`StructuralConfig::template`]'s diagonal innovation variances
 /// and its observation variance. Every structural innovation covariance is
 /// diagonal, so this reproduces `build(variances, noise)` exactly.
@@ -484,13 +479,9 @@ pub fn fit(
     sampling: &SamplingConfig,
 ) -> Result<StructuralPosterior> {
     config.validate()?;
-    if y.iter().any(|v| v.is_infinite()) {
-        return Err(invalid(
-            "observations may be finite or NaN, but not infinite",
-        ));
-    }
-    // One finite observation per inferred (inverse-gamma) variance, and at
-    // least one even when every variance is fixed.
+    // No infinite observations, and one finite observation per inferred
+    // (inverse-gamma) variance, and at least one even when every variance is
+    // fixed.
     let inferred = config
         .priors()
         .into_iter()
@@ -712,8 +703,8 @@ impl StructuralPosterior {
                             "Student-t predictive precision overflowed or underflowed",
                         ));
                     }
-                    let observation =
-                        mean + normal(rng) * (draw.observation_variance / precision).sqrt();
+                    let observation = mean
+                        + standard_normal(rng) * (draw.observation_variance / precision).sqrt();
                     total += observation;
                     if !total.is_finite() || !mean.is_finite() {
                         return Err(invalid("predictive simulation overflowed"));
@@ -1288,13 +1279,13 @@ mod tests {
         // observation variance 0.02.
         const STEPS: usize = 120;
         let mut rng = ChaCha8Rng::seed_from_u64(908);
-        let mut coefficient = normal(&mut rng) * 0.2_f64.sqrt();
+        let mut coefficient = standard_normal(&mut rng) * 0.2_f64.sqrt();
         let mut truth = Vec::with_capacity(STEPS);
         let mut series = Vec::with_capacity(STEPS);
         for _ in 0..STEPS {
-            coefficient += normal(&mut rng) * 0.015_f64.sqrt();
+            coefficient += standard_normal(&mut rng) * 0.015_f64.sqrt();
             truth.push(coefficient);
-            series.push(coefficient + normal(&mut rng) * 0.02_f64.sqrt());
+            series.push(coefficient + standard_normal(&mut rng) * 0.02_f64.sqrt());
         }
         let x = vec![vec![1.0]; STEPS];
         let y = &series;

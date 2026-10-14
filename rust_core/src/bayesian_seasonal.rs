@@ -6,14 +6,12 @@
 //! inverse-gamma priors. Latent states are updated jointly with multivariate
 //! FFBS, so missing observations retain their calendar positions.
 
-use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
-
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, overdispersed_positive, path_means, path_quantiles,
-    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    check_forecast_size, invalid_config, numerical, overdispersed_positive, path_means,
+    path_quantiles, require_finite_observations, run_gibbs_chains, sample_inverse_gamma,
+    simulate_draws, split_paths, standard_normal, validate_positive_variance,
+    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 use crate::state_space::LinearGaussianStateSpace;
@@ -38,10 +36,10 @@ pub struct BayesianSeasonalLocalLevelConfig {
 impl BayesianSeasonalLocalLevelConfig {
     fn validate(&self) -> Result<GibbsSchedule, BayesianForecastError> {
         if self.period < 2 {
-            return Err(invalid("seasonal period must be at least 2"));
+            return Err(invalid_config("seasonal period must be at least 2"));
         }
         if self.initial_seasonal_effects.len() != self.period {
-            return Err(invalid(&format!(
+            return Err(invalid_config(format!(
                 "initial seasonal effects have {} entries; expected {}",
                 self.initial_seasonal_effects.len(),
                 self.period
@@ -53,7 +51,9 @@ impl BayesianSeasonalLocalLevelConfig {
                 .iter()
                 .any(|effect| !effect.is_finite())
         {
-            return Err(invalid("initial level and seasonal effects must be finite"));
+            return Err(invalid_config(
+                "initial level and seasonal effects must be finite",
+            ));
         }
         let scale = self
             .initial_seasonal_effects
@@ -63,15 +63,15 @@ impl BayesianSeasonalLocalLevelConfig {
             .max(1.0);
         let sum = self.initial_seasonal_effects.iter().sum::<f64>();
         if sum.abs() > 1e-10 * scale {
-            return Err(invalid("initial seasonal effects must sum to zero"));
+            return Err(invalid_config("initial seasonal effects must sum to zero"));
         }
         if !self.initial_level_variance.is_finite() || self.initial_level_variance <= 0.0 {
-            return Err(invalid(
+            return Err(invalid_config(
                 "initial level variance must be finite and strictly positive",
             ));
         }
         if !self.initial_seasonal_variance.is_finite() || self.initial_seasonal_variance <= 0.0 {
-            return Err(invalid(
+            return Err(invalid_config(
                 "initial seasonal variance must be finite and strictly positive",
             ));
         }
@@ -153,10 +153,10 @@ impl SeasonalLocalLevelPosterior {
         seed: u64,
     ) -> Result<SeasonalPosteriorPredictiveForecast, BayesianForecastError> {
         if horizon == 0 {
-            return Err(invalid("forecast horizon must be positive"));
+            return Err(invalid_config("forecast horizon must be positive"));
         }
         if self.period < 2 || self.chains.is_empty() || self.chains.iter().any(Vec::is_empty) {
-            return Err(invalid(
+            return Err(invalid_config(
                 "posterior must contain a valid period and non-empty chains",
             ));
         }
@@ -166,9 +166,9 @@ impl SeasonalLocalLevelPosterior {
             seed,
             FORECAST_SEED_DOMAIN,
             |_, _, draw: &SeasonalLocalLevelPosteriorDraw, rng| {
-                validate_variance("level", draw.level_variance)?;
-                validate_variance("seasonal", draw.seasonal_variance)?;
-                validate_variance("observation", draw.observation_variance)?;
+                validate_positive_variance("level", draw.level_variance)?;
+                validate_positive_variance("seasonal", draw.seasonal_variance)?;
+                validate_positive_variance("observation", draw.observation_variance)?;
                 if draw.terminal_state.len() != self.period
                     || draw.terminal_state.iter().any(|value| !value.is_finite())
                 {
@@ -266,7 +266,9 @@ pub fn fit_bayesian_seasonal_local_level(
     config: &BayesianSeasonalLocalLevelConfig,
 ) -> Result<SeasonalLocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = validate_observations(observations)? as f64;
+    // Level, seasonal and observation variances.
+    let observed_count =
+        require_finite_observations(observations, 3, "seasonal local-level")? as f64;
     // Each backward conditional holds a d x d gain and a d x 2d root.
     schedule.check_fit_size(
         "seasonal fit",
@@ -286,7 +288,7 @@ pub fn fit_bayesian_seasonal_local_level(
         config.initial_level_variance,
         config.initial_seasonal_variance,
     )
-    .map_err(|error| numerical(&format!("could not build seasonal state model: {error}")))?;
+    .map_err(|error| numerical(format!("could not build seasonal state model: {error}")))?;
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
@@ -310,7 +312,7 @@ pub fn fit_bayesian_seasonal_local_level(
             // states[0] is x[-1], followed by x[0]..x[T-1].
             let states = model
                 .sample_states_ffbs(observations, rng)
-                .map_err(|error| numerical(&format!("seasonal FFBS failed: {error}")))?;
+                .map_err(|error| numerical(format!("seasonal FFBS failed: {error}")))?;
 
             let mut level_sum_sq = 0.0;
             let mut seasonal_sum_sq = 0.0;
@@ -357,37 +359,6 @@ pub fn fit_bayesian_seasonal_local_level(
         period: config.period,
         chains,
     })
-}
-
-fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
-    if observations.iter().any(|value| value.is_infinite()) {
-        return Err(BayesianForecastError::InvalidObservations(
-            "observations may be finite or NaN, but not infinite".into(),
-        ));
-    }
-    // Level, seasonal and observation variances.
-    require_finite_observations(observations, 3, "seasonal local-level")
-}
-
-fn validate_variance(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
-    if !variance.is_finite() || variance <= 0.0 {
-        return Err(numerical(&format!(
-            "{name} variance must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn invalid(message: &str) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-
-fn numerical(message: &str) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
 }
 
 const FIT_SEED_DOMAIN: u64 = 0x5345_4153_5F46_4954;

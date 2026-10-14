@@ -19,15 +19,15 @@
 
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, cholesky_into, overdispersed_positive, path_means, path_quantiles,
-    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
+    path_means, path_quantiles, require_finite_observations, run_gibbs_chains,
+    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, validate_positive_variance,
+    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 
@@ -138,9 +138,9 @@ impl LocalLinearTrendPosterior {
             seed,
             FORECAST_SEED_DOMAIN,
             |_, _, draw: &LocalLinearTrendPosteriorDraw, rng| {
-                validate_positive("level", draw.level_variance)?;
-                validate_positive("slope", draw.slope_variance)?;
-                validate_positive("observation", draw.observation_variance)?;
+                validate_positive_variance("level", draw.level_variance)?;
+                validate_positive_variance("slope", draw.slope_variance)?;
+                validate_positive_variance("observation", draw.observation_variance)?;
                 if !draw.terminal_level.is_finite() || !draw.terminal_slope.is_finite() {
                     return Err(numerical("posterior terminal state is not finite"));
                 }
@@ -234,7 +234,7 @@ pub fn fit_bayesian_local_linear_trend(
     config: &BayesianLocalLinearTrendConfig,
 ) -> Result<LocalLinearTrendPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = validate_observations(observations)?;
+    let observed_count = require_finite_observations(observations, 3, "local-linear-trend")?;
     // Five values per draw; the two-state filter holds about 14 per time.
     schedule.check_fit_size(
         "local-linear-trend fit",
@@ -324,9 +324,9 @@ fn sample_states_ffbs(
     observation_variance: f64,
     rng: &mut ChaCha8Rng,
 ) -> Result<Vec<[f64; 2]>, BayesianForecastError> {
-    validate_positive("level", level_variance)?;
-    validate_positive("slope", slope_variance)?;
-    validate_positive("observation", observation_variance)?;
+    validate_positive_variance("level", level_variance)?;
+    validate_positive_variance("slope", slope_variance)?;
+    validate_positive_variance("observation", observation_variance)?;
 
     let len = observations.len();
     let mut filtered_means = Vec::with_capacity(len + 1);
@@ -352,7 +352,7 @@ fn sample_states_ffbs(
             (predicted_mean, predicted_covariance)
         } else {
             let innovation_variance = predicted_covariance[0] + observation_variance;
-            validate_positive("innovation", innovation_variance)?;
+            validate_positive_variance("innovation", innovation_variance)?;
             let innovation = observation - predicted_mean[0];
             let gain = [
                 predicted_covariance[0] / innovation_variance,
@@ -432,15 +432,6 @@ fn sample_states_ffbs(
     Ok(states)
 }
 
-fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
-    if observations.iter().any(|value| value.is_infinite()) {
-        return Err(BayesianForecastError::InvalidObservations(
-            "observations may be finite or NaN, but not infinite".into(),
-        ));
-    }
-    require_finite_observations(observations, 3, "local-linear-trend")
-}
-
 fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError> {
     if covariance.iter().any(|value| !value.is_finite()) {
         return Err(invalid_config(
@@ -471,12 +462,12 @@ fn validate_computed_state(
         .chain(covariance.iter())
         .any(|value| !value.is_finite())
     {
-        return Err(numerical(&format!(
+        return Err(numerical(format!(
             "{name} state at time {time} contains a non-finite value"
         )));
     }
     cholesky_2x2(symmetrized(covariance)).map_err(|_| {
-        numerical(&format!(
+        numerical(format!(
             "{name} covariance at time {time} is not positive definite"
         ))
     })?;
@@ -550,29 +541,8 @@ fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
     [matrix[0], off_diagonal, off_diagonal, matrix[3]]
 }
 
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn validate_positive(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
-    if !variance.is_finite() || variance <= 0.0 {
-        return Err(numerical(&format!(
-            "{name} variance must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
-
-fn invalid_config(message: &str) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-
-fn numerical(message: &str) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
-}
 
 #[cfg(test)]
 mod tests {

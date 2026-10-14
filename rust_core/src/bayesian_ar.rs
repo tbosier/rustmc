@@ -33,15 +33,16 @@
 
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, cholesky, path_means, path_quantiles, run_chains,
-    sample_inverse_gamma, simulate_draws, solve_lower, solve_lower_transpose, split_paths,
-    BayesianForecastError, ForecastQuantile, MAX_MATERIALIZED_VALUES,
+    check_forecast_size, checked_value_count, cholesky, dot, invalid_config, path_means,
+    path_quantiles, run_chains, sample_inverse_gamma, simulate_draws, solve_lower,
+    solve_lower_transpose, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
+    MAX_MATERIALIZED_VALUES,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
+#[cfg(test)]
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 /// Explicit Normal-Inverse-Gamma prior for an AR(p) regression.
 #[derive(Debug, Clone, PartialEq)]
@@ -76,13 +77,13 @@ impl NormalInverseGammaPrior {
         };
         let dimension = prior.coefficient_mean.len();
         if dimension < 2 {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "coefficient prior must include an intercept and at least one lag",
             ));
         }
-        dimension.checked_mul(dimension).ok_or_else(|| {
-            invalid_configuration("coefficient prior precision dimensions overflow")
-        })?;
+        dimension
+            .checked_mul(dimension)
+            .ok_or_else(|| invalid_config("coefficient prior precision dimensions overflow"))?;
         validate_prior(&prior, dimension)?;
         Ok(prior)
     }
@@ -149,10 +150,10 @@ impl BayesianArPosterior {
         seed: u64,
     ) -> Result<BayesianArForecast, BayesianForecastError> {
         if horizon == 0 {
-            return Err(invalid_configuration("forecast horizon must be positive"));
+            return Err(invalid_config("forecast horizon must be positive"));
         }
         if self.order == 0 {
-            return Err(invalid_configuration("AR order must be positive"));
+            return Err(invalid_config("AR order must be positive"));
         }
         if self.terminal_observations.len() != self.order
             || self
@@ -160,22 +161,23 @@ impl BayesianArPosterior {
                 .iter()
                 .any(|value| !value.is_finite())
         {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "posterior terminal observations must contain one finite value per lag",
             ));
         }
         if self.chains.is_empty() || self.chains.iter().any(Vec::is_empty) {
-            return Err(invalid_configuration(
+            return Err(invalid_config(
                 "every posterior chain must contain at least one draw",
             ));
         }
 
-        let expected_coefficients = self.order.checked_add(1).ok_or_else(|| {
-            invalid_configuration("AR order is too large to represent its coefficients")
-        })?;
+        let expected_coefficients = self
+            .order
+            .checked_add(1)
+            .ok_or_else(|| invalid_config("AR order is too large to represent its coefficients"))?;
         self.order
             .checked_add(horizon)
-            .ok_or_else(|| invalid_configuration("AR forecast history length overflows"))?;
+            .ok_or_else(|| invalid_config("AR forecast history length overflows"))?;
         check_forecast_size("AR forecast", &self.chains, horizon, 2)?;
         let per_draw = simulate_draws(
             &self.chains,
@@ -185,7 +187,7 @@ impl BayesianArPosterior {
                 if draw.coefficients.len() != expected_coefficients
                     || draw.coefficients.iter().any(|value| !value.is_finite())
                 {
-                    return Err(invalid_configuration(
+                    return Err(invalid_config(
                         "each posterior draw must contain finite intercept and lag coefficients",
                     ));
                 }
@@ -368,14 +370,15 @@ fn validate_inputs(
     config: &BayesianArConfig,
 ) -> Result<usize, BayesianForecastError> {
     if config.order == 0 {
-        return Err(invalid_configuration("AR order must be at least one"));
+        return Err(invalid_config("AR order must be at least one"));
     }
-    let dimension = config.order.checked_add(1).ok_or_else(|| {
-        invalid_configuration("AR order is too large to represent its coefficients")
-    })?;
+    let dimension = config
+        .order
+        .checked_add(1)
+        .ok_or_else(|| invalid_config("AR order is too large to represent its coefficients"))?;
     dimension
         .checked_mul(dimension)
-        .ok_or_else(|| invalid_configuration("AR coefficient precision dimensions overflow"))?;
+        .ok_or_else(|| invalid_config("AR coefficient precision dimensions overflow"))?;
     if observations.len() <= config.order {
         return Err(BayesianForecastError::InvalidObservations(format!(
             "AR({}) requires more than {} observations for its conditional likelihood",
@@ -388,12 +391,10 @@ fn validate_inputs(
         ));
     }
     if config.num_chains == 0 {
-        return Err(invalid_configuration("number of chains must be positive"));
+        return Err(invalid_config("number of chains must be positive"));
     }
     if config.num_draws == 0 {
-        return Err(invalid_configuration(
-            "number of posterior draws must be positive",
-        ));
+        return Err(invalid_config("number of posterior draws must be positive"));
     }
     checked_value_count(
         "AR posterior",
@@ -409,7 +410,7 @@ fn validate_prior(
     dimension: usize,
 ) -> Result<(), BayesianForecastError> {
     if prior.coefficient_mean.len() != dimension {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "coefficient prior mean must have length {dimension}"
         )));
     }
@@ -418,7 +419,7 @@ fn validate_prior(
         .iter()
         .any(|value| !value.is_finite())
     {
-        return Err(invalid_configuration(
+        return Err(invalid_config(
             "coefficient prior mean must contain only finite values",
         ));
     }
@@ -428,7 +429,7 @@ fn validate_prior(
             .iter()
             .any(|row| row.len() != dimension)
     {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "coefficient prior precision must have shape {dimension} by {dimension}"
         )));
     }
@@ -438,7 +439,7 @@ fn validate_prior(
         .flatten()
         .any(|value| !value.is_finite())
     {
-        return Err(invalid_configuration(
+        return Err(invalid_config(
             "coefficient prior precision must contain only finite values",
         ));
     }
@@ -475,7 +476,7 @@ fn validate_symmetric(matrix: &[Vec<f64>]) -> Result<(), BayesianForecastError> 
             .max(value.abs())
             .max(transposed.abs());
             if (value - transposed).abs() > 1e-12 * scale {
-                return Err(invalid_configuration(
+                return Err(invalid_config(
                     "coefficient prior precision must be symmetric",
                 ));
             }
@@ -496,7 +497,7 @@ fn factor_positive_definite(
     name: &str,
 ) -> Result<Vec<f64>, BayesianForecastError> {
     cholesky(matrix, dimension)
-        .map_err(|()| invalid_configuration(format!("{name} must be positive definite")))
+        .map_err(|()| invalid_config(format!("{name} must be positive definite")))
 }
 
 fn matrix_vector_product(
@@ -519,14 +520,6 @@ fn quadratic_form(matrix: &[Vec<f64>], vector: &[f64]) -> Result<f64, BayesianFo
     Ok(value.max(0.0))
 }
 
-fn dot(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
-}
-
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4152_5F50;
 const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_4152;
 
@@ -541,15 +534,11 @@ fn ensure_finite_vector(name: &str, values: &[f64]) -> Result<(), BayesianForeca
 
 fn validate_positive_finite(name: &str, value: f64) -> Result<(), BayesianForecastError> {
     if !value.is_finite() || value <= 0.0 {
-        return Err(invalid_configuration(format!(
+        return Err(invalid_config(format!(
             "{name} must be finite and strictly positive"
         )));
     }
     Ok(())
-}
-
-fn invalid_configuration(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
 }
 
 #[cfg(test)]

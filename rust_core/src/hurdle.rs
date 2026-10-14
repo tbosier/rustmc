@@ -12,14 +12,14 @@
 use crate::bayesian_forecast::sample_levels_ffbs;
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
-    check_forecast_size, checked_value_count, inverse_gamma_conditional, overdispersed_positive,
-    path_means, path_quantiles, run_chains, run_gibbs_chains, simulate_draws, split_paths,
-    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
-    PosteriorPredictiveForecast, MAX_MATERIALIZED_VALUES,
+    check_forecast_size, checked_value_count, invalid_config, inverse_gamma_conditional, numerical,
+    overdispersed_positive, path_means, path_quantiles, run_chains, run_gibbs_chains,
+    simulate_draws, split_paths, standard_normal, BayesianForecastError, ForecastQuantile,
+    GibbsSchedule, InverseGammaPrior, PosteriorPredictiveForecast, MAX_MATERIALIZED_VALUES,
 };
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Beta, Distribution, StandardNormal};
+use rand_distr::{Beta, Distribution};
 
 const MAX_TRUNCATION_ATTEMPTS: usize = 100_000;
 /// `"HURDFIT"` followed by a version byte.
@@ -63,14 +63,16 @@ impl HurdleLogNormalConfig {
             ),
         ] {
             if !value.is_finite() || value <= 0.0 {
-                return Err(invalid(format!("{name} must be finite and positive")));
+                return Err(invalid_config(format!(
+                    "{name} must be finite and positive"
+                )));
             }
         }
         if !self.initial_log_level.is_finite() {
-            return Err(invalid("initial log level must be finite"));
+            return Err(invalid_config("initial log level must be finite"));
         }
         if !(self.occurrence_alpha + self.occurrence_beta).is_finite() {
-            return Err(invalid("occurrence prior shape sum must be finite"));
+            return Err(invalid_config("occurrence prior shape sum must be finite"));
         }
         InverseGammaPrior::new(
             self.process_variance_prior.shape,
@@ -164,7 +166,7 @@ pub fn hurdle_lognormal_logp(
         || !log_variance.is_finite()
         || log_variance <= 0.0
     {
-        return Err(invalid("hurdle density needs nonnegative finite y, probability in [0,1], finite log level and positive log variance"));
+        return Err(invalid_config("hurdle density needs nonnegative finite y, probability in [0,1], finite log level and positive log variance"));
     }
     if y == 0.0 {
         return Ok((-probability).ln_1p());
@@ -238,7 +240,7 @@ pub fn fit_hurdle_lognormal(
                         rng,
                     )?;
                     let variance = config.initial_variance + observations.len() as f64 * q;
-                    let level = config.initial_log_level + normal(rng) * variance.sqrt();
+                    let level = config.initial_log_level + standard_normal(rng) * variance.sqrt();
                     if !level.is_finite() {
                         return Err(numerical("prior terminal level overflowed"));
                     }
@@ -382,7 +384,7 @@ impl HurdleLogNormalPosterior {
             || self.chains[0].is_empty()
             || self.chains.iter().any(|c| c.len() != self.chains[0].len())
         {
-            return Err(invalid(
+            return Err(invalid_config(
                 "positive horizon and nonempty equal-length posterior chains required",
             ));
         }
@@ -400,18 +402,19 @@ impl HurdleLogNormalPosterior {
                     || !draw.observation_variance.is_finite()
                     || draw.observation_variance <= 0.0
                 {
-                    return Err(invalid("invalid hurdle posterior draw"));
+                    return Err(invalid_config("invalid hurdle posterior draw"));
                 }
                 let mut level = draw.terminal_log_level;
                 let mut means = Vec::with_capacity(horizon);
                 let mut positive_means = Vec::with_capacity(horizon);
                 let mut observations = Vec::with_capacity(horizon);
                 for _ in 0..horizon {
-                    level += normal(rng) * draw.process_variance.sqrt();
+                    level += standard_normal(rng) * draw.process_variance.sqrt();
                     let positive_mean = (level + draw.observation_variance / 2.0).exp();
                     // Draw severity even when the indicator is zero so the two RNG
                     // streams' consumption does not depend on payment probability.
-                    let amount = (level + normal(rng) * draw.observation_variance.sqrt()).exp();
+                    let amount =
+                        (level + standard_normal(rng) * draw.observation_variance.sqrt()).exp();
                     let paid = rng.gen::<f64>() < draw.payment_probability;
                     if !positive_mean.is_finite()
                         || !amount.is_finite()
@@ -493,15 +496,6 @@ fn probability_draw(beta: &Beta<f64>, rng: &mut ChaCha8Rng) -> Result<f64, Bayes
         return Err(numerical("occurrence probability draw is nonfinite or outside [0,1]; rescale extreme Beta concentrations"));
     }
     Ok(value)
-}
-fn normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-fn invalid(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-fn numerical(message: impl Into<String>) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
 }
 
 #[cfg(test)]
@@ -892,8 +886,8 @@ mod tests {
         let mut level = 1.;
         let mut observations = Vec::new();
         for _ in 0..1200 {
-            level += normal(&mut rng) * 0.01_f64.sqrt();
-            let amount = (level + normal(&mut rng) * 0.1_f64.sqrt()).exp();
+            level += standard_normal(&mut rng) * 0.01_f64.sqrt();
+            let amount = (level + standard_normal(&mut rng) * 0.1_f64.sqrt()).exp();
             observations.push(if rng.gen::<f64>() < 0.6 { amount } else { 0. });
         }
         let mut cfg = config();

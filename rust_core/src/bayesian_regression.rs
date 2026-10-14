@@ -5,11 +5,11 @@
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule, InverseGammaPrior,
+    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, GibbsSchedule,
+    InverseGammaPrior,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 /// `"\0REG_FIT"`.
 const FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
@@ -172,22 +172,13 @@ fn draw_variance(
         rng,
     )?)
 }
-fn normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
 pub fn fit_regression(
     y: &[f64],
     design: &[Vec<f64>],
     config: &RegressionConfig,
 ) -> Result<RegressionPosterior, StateSpaceError> {
-    if y.iter().any(|x| x.is_infinite()) {
-        return Err(invalid(
-            "observations may be finite or NaN, but not infinite",
-        ));
-    }
-    // One finite observation per inferred variance, the observation variance
-    // included.
+    // No infinite observations, and one finite observation per inferred
+    // variance, the observation variance included.
     let observed =
         require_finite_observations(y, config.innovation_indices.len() + 1, "regression")?;
     if design.len() != y.len() {
@@ -418,7 +409,8 @@ impl RegressionPosterior {
                             .zip(&next)
                             .map(|(a, b)| a * b)
                             .sum::<f64>();
-                    let observation = mean + normal(rng) * draw.observation_variance.sqrt();
+                    let observation =
+                        mean + standard_normal(rng) * draw.observation_variance.sqrt();
                     total += observation;
                     if !total.is_finite() || next.iter().any(|v| !v.is_finite()) {
                         return Err(StateSpaceError::NumericalFailure(
@@ -649,12 +641,12 @@ mod tests {
     fn seeded_recovery_and_pool_independence() {
         let mut rng = ChaCha8Rng::seed_from_u64(188);
         let mut level = 0.0;
-        let x: Vec<Vec<f64>> = (0..250).map(|_| vec![normal(&mut rng)]).collect();
+        let x: Vec<Vec<f64>> = (0..250).map(|_| vec![standard_normal(&mut rng)]).collect();
         let y: Vec<f64> = x
             .iter()
             .map(|x| {
-                level += normal(&mut rng) * 0.02_f64.sqrt();
-                level + 1.8 * x[0] + normal(&mut rng) * 0.1_f64.sqrt()
+                level += standard_normal(&mut rng) * 0.02_f64.sqrt();
+                level + 1.8 * x[0] + standard_normal(&mut rng) * 0.1_f64.sqrt()
             })
             .collect();
         let fit = fit_regression(&y, &x, &config()).unwrap();

@@ -20,7 +20,8 @@
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, validate_positive_variance,
+    GibbsSchedule,
 };
 /// The types every forecasting sampler shares, defined in
 /// [`crate::forecast_common`] and re-exported here under their original paths.
@@ -31,7 +32,6 @@ use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
 use crate::seeding::chain_seed;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 #[derive(Debug, Clone)]
 pub struct BayesianLocalLevelConfig {
@@ -168,7 +168,7 @@ pub fn fit_bayesian_local_level(
     config: &BayesianLocalLevelConfig,
 ) -> Result<LocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = validate_observations(observations)?;
+    let observed_count = require_finite_observations(observations, 2, "local-level")?;
     // Three values per draw; the filter and the level path each hold T + 1.
     schedule.check_fit_size("local-level fit", &[3], &[observations.len() + 1, 3])?;
 
@@ -230,15 +230,6 @@ pub fn fit_bayesian_local_level(
     )?;
 
     Ok(LocalLevelPosterior { chains })
-}
-
-fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
-    if observations.iter().any(|value| value.is_infinite()) {
-        return Err(BayesianForecastError::InvalidObservations(
-            "observations may be finite or NaN, but not infinite".into(),
-        ));
-    }
-    require_finite_observations(observations, 2, "local-level")
 }
 
 /// One forward-filtering pass of the local-level Kalman recursion.
@@ -411,19 +402,6 @@ fn sample_normal(
         ));
     }
     Ok(draw)
-}
-
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn validate_positive_variance(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
-    if !variance.is_finite() || variance <= 0.0 {
-        return Err(BayesianForecastError::NumericalFailure(format!(
-            "{name} variance must be finite and strictly positive"
-        )));
-    }
-    Ok(())
 }
 
 const FIT_SEED_DOMAIN: u64 = 0x4649_545F_4C4F_434C;

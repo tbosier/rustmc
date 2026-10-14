@@ -14,7 +14,7 @@ use std::fmt;
 use rand::Rng;
 use rand_distr::{Distribution, StandardNormal};
 
-use crate::forecast_common::cholesky;
+use crate::forecast_common::{cholesky, dot};
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 const LOG_2_PI: f64 = 1.8378770664093453;
@@ -1387,10 +1387,6 @@ fn check_computed(
         )));
     }
     Ok(())
-}
-
-fn dot(left: &[f64], right: &[f64]) -> f64 {
-    left.iter().zip(right).map(|(a, b)| a * b).sum()
 }
 
 fn identity(d: usize) -> Vec<f64> {
