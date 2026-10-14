@@ -6,14 +6,12 @@
 //! `count[lag] ~ Poisson(lambda * p[lag])`. Currency is not a count observation.
 //! The final category is an unscheduled tail, never a dated calendar payment.
 
-use rand::{distributions::Open01, Rng, SeedableRng};
+use rand::{distributions::Open01, Rng};
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Beta, Binomial, Distribution, Gamma};
-use rayon::prelude::*;
 
 use crate::count_sampling::MAX_EXACT_COUNT;
-use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
-use crate::seeding::chain_seed;
+use crate::forecast_common::{checked_value_count, run_chains, MAX_MATERIALIZED_VALUES};
 
 const FIT_SEED_DOMAIN: u64 = 0x5255_4E4F_4646_5F46; // "RUNOFF_F"
 
@@ -309,11 +307,8 @@ pub fn fit_runoff(
         .collect::<Vec<_>>();
     // Each chain owns its stream, so how rayon schedules chains cannot change
     // a draw, and the first failing chain in chain order is the one reported.
-    let chains = (0..config.chains)
-        .into_par_iter()
-        .map(|chain| -> Result<Vec<RunoffDraw>, RunoffError> {
-        let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, FIT_SEED_DOMAIN));
-        let mut p = dirichlet(&config.alpha, &mut rng)?;
+    let chains = run_chains(config.chains, config.seed, FIT_SEED_DOMAIN, |_, _, rng| {
+        let mut p = dirichlet(&config.alpha, rng)?;
         let warmup = if exact { 0 } else { config.warmup };
         let mut retained = Vec::with_capacity(config.draws);
         for iteration in 0..warmup + config.draws {
@@ -321,7 +316,7 @@ pub fn fit_runoff(
             if let Some(params) = &hazards {
                 let mut rest = 1.0;
                 for (lag, (a, b)) in params.iter().enumerate() {
-                    let q = beta_draw(*a, *b, &mut rng)?;
+                    let q = beta_draw(*a, *b, rng)?;
                     exact_hazards.push(q);
                     p[lag] = rest * q;
                     rest *= 1.0 - q;
@@ -353,7 +348,7 @@ pub fn fit_runoff(
                                         p[lag] / mass
                                     }
                                 };
-                                full[lag] = binomial(remaining, q, &mut rng)?;
+                                full[lag] = binomial(remaining, q, rng)?;
                             }
                             remaining -= full[lag];
                         }
@@ -369,13 +364,13 @@ pub fn fit_runoff(
                         1.0 / (config.total_rate + exposure),
                     )
                     .map_err(|e| numerical(e.to_string()))?
-                    .sample(&mut rng);
+                    .sample(rng);
                     if !intensity.is_finite() {
                         return Err(numerical("nonfinite ultimate intensity draw"));
                     }
                     for lag in 0..categories {
                         if row[lag].is_none() {
-                            full[lag] = poisson(intensity * p[lag], &mut rng)?;
+                            full[lag] = poisson(intensity * p[lag], rng)?;
                         }
                     }
                     intensities.push(Some(intensity));
@@ -397,7 +392,7 @@ pub fn fit_runoff(
                         *a += *n as f64;
                     }
                 }
-                p = dirichlet(&posterior_alpha, &mut rng)?;
+                p = dirichlet(&posterior_alpha, rng)?;
             }
             if iteration >= warmup {
                 retained.push(RunoffDraw {
@@ -408,11 +403,8 @@ pub fn fit_runoff(
                 });
             }
         }
-        Ok(retained)
-        })
-        .collect::<Vec<_>>()
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
+        Ok::<_, RunoffError>(retained)
+    })?;
     Ok(RunoffPosterior {
         triangle: triangle.clone(),
         chains,
@@ -525,6 +517,8 @@ impl RunoffPosterior {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::seeding::chain_seed;
+    use rand::SeedableRng;
 
     fn config(alpha: Vec<f64>) -> RunoffConfig {
         RunoffConfig {

@@ -4,13 +4,11 @@
 //! deviation; group random walks can additionally share a common random walk.
 use crate::autodiff::softplus;
 use crate::bayesian_forecast::BayesianForecastError as Error;
-use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
+use crate::forecast_common::{checked_value_count, retains, run_chains, MAX_MATERIALIZED_VALUES};
 use crate::observation::sigmoid;
-use crate::seeding::chain_seed;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use rand_chacha::ChaCha8Rng;
 use rand_distr::{Distribution, Gamma, StandardNormal};
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 pub type Panel = Vec<Vec<f64>>;
@@ -293,41 +291,32 @@ pub fn fit_dynamic_glm(
         layout: &layout,
     };
     let blocks = layout.blocks();
-    let results = (0..config.chains)
-        .into_par_iter()
-        .map(|chain| {
-            let mut rng =
-                ChaCha8Rng::seed_from_u64(chain_seed(config.seed, chain, FIT_SEED_DOMAIN));
-            let mut z = vec![0.; layout.size()];
-            // Independent modest starts; ESS immediately samples prior-only blocks.
-            for x in &mut z {
-                *x = normal(&mut rng) * 0.1;
+    // The chain's start is drawn from its sampling stream, not from a separate
+    // start stream as in `run_gibbs_chains`, so seeded fits keep their draws.
+    let results = run_chains(config.chains, config.seed, FIT_SEED_DOMAIN, |_, _, rng| {
+        let mut z = vec![0.; layout.size()];
+        // Independent modest starts; ESS immediately samples prior-only blocks.
+        for x in &mut z {
+            *x = normal(rng) * 0.1;
+        }
+        let mut cache = PanelCache::new(&panel, &z);
+        if !cache.group_lp.iter().sum::<f64>().is_finite() {
+            return Err(numerical(
+                "initial likelihood is not finite; review data and prior scales",
+            ));
+        }
+        let mut evaluations = 1;
+        let mut samples = Vec::with_capacity(config.draws);
+        for iteration in 0..config.warmup + config.draws * config.thin {
+            for block in &blocks {
+                evaluations += cache.update(&panel, &mut z, block, rng)?;
             }
-            let mut cache = PanelCache::new(&panel, &z);
-            if !cache.group_lp.iter().sum::<f64>().is_finite() {
-                return Err(numerical(
-                    "initial likelihood is not finite; review data and prior scales",
-                ));
+            if retains(config.warmup, config.thin, iteration) {
+                samples.push(layout.decode(&z, config));
             }
-            let mut evaluations = 1;
-            let mut samples = Vec::with_capacity(config.draws);
-            for iteration in 0..config.warmup + config.draws * config.thin {
-                for block in &blocks {
-                    evaluations += cache.update(&panel, &mut z, block, &mut rng)?;
-                }
-                if iteration >= config.warmup
-                    && (iteration + 1 - config.warmup).is_multiple_of(config.thin)
-                {
-                    samples.push(layout.decode(&z, config));
-                }
-            }
-            Ok((samples, evaluations))
-        })
-        // Collected in chain order first, so the error reported when several
-        // chains fail does not depend on scheduling.
-        .collect::<Vec<_>>()
-        .into_iter()
-        .collect::<Result<Vec<_>, Error>>()?;
+        }
+        Ok((samples, evaluations))
+    })?;
     let (chains, likelihood_evaluations) = results.into_iter().unzip();
     let posterior = DynamicGlmPosterior {
         config: config.clone(),
@@ -552,26 +541,27 @@ fn prior_draws(
         },
     )?;
     allocation(&[config.chains, config.draws, layout.size()])?;
-    let chains = (0..config.chains)
-        .into_par_iter()
-        .map(|c| {
-            let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(config.seed, c, PRIOR_SEED_DOMAIN));
-            (0..config.draws)
-                .map(|_| {
-                    let z = (0..layout.size())
-                        .map(|_| normal(&mut rng))
-                        .collect::<Vec<_>>();
-                    let mut draw = layout.decode(&z, config);
-                    for component in &mut draw.states {
-                        for group in component {
-                            group[0] = 0.;
+    let chains = run_chains(
+        config.chains,
+        config.seed,
+        PRIOR_SEED_DOMAIN,
+        |_, _, rng| {
+            Ok::<_, Error>(
+                (0..config.draws)
+                    .map(|_| {
+                        let z = (0..layout.size()).map(|_| normal(rng)).collect::<Vec<_>>();
+                        let mut draw = layout.decode(&z, config);
+                        for component in &mut draw.states {
+                            for group in component {
+                                group[0] = 0.;
+                            }
                         }
-                    }
-                    draw
-                })
-                .collect()
-        })
-        .collect();
+                        draw
+                    })
+                    .collect(),
+            )
+        },
+    )?;
     Ok(DynamicGlmPosterior {
         config: config.clone(),
         chains,
@@ -804,15 +794,9 @@ impl DynamicGlmPosterior {
         // Each chain has its own stream, so the result does not depend on how
         // rayon schedules chains; errors are reported in chain order for the
         // same reason.
-        let chains: Vec<Result<ChainPaths, Error>> = self
-            .chains
-            .par_iter()
-            .enumerate()
-            .map(|(chain, draws)| {
-                let mut rng = ChaCha8Rng::seed_from_u64(chain_seed(forecast_seed, chain, domain));
-                self.forecast_chain(draws, steps, exog, exposure, &mut rng)
-            })
-            .collect();
+        let chains = run_chains(self.chains.len(), forecast_seed, domain, |chain, _, rng| {
+            self.forecast_chain(&self.chains[chain], steps, exog, exposure, rng)
+        })?;
         let hurdle = self.config.family == Family::HurdleLogNormal;
         let mut out = DynamicGlmForecast {
             mean_paths: Vec::new(),
@@ -820,8 +804,7 @@ impl DynamicGlmPosterior {
             occurrence_paths: Vec::new(),
             positive_mean_paths: Vec::new(),
         };
-        for chain in chains {
-            let (means, observations, occurrences, positives) = chain?;
+        for (means, observations, occurrences, positives) in chains {
             out.mean_paths.push(means);
             out.observation_paths.push(observations);
             if hurdle {
@@ -1039,6 +1022,8 @@ fn numerical(message: impl Into<String>) -> Error {
 #[cfg(test)]
 mod incremental_likelihood_tests {
     use super::*;
+    use crate::seeding::chain_seed;
+    use rand::SeedableRng;
 
     /// The full-panel log likelihood through the nested draw, which is how the
     /// sampler evaluated every slice proposal before it went group by group.
