@@ -123,12 +123,12 @@ impl PyBayesianAutoRegression {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws),
             chains,
             draws,
             warmup,
@@ -423,16 +423,15 @@ impl PyBayesianArForecast {
     }
 }
 
-impl PyBayesianAutoRegression {
+impl forecast_batch::BatchModel for PyBayesianAutoRegression {
     /// AR draws are exact and independent, so there is no warmup or thinning.
-    pub(crate) fn batch_config(&self, chains: usize, draws: usize) -> forecast_batch::Config {
-        let seed = 0;
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
         forecast_batch::Config::Ar(CoreBayesianArConfig {
             order: self.order,
             prior: self.prior.clone(),
-            num_chains: chains,
-            num_draws: draws,
-            seed,
+            num_chains: schedule.chains,
+            num_draws: schedule.draws,
+            seed: schedule.seed,
         })
     }
 }

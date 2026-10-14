@@ -11,7 +11,7 @@ use super::seasonal::{
 use super::trend::{
     PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
 };
-use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit};
+use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit, Schedule};
 use crate::{forecast_diagnostics, InferenceError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -384,9 +384,27 @@ fn run_cells<T: Sync, R: Send>(
 /// The size is `Config::allocation_size` for the cell's history, computed once.
 type CellInput = Result<(Vec<f64>, Config, usize), String>;
 
-/// The `fit_batch` defaults for the Gibbs schedule.
-const DEFAULT_WARMUP: usize = 500;
-const DEFAULT_THIN: usize = 1;
+/// A forecasting model that can fit `fit_batch` cells.
+pub(crate) trait BatchModel {
+    /// This model's cell config under `schedule`. AR ignores warmup and thin.
+    fn batch_config(&self, schedule: Schedule) -> Config;
+}
+
+/// The config of a `models` entry, if it is a forecasting model.
+fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Config> {
+    fn config<T: pyo3::PyClass + BatchModel>(
+        model: &Bound<'_, PyAny>,
+        schedule: Schedule,
+    ) -> Option<Config> {
+        let model = model.extract::<PyRef<'_, T>>().ok()?;
+        Some(model.batch_config(schedule))
+    }
+    config::<PyHurdleLogNormal>(model, schedule)
+        .or_else(|| config::<PyBayesianLocalLevel>(model, schedule))
+        .or_else(|| config::<PyBayesianSeasonalLocalLevel>(model, schedule))
+        .or_else(|| config::<PyBayesianLocalLinearTrend>(model, schedule))
+        .or_else(|| config::<PyBayesianAutoRegression>(model, schedule))
+}
 
 /// Refuse a non-default `warmup` or `thin` that no cell would use.
 ///
@@ -398,7 +416,7 @@ fn reject_unused_schedule(
     warmup: usize,
     thin: usize,
 ) -> PyResult<()> {
-    if (warmup, thin) == (DEFAULT_WARMUP, DEFAULT_THIN) {
+    if (warmup, thin) == (Schedule::DEFAULT.warmup, Schedule::DEFAULT.thin) {
         return Ok(());
     }
     let mut configs = cells
@@ -409,7 +427,9 @@ fn reject_unused_schedule(
     if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
         return Err(PyValueError::new_err(format!(
             "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
-             draws are exact and independent; leave them at {DEFAULT_WARMUP} and {DEFAULT_THIN}"
+             draws are exact and independent; leave them at {} and {}",
+            Schedule::DEFAULT.warmup,
+            Schedule::DEFAULT.thin
         )));
     }
     Ok(())
@@ -464,12 +484,12 @@ fn aligned_optional<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_batch(
     py: Python<'_>,
+    model: &dyn BatchModel,
     observations: &Bound<'_, PyAny>,
     ids: Vec<String>,
     models: Option<&Bound<'_, PyAny>>,
     exog: Option<&Bound<'_, PyAny>>,
     coefficient_priors: Option<&Bound<'_, PyAny>>,
-    default: Config,
     chains: usize,
     draws: usize,
     warmup: usize,
@@ -480,6 +500,14 @@ pub(crate) fn fit_batch(
     errors: &str,
 ) -> PyResult<PyForecastBatchFit> {
     check_errors(errors)?;
+    let schedule = Schedule {
+        chains,
+        draws,
+        warmup,
+        thin,
+        seed,
+    };
+    let default = model.batch_config(schedule);
     let rows = observations.try_iter()?.collect::<PyResult<Vec<_>>>()?;
     if ids.len() != rows.len() {
         return Err(PyValueError::new_err(
@@ -497,22 +525,10 @@ pub(crate) fn fit_batch(
                 let model = &models[index];
                 if model.is_none() {
                     default.clone()
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyHurdleLogNormal>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLevel>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianSeasonalLocalLevel>>()
-                {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLinearTrend>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianAutoRegression>>() {
-                    model.batch_config(chains, draws)
                 } else {
-                    return Err(
-                        "invalid configuration: models entries must be forecasting models or None"
-                            .into(),
-                    );
+                    batch_model_config(model, schedule).ok_or(
+                        "invalid configuration: models entries must be forecasting models or None",
+                    )?
                 }
             } else {
                 default.clone()

@@ -7,20 +7,18 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::bayesian_forecast::{
     fit_bayesian_local_level, BayesianLocalLevelConfig as CoreBayesianLocalLevelConfig,
-    InverseGammaPrior as CoreInverseGammaPrior, LocalLevelPosterior as CoreLocalLevelPosterior,
+    LocalLevelPosterior as CoreLocalLevelPosterior,
     PosteriorPredictiveForecast as CorePosteriorPredictiveForecast,
 };
-use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
+use rustmc_core::bayesian_regression::RegressionConfig;
 
 /// Bayesian scalar Gaussian local-level model fitted with conjugate
 /// forward-filtering/backward-sampling Gibbs updates.
 #[pyclass(name = "BayesianLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLevel {
-    pub(crate) initial_mean: f64,
-    pub(crate) initial_variance: f64,
-    pub(crate) process_variance_prior: CoreInverseGammaPrior,
-    pub(crate) observation_variance_prior: CoreInverseGammaPrior,
+    /// The model, on the default schedule until a call replaces it.
+    pub(crate) config: CoreBayesianLocalLevelConfig,
 }
 
 #[pymethods]
@@ -47,12 +45,12 @@ impl PyBayesianLocalLevel {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
             warmup,
@@ -82,35 +80,49 @@ impl PyBayesianLocalLevel {
                 "invalid configuration: initial variance must be finite and strictly positive",
             ));
         }
+        let Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        } = Schedule::DEFAULT;
         Ok(Self {
-            initial_mean,
-            initial_variance,
-            process_variance_prior: process_variance_prior.inner,
-            observation_variance_prior: observation_variance_prior.inner,
+            config: CoreBayesianLocalLevelConfig {
+                initial_mean,
+                initial_variance,
+                process_variance_prior: process_variance_prior.inner,
+                observation_variance_prior: observation_variance_prior.inner,
+                num_chains: chains,
+                num_warmup: warmup,
+                num_draws: draws,
+                thinning: thin,
+                seed,
+            },
         })
     }
 
     #[getter]
     fn initial_mean(&self) -> f64 {
-        self.initial_mean
+        self.config.initial_mean
     }
 
     #[getter]
     fn initial_variance(&self) -> f64 {
-        self.initial_variance
+        self.config.initial_variance
     }
 
     #[getter]
     fn process_variance_prior(&self) -> PyInverseGammaPrior {
         PyInverseGammaPrior {
-            inner: self.process_variance_prior,
+            inner: self.config.process_variance_prior,
         }
     }
 
     #[getter]
     fn observation_variance_prior(&self) -> PyInverseGammaPrior {
         PyInverseGammaPrior {
-            inner: self.observation_variance_prior,
+            inner: self.config.observation_variance_prior,
         }
     }
 
@@ -129,37 +141,21 @@ impl PyBayesianLocalLevel {
         coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
     ) -> PyResult<PyObject> {
         let observations = real_vector(observations, "observations")?;
+        let config = self.config.with_schedule(Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        });
         if let Some(exog) = exog {
-            let config = regression::config(
-                CoreLinearGaussianStateSpace::local_level(
-                    1.0,
-                    1.0,
-                    self.initial_mean,
-                    self.initial_variance,
-                )
-                .map_err(inference_error)?,
-                vec![self.process_variance_prior],
-                vec!["process_variance"],
-                self.observation_variance_prior,
-                false,
-                (chains, draws, warmup, thin, seed),
-            );
-            return regression::fit(py, observations, exog, coefficient_prior, config);
+            return regression::fit(py, observations, exog, coefficient_prior, |prior| {
+                RegressionConfig::from_local_level(&config, prior)
+            });
         }
         if coefficient_prior.is_some() {
             return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
-        let config = CoreBayesianLocalLevelConfig {
-            initial_mean: self.initial_mean,
-            initial_variance: self.initial_variance,
-            process_variance_prior: self.process_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        };
         let posterior = py
             .allow_threads(|| fit_bayesian_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
@@ -177,12 +173,12 @@ impl PyBayesianLocalLevel {
     fn __repr__(&self) -> String {
         format!(
             "BayesianLocalLevel(initial_mean={}, initial_variance={}, process_variance_prior=({}, {}), observation_variance_prior=({}, {}))",
-            self.initial_mean,
-            self.initial_variance,
-            self.process_variance_prior.shape,
-            self.process_variance_prior.scale,
-            self.observation_variance_prior.shape,
-            self.observation_variance_prior.scale,
+            self.config.initial_mean,
+            self.config.initial_variance,
+            self.config.process_variance_prior.shape,
+            self.config.process_variance_prior.scale,
+            self.config.observation_variance_prior.shape,
+            self.config.observation_variance_prior.scale,
         )
     }
 }
@@ -404,27 +400,9 @@ impl PyBayesianForecastResult {
     }
 }
 
-impl PyBayesianLocalLevel {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
-        let seed = 0;
-
-        forecast_batch::Config::Local(CoreBayesianLocalLevelConfig {
-            initial_mean: self.initial_mean,
-            initial_variance: self.initial_variance,
-            process_variance_prior: self.process_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        })
+impl forecast_batch::BatchModel for PyBayesianLocalLevel {
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
+        forecast_batch::Config::Local(self.config.with_schedule(schedule))
     }
 }
 

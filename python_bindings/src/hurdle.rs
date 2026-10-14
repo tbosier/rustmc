@@ -15,20 +15,9 @@ pub(crate) struct PyHurdleLogNormal {
     pub(crate) config: HurdleLogNormalConfig,
 }
 
-impl PyHurdleLogNormal {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
-        let mut config = self.config.clone();
-        config.num_chains = chains;
-        config.num_draws = draws;
-        config.num_warmup = warmup;
-        config.thinning = thin;
-        forecast_batch::Config::Hurdle(config)
+impl forecast_batch::BatchModel for PyHurdleLogNormal {
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
+        forecast_batch::Config::Hurdle(self.config.with_schedule(schedule))
     }
 }
 
@@ -58,12 +47,12 @@ impl PyHurdleLogNormal {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
             warmup,
@@ -90,6 +79,13 @@ impl PyHurdleLogNormal {
         process_variance_upper: f64,
         observation_variance_upper: f64,
     ) -> PyResult<Self> {
+        let Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        } = Schedule::DEFAULT;
         let config = HurdleLogNormalConfig {
             process_variance_prior: process_variance_prior.inner,
             observation_variance_prior: observation_variance_prior.inner,
@@ -99,11 +95,11 @@ impl PyHurdleLogNormal {
             initial_variance,
             process_variance_upper,
             observation_variance_upper,
-            num_chains: 4,
-            num_draws: 1000,
-            num_warmup: 500,
-            thinning: 1,
-            seed: 42,
+            num_chains: chains,
+            num_draws: draws,
+            num_warmup: warmup,
+            thinning: thin,
+            seed,
         };
         config.validate().map_err(bayesian_forecast_error)?;
         Ok(Self { config })
@@ -122,12 +118,13 @@ impl PyHurdleLogNormal {
         seed: u64,
     ) -> PyResult<PyHurdleFit> {
         let observations = real_vector(observations, "observations")?;
-        let mut config = self.config.clone();
-        config.num_chains = chains;
-        config.num_draws = draws;
-        config.num_warmup = warmup;
-        config.thinning = thin;
-        config.seed = seed;
+        let config = self.config.with_schedule(Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        });
         let posterior = py
             .allow_threads(|| fit_hurdle_lognormal(&observations, &config))
             .map_err(bayesian_forecast_error)?;

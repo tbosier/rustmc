@@ -156,6 +156,59 @@ pub(crate) fn path_array<'py>(
     draw_vector_array(py, paths, horizon, |path, step| path[step])
 }
 
+/// The Gibbs schedule a forecasting model's `fit` or `fit_batch` was called
+/// with. `fit_batch` replaces `seed` with each cell's own seed.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Schedule {
+    pub(crate) chains: usize,
+    pub(crate) draws: usize,
+    pub(crate) warmup: usize,
+    pub(crate) thin: usize,
+    pub(crate) seed: u64,
+}
+
+impl Schedule {
+    /// The `fit` defaults: `chains=4, draws=1000, warmup=500, thin=1, seed=42`.
+    /// A model stores its core config with this schedule until a call
+    /// replaces it.
+    pub(crate) const DEFAULT: Self = Self {
+        chains: 4,
+        draws: 1000,
+        warmup: 500,
+        thin: 1,
+        seed: 42,
+    };
+}
+
+/// A core Gibbs config with its schedule replaced.
+pub(crate) trait WithSchedule {
+    fn with_schedule(&self, schedule: Schedule) -> Self;
+}
+
+macro_rules! impl_with_schedule {
+    ($($config:ty),+ $(,)?) => {$(
+        impl WithSchedule for $config {
+            fn with_schedule(&self, schedule: Schedule) -> Self {
+                Self {
+                    num_chains: schedule.chains,
+                    num_draws: schedule.draws,
+                    num_warmup: schedule.warmup,
+                    thinning: schedule.thin,
+                    seed: schedule.seed,
+                    ..self.clone()
+                }
+            }
+        }
+    )+};
+}
+
+impl_with_schedule!(
+    rustmc_core::bayesian_forecast::BayesianLocalLevelConfig,
+    rustmc_core::bayesian_seasonal::BayesianSeasonalLocalLevelConfig,
+    rustmc_core::bayesian_trend::BayesianLocalLinearTrendConfig,
+    rustmc_core::hurdle::HurdleLogNormalConfig,
+);
+
 pub(crate) fn validate_probability(probability: f64) -> PyResult<()> {
     if probability.is_finite() && (0.0..=1.0).contains(&probability) {
         Ok(())
