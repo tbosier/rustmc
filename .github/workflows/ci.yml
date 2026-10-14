@@ -325,3 +325,7 @@ jobs:
     uses: ./.github/workflows/docs.yml
     with:
       deploy: true
+      # python-source-install checked the example pages before anything was
+      # published. Repeating it here could only fail the site deploy after the
+      # packages are out, if a toolchain release moved the last digits between.
+      check_examples: false
