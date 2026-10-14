@@ -450,6 +450,7 @@ fn validate_posterior(
         step_sizes: posterior.step_sizes,
         divergences: posterior.divergences,
         transitions,
+        max_tree_depth: None,
     })
 }
 

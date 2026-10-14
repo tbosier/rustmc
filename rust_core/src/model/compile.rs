@@ -537,6 +537,7 @@ fn derive_display_sample_result(
         divergences: raw_result.divergences.clone(),
         transitions: raw_result.transitions.clone(),
         param_names,
+        max_tree_depth: raw_result.max_tree_depth,
     })
 }
 

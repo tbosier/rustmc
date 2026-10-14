@@ -412,12 +412,21 @@ pub struct SampleResult {
     pub divergences: Vec<usize>,
     pub transitions: Vec<Vec<TransitionStats>>,
     pub param_names: Vec<String>,
+    /// The NUTS maximum tree depth the chains ran with, which tree-depth
+    /// saturation is counted against. `None` for HMC, and for a NUTS fit
+    /// loaded from an artifact that did not record it.
+    pub max_tree_depth: Option<usize>,
 }
 
 impl SampleResult {
     /// Gather the kernels' per-chain output, moving each chain's draws and
-    /// telemetry rather than copying them.
-    pub(crate) fn from_chains(chains: Vec<ChainResult>, param_names: Vec<String>) -> Self {
+    /// telemetry rather than copying them. `config` is the one the chains ran
+    /// with.
+    pub(crate) fn from_chains(
+        chains: Vec<ChainResult>,
+        param_names: Vec<String>,
+        config: &SamplerConfig,
+    ) -> Self {
         let mut result = Self {
             samples: Vec::with_capacity(chains.len()),
             unconstrained_samples: None,
@@ -426,6 +435,10 @@ impl SampleResult {
             divergences: Vec::with_capacity(chains.len()),
             transitions: Vec::with_capacity(chains.len()),
             param_names,
+            max_tree_depth: match config.sampler {
+                SamplerType::Nuts => Some(config.max_tree_depth),
+                SamplerType::Hmc => None,
+            },
         };
         for chain in chains {
             result.samples.push(chain.samples);
@@ -521,9 +534,13 @@ impl SampleResult {
         )
     }
 
-    /// Structured per-transition telemetry aggregated across chains.
+    /// Structured per-transition telemetry aggregated across chains, with
+    /// tree-depth saturation counted against [`Self::max_tree_depth`].
     pub fn transition_diagnostics(&self) -> diagnostics::TransitionDiagnosticsReport {
-        diagnostics::compute_transition_diagnostics(&self.transitions)
+        diagnostics::compute_transition_diagnostics_with_max_tree_depth(
+            &self.transitions,
+            self.max_tree_depth,
+        )
     }
 }
 
@@ -814,7 +831,7 @@ fn sample_checked(
     progress: Option<&ProgressState>,
 ) -> Result<SampleResult, String> {
     let chains = run_chains(graph, binding, config, initial, progress)?;
-    let mut result = SampleResult::from_chains(chains, graph.param_names.clone());
+    let mut result = SampleResult::from_chains(chains, graph.param_names.clone(), config);
     let (samples, unconstrained_samples) =
         constrain_chains(graph, std::mem::take(&mut result.samples))?;
     result.samples = samples;
@@ -1426,6 +1443,7 @@ mod tests {
                 },
             ]],
             param_names: vec!["x".to_string()],
+            max_tree_depth: None,
         };
 
         assert_eq!(result.mean_accept_rate(), 0.8);
