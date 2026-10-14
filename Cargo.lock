@@ -925,11 +925,7 @@ dependencies = [
  "ndarray",
  "numpy",
  "pyo3",
- "rand",
- "rand_chacha",
  "rustmc_core",
- "serde",
- "serde_json",
 ]
 
 [[package]]

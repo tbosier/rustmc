@@ -5,7 +5,7 @@ use crate::{forecast_batch, regression};
 use numpy::{IntoPyArray, PyArray1, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
+use rustmc_core::bayesian_regression::RegressionConfig;
 use rustmc_core::bayesian_seasonal::{
     fit_bayesian_seasonal_local_level,
     BayesianSeasonalLocalLevelConfig as CoreBayesianSeasonalLocalLevelConfig,
@@ -13,25 +13,20 @@ use rustmc_core::bayesian_seasonal::{
     SeasonalPosteriorPredictiveForecast as CoreSeasonalPosteriorPredictiveForecast,
 };
 use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
+use std::sync::Arc;
 
 /// Bayesian structural seasonal local-level model using conjugate Gibbs/FFBS.
 #[pyclass(name = "BayesianSeasonalLocalLevel", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianSeasonalLocalLevel {
-    pub(crate) period: usize,
-    pub(crate) initial_level: f64,
-    pub(crate) initial_seasonal_effects: Vec<f64>,
-    pub(crate) initial_level_variance: f64,
-    pub(crate) initial_seasonal_variance: f64,
-    pub(crate) level_variance_prior: CoreInverseGammaPrior,
-    pub(crate) seasonal_variance_prior: CoreInverseGammaPrior,
-    pub(crate) observation_variance_prior: CoreInverseGammaPrior,
+    /// The model, on the default schedule until a call replaces it.
+    pub(crate) config: CoreBayesianSeasonalLocalLevelConfig,
 }
 
 #[pymethods]
 impl PyBayesianSeasonalLocalLevel {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=None, thin=None, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -43,8 +38,8 @@ impl PyBayesianSeasonalLocalLevel {
         coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
-        warmup: usize,
-        thin: usize,
+        warmup: Option<usize>,
+        thin: Option<usize>,
         seed: u64,
         threads: usize,
         chunk_size: usize,
@@ -52,12 +47,12 @@ impl PyBayesianSeasonalLocalLevel {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
             warmup,
@@ -99,26 +94,43 @@ impl PyBayesianSeasonalLocalLevel {
             initial_seasonal_variance,
         )
         .map_err(inference_error)?;
+        let Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        } = Schedule::DEFAULT;
         Ok(Self {
-            period,
-            initial_level,
-            initial_seasonal_effects: effects,
-            initial_level_variance,
-            initial_seasonal_variance,
-            level_variance_prior: level_variance_prior.inner,
-            seasonal_variance_prior: seasonal_variance_prior.inner,
-            observation_variance_prior: observation_variance_prior.inner,
+            config: CoreBayesianSeasonalLocalLevelConfig {
+                period,
+                initial_level,
+                initial_seasonal_effects: effects,
+                initial_level_variance,
+                initial_seasonal_variance,
+                level_variance_prior: level_variance_prior.inner,
+                seasonal_variance_prior: seasonal_variance_prior.inner,
+                observation_variance_prior: observation_variance_prior.inner,
+                num_chains: chains,
+                num_warmup: warmup,
+                num_draws: draws,
+                thinning: thin,
+                seed,
+            },
         })
     }
 
     #[getter]
     fn period(&self) -> usize {
-        self.period
+        self.config.period
     }
 
     #[getter]
     fn initial_seasonal_effects<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray1<f64>> {
-        self.initial_seasonal_effects.clone().into_pyarray(py)
+        self.config
+            .initial_seasonal_effects
+            .clone()
+            .into_pyarray(py)
     }
 
     #[pyo3(signature = (observations, chains=4, draws=1000, warmup=500, thin=1, seed=42, *, exog=None, coefficient_prior=None))]
@@ -136,53 +148,29 @@ impl PyBayesianSeasonalLocalLevel {
         coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
     ) -> PyResult<PyObject> {
         let observations = real_vector(observations, "observations")?;
+        let config = self.config.with_schedule(Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        });
         if let Some(exog) = exog {
-            let config = regression::config(
-                CoreLinearGaussianStateSpace::seasonal_local_level(
-                    self.period,
-                    1.0,
-                    1.0,
-                    1.0,
-                    self.initial_level,
-                    self.initial_seasonal_effects.clone(),
-                    self.initial_level_variance,
-                    self.initial_seasonal_variance,
-                )
-                .map_err(inference_error)?,
-                vec![self.level_variance_prior, self.seasonal_variance_prior],
-                vec!["level_variance", "seasonal_variance"],
-                self.observation_variance_prior,
-                true,
-                (chains, draws, warmup, thin, seed),
-            );
-            return regression::fit(py, observations, exog, coefficient_prior, config);
+            return regression::fit(py, observations, exog, coefficient_prior, |prior| {
+                RegressionConfig::from_seasonal(&config, prior)
+            });
         }
         if coefficient_prior.is_some() {
             return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
-        let config = CoreBayesianSeasonalLocalLevelConfig {
-            period: self.period,
-            initial_level: self.initial_level,
-            initial_seasonal_effects: self.initial_seasonal_effects.clone(),
-            initial_level_variance: self.initial_level_variance,
-            initial_seasonal_variance: self.initial_seasonal_variance,
-            level_variance_prior: self.level_variance_prior,
-            seasonal_variance_prior: self.seasonal_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        };
         let posterior = py
             .allow_threads(|| fit_bayesian_seasonal_local_level(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(Py::new(
             py,
             PyBayesianSeasonalLocalLevelFit {
-                posterior,
-                observations,
+                posterior: Arc::new(posterior),
+                observations: observations.into(),
                 config,
             },
         )?
@@ -192,16 +180,16 @@ impl PyBayesianSeasonalLocalLevel {
     fn __repr__(&self) -> String {
         format!(
             "BayesianSeasonalLocalLevel(period={}, initial_level={})",
-            self.period, self.initial_level
+            self.config.period, self.config.initial_level
         )
     }
 }
 
-#[pyclass(name = "BayesianSeasonalLocalLevelFit", module = "rustmc")]
+#[pyclass(name = "BayesianSeasonalLocalLevelFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianSeasonalLocalLevelFit {
-    pub(crate) posterior: CoreSeasonalLocalLevelPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreSeasonalLocalLevelPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianSeasonalLocalLevelConfig,
 }
 
@@ -320,7 +308,9 @@ impl PyBayesianSeasonalLocalLevelFit {
         let inner = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianSeasonalForecast { inner })
+        Ok(PyBayesianSeasonalForecast {
+            inner: Arc::new(inner),
+        })
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -335,9 +325,9 @@ impl PyBayesianSeasonalLocalLevelFit {
     }
 }
 
-#[pyclass(name = "BayesianSeasonalForecast", module = "rustmc")]
+#[pyclass(name = "BayesianSeasonalForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianSeasonalForecast {
-    pub(crate) inner: CoreSeasonalPosteriorPredictiveForecast,
+    pub(crate) inner: Arc<CoreSeasonalPosteriorPredictiveForecast>,
 }
 
 #[pymethods]
@@ -453,31 +443,9 @@ impl PyBayesianSeasonalForecast {
     }
 }
 
-impl PyBayesianSeasonalLocalLevel {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
-        let seed = 0;
-
-        forecast_batch::Config::Seasonal(CoreBayesianSeasonalLocalLevelConfig {
-            period: self.period,
-            initial_level: self.initial_level,
-            initial_seasonal_effects: self.initial_seasonal_effects.clone(),
-            initial_level_variance: self.initial_level_variance,
-            initial_seasonal_variance: self.initial_seasonal_variance,
-            level_variance_prior: self.level_variance_prior,
-            seasonal_variance_prior: self.seasonal_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        })
+impl forecast_batch::BatchModel for PyBayesianSeasonalLocalLevel {
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
+        forecast_batch::Config::Seasonal(self.config.with_schedule(schedule))
     }
 }
 

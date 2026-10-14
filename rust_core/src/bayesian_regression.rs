@@ -41,7 +41,9 @@ pub struct RegressionConfig {
     pub num_warmup: usize,
     pub thinning: usize,
     pub seed: u64,
-    /// A structural seasonal observation uses coordinates zero and one.
+    /// Set by `from_seasonal`: the structural model is the seasonal
+    /// local-level template, so the second state path is the seasonal effect
+    /// rather than a slope. The sampler does not read it.
     pub seasonal: bool,
 }
 

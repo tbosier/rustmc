@@ -12,7 +12,7 @@ use rustmc_core::runoff::{
 /// The last alpha entry is an unscheduled tail. Unknown ultimate counts use an
 /// independent Gamma(total_shape, rate=total_rate) Poisson intensity per cohort.
 /// This model does not accept currency as multinomial event counts.
-#[pyclass(name = "DirichletMultinomialRunoff", module = "rustmc")]
+#[pyclass(name = "DirichletMultinomialRunoff", frozen, module = "rustmc")]
 pub(crate) struct PyRunoff {
     alpha: Vec<f64>,
     total_shape: f64,
@@ -100,7 +100,7 @@ fn runoff_error(error: RunoffError) -> PyErr {
     InferenceError::new_err(error.to_string())
 }
 
-#[pyclass(name = "RunoffFit", module = "rustmc")]
+#[pyclass(name = "RunoffFit", frozen, module = "rustmc")]
 pub(crate) struct PyRunoffFit {
     inner: RunoffPosterior,
 }

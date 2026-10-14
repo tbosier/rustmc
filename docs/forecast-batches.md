@@ -38,8 +38,8 @@ configuration, including different seasonal periods or AR orders. An entry of
 their time positions for the state-space models; AR continues to require finite
 histories. Sampling controls are shared across the call. AR uses exact independent
 conjugate draws, so it has no warmup or thinning: in a mixed batch `warmup` and
-`thin` apply to the Gibbs cells only, and a batch of only AR cells refuses values
-other than the defaults.
+`thin` apply to the Gibbs cells only (500 and 1 when omitted), and a batch of only
+AR cells refuses either one.
 
 `errors="collect"` returns successful fits alongside a mapping of cell ID to error
 text. Both validation and numerical errors are isolated; failed entries in `.results`
@@ -56,7 +56,8 @@ bound retained output memory. Fit objects retain all posterior parameter draws, 
 forecast objects retain all joint paths. For bounded retention, submit slices of a
 larger workload, persist their summaries or draws, then release each batch before
 submitting the next slice. Accessing `.results` or an individual fit/forecast creates
-an owned copy. Avoid keeping both copies for large workloads.
+a new Python object that shares the cell's draws or paths rather than copying them;
+array attributes such as `observation_samples` are still fresh NumPy copies.
 
 Seeds depend on `(seed, cell_id, domain)` followed by each sampler's existing
 model/domain/chain derivation, never cell position or worker scheduling. The cell

@@ -37,7 +37,7 @@ pub(crate) fn state_covariances_array<'py>(
 /// transition and process matrices. Observation rows may vary by time.
 /// Initial moments describe the state immediately before the first observation;
 /// filtering performs one prediction before updating on observations[0].
-#[pyclass(name = "LinearGaussianStateSpace", module = "rustmc")]
+#[pyclass(name = "LinearGaussianStateSpace", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyLinearGaussianStateSpace {
     pub(crate) inner: CoreLinearGaussianStateSpace,
@@ -258,7 +258,7 @@ impl PyLinearGaussianStateSpace {
     }
 }
 
-#[pyclass(name = "KalmanFilterResult", module = "rustmc")]
+#[pyclass(name = "KalmanFilterResult", frozen, module = "rustmc")]
 pub(crate) struct PyKalmanFilterResult {
     pub(crate) inner: CoreKalmanFilterResult,
     pub(crate) dimension: usize,
@@ -298,7 +298,7 @@ impl PyKalmanFilterResult {
     }
 }
 
-#[pyclass(name = "KalmanSmootherResult", module = "rustmc")]
+#[pyclass(name = "KalmanSmootherResult", frozen, module = "rustmc")]
 pub(crate) struct PyKalmanSmootherResult {
     pub(crate) inner: CoreKalmanSmootherResult,
     pub(crate) dimension: usize,
@@ -338,7 +338,7 @@ impl PyKalmanSmootherResult {
     }
 }
 
-#[pyclass(name = "ForecastResult", module = "rustmc")]
+#[pyclass(name = "ForecastResult", frozen, module = "rustmc")]
 pub(crate) struct PyForecastResult {
     pub(crate) inner: CoreForecastResult,
     pub(crate) dimension: usize,

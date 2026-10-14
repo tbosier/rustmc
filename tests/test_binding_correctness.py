@@ -49,18 +49,29 @@ def test_non_finite_matrix_data_is_rejected(rustmc_module):
         ({"num_leapfrog_steps": 0}, "num_leapfrog_steps"),
     ],
 )
+@pytest.mark.parametrize("sampler", ["nuts", "hmc"])
 def test_invalid_sample_configuration_fails_before_sampling(
-    rustmc_module, kwargs, message
+    rustmc_module, kwargs, message, sampler
 ):
     config = {
         "chains": 1,
         "draws": 1,
         "warmup": 1,
         "show_progress": False,
+        "sampler": sampler,
     }
     config.update(kwargs)
     with pytest.raises(ValueError, match=message):
         rustmc_module.sample(_model(rustmc_module), **config)
+
+
+def test_numeric_sample_options_are_reported_before_an_unknown_sampler(rustmc_module):
+    config = {"chains": 1, "draws": 1, "warmup": 1, "show_progress": False}
+    with pytest.raises(ValueError, match="Unknown sampler 'gibbs'"):
+        rustmc_module.sample(_model(rustmc_module), sampler="gibbs", **config)
+    config["chains"] = 0
+    with pytest.raises(ValueError, match="chains"):
+        rustmc_module.sample(_model(rustmc_module), sampler="gibbs", **config)
 
 
 def test_transition_diagnostics_expose_integrator_work(rustmc_module):

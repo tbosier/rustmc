@@ -11,7 +11,7 @@ use super::seasonal::{
 use super::trend::{
     PyBayesianLocalLinearTrend, PyBayesianLocalLinearTrendFit, PyBayesianTrendForecast,
 };
-use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit};
+use crate::forecast_support::{real_matrix, real_vector, DiagnosticsReport, ForecastFit, Schedule};
 use crate::{forecast_diagnostics, InferenceError};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
@@ -41,6 +41,7 @@ use rustmc_core::forecast_batch::{
     execute_batch, execute_batch_fail_fast, stable_cell_seed, BatchError,
 };
 use rustmc_core::hurdle::{fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast};
+use std::sync::Arc;
 
 // Limit each call's retained scalar values and each cell's conservative FFBS
 // workspace estimate. Larger workloads must use caller-managed chunks.
@@ -76,14 +77,16 @@ enum CellFit {
     Hurdle(PyHurdleFit),
     Regression(Box<PyBayesianRegressionFit>),
 }
+/// Payloads are shared with the Python objects built from them, so handing a
+/// cell to Python does not copy its paths.
 #[derive(Clone)]
 enum CellForecast {
-    Local(CorePosteriorPredictiveForecast),
-    Seasonal(CoreSeasonalPosteriorPredictiveForecast),
-    Trend(CoreTrendPosteriorPredictiveForecast),
-    Ar(CoreBayesianArForecast),
-    Hurdle(HurdleLogNormalForecast),
-    Regression(RegressionForecast, bool, usize),
+    Local(Arc<CorePosteriorPredictiveForecast>),
+    Seasonal(Arc<CoreSeasonalPosteriorPredictiveForecast>),
+    Trend(Arc<CoreTrendPosteriorPredictiveForecast>),
+    Ar(Arc<CoreBayesianArForecast>),
+    Hurdle(Arc<HurdleLogNormalForecast>),
+    Regression(Arc<RegressionForecast>, bool, usize),
 }
 impl Config {
     fn allocation_size(&self, history: usize) -> Result<usize, String> {
@@ -154,8 +157,8 @@ impl Config {
                 let posterior = fit_hurdle_lognormal(observations, &config)
                     .map_err(|error| error.to_string())?;
                 Ok(CellFit::Hurdle(PyHurdleFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -165,8 +168,8 @@ impl Config {
                 let posterior = fit_regression(observations, design, &config)
                     .map_err(|error| error.to_string())?;
                 Ok(CellFit::Regression(Box::new(PyBayesianRegressionFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                 })))
             }
             Self::Local(base) => {
@@ -175,8 +178,8 @@ impl Config {
                 let posterior =
                     fit_bayesian_local_level(observations, &config).map_err(|e| e.to_string())?;
                 Ok(CellFit::Local(PyBayesianLocalLevelFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -186,8 +189,8 @@ impl Config {
                 let posterior = fit_bayesian_seasonal_local_level(observations, &config)
                     .map_err(|e| e.to_string())?;
                 Ok(CellFit::Seasonal(PyBayesianSeasonalLocalLevelFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -197,8 +200,8 @@ impl Config {
                 let posterior = fit_bayesian_local_linear_trend(observations, &config)
                     .map_err(|e| e.to_string())?;
                 Ok(CellFit::Trend(PyBayesianLocalLinearTrendFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -208,8 +211,8 @@ impl Config {
                 let posterior =
                     fit_bayesian_ar(observations, &config).map_err(|e| e.to_string())?;
                 Ok(CellFit::Ar(PyBayesianArFit {
-                    posterior,
-                    observations: observations.to_vec(),
+                    posterior: Arc::new(posterior),
+                    observations: observations.into(),
                     config,
                 }))
             }
@@ -272,7 +275,7 @@ impl CellFit {
                     .forecast(design, seed)
                     .map(|inner| {
                         CellForecast::Regression(
-                            inner,
+                            Arc::new(inner),
                             fit.posterior.config.seasonal,
                             fit.posterior.config.structural_model.dimension(),
                         )
@@ -282,27 +285,27 @@ impl CellFit {
             Self::Hurdle(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Hurdle)
+                .map(|inner| CellForecast::Hurdle(Arc::new(inner)))
                 .map_err(|error| error.to_string()),
             Self::Local(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Local)
+                .map(|inner| CellForecast::Local(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Seasonal(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Seasonal)
+                .map(|inner| CellForecast::Seasonal(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Trend(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Trend)
+                .map(|inner| CellForecast::Trend(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
             Self::Ar(fit) => fit
                 .posterior
                 .forecast(steps, seed)
-                .map(CellForecast::Ar)
+                .map(|inner| CellForecast::Ar(Arc::new(inner)))
                 .map_err(|e| e.to_string()),
         }
     }
@@ -381,35 +384,52 @@ fn run_cells<T: Sync, R: Send>(
 }
 
 /// A cell's converted observations and model, or why it could not be built.
-type CellInput = Result<(Vec<f64>, Config), String>;
+/// The size is `Config::allocation_size` for the cell's history, computed when
+/// the cell is prepared and reused by the batch retention check.
+type CellInput = Result<(Vec<f64>, Config, usize), String>;
 
-/// The `fit_batch` defaults for the Gibbs schedule.
-const DEFAULT_WARMUP: usize = 500;
-const DEFAULT_THIN: usize = 1;
+/// A forecasting model that can fit `fit_batch` cells.
+pub(crate) trait BatchModel {
+    /// This model's cell config under `schedule`. AR ignores warmup and thin.
+    fn batch_config(&self, schedule: Schedule) -> Config;
+}
 
-/// Refuse a non-default `warmup` or `thin` that no cell would use.
+/// The config of a `models` entry, if it is a forecasting model.
+fn batch_model_config(model: &Bound<'_, PyAny>, schedule: Schedule) -> Option<Config> {
+    fn config<T: pyo3::PyClass + BatchModel>(
+        model: &Bound<'_, PyAny>,
+        schedule: Schedule,
+    ) -> Option<Config> {
+        let model = model.extract::<PyRef<'_, T>>().ok()?;
+        Some(model.batch_config(schedule))
+    }
+    config::<PyHurdleLogNormal>(model, schedule)
+        .or_else(|| config::<PyBayesianLocalLevel>(model, schedule))
+        .or_else(|| config::<PyBayesianSeasonalLocalLevel>(model, schedule))
+        .or_else(|| config::<PyBayesianLocalLinearTrend>(model, schedule))
+        .or_else(|| config::<PyBayesianAutoRegression>(model, schedule))
+}
+
+/// Refuse a `warmup` or `thin` that no cell would use.
 ///
 /// AR draws are exact and independent, so an all-AR batch has no warmup or
 /// thinning; silently dropping the settings would let a caller believe they
-/// had changed the fit.
+/// had changed the fit. `all_ar` is true when at least one cell will run and
+/// every cell whose `models` entry names a forecasting model is AR, whether or
+/// not that cell's observations or exog converted. A Gibbs cell whose data
+/// failed therefore still keeps the batch from counting as all-AR. A cell with
+/// an invalid `models` entry has no kind and is left out, and a batch in which
+/// no cell will run is not refused, so its cells report their own errors.
 fn reject_unused_schedule(
-    cells: &[(String, CellInput)],
-    warmup: usize,
-    thin: usize,
+    all_ar: bool,
+    warmup: Option<usize>,
+    thin: Option<usize>,
 ) -> PyResult<()> {
-    if (warmup, thin) == (DEFAULT_WARMUP, DEFAULT_THIN) {
-        return Ok(());
-    }
-    let mut configs = cells
-        .iter()
-        .filter_map(|(_, input)| input.as_ref().ok())
-        .map(|(_, config)| config)
-        .peekable();
-    if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
-        return Err(PyValueError::new_err(format!(
+    if all_ar && (warmup.is_some() || thin.is_some()) {
+        return Err(PyValueError::new_err(
             "warmup and thin do not apply to BayesianAutoRegression cells, whose posterior \
-             draws are exact and independent; leave them at {DEFAULT_WARMUP} and {DEFAULT_THIN}"
-        )));
+             draws are exact and independent; leave them unset",
+        ));
     }
     Ok(())
 }
@@ -463,22 +483,30 @@ fn aligned_optional<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fit_batch(
     py: Python<'_>,
+    model: &dyn BatchModel,
     observations: &Bound<'_, PyAny>,
     ids: Vec<String>,
     models: Option<&Bound<'_, PyAny>>,
     exog: Option<&Bound<'_, PyAny>>,
     coefficient_priors: Option<&Bound<'_, PyAny>>,
-    default: Config,
     chains: usize,
     draws: usize,
-    warmup: usize,
-    thin: usize,
+    warmup: Option<usize>,
+    thin: Option<usize>,
     seed: u64,
     threads: usize,
     chunk_size: usize,
     errors: &str,
 ) -> PyResult<PyForecastBatchFit> {
     check_errors(errors)?;
+    let schedule = Schedule {
+        chains,
+        draws,
+        warmup: warmup.unwrap_or(Schedule::DEFAULT.warmup),
+        thin: thin.unwrap_or(Schedule::DEFAULT.thin),
+        seed,
+    };
+    let default = model.batch_config(schedule);
     let rows = observations.try_iter()?.collect::<PyResult<Vec<_>>>()?;
     if ids.len() != rows.len() {
         return Err(PyValueError::new_err(
@@ -489,33 +517,24 @@ pub(crate) fn fit_batch(
     let designs = aligned_optional(exog, ids.len(), "exog")?;
     let priors = aligned_optional(coefficient_priors, ids.len(), "coefficient_priors")?;
     let mut cells = Vec::with_capacity(ids.len());
+    let (mut every_known_kind_is_ar, mut any_cell_built) = (true, false);
     for (index, row) in rows.iter().enumerate() {
-        let input = (|| -> Result<(Vec<f64>, Config), String> {
+        // The cell's model is resolved before its input, so its kind is known
+        // even when the input fails; the observations error still comes first.
+        let config = match &models {
+            Some(models) if !models[index].is_none() => {
+                batch_model_config(&models[index], schedule)
+            }
+            _ => Some(default.clone()),
+        };
+        if let Some(config) = &config {
+            every_known_kind_is_ar &= matches!(config, Config::Ar(_));
+        }
+        let input = (|| -> CellInput {
             let y = cell_input(py, real_vector(row, "observations"))?;
-            let config = if let Some(models) = &models {
-                let model = &models[index];
-                if model.is_none() {
-                    default.clone()
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyHurdleLogNormal>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLevel>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianSeasonalLocalLevel>>()
-                {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianLocalLinearTrend>>() {
-                    model.batch_config(chains, draws, warmup, thin)
-                } else if let Ok(model) = model.extract::<PyRef<'_, PyBayesianAutoRegression>>() {
-                    model.batch_config(chains, draws)
-                } else {
-                    return Err(
-                        "invalid configuration: models entries must be forecasting models or None"
-                            .into(),
-                    );
-                }
-            } else {
-                default.clone()
-            };
+            let config = config.ok_or(
+                "invalid configuration: models entries must be forecasting models or None",
+            )?;
             let design = designs
                 .as_ref()
                 .map(|items| &items[index])
@@ -544,17 +563,18 @@ pub(crate) fn fit_batch(
                             .into(),
                     ),
                 };
-            config.allocation_size(y.len())?;
-            Ok((y, config))
+            let size = config.allocation_size(y.len())?;
+            Ok((y, config, size))
         })();
+        any_cell_built |= input.is_ok();
         cells.push((ids[index].clone(), input));
     }
-    reject_unused_schedule(&cells, warmup, thin)?;
+    reject_unused_schedule(any_cell_built && every_known_kind_is_ar, warmup, thin)?;
     check_total_retention(
         cells
             .iter()
             .filter_map(|(_, input)| input.as_ref().ok())
-            .filter_map(|(y, config)| config.allocation_size(y.len()).ok()),
+            .map(|(_, _, size)| *size),
     )?;
     let results = py.allow_threads(|| {
         run_cells(
@@ -564,23 +584,16 @@ pub(crate) fn fit_batch(
             chunk_size,
             errors,
             |input, cell_seed| {
-                let (y, config) = input.as_ref().map_err(Clone::clone)?;
+                let (y, config, _) = input.as_ref().map_err(Clone::clone)?;
                 config.fit(y, cell_seed)
             },
         )
     })?;
-    if errors == "raise" {
-        for (id, result) in ids.iter().zip(&results) {
-            if let Err(error) = result {
-                return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
-            }
-        }
-    }
     Ok(PyForecastBatchFit { ids, results })
 }
 
 /// Results preserve requested cell order; failed cells have None in `results`.
-#[pyclass(name = "ForecastBatchFit", module = "rustmc")]
+#[pyclass(name = "ForecastBatchFit", frozen, module = "rustmc")]
 pub(crate) struct PyForecastBatchFit {
     ids: Vec<String>,
     results: Vec<Result<CellFit, String>>,
@@ -684,20 +697,13 @@ impl PyForecastBatchFit {
                 },
             )
         })?;
-        if errors == "raise" {
-            for (id, result) in self.ids.iter().zip(&results) {
-                if let Err(error) = result {
-                    return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
-                }
-            }
-        }
         Ok(PyForecastBatchForecast {
             ids: self.ids.clone(),
             results,
         })
     }
 }
-#[pyclass(name = "ForecastBatchForecast", module = "rustmc")]
+#[pyclass(name = "ForecastBatchForecast", frozen, module = "rustmc")]
 pub(crate) struct PyForecastBatchForecast {
     ids: Vec<String>,
     results: Vec<Result<CellForecast, String>>,

@@ -154,8 +154,8 @@ class BayesianAutoRegression:
         coefficient_priors: Sequence[GaussianCoefficientPrior | None] | None = None,
         chains: int = 4,
         draws: int = 1000,
-        warmup: int = 500,
-        thin: int = 1,
+        warmup: int | None = None,
+        thin: int | None = None,
         seed: int = 42,
         threads: int = 1,
         chunk_size: int = 64,
@@ -164,9 +164,9 @@ class BayesianAutoRegression:
         """Fit independent cells; AR posterior draws are exact and independent.
 
         ``warmup`` and ``thin`` reach only the Gibbs-sampled cells named in
-        ``models``. A batch whose cells are all autoregressions raises
-        ``ValueError`` for values other than the defaults rather than
-        ignoring them.
+        ``models``, which default to 500 and 1. A batch whose cells are all
+        autoregressions raises ``ValueError`` when either is given rather
+        than ignoring it.
         """
     def __init__(self, order: int, prior: NormalInverseGammaPrior) -> None: ...
     @property
@@ -363,8 +363,8 @@ class BayesianHurdleLogNormal:
         coefficient_priors: Sequence[GaussianCoefficientPrior | None] | None = None,
         chains: int = 4,
         draws: int = 1000,
-        warmup: int = 500,
-        thin: int = 1,
+        warmup: int | None = None,
+        thin: int | None = None,
         seed: int = 42,
         threads: int = 1,
         chunk_size: int = 64,
@@ -459,8 +459,8 @@ class BayesianLocalLevel:
         coefficient_priors: Sequence[GaussianCoefficientPrior | None] | None = None,
         chains: int = 4,
         draws: int = 1000,
-        warmup: int = 500,
-        thin: int = 1,
+        warmup: int | None = None,
+        thin: int | None = None,
         seed: int = 42,
         threads: int = 1,
         chunk_size: int = 64,
@@ -555,8 +555,8 @@ class BayesianLocalLinearTrend:
         coefficient_priors: Sequence[GaussianCoefficientPrior | None] | None = None,
         chains: int = 4,
         draws: int = 1000,
-        warmup: int = 500,
-        thin: int = 1,
+        warmup: int | None = None,
+        thin: int | None = None,
         seed: int = 42,
         threads: int = 1,
         chunk_size: int = 64,
@@ -760,8 +760,8 @@ class BayesianSeasonalLocalLevel:
         coefficient_priors: Sequence[GaussianCoefficientPrior | None] | None = None,
         chains: int = 4,
         draws: int = 1000,
-        warmup: int = 500,
-        thin: int = 1,
+        warmup: int | None = None,
+        thin: int | None = None,
         seed: int = 42,
         threads: int = 1,
         chunk_size: int = 64,

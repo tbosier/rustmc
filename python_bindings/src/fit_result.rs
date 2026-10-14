@@ -20,7 +20,7 @@ use rustmc_core::sampler::SampleResult;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct FitResult {
     /// Shared: cloning a `FitResult`, or taking one from a batch cell, never

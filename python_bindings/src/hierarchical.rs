@@ -244,7 +244,7 @@ pub(crate) fn validate_unique_names(
     Ok(())
 }
 
-#[pyclass(name = "BayesianHierarchicalMeanFit", module = "rustmc")]
+#[pyclass(name = "BayesianHierarchicalMeanFit", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianHierarchicalMeanFit {
     pub(crate) posterior: CoreHierarchicalMeanPosterior,
     pub(crate) time_counts: Vec<usize>,
@@ -443,7 +443,7 @@ impl PyBayesianHierarchicalForecast {
     }
 }
 
-#[pyclass(name = "BayesianHierarchicalForecast", module = "rustmc")]
+#[pyclass(name = "BayesianHierarchicalForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianHierarchicalForecast {
     pub(crate) inner: CoreHierarchicalMeanForecast,
     pub(crate) program_names: Vec<String>,

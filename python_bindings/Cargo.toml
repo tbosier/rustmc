@@ -18,7 +18,3 @@ rustmc_core = { path = "../rust_core", version = "0.13.0" }
 pyo3 = { version = "0.25", features = ["extension-module", "abi3-py39"] }
 numpy = "0.25"
 ndarray = "0.16"
-rand = "0.8"
-rand_chacha = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", features = ["float_roundtrip"] }

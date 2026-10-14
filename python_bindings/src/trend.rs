@@ -6,30 +6,27 @@ use ndarray::Array2;
 use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
+use rustmc_core::bayesian_regression::RegressionConfig;
 use rustmc_core::bayesian_trend::{
     fit_bayesian_local_linear_trend,
     BayesianLocalLinearTrendConfig as CoreBayesianLocalLinearTrendConfig,
     LocalLinearTrendPosterior as CoreLocalLinearTrendPosterior,
     TrendPosteriorPredictiveForecast as CoreTrendPosteriorPredictiveForecast,
 };
-use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
+use std::sync::Arc;
 
 /// Bayesian local-linear-trend model with stochastic level and slope.
 #[pyclass(name = "BayesianLocalLinearTrend", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLinearTrend {
-    pub(crate) initial_mean: [f64; 2],
-    pub(crate) initial_covariance: [f64; 4],
-    pub(crate) level_variance_prior: CoreInverseGammaPrior,
-    pub(crate) slope_variance_prior: CoreInverseGammaPrior,
-    pub(crate) observation_variance_prior: CoreInverseGammaPrior,
+    /// The model, on the default schedule until a call replaces it.
+    pub(crate) config: CoreBayesianLocalLinearTrendConfig,
 }
 
 #[pymethods]
 impl PyBayesianLocalLinearTrend {
     /// Fit independent ragged cells on one bounded native worker pool.
-    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=None, thin=None, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -41,8 +38,8 @@ impl PyBayesianLocalLinearTrend {
         coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
-        warmup: usize,
-        thin: usize,
+        warmup: Option<usize>,
+        thin: Option<usize>,
         seed: u64,
         threads: usize,
         chunk_size: usize,
@@ -50,12 +47,12 @@ impl PyBayesianLocalLinearTrend {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
             warmup,
@@ -112,34 +109,48 @@ impl PyBayesianLocalLinearTrend {
                 "invalid configuration: initial state covariance must be positive definite",
             ));
         }
+        let Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        } = Schedule::DEFAULT;
         Ok(Self {
-            initial_mean: [initial_level, initial_slope],
-            initial_covariance: [
-                initial_level_variance,
-                initial_level_slope_covariance,
-                initial_level_slope_covariance,
-                initial_slope_variance,
-            ],
-            level_variance_prior: level_variance_prior.inner,
-            slope_variance_prior: slope_variance_prior.inner,
-            observation_variance_prior: observation_variance_prior.inner,
+            config: CoreBayesianLocalLinearTrendConfig {
+                initial_mean: [initial_level, initial_slope],
+                initial_covariance: [
+                    initial_level_variance,
+                    initial_level_slope_covariance,
+                    initial_level_slope_covariance,
+                    initial_slope_variance,
+                ],
+                level_variance_prior: level_variance_prior.inner,
+                slope_variance_prior: slope_variance_prior.inner,
+                observation_variance_prior: observation_variance_prior.inner,
+                num_chains: chains,
+                num_warmup: warmup,
+                num_draws: draws,
+                thinning: thin,
+                seed,
+            },
         })
     }
 
     #[getter]
     fn initial_level(&self) -> f64 {
-        self.initial_mean[0]
+        self.config.initial_mean[0]
     }
 
     #[getter]
     fn initial_slope(&self) -> f64 {
-        self.initial_mean[1]
+        self.config.initial_mean[1]
     }
 
     #[getter]
     fn initial_covariance<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray2<f64>> {
         Array2::from_shape_fn((2, 2), |(row, column)| {
-            self.initial_covariance[row * 2 + column]
+            self.config.initial_covariance[row * 2 + column]
         })
         .into_pyarray(py)
     }
@@ -147,21 +158,21 @@ impl PyBayesianLocalLinearTrend {
     #[getter]
     fn level_variance_prior(&self) -> PyInverseGammaPrior {
         PyInverseGammaPrior {
-            inner: self.level_variance_prior,
+            inner: self.config.level_variance_prior,
         }
     }
 
     #[getter]
     fn slope_variance_prior(&self) -> PyInverseGammaPrior {
         PyInverseGammaPrior {
-            inner: self.slope_variance_prior,
+            inner: self.config.slope_variance_prior,
         }
     }
 
     #[getter]
     fn observation_variance_prior(&self) -> PyInverseGammaPrior {
         PyInverseGammaPrior {
-            inner: self.observation_variance_prior,
+            inner: self.config.observation_variance_prior,
         }
     }
 
@@ -180,49 +191,29 @@ impl PyBayesianLocalLinearTrend {
         coefficient_prior: Option<PyRef<'_, regression::PyGaussianCoefficientPrior>>,
     ) -> PyResult<PyObject> {
         let observations = real_vector(observations, "observations")?;
+        let config = self.config.with_schedule(Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        });
         if let Some(exog) = exog {
-            let config = regression::config(
-                CoreLinearGaussianStateSpace::new(
-                    2,
-                    vec![1.0, 1.0, 0.0, 1.0],
-                    vec![1.0, 0.0],
-                    vec![1.0, 0.0, 0.0, 1.0],
-                    1.0,
-                    self.initial_mean.to_vec(),
-                    self.initial_covariance.to_vec(),
-                )
-                .map_err(inference_error)?,
-                vec![self.level_variance_prior, self.slope_variance_prior],
-                vec!["level_variance", "slope_variance"],
-                self.observation_variance_prior,
-                false,
-                (chains, draws, warmup, thin, seed),
-            );
-            return regression::fit(py, observations, exog, coefficient_prior, config);
+            return regression::fit(py, observations, exog, coefficient_prior, |prior| {
+                RegressionConfig::from_trend(&config, prior)
+            });
         }
         if coefficient_prior.is_some() {
             return Err(InferenceError::new_err("coefficient_prior requires exog"));
         }
-        let config = CoreBayesianLocalLinearTrendConfig {
-            initial_mean: self.initial_mean,
-            initial_covariance: self.initial_covariance,
-            level_variance_prior: self.level_variance_prior,
-            slope_variance_prior: self.slope_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        };
         let posterior = py
             .allow_threads(|| fit_bayesian_local_linear_trend(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(Py::new(
             py,
             PyBayesianLocalLinearTrendFit {
-                posterior,
-                observations,
+                posterior: Arc::new(posterior),
+                observations: observations.into(),
                 config,
             },
         )?
@@ -232,16 +223,16 @@ impl PyBayesianLocalLinearTrend {
     fn __repr__(&self) -> String {
         format!(
             "BayesianLocalLinearTrend(initial_level={}, initial_slope={})",
-            self.initial_mean[0], self.initial_mean[1],
+            self.config.initial_mean[0], self.config.initial_mean[1],
         )
     }
 }
 
-#[pyclass(name = "BayesianLocalLinearTrendFit", module = "rustmc")]
+#[pyclass(name = "BayesianLocalLinearTrendFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianLocalLinearTrendFit {
-    pub(crate) posterior: CoreLocalLinearTrendPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreLocalLinearTrendPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianLocalLinearTrendConfig,
 }
 
@@ -361,7 +352,9 @@ impl PyBayesianLocalLinearTrendFit {
         let forecast = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianTrendForecast { inner: forecast })
+        Ok(PyBayesianTrendForecast {
+            inner: Arc::new(forecast),
+        })
     }
 
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
@@ -379,9 +372,9 @@ impl PyBayesianLocalLinearTrendFit {
     }
 }
 
-#[pyclass(name = "BayesianTrendForecast", module = "rustmc")]
+#[pyclass(name = "BayesianTrendForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianTrendForecast {
-    pub(crate) inner: CoreTrendPosteriorPredictiveForecast,
+    pub(crate) inner: Arc<CoreTrendPosteriorPredictiveForecast>,
 }
 
 #[pymethods]
@@ -490,28 +483,9 @@ impl PyBayesianTrendForecast {
     }
 }
 
-impl PyBayesianLocalLinearTrend {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
-        let seed = 0;
-
-        forecast_batch::Config::Trend(CoreBayesianLocalLinearTrendConfig {
-            initial_mean: self.initial_mean,
-            initial_covariance: self.initial_covariance,
-            level_variance_prior: self.level_variance_prior,
-            slope_variance_prior: self.slope_variance_prior,
-            observation_variance_prior: self.observation_variance_prior,
-            num_chains: chains,
-            num_warmup: warmup,
-            num_draws: draws,
-            thinning: thin,
-            seed,
-        })
+impl forecast_batch::BatchModel for PyBayesianLocalLinearTrend {
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
+        forecast_batch::Config::Trend(self.config.with_schedule(schedule))
     }
 }
 

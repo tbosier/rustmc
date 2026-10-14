@@ -5,13 +5,13 @@ use numpy::{IntoPyArray, PyArray1, PyArray2, PyArray3};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::bayesian_forecast::InverseGammaPrior as CoreInverseGammaPrior;
 use rustmc_core::bayesian_regression::{
     self as core, GaussianCoefficientPrior, RegressionConfig, RegressionForecast,
     RegressionPosterior,
 };
 use rustmc_core::forecast_common::{path_means, path_quantiles};
-use rustmc_core::state_space::LinearGaussianStateSpace as CoreLinearGaussianStateSpace;
+use rustmc_core::state_space::StateSpaceError;
+use std::sync::Arc;
 
 #[pyclass(name = "GaussianCoefficientPrior", frozen, module = "rustmc")]
 #[derive(Clone)]
@@ -57,21 +57,22 @@ fn fourier_design<'py>(
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 
+/// Fit `exog` regression on a structural model. `config` builds the model's
+/// regression config around the caller's coefficient prior, which is
+/// required.
 pub(crate) fn fit(
     py: Python<'_>,
     observations: Vec<f64>,
     exog: &Bound<'_, PyAny>,
     prior: Option<PyRef<'_, PyGaussianCoefficientPrior>>,
-    mut config: RegressionConfig,
+    config: impl FnOnce(GaussianCoefficientPrior) -> Result<RegressionConfig, StateSpaceError>,
 ) -> PyResult<PyObject> {
-    config.coefficient_prior = prior
-        .ok_or_else(|| {
-            InferenceError::new_err(
-                "exog requires an explicit GaussianCoefficientPrior via coefficient_prior",
-            )
-        })?
-        .inner
-        .clone();
+    let prior = prior.ok_or_else(|| {
+        InferenceError::new_err(
+            "exog requires an explicit GaussianCoefficientPrior via coefficient_prior",
+        )
+    })?;
+    let config = config(prior.inner.clone()).map_err(inference_error)?;
     let design = real_matrix(exog, "exog")?;
     let posterior = py
         .allow_threads(|| core::fit_regression(&observations, &design, &config))
@@ -79,45 +80,18 @@ pub(crate) fn fit(
     Ok(Py::new(
         py,
         PyBayesianRegressionFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
         },
     )?
     .into_any())
 }
-pub(crate) fn config(
-    structural_model: CoreLinearGaussianStateSpace,
-    variance_priors: Vec<CoreInverseGammaPrior>,
-    variance_names: Vec<&str>,
-    observation_variance_prior: CoreInverseGammaPrior,
-    seasonal: bool,
-    sampling: (usize, usize, usize, usize, u64),
-) -> RegressionConfig {
-    let (num_chains, num_draws, num_warmup, thinning, seed) = sampling;
-    RegressionConfig {
-        innovation_indices: (0..variance_priors.len()).collect(),
-        structural_model,
-        variance_priors,
-        variance_names: variance_names.into_iter().map(str::to_string).collect(),
-        observation_variance_prior,
-        coefficient_prior: GaussianCoefficientPrior {
-            mean: vec![],
-            covariance: vec![],
-        },
-        num_chains,
-        num_draws,
-        num_warmup,
-        thinning,
-        seed,
-        seasonal,
-    }
-}
 
-#[pyclass(name = "BayesianRegressionFit", module = "rustmc")]
+#[pyclass(name = "BayesianRegressionFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianRegressionFit {
-    pub(crate) posterior: RegressionPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<RegressionPosterior>,
+    pub(crate) observations: Arc<[f64]>,
 }
 impl ForecastFit for PyBayesianRegressionFit {
     fn sampler(&self) -> &'static str {
@@ -225,7 +199,7 @@ impl PyBayesianRegressionFit {
             .allow_threads(|| self.posterior.forecast(&design, seed))
             .map_err(inference_error)?;
         Ok(PyBayesianRegressionForecast {
-            inner,
+            inner: Arc::new(inner),
             seasonal: self.posterior.config.seasonal,
             dimension: self.posterior.config.structural_model.dimension(),
         })
@@ -235,9 +209,9 @@ impl PyBayesianRegressionFit {
     }
 }
 
-#[pyclass(name = "BayesianRegressionForecast", module = "rustmc")]
+#[pyclass(name = "BayesianRegressionForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianRegressionForecast {
-    pub(crate) inner: RegressionForecast,
+    pub(crate) inner: Arc<RegressionForecast>,
     pub(crate) seasonal: bool,
     pub(crate) dimension: usize,
 }

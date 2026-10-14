@@ -8,7 +8,7 @@ use pyo3::prelude::*;
 
 /// A vector parameter, from `ModelBuilder.vector_normal_prior`. It has no
 /// scalar value: index it by a group column or multiply it into a matrix.
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct VectorParamRef {
     pub(super) name: String,
@@ -150,7 +150,7 @@ pub(super) fn first_param_name(expr: &MuExpr) -> String {
 }
 
 /// A scalar parameter, as returned by a `ModelBuilder` prior.
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct ParamRef {
     pub(super) name: String,
@@ -160,7 +160,7 @@ pub(super) struct ParamRef {
 
 /// Recursive expression tree built on the Python side, compiled to graph
 /// nodes at sampling time.
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Debug, Clone)]
 pub(super) struct Expr {
     pub(super) inner: MuExpr,
