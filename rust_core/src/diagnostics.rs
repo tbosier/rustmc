@@ -1,3 +1,9 @@
+//! MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
+//!
+//! All algorithms follow the definitions in:
+//!   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
+//!   An improved R-hat for assessing convergence of MCMC"
+
 use crate::hmc::TransitionStats;
 use rayon::prelude::*;
 use std::collections::HashSet;
@@ -17,11 +23,6 @@ const NAME_COLUMN_MIN_WIDTH: usize = 12;
 /// abbreviation from ever making two distinct parameters print identically.
 const NAME_COLUMN_MAX_WIDTH: usize = 48;
 
-/// MCMC diagnostic computations: R-hat, ESS, MCSE, quantiles.
-///
-/// All algorithms follow the definitions in:
-///   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
-///   An improved R-hat for assessing convergence of MCMC"
 /// Per-parameter diagnostic summary.
 #[derive(Debug, Clone)]
 pub struct ParamDiagnostics {
@@ -435,7 +436,7 @@ fn parameter_diagnostics(samples: &[Vec<Vec<f64>>], pidx: usize, name: &str) -> 
         hdi_3,
         hdi_97,
         ess_bulk: ess_bulk_chains(&chains),
-        ess_tail: ess_tail_chains(&chains),
+        ess_tail: ess_tail_sorted(&chains, &all),
         r_hat: r_hat_chains(&chains),
         mcse_mean,
     }
@@ -634,7 +635,7 @@ where
 // scaling to preserve small differences around a large common offset; fall
 // back to scaling without centering if the finite endpoints span an
 // unrepresentable difference. Inputs here have already been shape/finite checked.
-fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
+fn normalize_chains(chains: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut origin = chains[0][0];
     let mut scale = chains
         .iter()
@@ -646,11 +647,10 @@ fn normalize_chains(chains: &[Vec<f64>]) -> (f64, f64, Vec<Vec<f64>>) {
         scale = chains.iter().flatten().map(|x| x.abs()).fold(0.0, f64::max);
     }
     let divisor = if scale > 0.0 { scale } else { 1.0 };
-    let normalized = chains
+    chains
         .iter()
         .map(|chain| chain.iter().map(|x| (x - origin) / divisor).collect())
-        .collect();
-    (origin, scale, normalized)
+        .collect()
 }
 
 fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
@@ -746,14 +746,23 @@ fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
     ess_split(&rank_normalize(&split))
 }
 
+/// [`ess_tail_sorted`] for tests, which sorts the pooled draws itself.
+#[cfg(test)]
+fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
+    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
+    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    ess_tail_sorted(chains, &all)
+}
+
 /// Tail ESS: minimum of ESS for the lower and upper tail indicators.
+///
+/// `all` is every draw of `chains`, pooled and sorted, as
+/// [`parameter_diagnostics`] already has it for the HDI.
 ///
 /// Both indicators are `x <= q`, as in ArviZ and Stan. The upper one could as
 /// well be its complement, which has the same ESS, but `x >= q` is not that
 /// complement when a draw sits exactly on the quantile.
-fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
-    let mut all: Vec<f64> = chains.iter().flat_map(|c| c.iter().copied()).collect();
-    all.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+fn ess_tail_sorted(chains: &[Vec<f64>], all: &[f64]) -> f64 {
     if all.first() == all.last() {
         // A parameter that never moved has no tail, as it has no bulk.
         return f64::NAN;
@@ -764,8 +773,8 @@ fn ess_tail_chains(chains: &[Vec<f64>]) -> f64 {
             .map(|c| c.iter().map(|&x| if x <= q { 1.0 } else { 0.0 }).collect())
             .collect()
     };
-    let ess_lo = indicator_ess(&below(quantile_sorted(&all, 0.05)));
-    let ess_hi = indicator_ess(&below(quantile_sorted(&all, 0.95)));
+    let ess_lo = indicator_ess(&below(quantile_sorted(all, 0.05)));
+    let ess_hi = indicator_ess(&below(quantile_sorted(all, 0.95)));
     ess_lo.min(ess_hi)
 }
 
@@ -843,7 +852,7 @@ fn ess_raw(chains: &[Vec<f64>]) -> f64 {
 /// ESS of chains that are already split, by Geyer's initial monotone sequence
 /// estimator exactly as Stan and ArviZ implement it.
 fn ess_split(split: &[Vec<f64>]) -> f64 {
-    let (_, _, split) = normalize_chains(split);
+    let split = normalize_chains(split);
     let m = split.len();
     let n = split[0].len();
     let m_f = m as f64;
