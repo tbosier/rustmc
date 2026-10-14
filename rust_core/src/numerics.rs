@@ -694,8 +694,10 @@ mod tests {
     }
 
     /// `ElementwiseOp::Softplus` used its own branch-free spelling,
-    /// `max(a, 0) + ln1p(exp(-|a|))`. It is the same value to the bit, which
-    /// is what let it be replaced by [`softplus`] without moving any output.
+    /// `max(a, 0) + ln1p(exp(-|a|))`. It is the same value to the bit for every
+    /// non-NaN input, which is what let it be replaced by [`softplus`]. A NaN
+    /// input gives a NaN either way, but its sign bit may differ; no output
+    /// distinguishes NaNs by sign.
     #[test]
     fn softplus_matches_the_branch_free_form_bit_for_bit() {
         let branch_free = |a: f64| a.max(0.0) + (-a.abs()).exp().ln_1p();
