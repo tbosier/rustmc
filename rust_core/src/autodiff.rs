@@ -1019,14 +1019,13 @@ impl Evaluator {
                     };
                     let beta_col = col::from_slice::<f64>(beta_slice);
                     let out_col = col::from_slice_mut::<f64>(out);
-                    let par = matvec_parallelism(matrix.n_rows, matrix.n_cols);
                     matmul(
                         out_col.as_2d_mut(),
                         x,
                         beta_col.as_2d(),
                         Some(1.0),
                         1.0,
-                        par,
+                        MATVEC_PARALLELISM,
                     );
                 }
                 Op::VectorNormalLogP {
@@ -1545,7 +1544,6 @@ impl Evaluator {
                     let all_identity = transforms
                         .iter()
                         .all(|t| matches!(t, ParamTransform::Identity));
-                    let par = matvec_parallelism(matrix.n_rows, matrix.n_cols);
                     // grad += X^T @ adj
                     if all_identity {
                         let target = &mut self.grad[*param_start..*param_start + *n_params];
@@ -1556,7 +1554,7 @@ impl Evaluator {
                             adj_col.as_2d(),
                             Some(1.0),
                             1.0,
-                            par,
+                            MATVEC_PARALLELISM,
                         );
                     } else {
                         let target =
@@ -1569,7 +1567,7 @@ impl Evaluator {
                             adj_col.as_2d(),
                             Some(1.0),
                             1.0,
-                            par,
+                            MATVEC_PARALLELISM,
                         );
                         for k in 0..*n_params {
                             self.grad[param_start + k] +=
@@ -1689,21 +1687,17 @@ mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
-/// Design-matrix size, in elements, from which a `MatVecMul` lets faer split
-/// its product over the Rayon pool. Below it the split costs more than the
-/// product. Chains already run on that pool, so this nests work-stealing
-/// tasks rather than adding threads. The value is a judgement, not a
-/// benchmark result; the product is the same to the bit either way (see
-/// `mat_vec_mul_is_bitwise_identical_across_thread_counts`).
-const MATVEC_PARALLEL_ELEMENTS: usize = 100_000;
-
-fn matvec_parallelism(n_rows: usize, n_cols: usize) -> faer::Parallelism<'static> {
-    if n_rows.saturating_mul(n_cols) >= MATVEC_PARALLEL_ELEMENTS {
-        faer::Parallelism::Rayon(0)
-    } else {
-        faer::Parallelism::None
-    }
-}
+/// The parallelism a `MatVecMul` hands faer.
+///
+/// Both of its products have a single column, and faer 0.19 routes every
+/// single-column product to its serial `matvec` kernel without reading this
+/// argument (`linalg::matmul::matmul_with_conj`, the `n == 1` branch). The
+/// `Rayon(0)` that designs of 100,000 or more elements used to request
+/// therefore never ran anything in parallel; chains already do, on the Rayon
+/// pool. Revisit this on a faer upgrade, where
+/// `mat_vec_mul_is_bitwise_identical_across_thread_counts` is the check that
+/// a parallel product still gives seeded sampling the same bits.
+const MATVEC_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
 
 /// The summed log density of `n` elements whose constant arguments are
 /// outside their support: `-inf`, or the empty sum.
@@ -2513,13 +2507,14 @@ mod tests {
         }
     }
 
-    /// A 400 x 300 design is past `MATVEC_PARALLEL_ELEMENTS`, so faer splits
-    /// both products over the pool. Seeded sampling must not depend on how
-    /// many threads that pool has.
+    /// Seeded sampling must not depend on how many threads the pool has. With
+    /// faer 0.19 the products are serial whatever `MATVEC_PARALLELISM` says
+    /// (see its documentation), so today this holds by construction; it is
+    /// here for the faer upgrade that makes a parallel product possible. The
+    /// 400 x 300 design is large enough that faer would split it.
     #[test]
     fn mat_vec_mul_is_bitwise_identical_across_thread_counts() {
         let (rows, cols) = (400usize, 300usize);
-        assert!(rows * cols >= MATVEC_PARALLEL_ELEMENTS);
         let mut state = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = || {
             state ^= state << 13;
