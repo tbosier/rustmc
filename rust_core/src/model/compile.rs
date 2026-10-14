@@ -696,8 +696,8 @@ pub(super) fn lookup_param_value_node(
 /// Compile a MuExpr tree into graph nodes.
 ///
 /// Parameters are resolved through `value_node_map`, which holds the
-/// *post-transform* value node for every scalar parameter. Resolving via
-/// `Graph::node_by_name` instead would return the unconstrained raw node for
+/// *post-transform* value node for every scalar parameter. Resolving by the
+/// parameter's own name instead would reach the unconstrained raw node for
 /// any transformed prior (HalfNormal, Exponential, LogNormal, Uniform, Gamma,
 /// Beta), silently putting a log-scale value into the linear predictor.
 ///

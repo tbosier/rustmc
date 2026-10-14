@@ -2633,7 +2633,7 @@ mod extreme_scale_regressions {
             let scaled =
                 graph.elementwise(crate::graph::ElementwiseOp::Mul, ratio, Some(scale_node));
             let term = graph.elementwise(crate::graph::ElementwiseOp::Neg, scaled, None);
-            graph.add_node_as_logp(term);
+            graph.add_logp_term(term);
 
             let mut evaluator = Evaluator::new(&graph);
             evaluator.compute(&graph, &[b]);

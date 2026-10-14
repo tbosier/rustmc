@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use crate::data::DataBinding;
@@ -565,7 +564,6 @@ pub struct Graph {
     pub param_spans: Vec<ParamSpan>,
     pub logp_terms: Vec<NodeId>,
     pub deterministics: Vec<(String, NodeId)>,
-    name_to_node: HashMap<String, NodeId>,
 }
 
 impl Graph {
@@ -582,7 +580,6 @@ impl Graph {
             param_spans: Vec::new(),
             logp_terms: Vec::new(),
             deterministics: Vec::new(),
-            name_to_node: HashMap::new(),
         }
     }
 
@@ -634,9 +631,6 @@ impl Graph {
 
     fn add_node(&mut self, op: Op, name: Option<String>) -> NodeId {
         let id = NodeId(self.nodes.len());
-        if let Some(ref n) = name {
-            self.name_to_node.insert(n.clone(), id);
-        }
         self.nodes.push(Node { id, op, name });
         id
     }
@@ -919,12 +913,6 @@ impl Graph {
         self.logp_terms.push(node);
     }
 
-    /// Convenience: add a node's value directly as a logp term (used for Jacobians).
-    pub fn add_node_as_logp(&mut self, node: NodeId) -> NodeId {
-        self.logp_terms.push(node);
-        node
-    }
-
     /// Return observation metadata for every supported observation term.
     ///
     /// A structure-only graph intentionally has no dataset payload. In that
@@ -1005,10 +993,6 @@ impl Graph {
             },
             None,
         )
-    }
-
-    pub fn node_by_name(&self, name: &str) -> Option<NodeId> {
-        self.name_to_node.get(name).copied()
     }
 
     /// Allocate `n` contiguous parameters with no individual `Param` nodes.
