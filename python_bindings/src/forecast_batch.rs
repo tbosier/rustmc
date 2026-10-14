@@ -381,7 +381,8 @@ fn run_cells<T: Sync, R: Send>(
 }
 
 /// A cell's converted observations and model, or why it could not be built.
-type CellInput = Result<(Vec<f64>, Config), String>;
+/// The size is `Config::allocation_size` for the cell's history, computed once.
+type CellInput = Result<(Vec<f64>, Config, usize), String>;
 
 /// The `fit_batch` defaults for the Gibbs schedule.
 const DEFAULT_WARMUP: usize = 500;
@@ -403,7 +404,7 @@ fn reject_unused_schedule(
     let mut configs = cells
         .iter()
         .filter_map(|(_, input)| input.as_ref().ok())
-        .map(|(_, config)| config)
+        .map(|(_, config, _)| config)
         .peekable();
     if configs.peek().is_some() && configs.all(|config| matches!(config, Config::Ar(_))) {
         return Err(PyValueError::new_err(format!(
@@ -490,7 +491,7 @@ pub(crate) fn fit_batch(
     let priors = aligned_optional(coefficient_priors, ids.len(), "coefficient_priors")?;
     let mut cells = Vec::with_capacity(ids.len());
     for (index, row) in rows.iter().enumerate() {
-        let input = (|| -> Result<(Vec<f64>, Config), String> {
+        let input = (|| -> CellInput {
             let y = cell_input(py, real_vector(row, "observations"))?;
             let config = if let Some(models) = &models {
                 let model = &models[index];
@@ -544,8 +545,8 @@ pub(crate) fn fit_batch(
                             .into(),
                     ),
                 };
-            config.allocation_size(y.len())?;
-            Ok((y, config))
+            let size = config.allocation_size(y.len())?;
+            Ok((y, config, size))
         })();
         cells.push((ids[index].clone(), input));
     }
@@ -554,7 +555,7 @@ pub(crate) fn fit_batch(
         cells
             .iter()
             .filter_map(|(_, input)| input.as_ref().ok())
-            .filter_map(|(y, config)| config.allocation_size(y.len()).ok()),
+            .map(|(_, _, size)| *size),
     )?;
     let results = py.allow_threads(|| {
         run_cells(
@@ -564,18 +565,11 @@ pub(crate) fn fit_batch(
             chunk_size,
             errors,
             |input, cell_seed| {
-                let (y, config) = input.as_ref().map_err(Clone::clone)?;
+                let (y, config, _) = input.as_ref().map_err(Clone::clone)?;
                 config.fit(y, cell_seed)
             },
         )
     })?;
-    if errors == "raise" {
-        for (id, result) in ids.iter().zip(&results) {
-            if let Err(error) = result {
-                return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
-            }
-        }
-    }
     Ok(PyForecastBatchFit { ids, results })
 }
 
@@ -684,13 +678,6 @@ impl PyForecastBatchFit {
                 },
             )
         })?;
-        if errors == "raise" {
-            for (id, result) in self.ids.iter().zip(&results) {
-                if let Err(error) = result {
-                    return Err(InferenceError::new_err(format!("cell {id:?}: {error}")));
-                }
-            }
-        }
         Ok(PyForecastBatchForecast {
             ids: self.ids.clone(),
             results,
