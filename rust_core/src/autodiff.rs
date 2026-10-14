@@ -1678,10 +1678,11 @@ impl Evaluator {
 // Reference evaluator — differential-testing oracle, not public API
 // ---------------------------------------------------------------------------
 
-/// Allocating re-implementation of the whole IR, used only to cross-check the
-/// zero-allocation `Evaluator`. It is deliberately not exported: it has no
-/// non-test callers and it panics on its entry points when a node's shape is
-/// not what it expected.
+/// Allocating second evaluator of the whole IR, used only to cross-check the
+/// zero-allocation `Evaluator`'s storage and adjoint plumbing; it shares the
+/// local derivative kernels, so it does not check those. It is deliberately
+/// not exported: it has no non-test callers and it panics on its entry points
+/// when a node's shape is not what it expected.
 #[cfg(test)]
 #[path = "autodiff_reference.rs"]
 mod reference;
@@ -2552,6 +2553,166 @@ mod tests {
         let serial = run(1);
         for threads in [2, 4, 7] {
             assert_eq!(run(threads), serial, "{threads} threads");
+        }
+    }
+
+    /// Every density op and every elementwise operator, with each of its
+    /// inputs a parameter (through `exp` or `sigmoid` where the input has a
+    /// restricted domain), against central finite differences. The reference
+    /// evaluator shares the derivative kernels, so this is what checks them.
+    #[test]
+    fn every_density_and_operator_matches_finite_differences() {
+        use crate::graph::{ElementwiseOp as E, ParamTransform};
+        let mut cases: Vec<(String, Graph)> = Vec::new();
+        let mut case = |name: &str, build: &dyn Fn(&mut Graph)| {
+            let mut g = Graph::new();
+            build(&mut g);
+            cases.push((name.to_string(), g));
+        };
+        let positive = |g: &mut Graph, name: &str| {
+            let raw = g.add_param(name);
+            g.exp(raw)
+        };
+
+        case("NormalLogP", &|g| {
+            let (x, mu) = (g.add_param("x"), g.add_param("mu"));
+            let sigma = positive(g, "sigma");
+            g.normal_logp(x, mu, sigma);
+        });
+        case("LogHalfNormalLogP", &|g| {
+            let x = g.add_param("x");
+            let sigma = positive(g, "sigma");
+            g.log_half_normal_logp(x, sigma);
+        });
+        case("StudentTLogP", &|g| {
+            let (x, mu) = (g.add_param("x"), g.add_param("mu"));
+            let nu = positive(g, "nu");
+            let sigma = positive(g, "sigma");
+            g.student_t_logp(x, nu, mu, sigma);
+        });
+        for outcome in [0.0, 1.0] {
+            case(&format!("BernoulliLogP({outcome})"), &|g| {
+                let raw = g.add_param("p");
+                let p = g.sigmoid(raw);
+                let x = g.add_constant(outcome);
+                g.bernoulli_logp(x, p);
+            });
+        }
+        case("PoissonLogP", &|g| {
+            let lam = positive(g, "lam");
+            let x = g.add_constant(3.0);
+            g.poisson_logp(x, lam);
+        });
+        case("LogGammaLogP", &|g| {
+            let x = g.add_param("x");
+            let alpha = positive(g, "alpha");
+            let beta = positive(g, "beta");
+            g.log_gamma_logp(x, alpha, beta);
+        });
+        case("PositiveSupport", &|g| {
+            let x = positive(g, "x");
+            g.positive_support(x);
+            let zero = g.add_constant(0.0);
+            let one = g.add_constant(1.0);
+            g.normal_logp(x, zero, one);
+        });
+
+        let families: [(&str, Vec<f64>); 6] = [
+            ("Normal", vec![0.3, -1.2, 2.0, 0.7]),
+            ("BernoulliLogit", vec![1.0, 0.0, 0.0, 1.0]),
+            ("PoissonLog", vec![0.0, 2.0, 5.0, 1.0]),
+            ("ExponentialLog", vec![0.4, 1.5, 3.0, 0.2]),
+            ("LogNormal", vec![0.4, 1.5, 3.0, 0.2]),
+            ("NegativeBinomialLog", vec![0.0, 2.0, 5.0, 1.0]),
+        ];
+        for (family, y) in families {
+            case(&format!("ObsLogP({family})"), &|g| {
+                let (a, b) = (g.add_param("a"), g.add_param("b"));
+                let x = g.add_data("x", vec![0.5, -1.0, 1.5, 0.25]);
+                let bx = g.scalar_mul_data(b, x);
+                let eta = g.scalar_broadcast_add(a, bx);
+                let obs = g.add_obs_data(y.clone());
+                let aux = positive(g, "aux");
+                match family {
+                    "Normal" => g.obs_logp_normal(eta, aux, obs),
+                    "BernoulliLogit" => g.obs_logp_bernoulli_logit(eta, obs),
+                    "PoissonLog" => g.obs_logp_poisson_log(eta, obs),
+                    "ExponentialLog" => g.obs_logp_exponential_log(eta, obs),
+                    "LogNormal" => g.obs_logp_lognormal(eta, aux, obs),
+                    _ => g.obs_logp_negative_binomial_log(eta, aux, obs),
+                };
+                // The families without an auxiliary node still need a
+                // density in `aux` for the gradient to be defined.
+                let zero = g.add_constant(0.0);
+                let one = g.add_constant(1.0);
+                g.normal_logp(aux, zero, one);
+            });
+        }
+
+        case("VectorNormalLogP", &|g| {
+            let start = g.add_vector_params("v", 3);
+            g.vector_normal_logp(start, 3, 0.4, 1.7);
+        });
+        case("VectorHalfNormalLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Exp);
+            g.vector_half_normal_logp(start, 3, 1.3);
+        });
+        case("VectorStudentTLogP", &|g| {
+            let start = g.add_vector_params("v", 3);
+            g.vector_student_t_logp(start, 3, 2.5, -0.3, 0.8);
+        });
+        case("VectorGammaLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Exp);
+            g.vector_gamma_logp(start, 3, 1.5, 2.5);
+        });
+        case("VectorBetaLogP", &|g| {
+            let start = g.add_vector_params_with_transform("v", 3, ParamTransform::Sigmoid);
+            g.vector_beta_logp(start, 3, 2.5, 1.5);
+        });
+        case("VectorUniformLogP", &|g| {
+            let transform = ParamTransform::BoundedSigmoid {
+                lower: -2.0,
+                upper: 3.0,
+            };
+            let start = g.add_vector_params_with_transform("v", 3, transform);
+            g.vector_uniform_logp(start, 3, -2.0, 3.0);
+        });
+
+        let unary = [
+            E::Neg,
+            E::Exp,
+            E::Log,
+            E::Sigmoid,
+            E::Sqrt,
+            E::Tanh,
+            E::Softplus,
+            E::Sin,
+            E::Cos,
+        ];
+        let binary = [E::Add, E::Sub, E::Mul, E::Div, E::Pow];
+        for operator in unary.into_iter().chain(binary) {
+            let is_binary = binary
+                .iter()
+                .any(|op| std::mem::discriminant(op) == std::mem::discriminant(&operator));
+            case(&format!("Elementwise({operator:?})"), &|g| {
+                // A positive left operand keeps Log, Sqrt and Pow in their
+                // domain; a positive right one keeps Div away from zero.
+                let a = positive(g, "a");
+                let b = is_binary.then(|| positive(g, "b"));
+                let value = g.elementwise(operator, a, b);
+                let mu = g.add_constant(0.2);
+                let sigma = g.add_constant(1.5);
+                g.normal_logp(value, mu, sigma);
+            });
+        }
+
+        let points = [[0.3, -0.4, 0.8], [-0.9, 0.6, 0.1], [1.1, 0.2, -0.7]];
+        for (name, g) in &cases {
+            for point in points {
+                let params: Vec<f64> = point.iter().cycle().take(g.param_count).copied().collect();
+                let result = std::panic::catch_unwind(|| full_finite_diff_check(g, &params, 1e-4));
+                assert!(result.is_ok(), "{name} at {params:?}");
+            }
         }
     }
 

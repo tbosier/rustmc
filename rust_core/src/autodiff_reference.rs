@@ -1,4 +1,13 @@
-//! Allocating reference evaluator retained for independent checks of optimized kernels.
+//! Allocating reference evaluator, the oracle for the `Evaluator`'s graph
+//! plumbing: storage layout, broadcasting, and the accumulation of adjoints
+//! through the graph.
+//!
+//! It is not an independent check of the local derivative kernels. Its
+//! reverse pass calls the same ones the `Evaluator` does
+//! (`ElementwiseOp::adjoints`, `student_t_derivatives`, the bounded-sigmoid,
+//! Poisson, Bernoulli and negative binomial scores), so a wrong kernel is
+//! wrong identically in both. The kernels are checked against finite
+//! differences instead; see `every_density_and_operator_matches_finite_differences`.
 use super::*;
 #[derive(Debug, Clone)]
 pub enum Value {
