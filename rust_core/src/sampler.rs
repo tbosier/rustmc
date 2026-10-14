@@ -403,6 +403,28 @@ pub struct SampleResult {
 }
 
 impl SampleResult {
+    /// Gather the kernels' per-chain output, moving each chain's draws and
+    /// telemetry rather than copying them.
+    pub(crate) fn from_chains(chains: Vec<ChainResult>, param_names: Vec<String>) -> Self {
+        let mut result = Self {
+            samples: Vec::with_capacity(chains.len()),
+            unconstrained_samples: None,
+            accept_rates: Vec::with_capacity(chains.len()),
+            step_sizes: Vec::with_capacity(chains.len()),
+            divergences: Vec::with_capacity(chains.len()),
+            transitions: Vec::with_capacity(chains.len()),
+            param_names,
+        };
+        for chain in chains {
+            result.samples.push(chain.samples);
+            result.accept_rates.push(chain.accept_rate);
+            result.step_sizes.push(chain.step_size);
+            result.divergences.push(chain.divergences);
+            result.transitions.push(chain.transitions);
+        }
+        result
+    }
+
     /// Posterior mean per parameter, from the same implementation the summary
     /// table uses.
     ///
@@ -772,17 +794,13 @@ fn sample_checked(
     initial: Option<&[Vec<f64>]>,
     progress: Option<&ProgressState>,
 ) -> Result<SampleResult, String> {
-    let results = run_chains(graph, binding, config, initial, progress)?;
-    let (samples, unconstrained_samples) = constrain_chains(graph, &results)?;
-    Ok(SampleResult {
-        samples,
-        unconstrained_samples,
-        accept_rates: results.iter().map(|r| r.accept_rate).collect(),
-        step_sizes: results.iter().map(|r| r.step_size).collect(),
-        divergences: results.iter().map(|r| r.divergences).collect(),
-        transitions: results.into_iter().map(|r| r.transitions).collect(),
-        param_names: graph.param_names.clone(),
-    })
+    let chains = run_chains(graph, binding, config, initial, progress)?;
+    let mut result = SampleResult::from_chains(chains, graph.param_names.clone());
+    let (samples, unconstrained_samples) =
+        constrain_chains(graph, std::mem::take(&mut result.samples))?;
+    result.samples = samples;
+    result.unconstrained_samples = unconstrained_samples;
+    Ok(result)
 }
 
 /// Run every chain of one fit on the current Rayon pool.
@@ -836,32 +854,40 @@ type ChainDraws = Vec<Vec<Vec<f64>>>;
 
 /// Back-transform every chain's draws to the constrained scale, keeping the
 /// raw positions too when any parameter is transformed.
+///
+/// `raw` is moved, not copied: into the result's raw draws when any parameter
+/// is transformed, and into the constrained draws when none is, since the
+/// identity transform returns its input unchanged.
 fn constrain_chains(
     graph: &Graph,
-    results: &[ChainResult],
+    raw: ChainDraws,
 ) -> Result<(ChainDraws, Option<Arc<ChainDraws>>), String> {
     let transforms = &graph.param_transforms;
-    let samples: ChainDraws = results
+    let transformed = transforms
         .iter()
-        .map(|r| {
-            r.samples
-                .iter()
-                .map(|draw| {
-                    draw.iter()
-                        .enumerate()
-                        .map(|(i, &raw)| transforms[i].apply(raw))
-                        .collect()
-                })
-                .collect()
-        })
-        .collect();
+        .any(|t| !matches!(t, ParamTransform::Identity));
+    let (samples, unconstrained) = if transformed {
+        let samples: ChainDraws = raw
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        draw.iter()
+                            .enumerate()
+                            .map(|(i, &raw)| transforms[i].apply(raw))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        (samples, Some(Arc::new(raw)))
+    } else {
+        (raw, None)
+    };
     for draw in samples.iter().flatten() {
         validate_constrained_draw(draw, &graph.param_names)?;
     }
-    let unconstrained = transforms
-        .iter()
-        .any(|t| !matches!(t, ParamTransform::Identity))
-        .then(|| Arc::new(results.iter().map(|r| r.samples.clone()).collect()));
     Ok((samples, unconstrained))
 }
 
