@@ -57,13 +57,12 @@ pub struct Evaluator {
     /// `binding.observations` and empty for every other slot. The data never
     /// change for a binding, so both passes read these instead of taking two
     /// logarithms per observation per gradient. Rebuilt whenever the binding
-    /// changes, including by a same-shape [`Self::rebind`].
+    /// changes, including by a same-shape [`Self::rebind`]. A slot is therefore
+    /// either empty or holds the logarithms of the binding's current values,
+    /// and the forward pass fills an empty one it needs: see
+    /// [`Self::ensure_log_observations`].
     log_observations: Vec<Vec<f64>>,
 }
-
-/// Panic message for an evaluator used with a graph whose observation terms
-/// differ from those of the graph it was built for.
-const STALE_GRAPH: &str = "evaluator used with a graph other than the one it was built for";
 
 /// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
 /// reusing its allocations.
@@ -708,6 +707,21 @@ impl Evaluator {
         }
     }
 
+    /// Make `log_observations[slot]` hold `ln(y)` for observation slot `slot`.
+    ///
+    /// Construction and every rebind fill it for each LogNormal term of the
+    /// graph they were given, so this does nothing on that graph. A graph
+    /// changed afterwards (the `Graph` fields are public) can carry a LogNormal
+    /// term on a slot nobody filled; taking the logarithms here evaluates it
+    /// exactly as before the cache existed, instead of against an empty slot,
+    /// which would silently drop the likelihood. Only that case allocates.
+    fn ensure_log_observations(&mut self, slot: usize) {
+        let observations = &self.binding.observations[slot];
+        if self.log_observations[slot].len() != observations.len() {
+            self.log_observations[slot] = observations.iter().map(|y| y.ln()).collect();
+        }
+    }
+
     fn accumulate(&mut self, node: NodeId, i: usize, value: f64) {
         match self.node_kind[node.0] {
             NodeKind::Scalar => self.adj_scalars[node.0] += value,
@@ -943,11 +957,8 @@ impl Evaluator {
                             }
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+                            self.ensure_log_observations(*obs_data_idx);
                             let log_obs = &self.log_observations[*obs_data_idx];
-                            // Filled for every LogNormal term of the graph this
-                            // evaluator was built for; empty here means it was
-                            // handed a different graph.
-                            assert_eq!(log_obs.len(), obs.len(), "{STALE_GRAPH}");
                             let mut sum = 0.0f64;
                             for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
@@ -1469,11 +1480,10 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
+                            // `backward` runs only after `forward` on the same
+                            // graph, which has filled this slot.
                             let log_obs = &self.log_observations[*obs_data_idx];
-                            // Filled for every LogNormal term of the graph this
-                            // evaluator was built for; empty here means it was
-                            // handed a different graph.
-                            assert_eq!(log_obs.len(), obs.len(), "{STALE_GRAPH}");
+                            debug_assert_eq!(log_obs.len(), obs.len());
                             let mut dsigma = 0.0f64;
                             for (i, &ly) in log_obs.iter().take(vl).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
@@ -2725,22 +2735,29 @@ mod tests {
 
     /// The `ln(y)` cache is built from the graph an evaluator was constructed
     /// for. A graph changed afterwards so that a term becomes LogNormal must
-    /// not be evaluated against the empty cache, which would silently drop
-    /// the likelihood.
+    /// still be evaluated as LogNormal, as it was before the cache existed:
+    /// read against the empty cache, the likelihood silently dropped out
+    /// (log density and gradient both zero here).
     #[test]
-    #[should_panic(expected = "evaluator used with a graph other than the one it was built for")]
-    fn lognormal_term_added_after_construction_is_refused() {
+    fn lognormal_term_added_after_construction_is_evaluated() {
         let mut g = Graph::new();
         let mu = g.add_param("mu");
         let one = g.add_constant(1.0);
-        let obs = g.add_obs_data(vec![2.0]);
+        let obs = g.add_obs_data(vec![2.0, 0.5, 3.0]);
         let linpred = g.broadcast_observation(mu, obs);
         let term = g.obs_logp_normal(linpred, one, obs);
         let mut evaluator = Evaluator::new(&g);
         if let Op::ObsLogP { family, .. } = &mut g.nodes[term.0].op {
             *family = ObsFamily::LogNormal;
         }
-        evaluator.compute(&g, &[0.0]);
+        let mut fresh = Evaluator::new(&g);
+        for params in [[0.0], [0.4]] {
+            evaluator.compute(&g, &params);
+            fresh.compute(&g, &params);
+            assert_ne!(evaluator.total_logp, 0.0);
+            assert_eq!(evaluator.total_logp.to_bits(), fresh.total_logp.to_bits());
+            assert_eq!(evaluator.grad, fresh.grad);
+        }
     }
 
     /// Helper: check both grad_logp and Evaluator against finite differences.
