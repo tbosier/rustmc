@@ -20,8 +20,7 @@
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, validate_positive_variance,
-    GibbsSchedule,
+    simulate_draws, split_paths, standard_normal, validate_positive_variance, GibbsSchedule,
 };
 /// The types every forecasting sampler shares, defined in
 /// [`crate::forecast_common`] and re-exported here under their original paths.
@@ -200,9 +199,9 @@ pub fn fit_bayesian_local_level(
                     difference * difference
                 })
                 .sum();
-            *process_variance = sample_inverse_gamma(
-                config.process_variance_prior.shape + observations.len() as f64 / 2.0,
-                config.process_variance_prior.scale + process_sum_sq / 2.0,
+            *process_variance = config.process_variance_prior.conditional_draw(
+                observations.len(),
+                process_sum_sq,
                 rng,
             )?;
 
@@ -215,9 +214,9 @@ pub fn fit_bayesian_local_level(
                     residual * residual
                 })
                 .sum();
-            *observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+            *observation_variance = config.observation_variance_prior.conditional_draw(
+                observed_count,
+                observation_sum_sq,
                 rng,
             )?;
 

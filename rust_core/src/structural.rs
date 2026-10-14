@@ -4,7 +4,7 @@
 //! in every state draw so every transition contributes to the variance update.
 use crate::forecast_common::{
     checked_value_count, dot, overdispersed_positive, require_finite_observations,
-    run_gibbs_chains, sample_inverse_gamma, simulate_draws, standard_normal, GibbsSchedule,
+    run_gibbs_chains, simulate_draws, standard_normal, GibbsSchedule, InverseGammaPrior,
     MAX_MATERIALIZED_VALUES,
 };
 use crate::seeding::chain_seed;
@@ -53,14 +53,15 @@ impl VarianceParameter {
             Self::InverseGamma { .. } => overdispersed_positive(self.initial(), rng),
         }
     }
+    /// The fixed value, or a draw from the conjugate conditional given `n`
+    /// residuals with sum of squares `ss` (`n = 0` draws from the prior).
     fn sample<R: Rng + ?Sized>(&self, n: usize, ss: f64, rng: &mut R) -> Result<f64> {
         match *self {
             Self::Fixed(v) => Ok(v),
-            Self::InverseGamma { shape, scale } => Ok(sample_inverse_gamma(
-                shape + n as f64 / 2.0,
-                scale + ss / 2.0,
-                rng,
-            )?),
+            // The enum keeps its own serde shape; the update is the shared one.
+            Self::InverseGamma { shape, scale } => {
+                Ok(InverseGammaPrior { shape, scale }.conditional_draw(n, ss, rng)?)
+            }
         }
     }
 }

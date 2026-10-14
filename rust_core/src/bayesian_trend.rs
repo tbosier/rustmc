@@ -20,9 +20,9 @@
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
-    path_means, path_quantiles, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, validate_positive_variance,
-    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
+    split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
+    ForecastQuantile, GibbsSchedule, InverseGammaPrior,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 #[cfg(test)]
@@ -241,7 +241,7 @@ pub fn fit_bayesian_local_linear_trend(
         &[5],
         &[observations.len() + 1, 14],
     )?;
-    let transition_count = observations.len() as f64;
+    let transition_count = observations.len();
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
@@ -273,14 +273,14 @@ pub fn fit_bayesian_local_linear_trend(
                 level_sum_sq += level_residual * level_residual;
                 slope_sum_sq += slope_residual * slope_residual;
             }
-            *level_variance = sample_inverse_gamma(
-                config.level_variance_prior.shape + transition_count / 2.0,
-                config.level_variance_prior.scale + level_sum_sq / 2.0,
+            *level_variance = config.level_variance_prior.conditional_draw(
+                transition_count,
+                level_sum_sq,
                 rng,
             )?;
-            *slope_variance = sample_inverse_gamma(
-                config.slope_variance_prior.shape + transition_count / 2.0,
-                config.slope_variance_prior.scale + slope_sum_sq / 2.0,
+            *slope_variance = config.slope_variance_prior.conditional_draw(
+                transition_count,
+                slope_sum_sq,
                 rng,
             )?;
 
@@ -293,9 +293,9 @@ pub fn fit_bayesian_local_linear_trend(
                     residual * residual
                 })
                 .sum();
-            *observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+            *observation_variance = config.observation_variance_prior.conditional_draw(
+                observed_count,
+                observation_sum_sq,
                 rng,
             )?;
 

@@ -9,9 +9,9 @@
 use crate::diagnostics::DiagnosticsReport;
 use crate::forecast_common::{
     check_forecast_size, invalid_config, numerical, overdispersed_positive, path_means,
-    path_quantiles, require_finite_observations, run_gibbs_chains, sample_inverse_gamma,
-    simulate_draws, split_paths, standard_normal, validate_positive_variance,
-    BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
+    path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws, split_paths,
+    standard_normal, validate_positive_variance, BayesianForecastError, ForecastQuantile,
+    GibbsSchedule, InverseGammaPrior,
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 use crate::state_space::LinearGaussianStateSpace;
@@ -267,15 +267,14 @@ pub fn fit_bayesian_seasonal_local_level(
 ) -> Result<SeasonalLocalLevelPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
     // Level, seasonal and observation variances.
-    let observed_count =
-        require_finite_observations(observations, 3, "seasonal local-level")? as f64;
+    let observed_count = require_finite_observations(observations, 3, "seasonal local-level")?;
     // Each backward conditional holds a d x d gain and a d x 2d root.
     schedule.check_fit_size(
         "seasonal fit",
         &[config.period + 3],
         &[observations.len() + 1, config.period, config.period, 3],
     )?;
-    let transitions = observations.len() as f64;
+    let transitions = observations.len();
     // Built and validated once; each sweep overwrites only the level (0) and
     // seasonal (1) innovation variances and the observation variance.
     let template = LinearGaussianStateSpace::seasonal_local_level(
@@ -322,14 +321,13 @@ pub fn fit_bayesian_seasonal_local_level(
                 level_sum_sq += level_residual * level_residual;
                 seasonal_sum_sq += seasonal_residual * seasonal_residual;
             }
-            *level_variance = sample_inverse_gamma(
-                config.level_variance_prior.shape + transitions / 2.0,
-                config.level_variance_prior.scale + level_sum_sq / 2.0,
-                rng,
-            )?;
-            *seasonal_variance = sample_inverse_gamma(
-                config.seasonal_variance_prior.shape + transitions / 2.0,
-                config.seasonal_variance_prior.scale + seasonal_sum_sq / 2.0,
+            *level_variance =
+                config
+                    .level_variance_prior
+                    .conditional_draw(transitions, level_sum_sq, rng)?;
+            *seasonal_variance = config.seasonal_variance_prior.conditional_draw(
+                transitions,
+                seasonal_sum_sq,
                 rng,
             )?;
             let observation_sum_sq: f64 = observations
@@ -341,9 +339,9 @@ pub fn fit_bayesian_seasonal_local_level(
                     residual * residual
                 })
                 .sum();
-            *observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+            *observation_variance = config.observation_variance_prior.conditional_draw(
+                observed_count,
+                observation_sum_sq,
                 rng,
             )?;
 

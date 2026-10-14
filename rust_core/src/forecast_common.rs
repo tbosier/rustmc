@@ -104,6 +104,24 @@ impl InverseGammaPrior {
     pub(crate) fn mode(self) -> f64 {
         self.scale / (self.shape + 1.0)
     }
+
+    /// One draw of a variance from its conjugate full conditional under this
+    /// prior, given `count` Gaussian residuals with sum of squares
+    /// `sum_of_squares`: `InverseGamma(shape + count / 2, scale +
+    /// sum_of_squares / 2)`. Every Gaussian state-space sampler's variance
+    /// update goes through here.
+    pub(crate) fn conditional_draw<R: Rng + ?Sized>(
+        self,
+        count: usize,
+        sum_of_squares: f64,
+        rng: &mut R,
+    ) -> Result<f64, BayesianForecastError> {
+        sample_inverse_gamma(
+            self.shape + count as f64 / 2.0,
+            self.scale + sum_of_squares / 2.0,
+            rng,
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

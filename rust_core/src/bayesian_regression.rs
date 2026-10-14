@@ -5,11 +5,9 @@
 //! every forecast path retains one joint coefficient/state/variance draw.
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, standard_normal, GibbsSchedule,
-    InverseGammaPrior,
+    simulate_draws, split_paths, standard_normal, GibbsSchedule, InverseGammaPrior,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
-use rand_chacha::ChaCha8Rng;
 
 /// `"\0REG_FIT"`.
 const FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
@@ -160,18 +158,6 @@ pub struct RegressionForecast {
 fn invalid(message: &str) -> StateSpaceError {
     StateSpaceError::InvalidParameter(message.into())
 }
-fn draw_variance(
-    prior: InverseGammaPrior,
-    count: usize,
-    ss: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, StateSpaceError> {
-    Ok(sample_inverse_gamma(
-        prior.shape + count as f64 / 2.0,
-        prior.scale + ss / 2.0,
-        rng,
-    )?)
-}
 pub fn fit_regression(
     y: &[f64],
     design: &[Vec<f64>],
@@ -270,7 +256,7 @@ pub fn fit_regression(
                         (pair[1][index] - predicted).powi(2)
                     })
                     .sum();
-                *variance = draw_variance(prior, y.len(), ss, rng)?;
+                *variance = prior.conditional_draw(y.len(), ss, rng)?;
             }
             let ss = y
                 .iter()
@@ -289,8 +275,9 @@ pub fn fit_regression(
                     (y - structural - regression).powi(2)
                 })
                 .sum();
-            *observation_variance =
-                draw_variance(config.observation_variance_prior, observed, ss, rng)?;
+            *observation_variance = config
+                .observation_variance_prior
+                .conditional_draw(observed, ss, rng)?;
             Ok(retain.then(|| {
                 let state = states.last().expect("validated nonempty data");
                 RegressionDraw {
@@ -488,6 +475,7 @@ mod tests {
     use super::*;
     use crate::seeding::chain_seed;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn coefficient_prior_validates_itself_and_fourier_width_matches_rows() {
