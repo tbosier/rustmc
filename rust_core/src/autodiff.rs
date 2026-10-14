@@ -1891,17 +1891,38 @@ fn student_t_dx(diff: f64, ln_sigma: f64, ln_nu: f64, ln_nu1: f64) -> f64 {
     }
     let log_abs_diff = diff.abs().ln();
     let log_tail = softplus(2.0 * (log_abs_diff - ln_sigma) - ln_nu);
+    student_t_dx_from_logs(diff, log_abs_diff, log_tail, ln_sigma, ln_nu, ln_nu1)
+}
+
+/// [`student_t_dx`] at a nonzero `diff`, for a caller that already has
+/// `ln|diff|` and the log tail `softplus(2 (ln|diff| - ln sigma) - ln nu)`.
+fn student_t_dx_from_logs(
+    diff: f64,
+    log_abs_diff: f64,
+    log_tail: f64,
+    ln_sigma: f64,
+    ln_nu: f64,
+    ln_nu1: f64,
+) -> f64 {
     -diff.signum() * (ln_nu1 + log_abs_diff - 2.0 * ln_sigma - ln_nu - log_tail).exp()
 }
 
 // Return derivatives with respect to x, sigma, and nu. Log-ratio arithmetic
 // retains Student-t's polynomial tails even when the squared residual overflows.
+// Each logarithm and the softplus are taken once and shared by all three.
 fn student_t_derivatives(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
     let diff = x - mu;
-    let log_ratio = 2.0 * (diff.abs().ln() - sigma.ln()) - nu.ln();
+    let (ln_sigma, ln_nu) = (sigma.ln(), nu.ln());
+    let log_abs_diff = diff.abs().ln();
+    let log_ratio = 2.0 * (log_abs_diff - ln_sigma) - ln_nu;
     let log_tail = softplus(log_ratio);
     let weight = stable_sigmoid(log_ratio);
-    let dx = student_t_dx(diff, sigma.ln(), nu.ln(), (nu + 1.0).ln());
+    let dx = if diff == 0.0 {
+        0.0
+    } else {
+        let ln_nu1 = (nu + 1.0).ln();
+        student_t_dx_from_logs(diff, log_abs_diff, log_tail, ln_sigma, ln_nu, ln_nu1)
+    };
     let scale_term = (nu + 1.0) * weight - 1.0;
     let dsigma = scale_term / sigma;
     let dnu = 0.5 * digamma(0.5 * (nu + 1.0)) - 0.5 * digamma(0.5 * nu) - 0.5 * log_tail
@@ -2854,6 +2875,53 @@ mod tests {
         g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    /// `student_t_derivatives` shares its logarithms and softplus with the
+    /// location score instead of letting `student_t_dx` take them again. It
+    /// must give the bits of the single expression it had before the vector
+    /// priors split that score out, which is reproduced here.
+    #[test]
+    fn student_t_derivatives_match_their_unsplit_form_bit_for_bit() {
+        fn unsplit(x: f64, nu: f64, mu: f64, sigma: f64) -> (f64, f64, f64) {
+            let diff = x - mu;
+            let log_abs_diff = diff.abs().ln();
+            let log_ratio = 2.0 * (log_abs_diff - sigma.ln()) - nu.ln();
+            let log_tail = softplus(log_ratio);
+            let weight = stable_sigmoid(log_ratio);
+            let dx = if diff == 0.0 {
+                0.0
+            } else {
+                -diff.signum()
+                    * ((nu + 1.0).ln() + log_abs_diff - 2.0 * sigma.ln() - nu.ln() - log_tail).exp()
+            };
+            let scale_term = (nu + 1.0) * weight - 1.0;
+            let dsigma = scale_term / sigma;
+            let dnu = 0.5 * digamma(0.5 * (nu + 1.0)) - 0.5 * digamma(0.5 * nu) - 0.5 * log_tail
+                + 0.5 * scale_term / nu;
+            (dx, dsigma, dnu)
+        }
+        let same = |l: f64, r: f64| l.to_bits() == r.to_bits() || (l.is_nan() && r.is_nan());
+        let xs = [-1e300, -40.0, -2.5, -1e-12, 0.0, 1e-300, 0.7, 3.0, 1e200];
+        let nus = [1e-3, 0.5, 1.0, 4.0, 30.0, 1e8];
+        let sigmas = [1e-200, 0.01, 1.0, 2.5, 1e150];
+        for &x in &xs {
+            for &nu in &nus {
+                for &sigma in &sigmas {
+                    for mu in [0.0, 0.7, -3.25] {
+                        let (a, b, c) = student_t_derivatives(x, nu, mu, sigma);
+                        let (p, q, r) = unsplit(x, nu, mu, sigma);
+                        assert!(
+                            same(a, p) && same(b, q) && same(c, r),
+                            "x={x} nu={nu} mu={mu} sigma={sigma}"
+                        );
+                        let ln_nu1 = (nu + 1.0).ln();
+                        let dx = student_t_dx(x - mu, sigma.ln(), nu.ln(), ln_nu1);
+                        assert!(same(dx, p), "dx: x={x} nu={nu} mu={mu} sigma={sigma}");
+                    }
+                }
+            }
+        }
     }
 
     /// The vector priors take the logarithms of their constant arguments once
