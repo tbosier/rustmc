@@ -47,7 +47,7 @@
 mod exactness_support;
 
 use exactness_support::{
-    check, fit, fit_with, gate_cases, label, nominal_false_alarm_rate, with_sampler, Check,
+    check, fit, fit_with, gate_cases, label, nominal_false_alarm_rate, with_sampler, within, Check,
     GaussianTarget, Outcome, Path, MAX_MCSE, NOMINAL_EXCEEDANCE,
 };
 use rayon::prelude::*;
@@ -143,7 +143,7 @@ fn env_usize(name: &str, default: usize) -> usize {
 
 /// Fraction of `values` whose magnitude is at least `bound` (NaN counts).
 fn exceedance(values: &[f64], bound: f64) -> f64 {
-    values.iter().filter(|z| !(z.abs() < bound)).count() as f64 / values.len() as f64
+    values.iter().filter(|&&z| !within(z, bound)).count() as f64 / values.len() as f64
 }
 
 fn standard_deviation(values: &[f64]) -> f64 {

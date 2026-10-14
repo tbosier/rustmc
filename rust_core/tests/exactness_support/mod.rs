@@ -251,9 +251,9 @@ impl LogDensity for GaussianTarget {
             *r -= c;
         }
         gradient.fill(0.0);
-        for i in 0..n {
-            for j in 0..n {
-                gradient[j] -= self.a[i * n + j] * residual[i];
+        for (row, r) in self.a.chunks(n).zip(&residual) {
+            for (g, a) in gradient.iter_mut().zip(row) {
+                *g -= a * r;
             }
         }
         Ok(-0.5 * residual.iter().map(|r| r * r).sum::<f64>())
@@ -452,6 +452,16 @@ fn worst(values: &[f64], key: impl Fn(f64) -> f64) -> Option<(usize, f64)> {
     best
 }
 
+/// Whether `|z| < bound`; false for NaN, so a NaN error fails its check.
+pub fn within(z: f64, bound: f64) -> bool {
+    z.abs() < bound
+}
+
+/// Whether `value >= floor`; false for NaN.
+fn at_least(value: f64, floor: f64) -> bool {
+    value >= floor
+}
+
 /// Apply the gate to `fit` against the exact moments of `target`.
 pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcome {
     let (means, sds) = (&target.means, &target.sds);
@@ -534,7 +544,7 @@ pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcom
         ));
     }
     if let Some((i, e)) = worst(&ess_bulk, |e| -e) {
-        if !(e >= MIN_ESS_BULK) {
+        if !at_least(e, MIN_ESS_BULK) {
             failures.push((
                 Check::BulkEss,
                 format!("coordinate {i} has bulk ESS {e:.1}, below {MIN_ESS_BULK}"),
@@ -542,7 +552,7 @@ pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcom
         }
     }
     if let Some((i, z)) = worst(&mean_z, f64::abs) {
-        if !(z.abs() < MAX_MCSE) {
+        if !within(z, MAX_MCSE) {
             failures.push((
                 Check::Mean,
                 format!(
@@ -553,7 +563,7 @@ pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcom
         }
     }
     if let Some((i, z)) = worst(&variance_z, f64::abs) {
-        if !(z.abs() < MAX_MCSE) {
+        if !within(z, MAX_MCSE) {
             failures.push((
                 Check::Variance,
                 format!(
@@ -566,7 +576,7 @@ pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcom
         }
     }
 
-    if !(squared_norm_z.abs() < MAX_MCSE) {
+    if !within(squared_norm_z, MAX_MCSE) {
         failures.push((
             Check::SquaredNorm,
             format!(
