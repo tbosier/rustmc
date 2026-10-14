@@ -168,7 +168,7 @@ pub(crate) fn run_chain_with_evaluator(
     let mut total = 0u64;
     let mut n_divergences = 0usize;
 
-    let mut mass = MassMatrix::from_graph(graph);
+    let mut mass = MassMatrix::identity(graph);
     // The same windowed schedule, dual averaging and step-size search as NUTS.
     let (mut adapter, mut step_size) = WarmupAdapter::start(
         graph,

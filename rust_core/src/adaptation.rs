@@ -596,7 +596,7 @@ mod tests {
         );
         adapter.windows = windows;
         adapter.accumulator = MassMatrixAccumulator::for_window(&graph, MetricKind::Auto, 1);
-        let mut mass = MassMatrix::from_graph(&graph);
+        let mut mass = MassMatrix::identity(&graph);
         let mut rng = ChaCha8Rng::seed_from_u64(3);
         for iter in 0..num_warmup {
             // Positions far from the unit variance, so any estimate shows.
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn unusable_windows_keep_the_current_metric() {
-        let unit = format!("{:?}", MassMatrix::from_graph(&standard_normal().0));
+        let unit = format!("{:?}", MassMatrix::identity(&standard_normal().0));
         // A one-draw window, and a full window with too little warmup left
         // after it for the step size to settle.
         assert_eq!(format!("{:?}", run_adapter(vec![(5, 6)], 100)), unit);
@@ -652,7 +652,7 @@ mod tests {
 
     fn search(graph: &Graph, seed: u64) -> f64 {
         let mut evaluator = Evaluator::new(graph);
-        let mass = MassMatrix::from_graph(graph);
+        let mass = MassMatrix::identity(graph);
         let mut rng = ChaCha8Rng::seed_from_u64(seed);
         find_reasonable_step_size(
             graph,

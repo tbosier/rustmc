@@ -154,10 +154,6 @@ impl MassMatrix {
         }
     }
 
-    pub fn from_graph(graph: &Graph) -> Self {
-        Self::identity(graph)
-    }
-
     pub fn sample_momentum_into<R: Rng + ?Sized>(
         &self,
         rng: &mut R,
@@ -193,24 +189,16 @@ impl MassMatrix {
         ke
     }
 
-    pub fn uturn(
-        &self,
-        left_q: &[f64],
-        left_p: &[f64],
-        right_q: &[f64],
-        right_p: &[f64],
-        scratch: &mut [f64],
-    ) -> bool {
+    pub fn uturn(&self, left_q: &[f64], left_p: &[f64], right_q: &[f64], right_p: &[f64]) -> bool {
         debug_assert_eq!(left_q.len(), self.dim);
         debug_assert_eq!(right_q.len(), self.dim);
         debug_assert_eq!(left_p.len(), self.dim);
         debug_assert_eq!(right_p.len(), self.dim);
-        debug_assert!(scratch.len() >= self.dim);
 
         let mut dot_left = 0.0f64;
         let mut dot_right = 0.0f64;
         for block in &self.blocks {
-            let (dl, dr) = block.uturn_terms(left_q, left_p, right_q, right_p, scratch);
+            let (dl, dr) = block.uturn_terms(left_q, left_p, right_q, right_p);
             dot_left += dl;
             dot_right += dr;
         }
@@ -227,12 +215,6 @@ impl MassMatrix {
 }
 
 impl MassMatrixAccumulator {
-    /// An accumulator whose finalized metric is dense within every vector
-    /// parameter of at most 512 elements ([`MetricKind::Dense`]).
-    pub fn from_graph(graph: &Graph) -> Self {
-        Self::for_window(graph, MetricKind::Dense, usize::MAX)
-    }
-
     /// An accumulator for one adaptation window of `window_len` draws.
     ///
     /// The window length is known when the window opens, so under
@@ -378,7 +360,6 @@ impl MassBlock {
         left_p: &[f64],
         right_q: &[f64],
         right_p: &[f64],
-        _scratch: &mut [f64],
     ) -> (f64, f64) {
         // In whitened canonical coordinates z=L^-1 q and p_z=L^T p,
         // delta_z^T p_z = delta_q^T p: the constant metric cancels.
@@ -919,7 +900,7 @@ mod tests {
         assert_eq!(velocity, [6.0]);
         assert_eq!(block.kinetic_energy(&momentum, &mut scratch), 4.5);
 
-        let (left, right) = block.uturn_terms(&[0.0], &momentum, &[2.0], &[-0.5], &mut scratch);
+        let (left, right) = block.uturn_terms(&[0.0], &momentum, &[2.0], &[-0.5]);
         assert_eq!((left, right), (3.0, -1.0));
 
         let mut rng = ChaCha8Rng::seed_from_u64(11);
@@ -953,7 +934,7 @@ mod tests {
         let left_q = [1.0, -1.0];
         let right_q = [3.0, 2.0];
         let right_p = [-0.5, 4.0];
-        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p, &mut scratch);
+        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p);
         let delta = [right_q[0] - left_q[0], right_q[1] - left_q[1]];
         assert_eq!(left, delta[0] * momentum[0] + delta[1] * momentum[1]);
         assert_eq!(right, delta[0] * right_p[0] + delta[1] * right_p[1]);
@@ -995,7 +976,7 @@ mod tests {
         let left_q = [1.0, -1.0];
         let right_q = [3.0, 2.0];
         let right_p = [-0.5, 4.0];
-        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p, &mut scratch);
+        let (left, right) = block.uturn_terms(&left_q, &momentum, &right_q, &right_p);
         let delta = [right_q[0] - left_q[0], right_q[1] - left_q[1]];
         assert_close(left, delta[0] * momentum[0] + delta[1] * momentum[1], 1e-12);
         assert_close(right, delta[0] * right_p[0] + delta[1] * right_p[1], 1e-12);

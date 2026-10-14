@@ -177,7 +177,7 @@ pub(crate) fn run_chain_with_evaluator(
     let mut sum_accept_prob = 0.0f64;
     let mut total_iters_done = 0u64;
 
-    let mut mass = MassMatrix::from_graph(graph);
+    let mut mass = MassMatrix::identity(graph);
     let mut scratch = vec![0.0f64; dim];
     let mut pool = PointPool::new(dim);
 
@@ -458,7 +458,7 @@ fn build_tree_iterative(
         }
 
         // Check U-turn across the full tree
-        if check_uturn(&left, &right, mass, scratch) {
+        if check_uturn(&left, &right, mass) {
             break;
         }
     }
@@ -600,7 +600,7 @@ fn build_subtree(
     };
 
     // Check U-turn on the merged subtree
-    let turning = outer.turning || check_uturn(&left, &right, mass, scratch);
+    let turning = outer.turning || check_uturn(&left, &right, mass);
 
     TreeResult {
         left,
@@ -655,13 +655,8 @@ fn leapfrog(
 ///
 /// For a constant Euclidean metric, the transform to canonical whitened
 /// coordinates cancels from these dot products.
-fn check_uturn(
-    left: &PhasePoint,
-    right: &PhasePoint,
-    mass: &MassMatrix,
-    scratch: &mut [f64],
-) -> bool {
-    mass.uturn(&left.q, &left.p, &right.q, &right.p, scratch)
+fn check_uturn(left: &PhasePoint, right: &PhasePoint, mass: &MassMatrix) -> bool {
+    mass.uturn(&left.q, &left.p, &right.q, &right.p)
 }
 
 fn log_sum_exp(a: f64, b: f64) -> f64 {
@@ -962,7 +957,7 @@ mod tests {
         let zero = graph.add_constant(0.0);
         let one = graph.add_constant(1.0);
         graph.normal_logp(x, zero, one);
-        let mass = MassMatrix::from_graph(&graph);
+        let mass = MassMatrix::identity(&graph);
         let mut found_clipped_leaf = false;
         for q in [-2.0, -1.0, 0.5, 1.0, 2.0] {
             for p in [-2.0, -0.5, 0.5, 2.0] {
@@ -1042,7 +1037,7 @@ mod tests {
         let narrow = graph.add_constant(0.1);
         graph.normal_logp(x, zero, narrow);
         graph.normal_logp(y, zero, one);
-        let mass = MassMatrix::from_graph(&graph);
+        let mass = MassMatrix::identity(&graph);
         let mut evaluator = Evaluator::new(&graph);
         evaluator.compute(&graph, &[0.0, 0.0]);
         let mut current = PhasePoint {
