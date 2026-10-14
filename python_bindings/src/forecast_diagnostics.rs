@@ -51,7 +51,7 @@ pub(crate) fn sampler_stats<'py>(
     stats.set_item("independent_chain_comparison", chains >= 2)?;
     stats.set_item(
         "diagnostics_available",
-        draws >= rustmc_core::forecast_diagnostics::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN,
+        draws >= rustmc_core::diagnostics::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN,
     )?;
     Ok(stats)
 }

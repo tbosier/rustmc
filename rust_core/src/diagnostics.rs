@@ -2,6 +2,11 @@ use crate::hmc::TransitionStats;
 use rayon::prelude::*;
 use std::collections::HashSet;
 
+/// The fewest retained draws per chain for which R-hat, bulk/tail ESS and the
+/// MCSE are reported, for every engine. Defined next to the forecasting
+/// samplers' diagnostics, which is a crate-private module.
+pub use crate::forecast_diagnostics::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN;
+
 /// Narrowest the parameter-name column is ever drawn.
 ///
 /// This is the historical width, so tables whose names all fit keep exactly
