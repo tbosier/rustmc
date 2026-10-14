@@ -26,10 +26,13 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 }
 
 /// The sampler options shared by `sample`, `CompiledModel.sample` and the
-/// batch entry points, as Python passes them, checked once by the core's
-/// `BatchSampleConfig::validate`. Every entry point checks them before it
-/// compiles or binds a model, so a request over the core's size limits fails
-/// before that work, ahead of any error the model itself would raise.
+/// batch entry points, as Python passes them, checked here by the core's
+/// `BatchSampleConfig::validate` (the core checks them again when it samples).
+/// Every entry point checks them before it compiles or binds a model. So the
+/// size limits that do not depend on the model (the transition records, and
+/// the retained draws at one value each) fail before that work, ahead of any
+/// error the model would raise. The retained-draws limit at the model's real
+/// parameter count is checked only later, by the core.
 pub(crate) struct SamplerOptions<'a> {
     pub(crate) chains: usize,
     pub(crate) draws: usize,
