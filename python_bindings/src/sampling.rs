@@ -65,10 +65,12 @@ impl SamplerOptions<'_> {
     /// Configuration for a batch of fits.
     pub(crate) fn batch(&self) -> PyResult<BatchSampleConfig> {
         let metric = MetricKind::parse(self.metric).map_err(PyValueError::new_err)?;
-        // The numeric checks do not read the sampler type; validating them
-        // before parsing it keeps the base's error order.
-        let mut config = BatchSampleConfig {
-            sampler: SamplerType::Nuts,
+        // The numeric checks are reported before an unknown sampler name, as
+        // before. A known sampler is validated under its own rules; NUTS
+        // stands in only for a name that is refused below anyway.
+        let sampler = parse_sampler_type(self.sampler);
+        let config = BatchSampleConfig {
+            sampler: *sampler.as_ref().unwrap_or(&SamplerType::Nuts),
             num_chains: self.chains,
             num_draws: self.draws,
             num_warmup: self.warmup,
@@ -81,7 +83,7 @@ impl SamplerOptions<'_> {
             metric,
         };
         config.validate().map_err(PyValueError::new_err)?;
-        config.sampler = parse_sampler_type(self.sampler)?;
+        sampler?;
         Ok(config)
     }
 }
