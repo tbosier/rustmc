@@ -9,8 +9,6 @@
 //! forecasting samplers call them too, so they belong here, and `autodiff`
 //! re-exports them at their old paths.
 
-use crate::graph::ElementwiseOp;
-
 /// Logistic sigmoid, `1 / (1 + exp(-x))`, evaluated without overflow.
 ///
 /// The textbook form overflows `exp(-x)` for `x < -709` and returns 0 where
@@ -475,6 +473,21 @@ pub(crate) fn tanh_slope(a: f64) -> f64 {
     (2.0 * half) * (2.0 * half)
 }
 
+/// `(d/da, d/db)` of `a^b`, given `value == a^b` and `log_a == ln(a)`.
+///
+/// `x^0` is constant even at `x = 0`. For positive exponents `0^b` is also
+/// constant in `b`; forming `0 * ln(0)` would give a false NaN.
+#[inline]
+pub(crate) fn pow_derivatives(a: f64, b: f64, value: f64, log_a: f64) -> (f64, f64) {
+    let da = if b == 0.0 { 0.0 } else { b * a.powf(b - 1.0) };
+    let db = if a == 0.0 && b > 0.0 {
+        0.0
+    } else {
+        value * log_a
+    };
+    (da, db)
+}
+
 /// `upstream * (b a^(b-1), a^b ln a)`.
 ///
 /// `a^(b-1)` can leave the range on its own while `a^b` — the value the forward
@@ -491,17 +504,20 @@ pub(crate) fn tanh_slope(a: f64) -> f64 {
 /// infinity, and only for a positive base: `powf` of a negative base is NaN
 /// unless the exponent is an integer, and a logarithm cannot tell the
 /// difference.
-pub(crate) fn pow_adjoints(upstream: f64, a: f64, b: f64) -> (f64, f64) {
-    let (da, db) = ElementwiseOp::Pow.derivatives(a, b);
+///
+/// `value` is `a^b`, which the forward pass has already computed: the caller
+/// passes it in rather than paying for a second `powf`, and `ln(a)` is taken
+/// once for the derivative and the rescue test together.
+pub(crate) fn pow_adjoints(upstream: f64, a: f64, b: f64, value: f64) -> (f64, f64) {
+    let log_a = a.ln();
+    let (da, db) = pow_derivatives(a, b, value, log_a);
     let mut adjoint_a = upstream * da;
     let mut adjoint_b = upstream * db;
-    let log_a = a.ln();
     let rescue_a = needs_rescue(adjoint_a, &[upstream, a, b]);
     let rescue_b = needs_rescue(adjoint_b, &[upstream, a, log_a]);
     if !rescue_a && !rescue_b {
         return (adjoint_a, adjoint_b);
     }
-    let value = a.powf(b);
     if rescue_a {
         adjoint_a = scaled_ratio(&[upstream, b, value], &[a])
             .or_else(|| scaled_power_product(&[upstream, b], a, b - 1.0))
@@ -626,6 +642,56 @@ pub(crate) fn digamma(mut x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::ElementwiseOp;
+
+    /// Reverse mode hands `adjoints_with_value` the node's forward value so
+    /// `Exp`, `Sqrt` and `Pow` need not recompute it. That must not move a
+    /// bit relative to `adjoints`, which recomputes it, on either path of
+    /// `pow_adjoints` -- the direct product or the rescue.
+    #[test]
+    fn adjoints_from_the_forward_value_match_recomputed_adjoints() {
+        let points = [
+            -3.0, -1.0, -0.5, -0.0, 0.0, 1e-300, 1e-200, 0.3, 1.0, 2.0, 7.5, 1e200,
+        ];
+        let upstreams = [1.0, -2.5, 1e-200, 1e200, 0.0];
+        for op in [
+            ElementwiseOp::Exp,
+            ElementwiseOp::Sqrt,
+            ElementwiseOp::Pow,
+            ElementwiseOp::Log,
+            ElementwiseOp::Div,
+            ElementwiseOp::Tanh,
+        ] {
+            for &a in &points {
+                for &b in &points {
+                    for &u in &upstreams {
+                        let out = op.value(a, b);
+                        let (x, y) = op.adjoints_with_value(u, a, b, out);
+                        let (p, q) = op.adjoints(u, a, b);
+                        let same = |l: f64, r: f64| {
+                            l.to_bits() == r.to_bits() || (l.is_nan() && r.is_nan())
+                        };
+                        assert!(same(x, p) && same(y, q), "{op:?} u={u} a={a} b={b}");
+                    }
+                }
+            }
+        }
+        // `derivatives` keeps the formula it had before it was routed through
+        // `pow_derivatives`.
+        for &a in &points {
+            for &b in &points {
+                let da = if b == 0.0 { 0.0 } else { b * a.powf(b - 1.0) };
+                let db = if a == 0.0 && b > 0.0 {
+                    0.0
+                } else {
+                    a.powf(b) * a.ln()
+                };
+                let (x, y) = ElementwiseOp::Pow.derivatives(a, b);
+                assert!(x.to_bits() == da.to_bits() || (x.is_nan() && da.is_nan()));
+                assert!(y.to_bits() == db.to_bits() || (y.is_nan() && db.is_nan()));
+            }
+        }
+    }
 
     /// `ElementwiseOp::Softplus` used its own branch-free spelling,
     /// `max(a, 0) + ln1p(exp(-|a|))`. It is the same value to the bit, which

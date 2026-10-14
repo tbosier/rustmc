@@ -72,7 +72,8 @@ pub use crate::numerics::{
     stable_sigmoid_derivative,
 };
 use crate::numerics::{
-    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, softplus, tanh_slope,
+    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, pow_derivatives, softplus,
+    tanh_slope,
 };
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
@@ -118,17 +119,7 @@ impl ElementwiseOp {
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
             Self::Div => (1.0 / b, div_denominator_derivative(a, b)),
-            Self::Pow => {
-                // x^0 is constant even at x=0. For positive exponents, 0^b
-                // is also constant in b; forming 0*log(0) gives a false NaN.
-                let da = if b == 0.0 { 0.0 } else { b * a.powf(b - 1.0) };
-                let db = if a == 0.0 && b > 0.0 {
-                    0.0
-                } else {
-                    a.powf(b) * a.ln()
-                };
-                (da, db)
-            }
+            Self::Pow => pow_derivatives(a, b, a.powf(b), a.ln()),
             Self::Neg => (-1.0, 0.0),
             Self::Exp => (a.exp(), 0.0),
             Self::Log => (1.0 / a, 0.0),
@@ -183,11 +174,25 @@ impl ElementwiseOp {
             // whatever `a / b` and the adjoint are.
             Self::Div => (upstream / b, div_denominator_adjoint(upstream, a, b)),
             Self::Log => (upstream / a, 0.0),
-            Self::Pow => pow_adjoints(upstream, a, b),
+            Self::Pow => pow_adjoints(upstream, a, b, a.powf(b)),
             _ => {
                 let (da, db) = self.derivatives(a, b);
                 (upstream * da, upstream * db)
             }
+        }
+    }
+
+    /// [`Self::adjoints`], given the node's own forward value `out == value(a, b)`.
+    ///
+    /// The derivatives of `Exp`, `Sqrt` and `Pow` are built from that value,
+    /// so reverse mode passes it in instead of recomputing an `exp`, a `sqrt`
+    /// or a `powf` per element. The results are the same bits as `adjoints`.
+    pub(crate) fn adjoints_with_value(self, upstream: f64, a: f64, b: f64, out: f64) -> (f64, f64) {
+        match self {
+            Self::Exp => (upstream * out, upstream * 0.0),
+            Self::Sqrt => (upstream * (0.5 / out), upstream * 0.0),
+            Self::Pow => pow_adjoints(upstream, a, b, out),
+            _ => self.adjoints(upstream, a, b),
         }
     }
 }

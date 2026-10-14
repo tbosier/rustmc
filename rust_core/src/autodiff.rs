@@ -1206,7 +1206,8 @@ impl Evaluator {
                         // derivatives leave the exponent range on their own
                         // while the product does not. See
                         // `ElementwiseOp::adjoints`.
-                        let (da, db) = operator.adjoints(upstream, av, bv);
+                        let out = self.read_vec(idx, i);
+                        let (da, db) = operator.adjoints_with_value(upstream, av, bv, out);
                         self.accumulate(*a, i, da);
                         if let Some(b) = b {
                             self.accumulate(*b, i, db);
@@ -1252,8 +1253,8 @@ impl Evaluator {
                     self.adj_scalars[b.0] += a_s * va;
                 }
                 Op::Exp(a) => {
-                    let va = self.scalars[a.0].exp();
-                    self.adj_scalars[a.0] += a_s * va;
+                    // d/da exp(a) is the node's own value.
+                    self.adj_scalars[a.0] += a_s * self.scalars[idx];
                 }
                 Op::Sigmoid(a) => {
                     self.adj_scalars[a.0] += a_s * stable_sigmoid_derivative(self.scalars[a.0]);
