@@ -154,6 +154,12 @@ pub struct LinearGaussianStateSpace {
     observation_rows: Option<Vec<Vec<f64>>>,
     process_covariance: Vec<f64>,
     diagonal_process: bool,
+    /// For a non-diagonal process covariance, its `positive_semidefinite_factor`,
+    /// computed whenever the covariance is set so that simulating a transition
+    /// does not refactor it at every step. `None` for a diagonal covariance,
+    /// which is simulated coordinate by coordinate, or for one that
+    /// `set_variances` has made unfactorable.
+    process_factor: Option<Vec<f64>>,
     observation_variance: f64,
     observation_variances: Option<Vec<f64>>,
     initial_mean: Vec<f64>,
@@ -196,11 +202,12 @@ impl LinearGaussianStateSpace {
         }
         check_symmetric("process covariance", &process_covariance, dimension)?;
         check_symmetric("initial covariance", &initial_covariance, dimension)?;
-        positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
-            StateSpaceError::NotPositiveSemidefinite(
-                "process covariance must be positive semidefinite".into(),
-            )
-        })?;
+        let process_factor =
+            positive_semidefinite_factor(&process_covariance, dimension).map_err(|_| {
+                StateSpaceError::NotPositiveSemidefinite(
+                    "process covariance must be positive semidefinite".into(),
+                )
+            })?;
         cholesky(&initial_covariance, dimension).map_err(|_| {
             StateSpaceError::NotPositiveDefinite(
                 "initial covariance must be strictly positive definite".into(),
@@ -218,6 +225,7 @@ impl LinearGaussianStateSpace {
             observation_rows: None,
             process_covariance,
             diagonal_process,
+            process_factor: (!diagonal_process).then_some(process_factor),
             observation_variance,
             observation_variances: None,
             initial_mean,
@@ -489,13 +497,11 @@ impl LinearGaussianStateSpace {
             check_finite("simulated state", &draw)?;
             Ok(draw)
         } else {
-            sample_multivariate_normal(
-                "process covariance",
-                &mean,
-                &self.process_covariance,
-                self.dimension,
-                rng,
-            )
+            let factor = self
+                .process_factor
+                .as_deref()
+                .ok_or_else(|| not_positive_semidefinite("process covariance"))?;
+            sample_with_factor("process covariance", &mean, factor, self.dimension, rng)
         }
     }
 
@@ -530,6 +536,12 @@ impl LinearGaussianStateSpace {
     pub(crate) fn set_variances(&mut self, indices: &[usize], variances: &[f64], observation: f64) {
         for (&index, &variance) in indices.iter().zip(variances) {
             self.process_covariance[index * self.dimension + index] = variance;
+        }
+        // Writing diagonal entries keeps a diagonal covariance diagonal; a
+        // correlated one needs its cached factor refreshed.
+        if !self.diagonal_process {
+            self.process_factor =
+                positive_semidefinite_factor(&self.process_covariance, self.dimension).ok();
         }
         self.observation_variance = observation;
     }
@@ -1549,9 +1561,23 @@ fn sample_multivariate_normal<R: Rng + ?Sized>(
     d: usize,
     rng: &mut R,
 ) -> Result<Vec<f64>, StateSpaceError> {
-    let factor = positive_semidefinite_factor(covariance, d).map_err(|_| {
-        StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
-    })?;
+    let factor =
+        positive_semidefinite_factor(covariance, d).map_err(|_| not_positive_semidefinite(name))?;
+    sample_with_factor(name, mean, &factor, d, rng)
+}
+
+fn not_positive_semidefinite(name: &str) -> StateSpaceError {
+    StateSpaceError::NumericalFailure(format!("{name} is not positive semidefinite"))
+}
+
+/// Draw from `N(mean, factor factor')` for a dense row-major `d x d` factor.
+fn sample_with_factor<R: Rng + ?Sized>(
+    name: &str,
+    mean: &[f64],
+    factor: &[f64],
+    d: usize,
+    rng: &mut R,
+) -> Result<Vec<f64>, StateSpaceError> {
     let standard: Vec<f64> = (0..d).map(|_| StandardNormal.sample(rng)).collect();
     let mut draw = mean.to_vec();
     for row in 0..d {
@@ -1722,6 +1748,70 @@ mod tests {
             .to_string();
         assert!(message.contains("process covariance"), "{message}");
         assert!(!message.contains("smoothing"), "{message}");
+    }
+
+    #[test]
+    fn correlated_transitions_reuse_the_factor_the_covariance_was_validated_with() {
+        let mut model = LinearGaussianStateSpace::new(
+            3,
+            identity(3),
+            vec![1.0, 0.0, 0.0],
+            vec![1.0, 0.5, 0.0, 0.5, 2.0, 0.0, 0.0, 0.0, 0.0],
+            1.0,
+            vec![0.0; 3],
+            identity(3),
+        )
+        .unwrap();
+        let state = [0.3, -1.0, 2.0];
+        for variance in [None, Some(4.0)] {
+            if let Some(variance) = variance {
+                model.set_variances(&[1], &[variance], 1.0);
+            }
+            let mean = mat_vec(&model.transition, &state, 3);
+            let mut cached = ChaCha8Rng::seed_from_u64(9);
+            let mut fresh = ChaCha8Rng::seed_from_u64(9);
+            for _ in 0..5 {
+                let expected = sample_multivariate_normal(
+                    "process covariance",
+                    &mean,
+                    &model.process_covariance,
+                    3,
+                    &mut fresh,
+                )
+                .unwrap();
+                assert_eq!(
+                    model.simulate_transition(&state, &mut cached).unwrap(),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_accepted_process_covariance_has_a_square_root_for_the_filter() {
+        // `new` validates with `positive_semidefinite_factor`; the filter
+        // factors with `process_root`. A covariance the first accepts must not
+        // make the second fail later.
+        let covariances: [(usize, Vec<f64>); 5] = [
+            (2, vec![1.0, 0.5, 0.5, 1.0]),
+            (2, vec![1.0, 1.0, 1.0, 1.0]),
+            (2, vec![1e-14, 5e-8, 5e-8, 1.0]),
+            (2, vec![1e20, 0.0, 0.0, 0.0]),
+            (3, vec![4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 9.0]),
+        ];
+        for (d, covariance) in covariances {
+            LinearGaussianStateSpace::new(
+                d,
+                identity(d),
+                vec![1.0; d],
+                covariance.clone(),
+                1.0,
+                vec![0.0; d],
+                identity(d),
+            )
+            .unwrap();
+            assert!(process_root(&covariance, d).is_ok(), "{covariance:?}");
+        }
     }
 
     /// Observations shared by the exact-reference tests, with three missing.
