@@ -10,7 +10,7 @@ pub mod data;
 pub mod diagnostics;
 pub mod distributions;
 pub mod dynamic_glm;
-pub(crate) mod elliptical_slice;
+pub mod elliptical_slice;
 pub mod forecast_batch;
 pub mod forecast_common;
 pub(crate) mod forecast_diagnostics;
