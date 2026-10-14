@@ -60,23 +60,31 @@ jobs:
       # same toolchain as the library.
       - run: cargo check -p rustmc_core --all-targets --locked
 
-  # One editable source install. Everything here needs the source tree: the
+  # Editable source installs. Everything here needs the source tree: the
   # provenance check, the source-only test modules (the benchmark harness and
   # the statistical gates skip against an installed wheel), the standalone
   # Rust runtime comparison, the examples and their pages, and the posterior
-  # validation. The other Python versions are covered by python-wheel-install,
-  # which runs the full suite against the same abi3 extension.
+  # validation. Two versions, one per supported ArviZ major, because the
+  # benchmark harness's ArviZ checks run only here. Every other Python
+  # version is covered by python-wheel-install, which runs the full suite
+  # against the same abi3 extension.
   python-source-install:
-    name: Python source install (3.11, ubuntu-latest)
+    name: Python source install (${{ matrix.python-version }}, ubuntu-latest)
     needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: py${{ matrix.python-version }}
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - name: Create isolated test environment
         run: python -m venv "${{ runner.temp }}/source-env"
       - name: Install build and test dependencies
@@ -86,10 +94,16 @@ jobs:
           VIRTUAL_ENV: ${{ runner.temp }}/source-env
         run: "${{ runner.temp }}/source-env/bin/maturin develop --release --manifest-path python_bindings/Cargo.toml"
       - name: Install ArviZ 0.x integration dependency
+        if: matrix.python-version == '3.11'
         run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=0.20,<1'"
+      - name: Install ArviZ 1.x integration dependency
+        if: matrix.python-version == '3.12'
+        run: "${{ runner.temp }}/source-env/bin/python -m pip install 'arviz>=1,<2'"
       - name: Build standalone model runtime example
+        if: matrix.python-version == '3.11'
         run: cargo build -p rustmc_core --release --example load_model
       - name: Compare Python and standalone Rust model execution
+        if: matrix.python-version == '3.11'
         env:
           RUSTMC_NATIVE_ARTIFACT_EXAMPLE: ${{ github.workspace }}/target/release/examples/load_model
         run: ${{ runner.temp }}/source-env/bin/python -m pytest -q tests/test_native_artifact_runtime.py
@@ -102,6 +116,7 @@ jobs:
       # tables are the manifest; a script in neither a table nor an excluded
       # section fails this step.
       - name: Run every documented example under a time budget
+        if: matrix.python-version == '3.11'
         run: >-
           ${{ runner.temp }}/source-env/bin/python scripts/run_examples.py
           --timeout 180 --jobs 2
@@ -110,14 +125,16 @@ jobs:
       # advertised 128 divergent transitions for a model that now has none. This
       # step regenerates the pages and fails if any committed page disagrees.
       - name: Check the example pages still match the examples
+        if: matrix.python-version == '3.11'
         run: >-
           ${{ runner.temp }}/source-env/bin/python scripts/build_example_docs.py --check
       - name: Check reference posteriors and repeated simulations
+        if: matrix.python-version == '3.11'
         run: >-
           ${{ runner.temp }}/source-env/bin/python -m benchmarks.validate_posteriors
           --replicates 32 --output "${{ runner.temp }}/posterior-validation.json"
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && matrix.python-version == '3.11'
         with:
           name: posterior-validation
           path: ${{ runner.temp }}/posterior-validation.json
@@ -174,10 +191,6 @@ jobs:
         run: |
           WHEEL=$(ls dist/rustmc-*.whl | head -1)
           "${{ runner.temp }}/wheel-env/bin/python" -m pip install "$WHEEL" numpy pytest
-      # ArviZ 0.x is covered by the source install on 3.11.
-      - name: Install ArviZ 1.x integration dependency
-        if: matrix.python-version == '3.12'
-        run: "${{ runner.temp }}/wheel-env/bin/python -m pip install 'arviz>=1,<2'"
       - name: Verify wheel provenance and full Python integration
         working-directory: ${{ runner.temp }}
         env:
@@ -188,7 +201,7 @@ jobs:
 
   build:
     name: Build wheel (${{ matrix.target }})
-    # A tag must not reach the publish path unless the source install and the
+    # A tag must not reach the publish path unless the source installs and the
     # clean-wheel installs across the advertised Python matrix passed.
     needs: [python-source-install, python-wheel-install]
     # Exercise the release platforms before merging, as well as on release tags.
