@@ -56,7 +56,8 @@ bound retained output memory. Fit objects retain all posterior parameter draws, 
 forecast objects retain all joint paths. For bounded retention, submit slices of a
 larger workload, persist their summaries or draws, then release each batch before
 submitting the next slice. Accessing `.results` or an individual fit/forecast creates
-an owned copy. Avoid keeping both copies for large workloads.
+a new Python object that shares the cell's draws or paths rather than copying them;
+array attributes such as `observation_samples` are still fresh NumPy copies.
 
 Seeds depend on `(seed, cell_id, domain)` followed by each sampler's existing
 model/domain/chain derivation, never cell position or worker scheduling. The cell
