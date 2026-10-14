@@ -428,9 +428,12 @@ mod boundary_tests {
     }
 
     /// Run one chain of `sampler` on [`NanBand`] from the origin with unit
-    /// metric, step size 1 and no warmup, and return it with the log of the
-    /// points each transition evaluated.
-    fn nan_band_chain(sampler: SamplerType) -> (crate::hmc::ChainResult, Vec<Vec<f64>>) {
+    /// metric, step size 1, `num_leapfrog_steps` HMC steps and no warmup,
+    /// and return it with the log of the points each transition evaluated.
+    fn nan_band_chain(
+        sampler: SamplerType,
+        num_leapfrog_steps: usize,
+    ) -> (crate::hmc::ChainResult, Vec<Vec<f64>>) {
         let target = NanBand {
             calls: std::sync::Mutex::new(Vec::new()),
         };
@@ -447,7 +450,7 @@ mod boundary_tests {
             num_draws: 2000,
             num_warmup: 0,
             step_size: 1.0,
-            num_leapfrog_steps: 2,
+            num_leapfrog_steps,
             max_tree_depth: 4,
             ..Default::default()
         };
@@ -471,42 +474,51 @@ mod boundary_tests {
 
     #[test]
     fn an_hmc_trajectory_through_a_point_outside_the_support_is_a_rejected_divergence() {
-        let (chain, trajectories) = nan_band_chain(SamplerType::Hmc);
-        let mut start = 0.0;
-        let mut through_the_band_and_back = 0;
-        for ((transition, draw), trajectory) in chain
-            .transitions
-            .iter()
-            .zip(&chain.samples)
-            .zip(&trajectories)
-        {
-            let left = trajectory.iter().any(|&x| NanBand::outside(x));
-            assert_eq!(transition.divergent, left, "{trajectory:?} from {start}");
-            if left {
-                assert!(!transition.accepted, "{trajectory:?} from {start}");
-                assert_eq!(draw[0], start);
-                // The trajectory stops at the point outside the support.
-                assert!(NanBand::outside(*trajectory.last().unwrap()));
-                // The trace from review: from q, momentum p, step 1, two
-                // steps visit q + p, in the band, and then q + 2p, inside.
-                let p = trajectory[0] - start;
-                if trajectory.len() == 1 && !NanBand::outside(start + 2.0 * p) {
-                    through_the_band_and_back += 1;
+        for steps in [2, 3] {
+            let (chain, trajectories) = nan_band_chain(SamplerType::Hmc, steps);
+            let mut start = 0.0;
+            // Trajectories that left the support at step k + 1 and would have
+            // ended back inside it: with two steps, the trace from review
+            // (from q with momentum p, q + p is in the band and q + 2p is not).
+            let mut through_and_back = vec![0; steps - 1];
+            for ((transition, draw), trajectory) in chain
+                .transitions
+                .iter()
+                .zip(&chain.samples)
+                .zip(&trajectories)
+            {
+                let left = trajectory.iter().any(|&x| NanBand::outside(x));
+                assert_eq!(transition.divergent, left, "{trajectory:?} from {start}");
+                if left {
+                    assert!(!transition.accepted, "{trajectory:?} from {start}");
+                    assert_eq!(transition.energy_error, f64::INFINITY);
+                    assert_eq!(transition.accept_prob, 0.0);
+                    assert_eq!(draw[0], start);
+                    // The trajectory stops at the point outside the support.
+                    assert!(NanBand::outside(*trajectory.last().unwrap()));
+                    let p = trajectory[0] - start;
+                    let stopped_at = trajectory.len();
+                    if stopped_at < steps && !NanBand::outside(start + steps as f64 * p) {
+                        through_and_back[stopped_at - 1] += 1;
+                    }
+                } else {
+                    // A flat density has no energy error inside the support.
+                    assert!(transition.accepted);
+                    assert_eq!(trajectory.len(), steps);
                 }
-            } else {
-                // A flat density has no energy error inside the support.
-                assert!(transition.accepted);
-                assert_eq!(trajectory.len(), 2);
+                assert!(!NanBand::outside(draw[0]));
+                start = draw[0];
             }
-            assert!(!NanBand::outside(draw[0]));
-            start = draw[0];
+            assert!(
+                through_and_back.iter().all(|&n| n > 0),
+                "{steps} steps: {through_and_back:?}"
+            );
         }
-        assert!(through_the_band_and_back > 0);
     }
 
     #[test]
     fn a_nuts_leaf_outside_the_support_ends_the_tree_as_a_divergence() {
-        let (chain, trajectories) = nan_band_chain(SamplerType::Nuts);
+        let (chain, trajectories) = nan_band_chain(SamplerType::Nuts, 2);
         let mut divergences = 0;
         for ((transition, draw), trajectory) in chain
             .transitions

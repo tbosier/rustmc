@@ -318,19 +318,22 @@ pub(crate) fn run_chain_with_evaluator(
             *v = -*v;
         }
 
-        // Outside the support the density is -inf, whatever non-finite value
-        // the evaluator gave, so the energy error is +inf rather than NaN.
-        let logp_prop = if left_support {
-            f64::NEG_INFINITY
-        } else {
-            evaluator.log_density()
-        };
+        let logp_prop = evaluator.log_density();
         let ke_current = mass.kinetic_energy(&p, &mut scratch);
         let ke_prop = mass.kinetic_energy(&p_prop, &mut scratch);
         let h_current = -logp_current + ke_current;
         let h_prop = -logp_prop + ke_prop;
         let log_accept_ratio = h_current - h_prop;
-        let energy_error = h_prop - h_current;
+        // Outside the support the density is -inf, so the energy error is
+        // +inf. It is set rather than computed: the abandoned trajectory's
+        // last momentum kick used a gradient from an earlier step, and the
+        // evaluator's non-finite density need not be -inf, so the computed
+        // value could be NaN.
+        let energy_error = if left_support {
+            f64::INFINITY
+        } else {
+            h_prop - h_current
+        };
         let accept_prob = acceptance_probability(energy_error);
 
         let divergent = left_support || energy_error > MAX_DELTA_H || !energy_error.is_finite();
