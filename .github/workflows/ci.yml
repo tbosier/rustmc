@@ -33,6 +33,15 @@ jobs:
         run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
       - name: Verify publishable Rust crate archive
         run: cargo package -p rustmc_core --locked
+      # cargo package verifies the library only. Build the shipped test and
+      # example targets from the unpacked archive too, so a test that reaches
+      # outside the crate (for a fixture, say) fails here, not for a user.
+      - name: Build the packaged crate's tests from the archive alone
+        run: |
+          mkdir -p "$RUNNER_TEMP/crate"
+          tar xzf target/package/rustmc_core-*.crate -C "$RUNNER_TEMP/crate"
+          cargo test --release --no-run --locked --target-dir target \
+            --manifest-path "$(ls -d "$RUNNER_TEMP"/crate/rustmc_core-*)/Cargo.toml"
 
   msrv:
     name: Minimum supported Rust version
