@@ -356,9 +356,9 @@ pub struct LocalLevelFilter {
 /// rounded result everywhere and never returns zero or an infinity, where the
 /// two single-ordering forms are wrong by up to 8e15 ulp and fail outright on
 /// about 22% of the pairs for `a * b` first, which loses both ends of the
-/// range, and about 11% for dividing first, which loses only the lower one. The scalar collapse of the Joseph
-/// form that `state_space.rs` uses, `(1 - k)^2 a + k^2 b`, scores the same two
-/// ulp for more arithmetic and without the interval argument.
+/// range, and about 11% for dividing first, which loses only the lower one.
+/// The scalar collapse of the Joseph form, `(1 - k)^2 a + k^2 b`, scores the
+/// same two ulp for more arithmetic and without the interval argument.
 ///
 /// `sum` is passed in because both callers have already formed `a + b` for the
 /// gain. A non-finite sum is not rescued here: it yields a zero or non-finite
