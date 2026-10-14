@@ -1191,6 +1191,45 @@ mod tests {
     }
 
     #[test]
+    fn kernel_configs_forward_every_setting_unchanged() {
+        // Every value distinct, so a swapped or shifted field shows.
+        let config = SamplerConfig {
+            num_draws: 11,
+            num_warmup: 13,
+            step_size: 0.25,
+            target_accept: 0.7,
+            num_leapfrog_steps: 17,
+            max_tree_depth: 5,
+            metric: MetricKind::Dense,
+            ..Default::default()
+        };
+        let nuts = config.nuts_config();
+        assert_eq!(
+            (
+                nuts.num_draws,
+                nuts.num_warmup,
+                nuts.step_size,
+                nuts.target_accept,
+                nuts.max_tree_depth,
+                nuts.metric,
+            ),
+            (11, 13, 0.25, 0.7, 5, MetricKind::Dense)
+        );
+        let hmc = config.hmc_config();
+        assert_eq!(
+            (
+                hmc.num_draws,
+                hmc.num_warmup,
+                hmc.step_size,
+                hmc.target_accept,
+                hmc.num_leapfrog_steps,
+                hmc.metric,
+            ),
+            (11, 13, 0.25, 0.7, 17, MetricKind::Dense)
+        );
+    }
+
+    #[test]
     fn batch_configs_convert_and_validate_as_single_fits() {
         let batch = BatchSampleConfig {
             sampler: SamplerType::Hmc,
