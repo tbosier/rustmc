@@ -47,7 +47,10 @@ are `None`, and indexing a failed ID raises its error. `errors="raise"` stops
 scheduling work after an observed failure; already-running workers may finish.
 Duplicate IDs, wrong batch lengths, or invalid execution options always raise.
 `batch.diagnostics()` maps successful IDs to parameter reports and failed IDs to
-`None`. Forecast errors follow the same contract, including previous fit failures.
+`None`; `batch.warnings()` maps them to fit warnings the same way, and
+`batch.flagged()` lists the successful IDs with a failed check (see
+[fit warnings](reference.md#fit-warnings-and-batch-triage)). A local-linear-trend cell
+is always flagged, for its [known limitation](reference.md#known-limitation-slow-mixing-of-the-level-and-slope-variances). Forecast errors follow the same contract, including previous fit failures.
 
 One private Rayon pool serves the entire call, including nested chain work. `threads`
 and `chunk_size` must be positive; the default worker limit is one. Native execution
@@ -75,7 +78,7 @@ path. Aggregation across cells represents independent series and introduces no s
 shocks or hierarchical dependence.
 
 All five fitted models and hierarchical Gibbs fits expose `summary()`, `diagnostics()`,
-and a `sampler_stats` dictionary. Parameter reports reuse rank-normalized folded split
+`warnings()`, and a `sampler_stats` dictionary. Parameter reports reuse rank-normalized folded split
 R-hat, bulk/tail ESS, mean MCSE, and 94% empirical HDIs. These HDIs summarize parameter
 draws; forecast intervals retain their existing equal-tailed semantics. Local and trend
 reports cover learned variances and retained terminal states. Seasonal reports include

@@ -17,8 +17,8 @@ draws are exact and independent there is no warmup and no convergence period, so
 `sampler_stats` before interpreting a diagnostic.
 
 They return their own fit classes rather than the `FitResult` from
-[Get started](getting-started.md). `summary()`, `diagnostics()` and `sampler_stats`
-are common to all of them. Beyond that they diverge: most expose `get_samples_2d()` and
+[Get started](getting-started.md). `summary()`, `diagnostics()`, `warnings()` and
+`sampler_stats` are common to all of them. Beyond that they diverge: most expose `get_samples_2d()` and
 `forecast(steps)`, but `RunoffFit` does neither — it exposes `allocation_samples()`,
 `ultimate_samples()`, `calendar_samples(steps)` and the other arrays described in
 [payment runoff](runoff.md). Check the page for the model you are using.
@@ -197,8 +197,9 @@ posterior and predictive replay; compiled-model JSON omits training values.
 
 `compiled.sample_batch(datasets, ids=..., threads=4, chunk_size=64, errors="collect")`
 uses one bounded native pool and returns an ordered `BatchFit`. Inspect `.errors`,
-retrieve a successful item with `.get(id)`, and use `.diagnostics()`, `.predict()`, or
-`.fit` for the full result. With `errors="raise"`, cell errors raise with their ID.
+retrieve a successful item with `.get(id)`, and use `.diagnostics()`, `.warnings()`,
+`.predict()`, or `.fit` for the full result; `.flagged()` lists the cells that fail a
+check. With `errors="raise"`, cell errors raise with their ID.
 The default `seed_policy="cell_id_v1"` is stable under reordering, thread count and
 chunk-size changes. `seed_policy="position_v0"` seeds each cell by its position
 instead. Either way, chains within a cell draw different streams than in 0.12, so
