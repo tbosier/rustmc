@@ -732,9 +732,12 @@ list means every check ran and passed.
 
 A parameter whose draws are finite but do not vary has no R-hat or ESS. In an HMC or
 NUTS fit every parameter is sampled, so that means a chain is stuck, and the
-`diagnostics_unavailable` record has status `"fail"`. In a forecasting fit it is usually
-a variance the model fixes, so the record has status `"unavailable"`, which does not
-flag the fit.
+`diagnostics_unavailable` record has status `"fail"`. A forecasting model can fix a
+value (a `StructuralModel` variance set with `VarianceParameter.fixed`), and the rule
+cannot tell that apart from draws that collapsed numerically, for example a level
+sampled on data near 1e16 where the posterior spread is below double precision. So in a
+forecasting fit the record has status `"unavailable"`, which does not flag the fit;
+read the `unavailable` records of a fit whose parameters should all vary.
 
 Divergences, E-BFMI and tree-depth saturation exist only for Hamiltonian trajectories.
 Forecasting fits (Gibbs/FFBS, elliptical slice, exact conjugate draws, runoff) report

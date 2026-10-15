@@ -21,8 +21,10 @@
 //!   [`MIN_DIAGNOSTIC_DRAWS_PER_CHAIN`](super::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN)
 //!   finite draws per chain; a fit with fewer, or with a non-finite draw,
 //!   fails `diagnostics_unavailable`. So does an HMC or NUTS parameter whose
-//!   draws do not vary (a stuck chain); for other samplers that is a value
-//!   the model fixes, and the check is only unavailable.
+//!   draws do not vary (a stuck chain). Other samplers can fix a value (a
+//!   `StructuralModel` variance set to `VarianceParameter::Fixed`), and the
+//!   rule cannot tell that from draws that collapsed numerically, so there
+//!   the check is only unavailable and does not flag the fit.
 use super::{DiagnosticsReport, TransitionDiagnosticsReport, MIN_DIAGNOSTIC_DRAWS_PER_CHAIN};
 
 /// Rank-normalized split R-hat above this fails.
