@@ -20,7 +20,7 @@ use rustmc_core::sampler::SampleResult;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct FitResult {
     /// Shared: cloning a `FitResult`, or taking one from a batch cell, never
@@ -121,9 +121,17 @@ impl FitResult {
         generic_results::diagnostics(self.display(), py)
     }
 
-    /// Structured sampler telemetry, including integrator work and tree depth.
+    /// Structured sampler telemetry, including integrator work, tree depth,
+    /// per-chain E-BFMI and tree-depth saturation.
     fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         generic_results::transition_diagnostics(self.fit.raw_samples(), py)
+    }
+
+    /// Every failed or unavailable check of this fit (R-hat, ESS,
+    /// divergences, E-BFMI, tree-depth saturation), one dict per check. An
+    /// empty list means every check ran and passed.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        generic_results::warnings(self.display(), py)
     }
 
     /// Per-chain adapted step sizes.
@@ -271,7 +279,9 @@ impl FitResult {
     /// Returns an `arviz.InferenceData` on ArviZ 0.x or an `xarray.DataTree`
     /// on ArviZ 1.x, with:
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
-    ///   - `sample_stats`          — `diverging` (bool) and `step_size` per draw
+    ///   - `sample_stats`          — `diverging` (bool), `step_size` and
+    ///     `energy` per draw, and `tree_depth` for NUTS; `energy` is left out
+    ///     for a fit restored from an artifact older than version 3
     ///   - `observed_data`         — the fitted response vector for each likelihood
     ///   - `log_likelihood`        — (n_chains × n_draws × n_obs) pointwise values
     ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
@@ -325,6 +335,13 @@ impl FitResult {
         }
         let mut step_size_arr = Array2::<f64>::zeros((n_chains, n_draws));
         let mut diverging_arr = Array2::<bool>::from_elem((n_chains, n_draws), false);
+        let mut energy_arr = Array2::<f64>::zeros((n_chains, n_draws));
+        let mut tree_depth_arr = Array2::<i64>::zeros((n_chains, n_draws));
+        // A fit restored from an artifact older than version 3 has no
+        // energies, and an HMC fit no trees: those variables are left out
+        // rather than exported as placeholders.
+        let mut has_energy = true;
+        let mut has_tree_depth = true;
         for (ci, transitions) in raw.transitions.iter().enumerate() {
             let post_warmup: Vec<_> = transitions
                 .iter()
@@ -339,6 +356,12 @@ impl FitResult {
             for (di, transition) in post_warmup.into_iter().enumerate() {
                 step_size_arr[[ci, di]] = transition.step_size;
                 diverging_arr[[ci, di]] = transition.divergent;
+                energy_arr[[ci, di]] = transition.energy;
+                has_energy &= transition.energy.is_finite();
+                match transition.tree_depth {
+                    Some(depth) => tree_depth_arr[[ci, di]] = depth as i64,
+                    None => has_tree_depth = false,
+                }
             }
         }
 
@@ -360,6 +383,13 @@ impl FitResult {
         let sample_stats = PyDict::new(py);
         sample_stats.set_item("step_size", step_size_arr.into_pyarray(py))?;
         sample_stats.set_item("diverging", diverging_arr.into_pyarray(py))?;
+        // ArviZ's names: `az.bfmi(idata)` reads `energy`.
+        if has_energy {
+            sample_stats.set_item("energy", energy_arr.into_pyarray(py))?;
+        }
+        if has_tree_depth {
+            sample_stats.set_item("tree_depth", tree_depth_arr.into_pyarray(py))?;
+        }
         groups.set_item("sample_stats", sample_stats)?;
 
         if has_likelihoods {

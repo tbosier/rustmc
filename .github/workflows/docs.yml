@@ -6,6 +6,12 @@ name: Docs
 # from main documents behaviour that PyPI does not have yet. Pull requests and
 # main still build it, without deploying, so a broken page is caught before
 # release.
+#
+# The example-page drift check runs once per change, in ci.yml, which runs it
+# before anything is published. Here it runs only when `check_examples` is set:
+# a manual redeploy checks by default, and ci.yml's post-publish call turns it
+# off, because a toolchain release landing between the two runs could fail the
+# site deploy after the packages are already public.
 on:
   push:
     branches: [main]
@@ -16,10 +22,17 @@ on:
       deploy:
         type: boolean
         default: true
+      check_examples:
+        type: boolean
+        default: true
   workflow_dispatch:
     inputs:
       deploy:
         description: Deploy the site (the run must be on a vX.Y.Z tag)
+        type: boolean
+        default: true
+      check_examples:
+        description: Check the example pages still match the examples first
         type: boolean
         default: true
 
@@ -37,12 +50,19 @@ jobs:
         with:
           python-version: "3.11"
 
-      - uses: dtolnay/rust-toolchain@stable
-
       - name: Install docs dependencies
-        # Install the checked-out package, not the latest PyPI release, so the
-        # example pages are rebuilt against the API being documented.
-        run: python -m pip install . mkdocs-material
+        run: python -m pip install mkdocs-material
+
+      # `inputs` is empty on push and pull_request, so these three steps run
+      # only when a caller asks for the check.
+      - uses: dtolnay/rust-toolchain@stable
+        if: inputs.check_examples
+
+      - name: Install the checked-out package
+        if: inputs.check_examples
+        # The checked-out package, not the latest PyPI release, so the example
+        # pages are rebuilt against the API being documented.
+        run: python -m pip install .
 
       # docs/examples/*.md is generated from examples/*.py and committed. Verify
       # rather than regenerate: a regenerating deploy would quietly publish
@@ -50,6 +70,7 @@ jobs:
       # drift that CI is meant to stop. What ships is the reviewed committed page,
       # and the deploy fails if it no longer matches the code that produced it.
       - name: Verify the example pages match the examples
+        if: inputs.check_examples
         run: python scripts/build_example_docs.py --check
 
       # `strict: true` in mkdocs.yml makes any warning fail this step.

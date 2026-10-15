@@ -1,14 +1,15 @@
 //! `rustmc.graph-fit` artifacts written by the Python bindings load, evaluate
-//! and re-save from Rust. The fixtures under the repository's `tests/fixtures`
-//! are shared with the Python suite (`tests/test_fit_artifact.py`), which
-//! asserts the same bytes, so a format change on either side fails both.
+//! and re-save from Rust. The fixtures live in this crate's `tests/fixtures`,
+//! so the packaged crate can build this test. They are shared with the Python
+//! suite (`tests/test_fit_artifact.py`), which asserts the same bytes, so a
+//! format change on either side fails both.
 use std::collections::HashMap;
 
 use rustmc_core::data::DataInputs;
 use rustmc_core::model::ModelFit;
 
-const UNIFORM: &str = include_str!("../../tests/fixtures/graph_fit_v2_uniform.json");
-const REGRESSION: &str = include_str!("../../tests/fixtures/graph_fit_v2_regression.json");
+const UNIFORM: &str = include_str!("fixtures/graph_fit_v2_uniform.json");
+const REGRESSION: &str = include_str!("fixtures/graph_fit_v2_regression.json");
 
 #[test]
 fn loads_the_python_written_uniform_fixture() {

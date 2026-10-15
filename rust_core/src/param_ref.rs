@@ -196,12 +196,25 @@ pub fn validate_param_references(
 /// Closest declared name within a small edit distance, for "did you mean".
 fn suggest(name: &str, candidates: &[String]) -> Option<String> {
     let budget = (name.chars().count() / 3).clamp(1, 3);
+    closest(name, candidates.iter().map(String::as_str), budget).map(str::to_string)
+}
+
+/// The candidate nearest `name` by [`levenshtein`] distance, if any is within
+/// `budget` edits; the first in iteration order among equally near ones.
+///
+/// The one "did you mean" search in the crate: parameter references use it
+/// with a budget that grows with the name, data keys with a fixed budget of 2.
+pub(crate) fn closest<'a>(
+    name: &str,
+    candidates: impl IntoIterator<Item = &'a str>,
+    budget: usize,
+) -> Option<&'a str> {
     candidates
-        .iter()
-        .map(|c| (levenshtein(name, c), c))
-        .filter(|(d, _)| *d <= budget)
-        .min_by_key(|(d, _)| *d)
-        .map(|(_, c)| c.clone())
+        .into_iter()
+        .map(|candidate| (levenshtein(name, candidate), candidate))
+        .filter(|(distance, _)| *distance <= budget)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| candidate)
 }
 
 /// Plain Levenshtein edit distance (two-row dynamic program).

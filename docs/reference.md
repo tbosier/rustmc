@@ -4,10 +4,18 @@ Per-class arguments, output shapes, and stated limits. This is a lookup page, no
 tutorial: it assumes you have already fitted something in
 [Get started](getting-started.md) and now need the exact behaviour of one call.
 
-Coverage is not complete. `StructuralModel`, `BayesianDynamicGLM`, `VarianceParameter`
-and `ForecastSession` are public but documented only in their guides —
-[structural composition](structural-forecasting.md) and
-[dynamic GLMs](dynamic-glm.md).
+Coverage is not complete. These public names are documented only in their guides:
+
+- [Structural composition](structural-forecasting.md): `StructuralModel` and
+  `VarianceParameter`.
+- [Dynamic counts, amounts, and pooling](dynamic-glm.md): `BayesianDynamicGLM`,
+  `BayesianDynamicPoisson`, `BayesianDynamicNegativeBinomial`,
+  `BayesianDynamicHurdleLogNormal` and `DynamicGLMFit`.
+- [Evaluation and workflows](forecasting-workflows.md): `ForecastSession`, `backtest`,
+  `forecast_scenarios`, `naive_forecast`, `seasonal_naive`, `score_forecast`, `crps`,
+  `interval_score` and `weighted_interval_score`.
+- [Independent batches and diagnostics](forecast-batches.md): `forecast_cell_seed`.
+- [Sparse amounts](sparse-amounts.md): `hurdle_lognormal_logp`.
 
 Each section states what a model does not do as well as what it does. Those limits are
 deliberate and current; where a thing is not supported, it says so next to the thing.
@@ -36,8 +44,8 @@ Construct a general model with NumPy arrays, or use the `local_level()`,
 constructors. `filter(y)` returns predicted and filtered state means/covariances plus
 the observed-data log likelihood. `smooth(y)` returns the filtered and smoothed state
 moments and the same log likelihood; it does not carry the predicted moments, so keep
-the `filter(y)` result if you need those. `forecast(y, steps)` returns future
-latent-state and observation means/variances. A `NaN` observation is treated as missing
+the `filter(y)` result if you need those. `forecast(y, steps)` returns a
+`ForecastResult` holding future latent-state and observation means/variances. A `NaN` observation is treated as missing
 and causes a prediction-only step; infinities are rejected.
 
 `forecast.observation_covariance` contains the joint covariance across future scalar
@@ -65,9 +73,10 @@ must have exactly `steps` rows. See
 [time-varying observation rows](regression-forecasting.md#fixed-parameter-time-varying-observation-rows).
 The transition matrix, the process covariance, and the initial mean and covariance are
 constant for the whole series and horizon; there is no API to vary them. In the Rust
-core the per-time observation variance can also vary, through
-`with_observation_variances`; that is used internally by the structural models and is
-not exposed in Python, where the observation variance is a single constant.
+core the per-time observation variance of the training series can also vary, through
+`with_observation_variances` (the structural Student-t fits use its in-place
+counterpart); forecasts still use the constant observation variance, and none of this
+is exposed in Python, where the observation variance is a single constant.
 
 Whether or not the rows vary, the parameters are supplied, not estimated. Noise is
 Gaussian and the observation is univariate. Process covariance may be positive
@@ -251,9 +260,11 @@ minimum. Short histories can be
 strongly sensitive to initial-state and variance priors. The regression extension and
 `fourier_design` provide a smaller harmonic model for long periods.
 
-All specialized fits expose `summary()`, `diagnostics()`, and `sampler_stats`.
-Hamiltonian divergences and acceptance are unavailable for Gibbs/FFBS and exact
-conjugate sampling. [Independent batches](forecast-batches.md) preserve cell identity
+All specialized fits expose `summary()`, `diagnostics()`, `warnings()`, and
+`sampler_stats`. Hamiltonian divergences and acceptance are unavailable for Gibbs/FFBS
+and exact conjugate sampling, and `warnings()` reports the divergence, E-BFMI and
+tree-depth checks as unavailable for them (see
+[fit warnings](#fit-warnings-and-batch-triage)). [Independent batches](forecast-batches.md) preserve cell identity
 and return per-cell fits, errors, diagnostics, and forecasts.
 
 For [sparse amounts](sparse-amounts.md), use `BayesianHurdleLogNormal`; for
@@ -298,6 +309,14 @@ interval; `level_interval()` and `slope_interval()` summarize the latent states.
 process innovations are independent (diagonal process covariance). `NaN` retains a
 scheduled missing time point. Variance components can be weakly identified near zero,
 so inspect multi-chain convergence.
+
+### Known limitation: slow mixing of the level and slope variances
+
+The local-linear-trend Gibbs sampler mixes `level_variance` and `slope_variance`
+slowly, so every `BayesianLocalLinearTrendFit.warnings()`, and every trend fitted with
+`exog`, includes a `known_limitation` record with status `"fail"`. The measurements and
+the other samplers that carry the record are in
+[slow state-variance mixing](#slow-state-variance-mixing).
 
 ## Bayesian autoregression AR(p)
 
@@ -469,7 +488,8 @@ and cannot be shadowed by a per-dataset dictionary. Dataset IDs must be unique a
 the number of datasets.
 
 `BatchFit.ids` preserves caller order; `len(batch_fit)` returns the dataset count and
-`batch_fit[i]` returns a `BatchResult`.
+`batch_fit[i]` returns a `BatchResult`. `batch_fit.flagged()` lists the successful
+cells that fail a check (see [fit warnings](#fit-warnings-and-batch-triage)).
 
 `sample_batch(..., errors=...)` chooses what happens when one dataset fails to bind or
 sample. The default `errors="raise"` propagates the first failure. With
@@ -602,7 +622,8 @@ than absolute batch throughput.
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
 | `diagnostics()` | `list[dict]` | Per-parameter diagnostics; a value that cannot be computed is `None` |
-| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry |
+| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry, with each chain's `e_bfmi` and `tree_depth_saturation` |
+| `warnings()` | `list[dict]` | Every failed or unavailable check; see [fit warnings](#fit-warnings-and-batch-triage) |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
 | `divergences()` | `list[int]` | Per-chain divergence counts |
@@ -610,7 +631,7 @@ than absolute batch throughput.
 | `predict(data=None, seed=42, expected=False, sizes=None)` | `dict[str, np.ndarray]` | Predictive draws on `(chain, draw, obs)` axes |
 | `deterministics(data=None, sizes=None)` | `dict[str, np.ndarray]` | Draws of each declared `deterministic()`, on `(chain, draw)` or `(chain, draw, obs)` axes |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood. `sample_stats` holds `diverging`, `step_size`, `energy` and, for NUTS, `tree_depth`, so `az.bfmi()` works on it |
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 
@@ -665,7 +686,126 @@ Each element returned by `rmc.batch_sample()` is a `BatchResult`.
 | `accept_rates` | `list[float]` | Per-chain accept rates |
 | `divergences` | `int` | Total divergences across chains |
 | `divergences_per_chain` | `list[int]` | Per-chain divergence counts |
+| `diagnostics()`, `transition_diagnostics()`, `summary()` | | As on `FitResult` |
+| `warnings()` | `list[dict]` | Every failed or unavailable check; see [fit warnings](#fit-warnings-and-batch-triage) |
 
+## Fit warnings and batch triage
+
+`warnings()` on `FitResult`, `BatchResult` and every forecasting fit applies one rule,
+implemented once in the Rust core (`rustmc_core::diagnostics::fit_warnings`). It
+returns one dict per check the fit failed or could not make, with keys `code`,
+`status` (`"fail"` or `"unavailable"`), `parameter` (or `None`), `chain` (set for
+E-BFMI only), `value` (`None` when there is none), `threshold`, and a one-line
+`message` that states the threshold. A check that passes adds nothing, so an empty
+list means every check ran and passed.
+
+| Code | Status `"fail"` when | Where the threshold comes from |
+|------|----------------------|--------------------------------|
+| `r_hat` | a parameter's rank-normalized split R-hat is above 1.01 | Vehtari et al. (2021) |
+| `ess_bulk` | a parameter's bulk ESS is below 400 | Vehtari et al. (2021): 100 per chain at 4 chains |
+| `ess_tail` | a parameter's tail ESS is below 400 | Vehtari et al. (2021) |
+| `diagnostics_unavailable` | R-hat and ESS cannot be computed: fewer than 4 draws per chain, a non-finite draw, or draws that do not vary for a quantity the model does not hold constant | 4 is two draws per split half, the fewest the split statistics use |
+| `divergences` | any draw transition diverged (more than 0) | Stan's divergence check |
+| `e_bfmi` | a chain's E-BFMI is below 0.3 | Betancourt (2016); 0.3 is where Stan and ArviZ warn |
+| `tree_depth_saturation` | any draw transition's NUTS tree reached `max_tree_depth` (more than 0) | Stan's tree-depth check |
+| `known_limitation` | always, for a sampler listed under [slow state-variance mixing](#slow-state-variance-mixing) | R-hat 1.01, which those samplers exceed in every setting measured |
+
+A parameter whose draws are finite but do not vary has no R-hat or ESS. A model
+declares the quantities it can hold constant: a `StructuralModel` variance set with
+`VarianceParameter.fixed`; a `StructuralModel` or exog-regression terminal state that no
+innovation and no initial variance can reach through the transition, such as an AR
+coordinate with coefficient 0 and its innovation fixed at 0 (a state with a zero
+innovation that keeps its initial variance, like a level, still varies); a dynamic GLM's
+terminal states when `process_sd` and `shared_process_sd` are both 0; and a runoff
+cohort's `ultimate`, a count that is known for a closed cohort and whose posterior can sit
+on one value. For those the
+`diagnostics_unavailable` record has status `"unavailable"`, which does not flag the
+fit. Every other quantity is drawn by the sampler, so draws that do not vary mean a
+stuck chain or draws that collapsed below floating-point resolution (for example a
+level sampled on data near 1e16 with unit-scale variances), and the record has status
+`"fail"`.
+
+Divergences, E-BFMI and tree-depth saturation exist only for Hamiltonian trajectories.
+Forecasting fits (Gibbs/FFBS, elliptical slice, exact conjugate draws, runoff) report
+each of the three once with status `"unavailable"`, and static HMC fits report
+tree-depth saturation that way. A fit restored from an artifact older than version 3
+has no energies or tree-depth limit and reports those two checks as unavailable.
+Unavailable is never a pass.
+
+E-BFMI is computed per chain over the draw transitions as the ratio ArviZ's `bfmi`
+computes: the sum of squared differences of successive energies over the sum of
+squared deviations of the energies from their mean. The deviations are taken after
+subtracting the chain's first energy, which leaves the ratio unchanged and keeps it
+accurate when the log density carries a large constant. `to_arviz()` exports the energies as
+`energy`, so `az.bfmi(fit.to_arviz())` returns the per-chain `e_bfmi` values of
+`transition_diagnostics()`. A NUTS transition's tree depth counts the doubling that
+ended its tree, so a transition counts as saturated when its tree used the last
+doubling `max_tree_depth` allows, however that doubling ended.
+
+`BatchFit.flagged(ignore=None)` and `ForecastBatchFit.flagged(ignore=None)` return the
+IDs of the successful cells with at least one `"fail"` record, in batch order. Failed
+cells are not listed: they have no fit, and their errors are in `errors`. `ignore`
+takes codes to leave out, for example `ignore=["known_limitation"]` once
+local-linear-trend cells have been checked; an unknown code raises `ValueError`.
+`ForecastBatchFit.warnings()` maps each ID to its list of records, or to `None` for a
+failed cell, as `diagnostics()` does.
+
+```python
+batch = compiled.sample_batch(datasets, ids=ids, chains=4, draws=1000, warmup=500)
+for cell_id in batch.flagged():
+    for warning in batch.get(cell_id).warnings():
+        if warning["status"] == "fail":
+            print(cell_id, warning["message"])
+```
+
+The ESS threshold is a total over chains, so `sample_batch`'s defaults (one chain of
+500 draws) leave little room above 400: pass more chains and draws for cells you want
+to triage.
+
+References: Vehtari, Gelman, Simpson, Carpenter and Bürkner (2021), "Rank-normalization,
+folding, and localization: an improved R-hat for assessing convergence of MCMC",
+*Bayesian Analysis* 16(2). Betancourt (2016), "Diagnosing suboptimal cotangent
+disintegrations in Hamiltonian Monte Carlo", arXiv:1604.00695.
+
+
+### Slow state-variance mixing
+
+The Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
+and several mix those variances slowly. `benchmarks/state_variance_mixing.py` fits each
+sampler to series simulated from its own model in five regimes at 200 and 1000 points,
+three data seeds each, with 4 chains, 300 warmup and 500 draws, and takes the worst
+R-hat over the seeds in each of the ten settings. A fit's own R-hat can pass by chance,
+so a sampler whose worst R-hat was above 1.01 in all ten settings carries a
+`known_limitation` record with status `"fail"` in every fit, and `flagged()` lists its
+cells. Check those variances with longer chains, then leave the record out with
+`flagged(ignore=["known_limitation"])`.
+
+| Fit | Worst R-hat over the ten settings | Record |
+|-----|-----------------------------------|--------|
+| `BayesianLocalLinearTrend` | level 1.062 to 2.056, slope 1.051 to 1.421 | yes |
+| `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
+| `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, in the configuration measured: both state variances and the observation variance inferred, Gaussian observations, and damping from 0.9 to 1 |
+| `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
+| `BayesianSeasonalLocalLevel` with `exog` | level 1.012 to 1.221, seasonal 1.034 to 1.423 | yes |
+| `BayesianLocalLevel` | process 1.004 to 1.171, above 1.01 in seven of its eight distinct settings | no |
+
+The local level has one state variance, so its balanced and near-zero second variance
+regimes simulate the same series and it has eight distinct settings, not ten. Its one
+setting at or below 1.01 is the near-zero observation variance regime at 200 points,
+where the data pin down the states. Its R-hat was 1.022 to 1.171 in the other seven, so
+read its ordinary R-hat and ESS warnings with that in mind. Samplers
+not in the table were not measured and carry no record; that includes `StructuralModel`
+level, seasonal and regression components, a trend component with a state or the
+observation variance fixed or with damping below 0.9, the Student-t structural sampler
+and the local level fitted with `exog`.
+
+```bash
+./scripts/dev_pytest.sh -q tests/test_smoke.py  # builds the extension into .pybuild
+PYTHONPATH=.pybuild python -m benchmarks.state_variance_mixing
+```
+
+The local-linear-trend rows reproduce the figures of the earlier
+`llt_variance_mixing` benchmark (commit `e9039d8`) exactly.
 ## `ParamRef` and `Expr` operators
 
 ```python
@@ -722,9 +862,9 @@ Fitting and forecasting calls return named types, and each guide describes the m
 of the types it returns. `FitResult`, `BatchResult`, `BatchFit`,
 `StructuralFit`/`StructuralForecast`, `RunoffFit`,
 `ForecastBatchFit`/`ForecastBatchForecast`, `DynamicGLMForecast`,
-`KalmanFilterResult`/`KalmanSmootherResult`, and one fit type plus one forecast type
-per specialized model come from those calls and are not constructed directly. The
-forecast type is not reliably named after the fit type:
+`KalmanFilterResult`/`KalmanSmootherResult`/`ForecastResult`, and one fit type plus
+one forecast type per specialized model come from those calls and are not constructed
+directly. The forecast type is not reliably named after the fit type:
 `BayesianLocalLevelFit.forecast()` returns `BayesianForecastResult`,
 `BayesianLocalLinearTrendFit.forecast()` returns `BayesianTrendForecast`,
 `BayesianSeasonalLocalLevelFit.forecast()` returns `BayesianSeasonalForecast`, and

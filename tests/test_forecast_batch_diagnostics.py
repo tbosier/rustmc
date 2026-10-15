@@ -138,6 +138,16 @@ def test_diagnostics_and_sampler_metadata(rustmc_module, model_index):
     for item in short.diagnostics():
         for key in ["r_hat", "ess_bulk", "ess_tail", "mcse_mean"]:
             assert item[key] is None
+    # Four retained draws per chain (two per split half) is the engine-wide
+    # floor, the same one HMC/NUTS fits use.
+    floor_kwargs = dict(chains=2, draws=4, seed=154)
+    if model_index != 3:
+        floor_kwargs["warmup"] = 4
+    floor = model.fit(y, **floor_kwargs)
+    assert floor.sampler_stats["diagnostics_available"]
+    for item in floor.diagnostics():
+        for key in ["r_hat", "ess_bulk", "ess_tail", "mcse_mean"]:
+            assert item[key] is not None, (item["name"], key)
 
 
 def test_diagnostics_match_arviz_for_identical_retained_chains(rustmc_module):
@@ -244,7 +254,8 @@ def test_huge_batch_allocations_return_errors_instead_of_panicking(rustmc_module
 def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     local, _, _, ar = models(rustmc_module)
     y = np.random.default_rng(5).normal(size=12)
-    for schedule in ({"warmup": 10}, {"thin": 2}):
+    # An explicit value is refused even when it equals the Gibbs default.
+    for schedule in ({"warmup": 10}, {"thin": 2}, {"warmup": 500}, {"thin": 1}):
         with pytest.raises(ValueError, match="exact and independent"):
             ar.fit_batch([y], ["ar"], draws=8, **schedule)
         with pytest.raises(ValueError, match="exact and independent"):
@@ -253,3 +264,28 @@ def test_all_ar_batches_refuse_warmup_and_thin_they_cannot_use(rustmc_module):
     assert ar.fit_batch([y], ["ar"], draws=8)["ar"].draws == 8
     mixed = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8, warmup=10, thin=2)
     assert (mixed["ar"].draws, mixed["level"].warmup, mixed["level"].thin) == (8, 10, 2)
+    # A cell's kind comes from its model, not from whether its input built: a
+    # mixed batch whose Gibbs cell has bad observations keeps its AR fit...
+    partial = ar.fit_batch([y, ["invalid"]], ["ar", "level"], models=[None, local], draws=8,
+                           warmup=500, errors="collect")
+    assert partial["ar"].draws == 8 and "level" in partial.errors
+    # ...an all-AR batch with bad observations in one cell is still refused...
+    for schedule in ({"warmup": 10}, {"thin": 2}):
+        with pytest.raises(ValueError, match="exact and independent"):
+            ar.fit_batch([y, ["invalid"]], ["a", "b"], draws=8, errors="collect", **schedule)
+        with pytest.raises(ValueError, match="exact and independent"):
+            local.fit_batch([y, ["invalid"]], ["a", "b"], models=[ar, ar], draws=8,
+                            errors="collect", **schedule)
+    # ...an invalid models entry has no kind and is left out, so the AR cells
+    # beside it still make the batch all-AR...
+    with pytest.raises(ValueError, match="exact and independent"):
+        ar.fit_batch([y, y], ["ar", "bad"], models=[None, "not a model"], draws=8,
+                     warmup=10, errors="collect")
+    # ...and a batch in which no cell can run reports each cell's own error.
+    failed = ar.fit_batch([["invalid"]], ["bad"], draws=8, warmup=10, errors="collect")
+    assert "bad" in failed.errors
+    with pytest.raises(rustmc_module.InferenceError, match="observations"):
+        ar.fit_batch([["invalid"]], ["bad"], draws=8, warmup=10)
+    # Omitted, they take the Gibbs defaults.
+    defaulted = ar.fit_batch([y, y], ["ar", "level"], models=[None, local], draws=8)
+    assert (defaulted["level"].warmup, defaulted["level"].thin) == (500, 1)

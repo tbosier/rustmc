@@ -3,6 +3,7 @@ use crate::builder::{
     compile_python_model, reject_discrete_priors_for_gradient_sampling, ModelSpec,
 };
 use crate::fit_result::FitResult;
+use crate::forecast_diagnostics;
 use crate::generic_results;
 use crate::model_error;
 use crate::sampling::SamplerOptions;
@@ -10,6 +11,7 @@ use pyo3::exceptions::{PyIndexError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use rustmc_core::data::DataBinding as CoreDataBinding;
+use rustmc_core::diagnostics::has_failure;
 use rustmc_core::model::{sample_model_batch, ModelBatchCell, ModelFit};
 use rustmc_core::sampler::{BatchSeedPolicy, BoundBatchOptions, SampleResult};
 use std::collections::HashMap;
@@ -17,7 +19,7 @@ use std::sync::Arc;
 
 /// One cell of a batch run: a fit whose posterior is shared, never copied,
 /// with the `FitResult` its `fit` property returns.
-#[pyclass(module = "rustmc")]
+#[pyclass(frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct BatchResult {
     fit: Arc<ModelFit>,
@@ -78,6 +80,12 @@ impl BatchResult {
 
     fn transition_diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         generic_results::transition_diagnostics(self.fit.raw_samples(), py)
+    }
+
+    /// Every failed or unavailable check of this cell's fit, one dict per
+    /// check; see `FitResult.warnings`.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        generic_results::warnings(self.display(), py)
     }
 
     #[pyo3(signature = (data=None, seed=42, expected=false, sizes=None))]
@@ -163,7 +171,7 @@ impl BatchResult {
     }
 }
 
-#[pyclass(name = "BatchFit", module = "rustmc")]
+#[pyclass(name = "BatchFit", frozen, module = "rustmc")]
 pub(crate) struct PyBatchFit {
     pub(crate) ids: Vec<String>,
     pub(crate) results: Vec<Result<BatchResult, String>>,
@@ -188,6 +196,25 @@ impl PyBatchFit {
                     .map(|error| (id.clone(), error.clone()))
             })
             .collect()
+    }
+
+    /// IDs of the successful cells with at least one failed check (see
+    /// `BatchResult.warnings`), in batch order. Checks whose code is in
+    /// `ignore` do not count. Failed cells are not listed: they have no fit,
+    /// and their errors are in `errors`.
+    #[pyo3(signature = (ignore=None))]
+    fn flagged(&self, py: Python<'_>, ignore: Option<Vec<String>>) -> PyResult<Vec<String>> {
+        let ignore = forecast_diagnostics::ignored_codes(ignore)?;
+        Ok(py.allow_threads(|| {
+            self.ids
+                .iter()
+                .zip(&self.results)
+                .filter_map(|(id, result)| {
+                    let cell = result.as_ref().ok()?;
+                    has_failure(&cell.display().warnings(), &ignore).then(|| id.clone())
+                })
+                .collect()
+        }))
     }
 
     fn get(&self, py: Python<'_>, id: &str) -> PyResult<Py<BatchResult>> {

@@ -10,51 +10,9 @@ use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use rand::SeedableRng;
-use rand_chacha::ChaCha8Rng;
 use rustmc_core::data::DataBinding as CoreDataBinding;
 use rustmc_core::model::DisplayParamSpec;
 use rustmc_core::sampler::{BatchSampleConfig, MetricKind, SamplerConfig, SamplerType};
-use rustmc_core::seeding::{stream_seed, PRIOR_PREDICT_SEED_DOMAIN};
-
-fn validate_sample_config(
-    chains: usize,
-    draws: usize,
-    warmup: usize,
-    step_size: f64,
-    target_accept: f64,
-    max_tree_depth: usize,
-    num_leapfrog_steps: usize,
-) -> PyResult<()> {
-    if chains == 0 {
-        return Err(PyValueError::new_err("chains must be >= 1"));
-    }
-    if draws == 0 {
-        return Err(PyValueError::new_err("draws must be >= 1"));
-    }
-    if warmup == 0 {
-        return Err(PyValueError::new_err("warmup must be >= 1"));
-    }
-    if !step_size.is_finite() || step_size < 0.0 {
-        return Err(PyValueError::new_err(
-            "step_size must be finite and >= 0 (0 enables adaptation)",
-        ));
-    }
-    if !target_accept.is_finite() || target_accept <= 0.0 || target_accept >= 1.0 {
-        return Err(PyValueError::new_err(
-            "target_accept must be finite and strictly between 0 and 1",
-        ));
-    }
-    if !(1..=63).contains(&max_tree_depth) {
-        return Err(PyValueError::new_err(
-            "max_tree_depth must be between 1 and 63",
-        ));
-    }
-    if num_leapfrog_steps == 0 {
-        return Err(PyValueError::new_err("num_leapfrog_steps must be >= 1"));
-    }
-    Ok(())
-}
 
 fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
     match sampler {
@@ -68,7 +26,13 @@ fn parse_sampler_type(sampler: &str) -> PyResult<SamplerType> {
 }
 
 /// The sampler options shared by `sample`, `CompiledModel.sample` and the
-/// batch entry points, as Python passes them, checked once.
+/// batch entry points, as Python passes them, checked here by the core's
+/// `BatchSampleConfig::validate` (the core checks them again when it samples).
+/// Every entry point checks them before it compiles or binds a model. So the
+/// size limits that do not depend on the model (the transition records, and
+/// the retained draws at one value each) fail before that work, ahead of any
+/// error the model would raise. The retained-draws limit at the model's real
+/// parameter count is checked only later, by the core.
 pub(crate) struct SamplerOptions<'a> {
     pub(crate) chains: usize,
     pub(crate) draws: usize,
@@ -106,17 +70,12 @@ impl SamplerOptions<'_> {
     /// Configuration for a batch of fits.
     pub(crate) fn batch(&self) -> PyResult<BatchSampleConfig> {
         let metric = MetricKind::parse(self.metric).map_err(PyValueError::new_err)?;
-        validate_sample_config(
-            self.chains,
-            self.draws,
-            self.warmup,
-            self.step_size,
-            self.target_accept,
-            self.max_tree_depth,
-            self.num_leapfrog_steps,
-        )?;
-        Ok(BatchSampleConfig {
-            sampler: parse_sampler_type(self.sampler)?,
+        // The numeric checks are reported before an unknown sampler name, as
+        // before. A known sampler is validated under its own rules; NUTS
+        // stands in only for a name that is refused below anyway.
+        let sampler = parse_sampler_type(self.sampler);
+        let config = BatchSampleConfig {
+            sampler: *sampler.as_ref().unwrap_or(&SamplerType::Nuts),
             num_chains: self.chains,
             num_draws: self.draws,
             num_warmup: self.warmup,
@@ -127,7 +86,10 @@ impl SamplerOptions<'_> {
             seed: self.seed,
             show_progress: self.show_progress,
             metric,
-        })
+        };
+        config.validate().map_err(PyValueError::new_err)?;
+        sampler?;
+        Ok(config)
     }
 }
 
@@ -232,18 +194,17 @@ pub(crate) fn sample_prior_predictive<'py>(
     let graph = &compiled.graph;
     let heads = graph.observation_heads();
 
-    // The generator itself lives in the core so a `GraphModel` loaded outside
-    // Python simulates from exactly the same code.
+    // The generator and its seeding both live in the core, so a `GraphModel`
+    // loaded outside Python simulates the same draws for the same seed.
     let mut draws = py
         .allow_threads(|| {
-            let mut rng = ChaCha8Rng::seed_from_u64(stream_seed(seed, PRIOR_PREDICT_SEED_DOMAIN));
-            rustmc_core::prior_sampling::prior_predictive(
+            rustmc_core::prior_sampling::prior_predictive_seeded(
                 graph,
                 &model_spec.priors,
                 &compiled.display_params,
                 &compiled.auto_vector_params,
                 n_samples,
-                &mut rng,
+                seed,
             )
         })
         .map_err(model_error)?;

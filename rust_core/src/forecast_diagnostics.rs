@@ -1,175 +1,25 @@
 //! Parameter diagnostics for non-Hamiltonian forecasting samplers.
-use crate::bayesian_ar::BayesianArPosterior;
-use crate::bayesian_forecast::LocalLevelPosterior;
-use crate::bayesian_seasonal::SeasonalLocalLevelPosterior;
-use crate::bayesian_trend::LocalLinearTrendPosterior;
+//!
+//! Each posterior type builds its own parameter names and samples, next to
+//! its model, and passes them to [`parameter_diagnostics`].
 use crate::diagnostics::{compute_diagnostics, DiagnosticsReport};
 
+/// The fewest retained draws per chain for which [`parameter_diagnostics`]
+/// reports R-hat, bulk/tail ESS and the MCSE: two per split half, the rule
+/// [`compute_diagnostics`] applies to every engine.
+pub const MIN_DIAGNOSTIC_DRAWS_PER_CHAIN: usize = 4;
+
 /// Reuse the rank-normalized folded split diagnostics without fabricating
-/// Hamiltonian sampler telemetry. Nonfinite or insufficient/constant traces have
-/// unavailable convergence metrics (NaN in Rust, None in specialized Python APIs).
+/// Hamiltonian sampler telemetry.
+///
+/// Availability follows the one rule [`compute_diagnostics`] applies to every
+/// engine, HMC/NUTS fits included: an empty or ragged sample, or a parameter
+/// with a non-finite draw, is unavailable; R-hat, bulk/tail ESS and the MCSE
+/// need at least four draws per chain (two per split half), and a parameter
+/// whose draws never move has none of them. Unavailable values are NaN in
+/// Rust and None in the specialised Python APIs.
 pub fn parameter_diagnostics(samples: &[Vec<Vec<f64>>], names: &[String]) -> DiagnosticsReport {
-    let mut report = compute_diagnostics(samples, names, &[], 0);
-    // The shared engine rejects empty/ragged parameter matrices before ranking.
-    if samples
-        .iter()
-        .flatten()
-        .any(|draw| draw.len() != names.len())
-    {
-        return report;
-    }
-    for (index, parameter) in report.params.iter_mut().enumerate() {
-        let first = samples
-            .first()
-            .and_then(|chain| chain.first())
-            .map(|draw| draw[index]);
-        let unavailable = samples.is_empty()
-            || samples.iter().any(|chain| chain.len() < 6)
-            || samples
-                .iter()
-                .flatten()
-                .any(|draw| !draw[index].is_finite())
-            || first.is_some_and(|first| samples.iter().flatten().all(|draw| draw[index] == first));
-        if unavailable {
-            parameter.r_hat = f64::NAN;
-            parameter.ess_bulk = f64::NAN;
-            parameter.ess_tail = f64::NAN;
-            parameter.mcse_mean = f64::NAN;
-        }
-    }
-    report
-}
-
-impl LocalLevelPosterior {
-    pub fn diagnostics(&self) -> DiagnosticsReport {
-        let names =
-            ["process_variance", "observation_variance", "terminal_level"].map(String::from);
-        let samples = self
-            .chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|d| vec![d.process_variance, d.observation_variance, d.terminal_level])
-                    .collect()
-            })
-            .collect::<Vec<_>>();
-        parameter_diagnostics(&samples, &names)
-    }
-}
-impl LocalLinearTrendPosterior {
-    pub fn diagnostics(&self) -> DiagnosticsReport {
-        let names = [
-            "level_variance",
-            "slope_variance",
-            "observation_variance",
-            "terminal_level",
-            "terminal_slope",
-        ]
-        .map(String::from);
-        let samples = self
-            .chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|d| {
-                        vec![
-                            d.level_variance,
-                            d.slope_variance,
-                            d.observation_variance,
-                            d.terminal_level,
-                            d.terminal_slope,
-                        ]
-                    })
-                    .collect()
-            })
-            .collect::<Vec<_>>();
-        parameter_diagnostics(&samples, &names)
-    }
-}
-impl SeasonalLocalLevelPosterior {
-    pub fn diagnostics(&self) -> DiagnosticsReport {
-        let mut names = vec![
-            "level_variance".into(),
-            "seasonal_variance".into(),
-            "observation_variance".into(),
-            "terminal_level".into(),
-        ];
-        names.extend((1..self.period).map(|i| format!("terminal_seasonal[{}]", i - 1)));
-        let samples = self
-            .chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|d| {
-                        let mut values = vec![
-                            d.level_variance,
-                            d.seasonal_variance,
-                            d.observation_variance,
-                        ];
-                        values.extend_from_slice(&d.terminal_state);
-                        values
-                    })
-                    .collect()
-            })
-            .collect::<Vec<_>>();
-        parameter_diagnostics(&samples, &names)
-    }
-}
-impl BayesianArPosterior {
-    pub fn diagnostics(&self) -> DiagnosticsReport {
-        let mut names = vec!["intercept".into()];
-        names.extend((1..=self.order).map(|i| format!("lag_{i}")));
-        names.push("innovation_variance".into());
-        let samples = self
-            .chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|d| {
-                        let mut values = d.coefficients.clone();
-                        values.push(d.innovation_variance);
-                        values
-                    })
-                    .collect()
-            })
-            .collect::<Vec<_>>();
-        parameter_diagnostics(&samples, &names)
-    }
-}
-
-impl crate::bayesian_regression::RegressionPosterior {
-    /// Variances, regression coefficients and every terminal structural state.
-    pub fn diagnostics(&self) -> DiagnosticsReport {
-        let mut names = self.config.variance_names.clone();
-        names.push("observation_variance".into());
-        names.extend(
-            (0..self.config.coefficient_prior.mean.len()).map(|i| format!("coefficient[{i}]")),
-        );
-        names.extend(
-            (0..self.config.structural_model.dimension()).map(|i| format!("terminal_state[{i}]")),
-        );
-        let samples = self
-            .chains
-            .iter()
-            .map(|chain| {
-                chain
-                    .iter()
-                    .map(|draw| {
-                        let mut values = draw.variances.clone();
-                        values.push(draw.observation_variance);
-                        values.extend_from_slice(&draw.coefficients);
-                        values.extend_from_slice(&draw.terminal_state);
-                        values
-                    })
-                    .collect()
-            })
-            .collect::<Vec<_>>();
-        parameter_diagnostics(&samples, &names)
-    }
+    compute_diagnostics(samples, names, &[], 0)
 }
 
 #[cfg(test)]
@@ -198,6 +48,74 @@ mod tests {
         let report = parameter_diagnostics(&samples, &["x".into()]);
         assert!(report.params[0].r_hat.is_infinite());
     }
+    #[test]
+    fn forecasting_fits_share_the_engine_wide_availability_rule() {
+        // These forecasting fits used to blank R-hat, ESS and MCSE below six
+        // draws per chain, while the same draws from an HMC fit reported them
+        // from four. Both now follow compute_diagnostics: HMC/NUTS fits reach
+        // it through SampleResult::diagnostics with their draws unchanged, so
+        // the bit comparison below fails if the forecasting path adds a floor
+        // of its own or pairs a name with another parameter's draws; the
+        // availability assertions pin the floor itself.
+        let names = ["process_variance", "observation_variance", "terminal_level"]
+            .map(String::from)
+            .to_vec();
+        for draws in [3usize, 4, 5, 6, 40] {
+            let posterior = crate::bayesian_forecast::LocalLevelPosterior {
+                chains: (0..2)
+                    .map(|chain| {
+                        (0..draws)
+                            .map(|draw| {
+                                let x = ((chain * 31 + draw * 7) % 11) as f64;
+                                crate::bayesian_forecast::LocalLevelPosteriorDraw {
+                                    process_variance: 0.1 + x,
+                                    observation_variance: 2.0,
+                                    terminal_level: x - 5.0,
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect(),
+            };
+            let samples: Vec<Vec<Vec<f64>>> = posterior
+                .chains
+                .iter()
+                .map(|chain| {
+                    chain
+                        .iter()
+                        .map(|d| vec![d.process_variance, d.observation_variance, d.terminal_level])
+                        .collect()
+                })
+                .collect();
+            let forecasting = posterior.diagnostics();
+            let engine = compute_diagnostics(&samples, &names, &[], 0);
+            for (ours, theirs) in forecasting.params.iter().zip(&engine.params) {
+                for (a, b) in [
+                    (ours.r_hat, theirs.r_hat),
+                    (ours.ess_bulk, theirs.ess_bulk),
+                    (ours.ess_tail, theirs.ess_tail),
+                    (ours.mcse_mean, theirs.mcse_mean),
+                ] {
+                    assert_eq!(a.to_bits(), b.to_bits(), "{draws} draws: {ours:?}");
+                }
+            }
+            // The moving parameters are available from four draws per chain;
+            // the constant one never is.
+            let moving = &forecasting.params[0];
+            assert_eq!(
+                moving.r_hat.is_finite(),
+                draws >= MIN_DIAGNOSTIC_DRAWS_PER_CHAIN,
+                "{draws}: {moving:?}"
+            );
+            assert_eq!(
+                moving.ess_bulk.is_finite(),
+                draws >= MIN_DIAGNOSTIC_DRAWS_PER_CHAIN
+            );
+            assert!(forecasting.params[1].r_hat.is_nan());
+            assert!(forecasting.params[1].ess_bulk.is_nan());
+        }
+    }
+
     #[test]
     fn unavailable_short_and_constant_traces() {
         for samples in [vec![vec![vec![1.]; 3]; 2], vec![vec![vec![1.]; 40]; 2]] {

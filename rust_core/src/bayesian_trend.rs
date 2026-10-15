@@ -17,18 +17,38 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::bayesian_forecast::{BayesianForecastError, ForecastQuantile, InverseGammaPrior};
+use crate::diagnostics::warnings::slow_state_variance_mixing;
+use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry};
 use crate::forecast_common::{
-    check_forecast_size, cholesky_into, overdispersed_positive, path_means, path_quantiles,
-    require_finite_observations, run_gibbs_chains, sample_inverse_gamma, simulate_draws,
-    split_paths, GibbsSchedule,
+    check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
+    path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
+    split_paths, standard_normal, validate_positive_variance, BayesianForecastError,
+    ForecastQuantile, GibbsSchedule, InverseGammaPrior, TREND_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    TREND_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
-#[cfg(test)]
-use crate::seeding::chain_seed;
+use crate::forecast_diagnostics::parameter_diagnostics;
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
+
+/// How fit warnings name this model's sampler.
+const SAMPLER_NAME: &str = "conjugate Gibbs/FFBS";
+
+/// The documented mixing problem of the local-linear-trend Gibbs sampler, as
+/// a failed `known_limitation` check.
+///
+/// It is a failure rather than an unavailable check because a fit's own
+/// R-hat can pass by chance while the sampler is known to mix the level and
+/// slope variances slowly; batch triage should flag the fit until the user
+/// has checked it with longer chains and filters this code out.
+pub fn local_linear_trend_limitation() -> FitWarning {
+    // Range measured by benchmarks/state_variance_mixing.py.
+    slow_state_variance_mixing(
+        "the local-linear-trend Gibbs sampler's level and slope variances",
+        1.051,
+        2.056,
+    )
+}
 
 /// Configuration for a fitted Bayesian local-linear-trend model.
 #[derive(Debug, Clone)]
@@ -85,6 +105,52 @@ pub struct LocalLinearTrendPosterior {
 }
 
 impl LocalLinearTrendPosterior {
+    pub fn diagnostics(&self) -> DiagnosticsReport {
+        let names = [
+            "level_variance",
+            "slope_variance",
+            "observation_variance",
+            "terminal_level",
+            "terminal_slope",
+        ]
+        .map(String::from);
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|d| {
+                        vec![
+                            d.level_variance,
+                            d.slope_variance,
+                            d.observation_variance,
+                            d.terminal_level,
+                            d.terminal_slope,
+                        ]
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        parameter_diagnostics(&samples, &names)
+    }
+
+    /// Every failed or unavailable check of this fit (see
+    /// [`fit_warnings`]), followed by [`local_linear_trend_limitation`],
+    /// which every local-linear-trend fit carries whatever its diagnostics
+    /// show.
+    pub fn warnings(&self) -> Vec<FitWarning> {
+        let mut warnings = fit_warnings(
+            &self.diagnostics(),
+            SamplerTelemetry::NonHamiltonian {
+                sampler: SAMPLER_NAME,
+                constant: &[],
+            },
+        );
+        warnings.push(local_linear_trend_limitation());
+        warnings
+    }
+
     /// Pair every posterior draw with one coherent future state/observation path.
     pub fn forecast(
         &self,
@@ -107,9 +173,9 @@ impl LocalLinearTrendPosterior {
             seed,
             FORECAST_SEED_DOMAIN,
             |_, _, draw: &LocalLinearTrendPosteriorDraw, rng| {
-                validate_positive("level", draw.level_variance)?;
-                validate_positive("slope", draw.slope_variance)?;
-                validate_positive("observation", draw.observation_variance)?;
+                validate_positive_variance("level", draw.level_variance)?;
+                validate_positive_variance("slope", draw.slope_variance)?;
+                validate_positive_variance("observation", draw.observation_variance)?;
                 if !draw.terminal_level.is_finite() || !draw.terminal_slope.is_finite() {
                     return Err(numerical("posterior terminal state is not finite"));
                 }
@@ -203,14 +269,14 @@ pub fn fit_bayesian_local_linear_trend(
     config: &BayesianLocalLinearTrendConfig,
 ) -> Result<LocalLinearTrendPosterior, BayesianForecastError> {
     let schedule = config.validate()?;
-    let observed_count = validate_observations(observations)?;
+    let observed_count = require_finite_observations(observations, 3, "local-linear-trend")?;
     // Five values per draw; the two-state filter holds about 14 per time.
     schedule.check_fit_size(
         "local-linear-trend fit",
         &[5],
         &[observations.len() + 1, 14],
     )?;
-    let transition_count = observations.len() as f64;
+    let transition_count = observations.len();
     let chains = run_gibbs_chains(
         &schedule,
         config.seed,
@@ -242,14 +308,14 @@ pub fn fit_bayesian_local_linear_trend(
                 level_sum_sq += level_residual * level_residual;
                 slope_sum_sq += slope_residual * slope_residual;
             }
-            *level_variance = sample_inverse_gamma(
-                config.level_variance_prior.shape + transition_count / 2.0,
-                config.level_variance_prior.scale + level_sum_sq / 2.0,
+            *level_variance = config.level_variance_prior.conditional_draw(
+                transition_count,
+                level_sum_sq,
                 rng,
             )?;
-            *slope_variance = sample_inverse_gamma(
-                config.slope_variance_prior.shape + transition_count / 2.0,
-                config.slope_variance_prior.scale + slope_sum_sq / 2.0,
+            *slope_variance = config.slope_variance_prior.conditional_draw(
+                transition_count,
+                slope_sum_sq,
                 rng,
             )?;
 
@@ -262,9 +328,9 @@ pub fn fit_bayesian_local_linear_trend(
                     residual * residual
                 })
                 .sum();
-            *observation_variance = sample_inverse_gamma(
-                config.observation_variance_prior.shape + observed_count as f64 / 2.0,
-                config.observation_variance_prior.scale + observation_sum_sq / 2.0,
+            *observation_variance = config.observation_variance_prior.conditional_draw(
+                observed_count,
+                observation_sum_sq,
                 rng,
             )?;
 
@@ -293,9 +359,9 @@ fn sample_states_ffbs(
     observation_variance: f64,
     rng: &mut ChaCha8Rng,
 ) -> Result<Vec<[f64; 2]>, BayesianForecastError> {
-    validate_positive("level", level_variance)?;
-    validate_positive("slope", slope_variance)?;
-    validate_positive("observation", observation_variance)?;
+    validate_positive_variance("level", level_variance)?;
+    validate_positive_variance("slope", slope_variance)?;
+    validate_positive_variance("observation", observation_variance)?;
 
     let len = observations.len();
     let mut filtered_means = Vec::with_capacity(len + 1);
@@ -321,7 +387,7 @@ fn sample_states_ffbs(
             (predicted_mean, predicted_covariance)
         } else {
             let innovation_variance = predicted_covariance[0] + observation_variance;
-            validate_positive("innovation", innovation_variance)?;
+            validate_positive_variance("innovation", innovation_variance)?;
             let innovation = observation - predicted_mean[0];
             let gain = [
                 predicted_covariance[0] / innovation_variance,
@@ -401,15 +467,6 @@ fn sample_states_ffbs(
     Ok(states)
 }
 
-fn validate_observations(observations: &[f64]) -> Result<usize, BayesianForecastError> {
-    if observations.iter().any(|value| value.is_infinite()) {
-        return Err(BayesianForecastError::InvalidObservations(
-            "observations may be finite or NaN, but not infinite".into(),
-        ));
-    }
-    require_finite_observations(observations, 3, "local-linear-trend")
-}
-
 fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError> {
     if covariance.iter().any(|value| !value.is_finite()) {
         return Err(invalid_config(
@@ -440,12 +497,12 @@ fn validate_computed_state(
         .chain(covariance.iter())
         .any(|value| !value.is_finite())
     {
-        return Err(numerical(&format!(
+        return Err(numerical(format!(
             "{name} state at time {time} contains a non-finite value"
         )));
     }
     cholesky_2x2(symmetrized(covariance)).map_err(|_| {
-        numerical(&format!(
+        numerical(format!(
             "{name} covariance at time {time} is not positive definite"
         ))
     })?;
@@ -519,30 +576,6 @@ fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
     [matrix[0], off_diagonal, off_diagonal, matrix[3]]
 }
 
-fn standard_normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
-fn validate_positive(name: &str, variance: f64) -> Result<(), BayesianForecastError> {
-    if !variance.is_finite() || variance <= 0.0 {
-        return Err(numerical(&format!(
-            "{name} variance must be finite and strictly positive"
-        )));
-    }
-    Ok(())
-}
-
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5452_454E;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5452;
-
-fn invalid_config(message: &str) -> BayesianForecastError {
-    BayesianForecastError::InvalidConfiguration(message.into())
-}
-
-fn numerical(message: &str) -> BayesianForecastError {
-    BayesianForecastError::NumericalFailure(message.into())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -563,14 +596,6 @@ mod tests {
         let mut config = config(12);
         config.initial_covariance = [1e-14, 5e-8, 5e-8, 1.0];
         config.validate().unwrap();
-    }
-
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
     }
 
     fn config(seed: u64) -> BayesianLocalLinearTrendConfig {

@@ -68,6 +68,16 @@ pub(crate) fn diagnostics<'py>(
     crate::forecast_diagnostics::diagnostics_list(py, &sample.diagnostics())
 }
 
+/// Every failed or unavailable check of an HMC or NUTS fit, one dict per
+/// check, by the core rule.
+pub(crate) fn warnings<'py>(
+    sample: &SampleResult,
+    py: Python<'py>,
+) -> PyResult<Bound<'py, PyList>> {
+    let warnings = py.allow_threads(|| sample.warnings());
+    crate::forecast_diagnostics::warnings_list(py, &warnings)
+}
+
 pub(crate) fn transition_diagnostics<'py>(
     sample: &SampleResult,
     py: Python<'py>,
@@ -82,6 +92,11 @@ pub(crate) fn transition_diagnostics<'py>(
     result.set_item("mean_accept_prob", report.mean_accept_prob)?;
     result.set_item("mean_energy_error", report.mean_energy_error)?;
     result.set_item("max_abs_energy_error", report.max_abs_energy_error)?;
+    result.set_item("max_tree_depth_limit", report.max_tree_depth_limit)?;
+    result.set_item(
+        "total_tree_depth_saturation",
+        report.total_tree_depth_saturation,
+    )?;
 
     let chains = PyList::empty(py);
     for chain in report.chains {
@@ -98,6 +113,9 @@ pub(crate) fn transition_diagnostics<'py>(
         item.set_item("mean_step_size", chain.mean_step_size)?;
         item.set_item("max_tree_depth", chain.max_tree_depth)?;
         item.set_item("total_leapfrog_steps", chain.total_leapfrog_steps)?;
+        // Undefined (fewer than two draws, or no recorded energies) is None.
+        item.set_item("e_bfmi", (!chain.e_bfmi.is_nan()).then_some(chain.e_bfmi))?;
+        item.set_item("tree_depth_saturation", chain.tree_depth_saturation)?;
         chains.append(item)?;
     }
     result.set_item("chains", chains)?;

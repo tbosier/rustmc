@@ -64,15 +64,9 @@ fn positive(value: f64, label: &str) -> Result<f64, ObservationError> {
 fn representable(value: f64, label: &str) -> Result<f64, ObservationError> {
     positive(value, label).map_err(|error| unrepresentable(error.to_string()))
 }
-/// Logistic function, evaluated so that neither tail overflows.
-pub(crate) fn sigmoid(x: f64) -> f64 {
-    if x >= 0.0 {
-        1.0 / (1.0 + (-x).exp())
-    } else {
-        let e = x.exp();
-        e / (1.0 + e)
-    }
-}
+/// The crate's one logistic function, re-exported under the name the
+/// forecasting samplers import it by.
+pub(crate) use crate::numerics::stable_sigmoid as sigmoid;
 
 /// Pointwise log likelihood on the same parameter scales as observation sampling.
 /// Invalid observations/parameters are errors; an unrepresentably small density
@@ -103,9 +97,9 @@ pub fn log_density(
                 return Err(invalid("Bernoulli observation must be zero or one"));
             }
             if observed == 1.0 {
-                -crate::autodiff::softplus(-eta)
+                -crate::numerics::softplus(-eta)
             } else {
-                -crate::autodiff::softplus(eta)
+                -crate::numerics::softplus(eta)
             }
         }
         ObsFamily::PoissonLog | ObsFamily::NegativeBinomialLog => {

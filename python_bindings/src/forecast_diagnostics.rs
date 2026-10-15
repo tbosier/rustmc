@@ -1,7 +1,9 @@
-//! Shared non-Hamiltonian diagnostic conversion.
+//! Shared diagnostic conversion: parameter diagnostics, fit warnings and
+//! the non-Hamiltonian sampler statistics.
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use rustmc_core::diagnostics::DiagnosticsReport;
+use rustmc_core::diagnostics::{DiagnosticsReport, FitWarning, WarningCode};
 
 pub(crate) fn diagnostics_list<'py>(
     py: Python<'py>,
@@ -49,6 +51,48 @@ pub(crate) fn sampler_stats<'py>(
     stats.set_item("diagnostic_coverage", coverage)?;
     stats.set_item("r_hat_method", "rank-normalized folded split")?;
     stats.set_item("independent_chain_comparison", chains >= 2)?;
-    stats.set_item("diagnostics_available", draws >= 6)?;
+    stats.set_item(
+        "diagnostics_available",
+        draws >= rustmc_core::diagnostics::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN,
+    )?;
     Ok(stats)
+}
+
+/// Fit warnings as a list of dicts with the keys the stub's `_FitWarning`
+/// declares. A value the check could not compute is `None`.
+pub(crate) fn warnings_list<'py>(
+    py: Python<'py>,
+    warnings: &[FitWarning],
+) -> PyResult<Bound<'py, PyList>> {
+    let items = PyList::empty(py);
+    for warning in warnings {
+        let item = PyDict::new(py);
+        item.set_item("code", warning.code.as_str())?;
+        item.set_item("status", warning.status.as_str())?;
+        item.set_item("parameter", warning.parameter.as_deref())?;
+        item.set_item("chain", warning.chain)?;
+        item.set_item("value", (!warning.value.is_nan()).then_some(warning.value))?;
+        item.set_item("threshold", warning.threshold)?;
+        item.set_item("message", &warning.message)?;
+        items.append(item)?;
+    }
+    Ok(items)
+}
+
+/// The warning codes `flagged(ignore=...)` names, refusing a name that is not
+/// a code so that a typo cannot silently ignore nothing.
+pub(crate) fn ignored_codes(ignore: Option<Vec<String>>) -> PyResult<Vec<WarningCode>> {
+    ignore
+        .unwrap_or_default()
+        .iter()
+        .map(|name| {
+            WarningCode::parse(name).ok_or_else(|| {
+                let known: Vec<&str> = WarningCode::ALL.iter().map(|c| c.as_str()).collect();
+                PyValueError::new_err(format!(
+                    "unknown warning code {name:?}; expected one of {}",
+                    known.join(", ")
+                ))
+            })
+        })
+        .collect()
 }

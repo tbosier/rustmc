@@ -80,7 +80,7 @@ pub fn prior_name(prior: &PriorSpec) -> &str {
     }
 }
 
-pub fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
+fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
     let mut out = Vec::new();
     fn push<'a>(out: &mut Vec<(&'static str, &'a str)>, role: &'static str, hp: &'a HyperParam) {
         if let HyperParam::Param(name) = hp {
@@ -105,7 +105,7 @@ pub fn prior_hyper_refs(prior: &PriorSpec) -> Vec<(&'static str, &str)> {
     out
 }
 
-pub fn model_reference_set(
+fn model_reference_set(
     priors: &[PriorSpec],
     likelihoods: &[LikelihoodSpec],
 ) -> (Vec<String>, Vec<ParamReference>) {
@@ -213,7 +213,7 @@ pub fn validate_positive_finite(name: &str, value: f64) -> ModelResult<()> {
     }
 }
 
-pub fn validate_binary_observations(obs: &[f64], name: &str) -> ModelResult<()> {
+pub(crate) fn validate_binary_observations(obs: &[f64], name: &str) -> ModelResult<()> {
     if let Some((idx, value)) = obs
         .iter()
         .copied()
@@ -228,7 +228,11 @@ pub fn validate_binary_observations(obs: &[f64], name: &str) -> ModelResult<()> 
     Ok(())
 }
 
-pub fn validate_positive_observations(obs: &[f64], name: &str, strict: bool) -> ModelResult<()> {
+pub(crate) fn validate_positive_observations(
+    obs: &[f64],
+    name: &str,
+    strict: bool,
+) -> ModelResult<()> {
     if let Some((idx, value)) = obs
         .iter()
         .copied()
@@ -252,7 +256,7 @@ pub fn validate_positive_observations(obs: &[f64], name: &str, strict: bool) -> 
     Ok(())
 }
 
-pub fn validate_integer_observations(obs: &[f64], name: &str) -> ModelResult<()> {
+pub(crate) fn validate_integer_observations(obs: &[f64], name: &str) -> ModelResult<()> {
     if let Some((idx, value)) = obs
         .iter()
         .copied()
@@ -267,7 +271,7 @@ pub fn validate_integer_observations(obs: &[f64], name: &str) -> ModelResult<()>
     Ok(())
 }
 
-pub fn validate_count_observations(obs: &[f64], name: &str) -> ModelResult<()> {
+pub(crate) fn validate_count_observations(obs: &[f64], name: &str) -> ModelResult<()> {
     if let Some((idx, value)) = obs
         .iter()
         .copied()
@@ -282,7 +286,7 @@ pub fn validate_count_observations(obs: &[f64], name: &str) -> ModelResult<()> {
     Ok(())
 }
 
-pub fn resolve_hyper(
+pub(crate) fn resolve_hyper(
     hp: &HyperParam,
     graph: &mut Graph,
     value_node_map: &HashMap<String, NodeId>,
@@ -299,7 +303,7 @@ pub fn resolve_hyper(
     }
 }
 
-pub fn resolve_hyper_value(
+pub(crate) fn resolve_hyper_value(
     hp: &HyperParam,
     values: &HashMap<String, f64>,
     context: &str,

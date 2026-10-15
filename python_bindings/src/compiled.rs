@@ -16,14 +16,14 @@ use rustmc_core::sampler::{BatchSeedPolicy, BoundBatchOptions};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-#[pyclass(name = "BoundModel", module = "rustmc")]
+#[pyclass(name = "BoundModel", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBoundModel {
     pub(crate) structure: Arc<Graph>,
     pub(crate) binding: CoreDataBinding,
 }
 
-#[pyclass(name = "CompiledModel", module = "rustmc")]
+#[pyclass(name = "CompiledModel", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyCompiledModel {
     pub(crate) model: GraphModel,

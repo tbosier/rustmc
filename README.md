@@ -77,6 +77,8 @@ Independent fits do not share information. For related groups, build one
   log-density terms. See [custom models](https://tbosier.github.io/rustmc/custom-models/).
 - Prior and posterior prediction, pointwise log likelihood, R-hat, effective sample
   size, Monte Carlo error, and ArviZ export.
+- Per-fit `warnings()` for R-hat, ESS, divergences, E-BFMI and tree depth, and
+  `flagged()` to list the fits in a batch that fail them.
 - Exact Gaussian AR regression, Gaussian hierarchical models, and Kalman/FFBS
   algorithms for state-space models.
 - [Forecasting workflows](https://tbosier.github.io/rustmc/forecasting-workflows/) for structural, count,

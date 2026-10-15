@@ -8,27 +8,17 @@ use rustmc_core::forecast_common::{cumulative_paths, path_quantiles, Paths};
 use rustmc_core::hurdle::{
     fit_hurdle_lognormal, HurdleLogNormalConfig, HurdleLogNormalForecast, HurdleLogNormalPosterior,
 };
+use std::sync::Arc;
 
-#[pyclass(name = "BayesianHurdleLogNormal", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormal", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleLogNormal {
     pub(crate) config: HurdleLogNormalConfig,
 }
 
-impl PyHurdleLogNormal {
-    pub(crate) fn batch_config(
-        &self,
-        chains: usize,
-        draws: usize,
-        warmup: usize,
-        thin: usize,
-    ) -> forecast_batch::Config {
-        let mut config = self.config.clone();
-        config.num_chains = chains;
-        config.num_draws = draws;
-        config.num_warmup = warmup;
-        config.thinning = thin;
-        forecast_batch::Config::Hurdle(config)
+impl forecast_batch::BatchModel for PyHurdleLogNormal {
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
+        forecast_batch::Config::Hurdle(self.config.with_schedule(schedule))
     }
 }
 
@@ -37,7 +27,7 @@ impl PyHurdleLogNormal {
     /// Fit independent sparse-amount cells with stable IDs on one native worker pool.
     /// Optional models permit per-cell priors and mixed forecasting model families.
     /// Hurdle cells do not support exog; regression cells in a mixed batch may use it.
-    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=None, thin=None, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -49,8 +39,8 @@ impl PyHurdleLogNormal {
         coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
-        warmup: usize,
-        thin: usize,
+        warmup: Option<usize>,
+        thin: Option<usize>,
         seed: u64,
         threads: usize,
         chunk_size: usize,
@@ -58,12 +48,12 @@ impl PyHurdleLogNormal {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws, warmup, thin),
             chains,
             draws,
             warmup,
@@ -90,6 +80,13 @@ impl PyHurdleLogNormal {
         process_variance_upper: f64,
         observation_variance_upper: f64,
     ) -> PyResult<Self> {
+        let Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        } = Schedule::DEFAULT;
         let config = HurdleLogNormalConfig {
             process_variance_prior: process_variance_prior.inner,
             observation_variance_prior: observation_variance_prior.inner,
@@ -99,11 +96,11 @@ impl PyHurdleLogNormal {
             initial_variance,
             process_variance_upper,
             observation_variance_upper,
-            num_chains: 4,
-            num_draws: 1000,
-            num_warmup: 500,
-            thinning: 1,
-            seed: 42,
+            num_chains: chains,
+            num_draws: draws,
+            num_warmup: warmup,
+            thinning: thin,
+            seed,
         };
         config.validate().map_err(bayesian_forecast_error)?;
         Ok(Self { config })
@@ -122,18 +119,19 @@ impl PyHurdleLogNormal {
         seed: u64,
     ) -> PyResult<PyHurdleFit> {
         let observations = real_vector(observations, "observations")?;
-        let mut config = self.config.clone();
-        config.num_chains = chains;
-        config.num_draws = draws;
-        config.num_warmup = warmup;
-        config.thinning = thin;
-        config.seed = seed;
+        let config = self.config.with_schedule(Schedule {
+            chains,
+            draws,
+            warmup,
+            thin,
+            seed,
+        });
         let posterior = py
             .allow_threads(|| fit_hurdle_lognormal(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(PyHurdleFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
             config,
         })
     }
@@ -153,11 +151,11 @@ impl PyHurdleLogNormal {
     }
 }
 
-#[pyclass(name = "BayesianHurdleLogNormalFit", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormalFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleFit {
-    pub(crate) posterior: HurdleLogNormalPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<HurdleLogNormalPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: HurdleLogNormalConfig,
 }
 
@@ -240,6 +238,12 @@ impl PyHurdleFit {
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         fit_diagnostics(py, self)
     }
+
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        fit_warning_list(py, self)
+    }
     fn summary(&self) -> String {
         fit_summary(self)
     }
@@ -262,17 +266,19 @@ impl PyHurdleFit {
         let inner = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyHurdleForecast { inner })
+        Ok(PyHurdleForecast {
+            inner: Arc::new(inner),
+        })
     }
     fn to_arviz<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
         fit_to_arviz(py, self, &self.observations)
     }
 }
 
-#[pyclass(name = "BayesianHurdleLogNormalForecast", module = "rustmc")]
+#[pyclass(name = "BayesianHurdleLogNormalForecast", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyHurdleForecast {
-    pub(crate) inner: HurdleLogNormalForecast,
+    pub(crate) inner: Arc<HurdleLogNormalForecast>,
 }
 
 #[pymethods]

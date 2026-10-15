@@ -11,9 +11,12 @@ pub mod diagnostics;
 pub mod distributions;
 pub mod dynamic_glm;
 pub mod elliptical_slice;
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub mod fault_injection;
 pub mod forecast_batch;
 pub mod forecast_common;
-pub mod forecast_diagnostics;
+pub(crate) mod forecast_diagnostics;
 pub mod graph;
 pub mod hierarchical;
 pub mod hmc;
@@ -26,7 +29,7 @@ pub mod nuts;
 pub mod observation;
 pub mod param_ref;
 pub mod prior_sampling;
-pub mod progress;
+pub(crate) mod progress;
 pub mod runoff;
 pub mod sampler;
 pub mod seeding;

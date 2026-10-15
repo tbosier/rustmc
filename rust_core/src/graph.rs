@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 
 use crate::data::DataBinding;
@@ -34,6 +33,8 @@ impl Display for GraphShapeError {
         write!(f, "{}", self.message)
     }
 }
+
+impl std::error::Error for GraphShapeError {}
 
 /// A 2-D data matrix stored row-major (n_rows × n_cols).
 #[derive(Debug, Clone)]
@@ -71,7 +72,8 @@ pub use crate::numerics::{
     stable_sigmoid_derivative,
 };
 use crate::numerics::{
-    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, tanh_slope,
+    div_denominator_adjoint, div_denominator_derivative, pow_adjoints, pow_derivatives, softplus,
+    tanh_slope,
 };
 
 /// Arithmetic with scalar broadcasting and elementwise vector semantics.
@@ -106,7 +108,7 @@ impl ElementwiseOp {
             Self::Sigmoid => stable_sigmoid(a),
             Self::Sqrt => a.sqrt(),
             Self::Tanh => a.tanh(),
-            Self::Softplus => a.max(0.0) + (-a.abs()).exp().ln_1p(),
+            Self::Softplus => softplus(a),
             Self::Sin => a.sin(),
             Self::Cos => a.cos(),
         }
@@ -117,17 +119,7 @@ impl ElementwiseOp {
             Self::Sub => (1.0, -1.0),
             Self::Mul => (b, a),
             Self::Div => (1.0 / b, div_denominator_derivative(a, b)),
-            Self::Pow => {
-                // x^0 is constant even at x=0. For positive exponents, 0^b
-                // is also constant in b; forming 0*log(0) gives a false NaN.
-                let da = if b == 0.0 { 0.0 } else { b * a.powf(b - 1.0) };
-                let db = if a == 0.0 && b > 0.0 {
-                    0.0
-                } else {
-                    a.powf(b) * a.ln()
-                };
-                (da, db)
-            }
+            Self::Pow => pow_derivatives(a, b, a.powf(b), a.ln()),
             Self::Neg => (-1.0, 0.0),
             Self::Exp => (a.exp(), 0.0),
             Self::Log => (1.0 / a, 0.0),
@@ -182,11 +174,25 @@ impl ElementwiseOp {
             // whatever `a / b` and the adjoint are.
             Self::Div => (upstream / b, div_denominator_adjoint(upstream, a, b)),
             Self::Log => (upstream / a, 0.0),
-            Self::Pow => pow_adjoints(upstream, a, b),
+            Self::Pow => pow_adjoints(upstream, a, b, a.powf(b)),
             _ => {
                 let (da, db) = self.derivatives(a, b);
                 (upstream * da, upstream * db)
             }
+        }
+    }
+
+    /// [`Self::adjoints`], given the node's own forward value `out == value(a, b)`.
+    ///
+    /// The derivatives of `Exp`, `Sqrt` and `Pow` are built from that value,
+    /// so reverse mode passes it in instead of recomputing an `exp`, a `sqrt`
+    /// or a `powf` per element. The results are the same bits as `adjoints`.
+    pub(crate) fn adjoints_with_value(self, upstream: f64, a: f64, b: f64, out: f64) -> (f64, f64) {
+        match self {
+            Self::Exp => (upstream * out, upstream * 0.0),
+            Self::Sqrt => (upstream * (0.5 / out), upstream * 0.0),
+            Self::Pow => pow_adjoints(upstream, a, b, out),
+            _ => self.adjoints(upstream, a, b),
         }
     }
 }
@@ -547,8 +553,14 @@ impl ParamTransform {
 /// The computational graph representing a probabilistic model.
 ///
 /// Stores nodes in topological order (each node only references earlier nodes).
-/// Data vectors and observed values are stored separately from the graph
-/// structure so the graph itself stays lightweight and shareable across threads.
+///
+/// A graph built with the `add_data`/`store_*` methods also carries one
+/// dataset in `data_vectors`, `obs_vectors` and `data_matrices`. The evaluator
+/// never reads those fields: it reads a [`DataBinding`], built from them by
+/// [`DataBinding::from_graph`] or supplied separately against a
+/// [`Self::structure_only`] graph, which is how one structure is shared across
+/// threads and datasets. [`Self::with_binding`] goes the other way and copies
+/// a binding's payloads back into the fields.
 #[derive(Debug, Clone)]
 pub struct Graph {
     pub nodes: Vec<Node>,
@@ -563,7 +575,6 @@ pub struct Graph {
     pub param_spans: Vec<ParamSpan>,
     pub logp_terms: Vec<NodeId>,
     pub deterministics: Vec<(String, NodeId)>,
-    name_to_node: HashMap<String, NodeId>,
 }
 
 impl Graph {
@@ -580,7 +591,6 @@ impl Graph {
             param_spans: Vec::new(),
             logp_terms: Vec::new(),
             deterministics: Vec::new(),
-            name_to_node: HashMap::new(),
         }
     }
 
@@ -632,9 +642,6 @@ impl Graph {
 
     fn add_node(&mut self, op: Op, name: Option<String>) -> NodeId {
         let id = NodeId(self.nodes.len());
-        if let Some(ref n) = name {
-            self.name_to_node.insert(n.clone(), id);
-        }
         self.nodes.push(Node { id, op, name });
         id
     }
@@ -760,7 +767,11 @@ impl Graph {
         node
     }
 
-    /// Backward-compatible alias for the Normal observation op.
+    /// Alias of [`Self::obs_logp_normal`], kept for existing callers.
+    ///
+    /// Every other family is spelled `obs_logp_<family>`; new code should use
+    /// [`Self::obs_logp_normal`]. This is due to be marked `#[deprecated]`
+    /// once the remaining in-repository callers have moved over.
     pub fn normal_obs_logp(
         &mut self,
         linpred_vec: NodeId,
@@ -913,12 +924,6 @@ impl Graph {
         self.logp_terms.push(node);
     }
 
-    /// Convenience: add a node's value directly as a logp term (used for Jacobians).
-    pub fn add_node_as_logp(&mut self, node: NodeId) -> NodeId {
-        self.logp_terms.push(node);
-        node
-    }
-
     /// Return observation metadata for every supported observation term.
     ///
     /// A structure-only graph intentionally has no dataset payload. In that
@@ -999,10 +1004,6 @@ impl Graph {
             },
             None,
         )
-    }
-
-    pub fn node_by_name(&self, name: &str) -> Option<NodeId> {
-        self.name_to_node.get(name).copied()
     }
 
     /// Allocate `n` contiguous parameters with no individual `Param` nodes.

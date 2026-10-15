@@ -11,6 +11,7 @@ use rustmc_core::bayesian_ar::{
     BayesianArForecast as CoreBayesianArForecast, BayesianArPosterior as CoreBayesianArPosterior,
     NormalInverseGammaPrior as CoreNormalInverseGammaPrior,
 };
+use std::sync::Arc;
 
 /// Conjugate prior for a Gaussian autoregression.
 ///
@@ -101,8 +102,8 @@ impl PyBayesianAutoRegression {
     ///
     /// AR posterior draws are exact and independent, so `warmup` and `thin`
     /// only reach Gibbs-sampled cells named in `models`; a batch with no such
-    /// cell refuses values other than the defaults instead of ignoring them.
-    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=500, thin=1, seed=42, threads=1, chunk_size=64, errors="raise"))]
+    /// cell refuses them instead of ignoring them.
+    #[pyo3(signature = (observations, ids, *, models=None, exog=None, coefficient_priors=None, chains=4, draws=1000, warmup=None, thin=None, seed=42, threads=1, chunk_size=64, errors="raise"))]
     #[allow(clippy::too_many_arguments)]
     fn fit_batch(
         &self,
@@ -114,8 +115,8 @@ impl PyBayesianAutoRegression {
         coefficient_priors: Option<&Bound<'_, PyAny>>,
         chains: usize,
         draws: usize,
-        warmup: usize,
-        thin: usize,
+        warmup: Option<usize>,
+        thin: Option<usize>,
         seed: u64,
         threads: usize,
         chunk_size: usize,
@@ -123,12 +124,12 @@ impl PyBayesianAutoRegression {
     ) -> PyResult<forecast_batch::PyForecastBatchFit> {
         forecast_batch::fit_batch(
             py,
+            self,
             observations,
             ids,
             models,
             exog,
             coefficient_priors,
-            self.batch_config(chains, draws),
             chains,
             draws,
             warmup,
@@ -196,8 +197,8 @@ impl PyBayesianAutoRegression {
             .allow_threads(|| fit_bayesian_ar(&observations, &config))
             .map_err(bayesian_forecast_error)?;
         Ok(PyBayesianArFit {
-            posterior,
-            observations,
+            posterior: Arc::new(posterior),
+            observations: observations.into(),
             config,
         })
     }
@@ -211,11 +212,11 @@ impl PyBayesianAutoRegression {
     }
 }
 
-#[pyclass(name = "BayesianARFit", module = "rustmc")]
+#[pyclass(name = "BayesianARFit", frozen, module = "rustmc")]
 #[derive(Clone)]
 pub(crate) struct PyBayesianArFit {
-    pub(crate) posterior: CoreBayesianArPosterior,
-    pub(crate) observations: Vec<f64>,
+    pub(crate) posterior: Arc<CoreBayesianArPosterior>,
+    pub(crate) observations: Arc<[f64]>,
     pub(crate) config: CoreBayesianArConfig,
 }
 
@@ -264,6 +265,12 @@ impl PyBayesianArFit {
         fit_diagnostics(py, self)
     }
 
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        fit_warning_list(py, self)
+    }
+
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         fit_sampler_stats(py, self)
@@ -308,7 +315,9 @@ impl PyBayesianArFit {
         let forecast = py
             .allow_threads(|| self.posterior.forecast(steps, seed))
             .map_err(bayesian_forecast_error)?;
-        Ok(PyBayesianArForecast { inner: forecast })
+        Ok(PyBayesianArForecast {
+            inner: Arc::new(forecast),
+        })
     }
 
     /// Export coefficient and innovation-variance draws to ArviZ.
@@ -327,9 +336,9 @@ impl PyBayesianArFit {
     }
 }
 
-#[pyclass(name = "BayesianARForecast", module = "rustmc")]
+#[pyclass(name = "BayesianARForecast", frozen, module = "rustmc")]
 pub(crate) struct PyBayesianArForecast {
-    pub(crate) inner: CoreBayesianArForecast,
+    pub(crate) inner: Arc<CoreBayesianArForecast>,
 }
 
 #[pymethods]
@@ -423,16 +432,15 @@ impl PyBayesianArForecast {
     }
 }
 
-impl PyBayesianAutoRegression {
+impl forecast_batch::BatchModel for PyBayesianAutoRegression {
     /// AR draws are exact and independent, so there is no warmup or thinning.
-    pub(crate) fn batch_config(&self, chains: usize, draws: usize) -> forecast_batch::Config {
-        let seed = 0;
+    fn batch_config(&self, schedule: Schedule) -> forecast_batch::Config {
         forecast_batch::Config::Ar(CoreBayesianArConfig {
             order: self.order,
             prior: self.prior.clone(),
-            num_chains: chains,
-            num_draws: draws,
-            seed,
+            num_chains: schedule.chains,
+            num_draws: schedule.draws,
+            seed: schedule.seed,
         })
     }
 }

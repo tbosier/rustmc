@@ -12,7 +12,7 @@ use rustmc_core::runoff::{
 /// The last alpha entry is an unscheduled tail. Unknown ultimate counts use an
 /// independent Gamma(total_shape, rate=total_rate) Poisson intensity per cohort.
 /// This model does not accept currency as multinomial event counts.
-#[pyclass(name = "DirichletMultinomialRunoff", module = "rustmc")]
+#[pyclass(name = "DirichletMultinomialRunoff", frozen, module = "rustmc")]
 pub(crate) struct PyRunoff {
     alpha: Vec<f64>,
     total_shape: f64,
@@ -100,7 +100,7 @@ fn runoff_error(error: RunoffError) -> PyErr {
     InferenceError::new_err(error.to_string())
 }
 
-#[pyclass(name = "RunoffFit", module = "rustmc")]
+#[pyclass(name = "RunoffFit", frozen, module = "rustmc")]
 pub(crate) struct PyRunoffFit {
     inner: RunoffPosterior,
 }
@@ -130,6 +130,32 @@ fn array3<'py, T: numpy::Element>(
 impl PyRunoffFit {
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         crate::forecast_diagnostics::diagnostics_list(py, &self.inner.diagnostics())
+    }
+
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let sampler = self.sampler();
+        let warnings = py.allow_threads(|| {
+            let report = self.inner.diagnostics();
+            // An ultimate is a count: known exactly for a closed cohort, and
+            // its posterior can sit on one value, so constant draws are not
+            // a failure. Lag probabilities and intensities are continuous.
+            let constant: Vec<String> = report
+                .params
+                .iter()
+                .map(|p| p.name.clone())
+                .filter(|name| name.starts_with("ultimate["))
+                .collect();
+            rustmc_core::diagnostics::fit_warnings(
+                &report,
+                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian {
+                    sampler,
+                    constant: &constant,
+                },
+            )
+        });
+        crate::forecast_diagnostics::warnings_list(py, &warnings)
     }
 
     fn summary(&self) -> String {

@@ -1,10 +1,11 @@
 use crate::adaptation::WarmupAdapter;
-use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
-use crate::sampler::{kernel_initial_position, reject_discrete_latent_parameters};
+use crate::sampler::{
+    run_raw_kernel, validate_leapfrog_steps, validate_step_size, validate_target_accept,
+};
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -33,6 +34,14 @@ pub struct TransitionStats {
     /// HMC proposal energy error, or NUTS selected-state energy error (which
     /// can be zero when the initial state is selected).
     pub energy_error: f64,
+    /// The Hamiltonian of the state the transition ends in: the negative log
+    /// density plus the kinetic energy of its momentum under the metric the
+    /// transition ran with. HMC: the proposal's when it was accepted, else the
+    /// starting state's with the momentum drawn for this transition. NUTS: the
+    /// selected state's. This is the `energy` sample statistic of Stan, PyMC
+    /// and ArviZ, from which E-BFMI is computed. NaN when it was not recorded
+    /// (a fit loaded from a version 1 or 2 artifact).
+    pub energy: f64,
     pub divergent: bool,
     pub step_size: f64,
     pub num_leapfrog_steps: usize,
@@ -66,13 +75,95 @@ impl Default for HmcConfig {
     }
 }
 
+impl HmcConfig {
+    /// Check the settings the kernel cannot run with: a non-finite or negative
+    /// step size (0 asks warmup to find one), `target_accept` outside (0, 1),
+    /// and no leapfrog steps. `num_warmup` may be 0, which samples
+    /// with the given step size (or the one a search finds, for 0) and the
+    /// unit metric.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_step_size(self.step_size)?;
+        validate_target_accept(self.target_accept)?;
+        validate_leapfrog_steps(self.num_leapfrog_steps)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChainResult {
     pub samples: Vec<Vec<f64>>,
+    /// HMC: the fraction of draw transitions whose proposal was accepted.
+    /// NUTS: the mean acceptance statistic over draw transitions.
     pub accept_rate: f64,
     pub step_size: f64,
     pub divergences: usize,
     pub transitions: Vec<TransitionStats>,
+}
+
+/// The per-transition bookkeeping HMC and NUTS share: retained draws,
+/// telemetry, posterior-only counters and the progress bar.
+///
+/// Warmup transitions are kept in `transitions` for auditability but do not
+/// count towards divergences, the acceptance rate or the draws.
+pub(crate) struct ChainRecorder<'a> {
+    samples: Vec<Vec<f64>>,
+    transitions: Vec<TransitionStats>,
+    divergences: usize,
+    accept_sum: f64,
+    draws: u64,
+    progress: Option<&'a ProgressState>,
+}
+
+impl<'a> ChainRecorder<'a> {
+    pub(crate) fn new(
+        num_warmup: usize,
+        num_draws: usize,
+        progress: Option<&'a ProgressState>,
+    ) -> Self {
+        Self {
+            samples: Vec::with_capacity(num_draws),
+            transitions: Vec::with_capacity(num_warmup + num_draws),
+            divergences: 0,
+            accept_sum: 0.0,
+            draws: 0,
+            progress,
+        }
+    }
+
+    /// Record a transition that left the chain at `q`. `accept` is this
+    /// transition's contribution to [`ChainResult::accept_rate`], which is
+    /// the mean of `accept` over draw transitions.
+    pub(crate) fn record(&mut self, q: &[f64], stats: TransitionStats, accept: f64) {
+        if !stats.is_warmup {
+            self.draws += 1;
+            if stats.divergent {
+                self.divergences += 1;
+            }
+            self.accept_sum += accept;
+            self.samples.push(q.to_vec());
+        }
+        if let Some(progress) = self.progress {
+            progress.increment();
+            if !stats.is_warmup && stats.divergent {
+                progress.add_divergence();
+            }
+        }
+        self.transitions.push(stats);
+    }
+
+    /// The chain's result, sampled at the final step size `step_size`.
+    pub(crate) fn finish(self, step_size: f64) -> ChainResult {
+        ChainResult {
+            samples: self.samples,
+            accept_rate: if self.draws > 0 {
+                self.accept_sum / self.draws as f64
+            } else {
+                0.0
+            },
+            step_size,
+            divergences: self.divergences,
+            transitions: self.transitions,
+        }
+    }
 }
 
 /// Run a single HMC chain with block-structured mass matrix adaptation.
@@ -82,17 +173,24 @@ pub struct ChainResult {
 /// is re-estimated at the end of each doubling window between an initial and
 /// a terminal buffer (see `adaptation::WarmupSchedule`).
 ///
+/// A leapfrog step that lands where the log density is not finite, outside
+/// the support, ends the trajectory there: the transition is divergent, its
+/// proposal is rejected, and its `num_leapfrog_steps` counts the steps taken.
+///
 /// Integrator buffers are allocated once per chain. After warmup a
 /// transition allocates only the retained draw; during warmup the end of each
 /// metric-estimation window also allocates the new metric and accumulator.
 /// # Errors
 ///
-/// Returns the rejection message from
+/// Returns an error when `config` fails [`HmcConfig::validate`], and the
+/// rejection message from
 /// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
 /// discrete latent. This entry point does not go through `sampler`, so the
 /// check has to happen here or not at all — see [`run_chain_bound`]. Also
-/// returns an error when the graph's data do not bind, or when `init` is not a
-/// finite vector with one entry per parameter. `None` starts at the origin.
+/// returns an error when the draws and transition records requested would
+/// exceed the crate's allocation limits, when the graph's data do not bind, or
+/// when `init` is not a finite vector with one entry per parameter. `None`
+/// starts at the origin.
 pub fn run_chain(
     graph: &Graph,
     config: &HmcConfig,
@@ -100,9 +198,11 @@ pub fn run_chain(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
-    reject_discrete_latent_parameters(graph)?;
-    let binding = DataBinding::from_graph(graph).map_err(|error| error.to_string())?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
+    config.validate()?;
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, None, length, init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
@@ -121,33 +221,11 @@ pub fn run_chain_bound(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
-    reject_discrete_latent_parameters(graph)?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
-}
-
-/// [`run_chain_bound`] without the discrete-latent check.
-///
-/// For callers inside `sampler`, which run the check once at their own
-/// boundary and would otherwise repeat a whole-graph scan per chain.
-pub(crate) fn run_chain_bound_unguarded(
-    graph: &Graph,
-    binding: DataBinding,
-    config: &HmcConfig,
-    rng: &mut ChaCha8Rng,
-    init: Option<Vec<f64>>,
-    progress: Option<&ProgressState>,
-) -> Result<ChainResult, String> {
-    let mut evaluator =
-        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
-    let position = kernel_initial_position(init, graph.param_count)?;
-    Ok(run_chain_with_evaluator(
-        graph,
-        config,
-        rng,
-        position,
-        progress,
-        &mut evaluator,
-    ))
+    config.validate()?;
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, Some(binding), length, init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 pub(crate) fn run_chain_with_evaluator(
@@ -158,6 +236,8 @@ pub(crate) fn run_chain_with_evaluator(
     progress: Option<&ProgressState>,
     evaluator: &mut impl GradientEvaluator,
 ) -> ChainResult {
+    // Every caller has validated the configuration it was built from.
+    debug_assert_eq!(config.validate(), Ok(()));
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
@@ -168,26 +248,22 @@ pub(crate) fn run_chain_with_evaluator(
     let mut grad = vec![0.0; dim];
     let mut velocity = vec![0.0; dim];
     let mut scratch = vec![0.0; dim];
-    let mut samples = Vec::with_capacity(config.num_draws);
-    let mut transitions = Vec::with_capacity(total_iters);
-    let mut accepted = 0u64;
-    let mut total = 0u64;
-    let mut n_divergences = 0usize;
+    let mut recorder = ChainRecorder::new(config.num_warmup, config.num_draws, progress);
 
-    let mut mass = MassMatrix::from_graph(graph);
+    let mut mass = MassMatrix::identity(graph);
     // The same windowed schedule, dual averaging and step-size search as NUTS.
-    let mut adapter = WarmupAdapter::new(
+    let (mut adapter, mut step_size) = WarmupAdapter::start(
         graph,
         config.num_warmup,
         config.target_accept,
         config.step_size,
         config.metric,
+        evaluator,
+        &q,
+        &mass,
+        rng,
+        &mut scratch,
     );
-    let mut step_size = if config.step_size > 0.0 {
-        config.step_size
-    } else {
-        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
-    };
 
     // The density and gradient at the current position are cached across
     // iterations: a rejected proposal leaves them unchanged and an accepted
@@ -212,6 +288,12 @@ pub(crate) fn run_chain_with_evaluator(
             p_prop[i] += 0.5 * step_size * grad_current[i];
         }
 
+        // A step that lands outside the support (a non-finite log density)
+        // ends the trajectory there, as a NUTS leaf there ends its tree: the
+        // proposal is divergent and rejected, however the remaining steps
+        // would have ended.
+        let mut steps_taken = 0;
+        let mut left_support = false;
         for step in 0..config.num_leapfrog_steps {
             mass.velocity_into(&p_prop, &mut velocity, &mut scratch);
             for i in 0..dim {
@@ -221,6 +303,11 @@ pub(crate) fn run_chain_with_evaluator(
             evaluator.compute(graph, &q_prop);
             if evaluator.has_failed() {
                 break 'iterations;
+            }
+            steps_taken += 1;
+            if !evaluator.log_density().is_finite() {
+                left_support = true;
+                break;
             }
             grad.copy_from_slice(evaluator.gradient());
 
@@ -245,35 +332,25 @@ pub(crate) fn run_chain_with_evaluator(
         let h_current = -logp_current + ke_current;
         let h_prop = -logp_prop + ke_prop;
         let log_accept_ratio = h_current - h_prop;
-        let energy_error = h_prop - h_current;
+        // Outside the support the density is -inf, so the energy error is
+        // +inf. It is set rather than computed: the abandoned trajectory's
+        // last momentum kick used a gradient from an earlier step, and the
+        // evaluator's non-finite density need not be -inf, so the computed
+        // value could be NaN.
+        let energy_error = if left_support {
+            f64::INFINITY
+        } else {
+            h_prop - h_current
+        };
         let accept_prob = acceptance_probability(energy_error);
 
-        let divergent = energy_error > MAX_DELTA_H || !energy_error.is_finite();
+        let divergent = left_support || energy_error > MAX_DELTA_H || !energy_error.is_finite();
         let mut accepted_transition = false;
         if !divergent && rng.gen::<f64>().ln() < log_accept_ratio {
             q.copy_from_slice(&q_prop);
             grad_current.copy_from_slice(&grad);
             logp_current = logp_prop;
             accepted_transition = true;
-        }
-
-        // Warmup transitions are retained in `transitions` for auditability,
-        // but must not affect posterior-sampling diagnostics.
-        if !is_warmup {
-            total += 1;
-            if divergent {
-                n_divergences += 1;
-            }
-            if accepted_transition {
-                accepted += 1;
-            }
-        }
-
-        if let Some(pbar) = progress {
-            pbar.increment();
-            if !is_warmup && divergent {
-                pbar.add_divergence();
-            }
         }
 
         if is_warmup {
@@ -289,33 +366,32 @@ pub(crate) fn run_chain_with_evaluator(
             );
         }
 
-        if !is_warmup {
-            samples.push(q.clone());
-        }
-
-        transitions.push(TransitionStats {
-            is_warmup,
-            accepted: accepted_transition,
-            accept_prob,
-            energy_error,
-            divergent,
-            step_size: step_size_used,
-            num_leapfrog_steps: config.num_leapfrog_steps,
-            tree_depth: None,
-        });
+        // HMC's acceptance rate is the fraction of accepted proposals.
+        let accept = if accepted_transition { 1.0 } else { 0.0 };
+        recorder.record(
+            &q,
+            TransitionStats {
+                is_warmup,
+                accepted: accepted_transition,
+                accept_prob,
+                energy_error,
+                // Read off values the accept step already computed; no new
+                // evaluation and no RNG draw.
+                energy: if accepted_transition {
+                    h_prop
+                } else {
+                    h_current
+                },
+                divergent,
+                step_size: step_size_used,
+                num_leapfrog_steps: steps_taken,
+                tree_depth: None,
+            },
+            accept,
+        );
     }
 
-    ChainResult {
-        samples,
-        accept_rate: if total > 0 {
-            accepted as f64 / total as f64
-        } else {
-            0.0
-        },
-        step_size,
-        divergences: n_divergences,
-        transitions,
-    }
+    recorder.finish(step_size)
 }
 
 #[cfg(test)]
@@ -405,6 +481,53 @@ mod tests {
         assert_eq!(chain.accept_rate, posterior_accept_rate);
     }
 
+    /// `energy` is the Hamiltonian of the state the transition leaves the
+    /// chain in, so `energy + log density at the retained position` is that
+    /// state's kinetic energy, which is finite and non-negative whether the
+    /// proposal was accepted (the proposal's state) or rejected (the starting
+    /// position with this transition's momentum).
+    ///
+    /// At stationarity on a standard normal with the unit metric, the
+    /// Hamiltonian's expectation is `E[q^2 / 2] + E[p^2 / 2] - log p(0) =
+    /// 1 - log p(0)`. Recording a rejected proposal's energy instead of the
+    /// retained state's biases that mean upwards by the rejected energy
+    /// errors: with this seed and step size (about a fifth of the proposals
+    /// rejected) the correct mean is 0.006 from the expectation and the wrong
+    /// one 0.25, so the bound of 0.05 separates them.
+    #[test]
+    fn hmc_energy_is_the_hamiltonian_of_the_retained_state() {
+        let graph = simple_gaussian_graph();
+        let config = HmcConfig {
+            step_size: 1.6,
+            num_leapfrog_steps: 3,
+            num_draws: 20_000,
+            num_warmup: 0,
+            ..HmcConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(11);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.3]), None)
+            .expect("continuous test model must run");
+        let mut evaluator = crate::autodiff::Evaluator::try_new(&graph).unwrap();
+        let (mut accepted, mut rejected) = (0, 0);
+        for (transition, draw) in chain.transitions.iter().zip(&chain.samples) {
+            evaluator.compute(&graph, draw);
+            let kinetic = transition.energy + evaluator.total_logp;
+            assert!(kinetic.is_finite() && kinetic >= -1e-12, "{kinetic}");
+            if transition.accepted {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+        // Both branches of the energy bookkeeping are exercised.
+        assert!(accepted > 0 && rejected > 0, "{accepted} / {rejected}");
+        evaluator.compute(&graph, &[0.0]);
+        let expected = 1.0 - evaluator.total_logp;
+        let mean = chain.transitions.iter().map(|t| t.energy).sum::<f64>()
+            / chain.transitions.len() as f64;
+        assert!((mean - expected).abs() < 0.05, "{mean} vs {expected}");
+    }
+
     #[test]
     fn hmc_flags_large_finite_energy_errors_as_divergent() {
         let graph = simple_gaussian_graph();
@@ -446,6 +569,56 @@ mod tests {
         )
         .expect("continuous test model must run");
         assert!(!stable.transitions[0].divergent);
+    }
+
+    #[test]
+    fn raw_kernel_refuses_settings_it_cannot_run_with() {
+        let graph = simple_gaussian_graph();
+        let base = HmcConfig {
+            num_draws: 2,
+            num_warmup: 0,
+            step_size: 0.1,
+            ..HmcConfig::default()
+        };
+        assert!(base.validate().is_ok());
+        for (config, field) in [
+            (
+                HmcConfig {
+                    num_leapfrog_steps: 0,
+                    ..base.clone()
+                },
+                "num_leapfrog_steps",
+            ),
+            (
+                HmcConfig {
+                    step_size: -0.1,
+                    ..base.clone()
+                },
+                "step_size",
+            ),
+            (
+                HmcConfig {
+                    target_accept: 1.0,
+                    ..base.clone()
+                },
+                "target_accept",
+            ),
+            (
+                HmcConfig {
+                    num_draws: usize::MAX,
+                    ..base.clone()
+                },
+                "safety limit",
+            ),
+        ] {
+            let mut rng = ChaCha8Rng::seed_from_u64(1);
+            let error = run_chain(&graph, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+            let binding = DataBinding::from_graph(&graph).unwrap();
+            let error =
+                run_chain_bound(&graph, binding, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+        }
     }
 
     #[test]

@@ -3,14 +3,16 @@
 //! Initial state priors are independent of innovation variances; x[-1] is included
 //! in every state draw so every transition contributes to the variance update.
 use crate::forecast_common::{
-    checked_value_count, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, GibbsSchedule, MAX_MATERIALIZED_VALUES,
+    checked_value_count, dot, overdispersed_positive, require_finite_observations,
+    run_gibbs_chains, simulate_draws, standard_normal, GibbsSchedule, InverseGammaPrior,
+    MAX_MATERIALIZED_VALUES, STRUCTURAL_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    STRUCTURAL_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN, STRUCTURAL_PRIOR_SEED_DOMAIN,
 };
 use crate::seeding::chain_seed;
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, Gamma, StandardNormal};
+use rand_distr::{Distribution, Gamma};
 use serde::{Deserialize, Serialize};
 type Result<T> = std::result::Result<T, StateSpaceError>;
 fn invalid(s: &str) -> StateSpaceError {
@@ -52,14 +54,15 @@ impl VarianceParameter {
             Self::InverseGamma { .. } => overdispersed_positive(self.initial(), rng),
         }
     }
+    /// The fixed value, or a draw from the conjugate conditional given `n`
+    /// residuals with sum of squares `ss` (`n = 0` draws from the prior).
     fn sample<R: Rng + ?Sized>(&self, n: usize, ss: f64, rng: &mut R) -> Result<f64> {
         match *self {
             Self::Fixed(v) => Ok(v),
-            Self::InverseGamma { shape, scale } => Ok(sample_inverse_gamma(
-                shape + n as f64 / 2.0,
-                scale + ss / 2.0,
-                rng,
-            )?),
+            // The enum keeps its own serde shape; the update is the shared one.
+            Self::InverseGamma { shape, scale } => {
+                Ok(InverseGammaPrior { shape, scale }.conditional_draw(n, ss, rng)?)
+            }
         }
     }
 }
@@ -77,6 +80,21 @@ pub struct Component {
     pub regression: bool,
 }
 impl Component {
+    /// Whether this component has the shape [`Component::trend`] builds: a
+    /// level and a slope, transition `[[1, phi], [0, phi]]` and observation
+    /// `[1, 0]`, whatever its damping `phi`.
+    pub fn is_trend(&self) -> bool {
+        let t = &self.transition;
+        t.len() == 4
+            && t[0] == 1.0
+            && t[2] == 0.0
+            && t[1] == t[3]
+            && t[1] > 0.0
+            && t[1] <= 1.0
+            && self.observation == [1.0, 0.0]
+            && self.innovations.len() == 2
+            && !self.regression
+    }
     pub fn level(name: String, innovation: VarianceParameter, mean: f64, variance: f64) -> Self {
         Self {
             name,
@@ -460,12 +478,6 @@ impl StructuralConfig {
         .forecast(steps, design, prior_seed)
     }
 }
-fn normal<R: Rng + ?Sized>(rng: &mut R) -> f64 {
-    StandardNormal.sample(rng)
-}
-fn dot(a: &[f64], b: &[f64]) -> f64 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
-}
 /// Overwrite a [`StructuralConfig::template`]'s diagonal innovation variances
 /// and its observation variance. Every structural innovation covariance is
 /// diagonal, so this reproduces `build(variances, noise)` exactly.
@@ -473,9 +485,6 @@ fn with_variances(model: &mut LinearGaussianStateSpace, variances: &[f64], noise
     let indices: Vec<usize> = (0..variances.len()).collect();
     model.set_variances(&indices, variances, noise);
 }
-const FIT_SEED_DOMAIN: u64 = 0x4649_545F_5354_5243;
-const FORECAST_SEED_DOMAIN: u64 = 0x4652_4353_545F_5354;
-const STRUCTURAL_PRIOR_SEED_DOMAIN: u64 = 0x5052_494F_525F_5354;
 
 pub fn fit(
     y: &[f64],
@@ -484,13 +493,9 @@ pub fn fit(
     sampling: &SamplingConfig,
 ) -> Result<StructuralPosterior> {
     config.validate()?;
-    if y.iter().any(|v| v.is_infinite()) {
-        return Err(invalid(
-            "observations may be finite or NaN, but not infinite",
-        ));
-    }
-    // One finite observation per inferred (inverse-gamma) variance, and at
-    // least one even when every variance is fixed.
+    // No infinite observations, and one finite observation per inferred
+    // (inverse-gamma) variance, and at least one even when every variance is
+    // fixed.
     let inferred = config
         .priors()
         .into_iter()
@@ -654,6 +659,97 @@ impl StructuralPosterior {
             &self.parameter_names(),
         )
     }
+    /// Every failed or unavailable check of this fit (see
+    /// [`crate::diagnostics::fit_warnings`]), followed by a
+    /// `known_limitation` record for each trend component in the
+    /// configuration measured to mix its variances slowly: level, slope and
+    /// observation variances inferred, Gaussian observations, and damping
+    /// from 0.9 to 1.
+    pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        let sampler = if self.config.student_df.is_some() {
+            "gibbs_ffbs_student_t"
+        } else {
+            "gibbs_ffbs_structural"
+        };
+        // A fixed variance is constant by construction. A terminal state is
+        // deterministic only if no innovation or initial variance can reach
+        // it (an AR coordinate with coefficient 0 and its innovation fixed at
+        // 0 stays at 0). Everything else is drawn and should vary.
+        let innovations: Vec<&VarianceParameter> = self
+            .config
+            .components
+            .iter()
+            .flat_map(|c| &c.innovations)
+            .collect();
+        let mut constant: Vec<String> = self
+            .config
+            .variance_names()
+            .into_iter()
+            .zip(&innovations)
+            .filter(|(_, v)| matches!(v, VarianceParameter::Fixed(_)))
+            .map(|(name, _)| name)
+            .collect();
+        if matches!(
+            self.config.observation_variance,
+            VarianceParameter::Fixed(_)
+        ) {
+            constant.push("observation_variance".into());
+        }
+        // The template holds each inferred variance at its positive prior
+        // mode, so its zero pattern is the configuration's. If it cannot be
+        // built, nothing is declared and a constant state fails.
+        if let Ok(template) = self.config.template() {
+            for (i, deterministic) in template
+                .deterministic_coordinates(&[])
+                .into_iter()
+                .enumerate()
+            {
+                if deterministic {
+                    constant.push(format!("terminal_state[{i}]"));
+                }
+            }
+        }
+        let mut warnings = crate::diagnostics::fit_warnings(
+            &self.diagnostics(),
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian {
+                sampler,
+                constant: &constant,
+            },
+        );
+        for component in &self.config.components {
+            // Only the measured configuration: both state variances and the
+            // observation variance inferred, Gaussian observations, and damping
+            // from 0.9 to 1. With a variance fixed the others can mix well,
+            // and the Student-t sampler and stronger damping were not measured.
+            let both_inferred = component
+                .innovations
+                .iter()
+                .all(|v| matches!(v, VarianceParameter::InverseGamma { .. }));
+            let observation_inferred = matches!(
+                self.config.observation_variance,
+                VarianceParameter::InverseGamma { .. }
+            );
+            // A trend's transition is [[1, phi], [0, phi]], so phi is entry 1.
+            if component.is_trend()
+                && (0.9..=1.0).contains(&component.transition[1])
+                && both_inferred
+                && observation_inferred
+                && self.config.student_df.is_none()
+            {
+                // Range over damping 1 and 0.9, measured by
+                // benchmarks/state_variance_mixing.py.
+                warnings.push(crate::diagnostics::warnings::slow_state_variance_mixing(
+                    &format!(
+                        "the level and slope variances of the trend component '{}'",
+                        component.name
+                    ),
+                    1.063,
+                    2.587,
+                ));
+            }
+        }
+        warnings
+    }
     pub fn forecast(
         &self,
         steps: usize,
@@ -712,8 +808,8 @@ impl StructuralPosterior {
                             "Student-t predictive precision overflowed or underflowed",
                         ));
                     }
-                    let observation =
-                        mean + normal(rng) * (draw.observation_variance / precision).sqrt();
+                    let observation = mean
+                        + standard_normal(rng) * (draw.observation_variance / precision).sqrt();
                     total += observation;
                     if !total.is_finite() || !mean.is_finite() {
                         return Err(invalid("predictive simulation overflowed"));
@@ -912,12 +1008,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        assert_ne!(
-            chain_seed(42, 0, FIT_SEED_DOMAIN),
-            chain_seed(42, 0, FORECAST_SEED_DOMAIN)
-        );
-        // The keys the three sampling roles actually build, for one caller seed:
+    fn prior_predictive_forecasts_do_not_reuse_fit_or_forecast_streams() {
+        // The domains themselves are checked for collisions in forecast_common.
+        // These are the keys the three sampling roles actually build, for one caller seed:
         // `fit` and `forecast` key per chain, while `prior_predict` keys its
         // prior draws once and then hands that key to `forecast`.
         for seed in [0, 1, 42, 491, u64::MAX] {
@@ -1288,13 +1381,13 @@ mod tests {
         // observation variance 0.02.
         const STEPS: usize = 120;
         let mut rng = ChaCha8Rng::seed_from_u64(908);
-        let mut coefficient = normal(&mut rng) * 0.2_f64.sqrt();
+        let mut coefficient = standard_normal(&mut rng) * 0.2_f64.sqrt();
         let mut truth = Vec::with_capacity(STEPS);
         let mut series = Vec::with_capacity(STEPS);
         for _ in 0..STEPS {
-            coefficient += normal(&mut rng) * 0.015_f64.sqrt();
+            coefficient += standard_normal(&mut rng) * 0.015_f64.sqrt();
             truth.push(coefficient);
-            series.push(coefficient + normal(&mut rng) * 0.02_f64.sqrt());
+            series.push(coefficient + standard_normal(&mut rng) * 0.02_f64.sqrt());
         }
         let x = vec![vec![1.0]; STEPS];
         let y = &series;

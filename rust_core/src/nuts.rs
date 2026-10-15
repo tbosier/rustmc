@@ -1,21 +1,32 @@
 //! No-U-Turn Sampler (NUTS) — Hoffman & Gelman (2014) with multinomial
 //! sampling (Betancourt 2017).
 //!
-//! This follows the core NUTS design used by PyMC and Stan:
+//! It shares the core of the NUTS design PyMC and Stan use:
 //!   - Iterative tree doubling (extend trajectory forward or backward)
-//!   - Endpoint-momentum U-turn checks on subtrees
 //!   - Multinomial candidate selection weighted by exp(-H)
 //!   - Divergence detection via energy error threshold
 //!   - Max tree depth cap (default 10)
+//!
+//! The U-turn criterion is Hoffman and Gelman's original endpoint test,
+//! applied to each subtree and to the whole trajectory. Stan (since 2.21.0)
+//! and PyMC also test the two spans that straddle each merge of subtrees,
+//! which catches U-turns the endpoint test misses on targets such as
+//! approximately iid normals; this implementation does not, so it can build
+//! deeper trees there. Either
+//! way the stopping rule is symmetric, so the draws are valid; the difference
+//! is in efficiency.
 
 use crate::adaptation::WarmupAdapter;
-use crate::autodiff::Evaluator;
 use crate::data::DataBinding;
 use crate::graph::Graph;
-use crate::hmc::{acceptance_probability, ChainResult, TransitionStats, MAX_DELTA_H};
+use crate::hmc::{
+    acceptance_probability, ChainRecorder, ChainResult, TransitionStats, MAX_DELTA_H,
+};
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
-use crate::sampler::{kernel_initial_position, reject_discrete_latent_parameters};
+use crate::sampler::{
+    run_raw_kernel, validate_max_tree_depth, validate_step_size, validate_target_accept,
+};
 use crate::target::GradientEvaluator;
 use rand::Rng;
 use rand_chacha::ChaCha8Rng;
@@ -42,6 +53,19 @@ impl Default for NutsConfig {
             num_warmup: 500,
             metric: MetricKind::Auto,
         }
+    }
+}
+
+impl NutsConfig {
+    /// Check the settings the kernel cannot run with: a non-finite or negative
+    /// step size (0 asks warmup to find one), `target_accept` outside (0, 1),
+    /// and a tree depth outside 1..=63. `num_warmup` may be 0, which samples
+    /// with the given step size (or the one a search finds, for 0) and the
+    /// unit metric.
+    pub fn validate(&self) -> Result<(), String> {
+        validate_step_size(self.step_size)?;
+        validate_target_accept(self.target_accept)?;
+        validate_max_tree_depth(self.max_tree_depth)
     }
 }
 
@@ -102,12 +126,15 @@ struct TreeResult {
 ///
 /// # Errors
 ///
-/// Returns the rejection message from
+/// Returns an error when `config` fails [`NutsConfig::validate`], and the
+/// rejection message from
 /// [`crate::sampler::reject_discrete_latent_parameters`] if `graph` carries a
 /// discrete latent. This entry point does not go through `sampler`, so the
 /// check has to happen here or not at all — see [`run_chain_bound`]. Also
-/// returns an error when the graph's data do not bind, or when `init` is not a
-/// finite vector with one entry per parameter. `None` starts at the origin.
+/// returns an error when the draws and transition records requested would
+/// exceed the crate's allocation limits, when the graph's data do not bind, or
+/// when `init` is not a finite vector with one entry per parameter. `None`
+/// starts at the origin.
 pub fn run_chain(
     graph: &Graph,
     config: &NutsConfig,
@@ -115,9 +142,11 @@ pub fn run_chain(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
-    reject_discrete_latent_parameters(graph)?;
-    let binding = DataBinding::from_graph(graph).map_err(|error| error.to_string())?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
+    config.validate()?;
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, None, length, init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 /// Run a chain against a validated dataset without embedding it in `Graph`.
@@ -136,33 +165,11 @@ pub fn run_chain_bound(
     init: Option<Vec<f64>>,
     progress: Option<&ProgressState>,
 ) -> Result<ChainResult, String> {
-    reject_discrete_latent_parameters(graph)?;
-    run_chain_bound_unguarded(graph, binding, config, rng, init, progress)
-}
-
-/// [`run_chain_bound`] without the discrete-latent check.
-///
-/// For callers inside `sampler`, which run the check once at their own
-/// boundary and would otherwise repeat a whole-graph scan per chain.
-pub(crate) fn run_chain_bound_unguarded(
-    graph: &Graph,
-    binding: DataBinding,
-    config: &NutsConfig,
-    rng: &mut ChaCha8Rng,
-    init: Option<Vec<f64>>,
-    progress: Option<&ProgressState>,
-) -> Result<ChainResult, String> {
-    let mut evaluator =
-        Evaluator::try_with_binding(graph, binding).map_err(|error| error.to_string())?;
-    let position = kernel_initial_position(init, graph.param_count)?;
-    Ok(run_chain_with_evaluator(
-        graph,
-        config,
-        rng,
-        position,
-        progress,
-        &mut evaluator,
-    ))
+    config.validate()?;
+    let length = (config.num_warmup, config.num_draws);
+    run_raw_kernel(graph, Some(binding), length, init, |position, evaluator| {
+        run_chain_with_evaluator(graph, config, rng, position, progress, evaluator)
+    })
 }
 
 pub(crate) fn run_chain_with_evaluator(
@@ -173,34 +180,32 @@ pub(crate) fn run_chain_with_evaluator(
     progress: Option<&ProgressState>,
     evaluator: &mut impl GradientEvaluator,
 ) -> ChainResult {
+    // Every caller has validated the configuration it was built from.
+    debug_assert_eq!(config.validate(), Ok(()));
     let dim = graph.param_count;
     let total_iters = config.num_warmup + config.num_draws;
 
     let q = init;
-    let mut samples = Vec::with_capacity(config.num_draws);
-    let mut transitions = Vec::with_capacity(total_iters);
-    let mut n_divergences = 0usize;
-    let mut sum_accept_prob = 0.0f64;
-    let mut total_iters_done = 0u64;
+    let mut recorder = ChainRecorder::new(config.num_warmup, config.num_draws, progress);
 
-    let mut mass = MassMatrix::from_graph(graph);
+    let mut mass = MassMatrix::identity(graph);
     let mut scratch = vec![0.0f64; dim];
     let mut pool = PointPool::new(dim);
 
     // Windowed warmup: step-size-only buffers around doubling
     // metric-estimation windows; see `adaptation::WarmupSchedule`.
-    let mut adapter = WarmupAdapter::new(
+    let (mut adapter, mut step_size) = WarmupAdapter::start(
         graph,
         config.num_warmup,
         config.target_accept,
         config.step_size,
         config.metric,
+        evaluator,
+        &q,
+        &mass,
+        rng,
+        &mut scratch,
     );
-    let mut step_size = if config.step_size > 0.0 {
-        config.step_size
-    } else {
-        adapter.initial_step_size(graph, evaluator, &q, &mass, rng, &mut scratch)
-    };
 
     // Compute initial state
     evaluator.compute(graph, &q);
@@ -217,6 +222,8 @@ pub(crate) fn run_chain_with_evaluator(
         }
         let is_warmup = iter < config.num_warmup;
         let step_size_used = step_size;
+        #[cfg(feature = "fault-injection")]
+        let step_size_used = crate::fault_injection::begin_transition(step_size_used, is_warmup);
 
         mass.sample_momentum_into(rng, &mut current.p, &mut scratch);
 
@@ -227,7 +234,7 @@ pub(crate) fn run_chain_with_evaluator(
             graph,
             evaluator,
             &current,
-            step_size,
+            step_size_used,
             &mass,
             h0,
             config.max_tree_depth,
@@ -247,22 +254,6 @@ pub(crate) fn run_chain_with_evaluator(
         pool.give(proposal);
 
         let accept_stat = tree_stats.mean_accept_prob;
-        // Retain warmup telemetry, but report posterior-draw diagnostics only.
-        if !is_warmup {
-            if tree_stats.diverging {
-                n_divergences += 1;
-            }
-            sum_accept_prob += accept_stat;
-            total_iters_done += 1;
-        }
-
-        if let Some(p) = progress {
-            p.increment();
-            if !is_warmup && tree_stats.diverging {
-                p.add_divergence();
-            }
-        }
-
         if is_warmup {
             step_size = adapter.after_transition(
                 iter,
@@ -276,41 +267,33 @@ pub(crate) fn run_chain_with_evaluator(
             );
         }
 
-        if !is_warmup {
-            samples.push(current.q.clone());
-        }
-
-        transitions.push(TransitionStats {
-            is_warmup,
-            accepted: !tree_stats.diverging,
-            accept_prob: accept_stat,
-            energy_error: tree_stats.energy_error,
-            divergent: tree_stats.diverging,
-            step_size: step_size_used,
-            num_leapfrog_steps: tree_stats.n_leapfrog,
-            tree_depth: Some(tree_stats.tree_depth),
-        });
+        // NUTS's acceptance rate is the mean acceptance statistic.
+        recorder.record(
+            &current.q,
+            TransitionStats {
+                is_warmup,
+                accepted: !tree_stats.diverging,
+                accept_prob: accept_stat,
+                energy_error: tree_stats.energy_error,
+                energy: tree_stats.energy,
+                divergent: tree_stats.diverging,
+                step_size: step_size_used,
+                num_leapfrog_steps: tree_stats.n_leapfrog,
+                tree_depth: Some(tree_stats.tree_depth),
+            },
+            accept_stat,
+        );
     }
 
-    let accept_rate = if total_iters_done > 0 {
-        sum_accept_prob / total_iters_done as f64
-    } else {
-        0.0
-    };
-
-    ChainResult {
-        samples,
-        accept_rate,
-        step_size,
-        divergences: n_divergences,
-        transitions,
-    }
+    recorder.finish(step_size)
 }
 
 struct TreeStats {
     diverging: bool,
     mean_accept_prob: f64,
     energy_error: f64,
+    /// Hamiltonian of the selected state, under the transition's metric.
+    energy: f64,
     tree_depth: usize,
     n_leapfrog: usize,
 }
@@ -446,7 +429,10 @@ fn build_tree_iterative(
             log_sum_weight: sub_log_sum_weight,
             ..
         } = subtree;
-        if rng.gen::<f64>() < accept_prob {
+        let take_subtree = rng.gen::<f64>() < accept_prob;
+        #[cfg(feature = "fault-injection")]
+        let take_subtree = take_subtree || crate::fault_injection::favours_new_subtree();
+        if take_subtree {
             pool.give(std::mem::replace(&mut proposal, sub_proposal));
         } else {
             pool.give(sub_proposal);
@@ -464,7 +450,7 @@ fn build_tree_iterative(
         }
 
         // Check U-turn across the full tree
-        if check_uturn(&left, &right, mass, scratch) {
+        if check_uturn(&left, &right, mass) {
             break;
         }
     }
@@ -476,7 +462,8 @@ fn build_tree_iterative(
     } else {
         0.0
     };
-    let energy_error = proposal.energy(mass, scratch) - h0;
+    let energy = proposal.energy(mass, scratch);
+    let energy_error = energy - h0;
 
     (
         proposal,
@@ -484,6 +471,7 @@ fn build_tree_iterative(
             diverging,
             mean_accept_prob: mean_accept,
             energy_error,
+            energy,
             tree_depth: depth,
             n_leapfrog: n_leapfrog_total,
         },
@@ -521,6 +509,8 @@ fn build_subtree(
         } else {
             -delta_h
         };
+        #[cfg(feature = "fault-injection")]
+        let log_weight = crate::fault_injection::leaf_log_weight(log_weight);
 
         return TreeResult {
             left: pool.copy_of(&next),
@@ -586,7 +576,10 @@ fn build_subtree(
     // Combine proposals via multinomial weighting
     let log_sum = log_sum_exp(inner.log_sum_weight, outer.log_sum_weight);
     let accept_outer = normalized_selection_prob(outer.log_sum_weight, log_sum);
-    let proposal = if rng.gen::<f64>() < accept_outer {
+    let take_outer = rng.gen::<f64>() < accept_outer;
+    #[cfg(feature = "fault-injection")]
+    let take_outer = take_outer || crate::fault_injection::favours_new_subtree();
+    let proposal = if take_outer {
         pool.give(inner.proposal);
         outer.proposal
     } else {
@@ -606,7 +599,7 @@ fn build_subtree(
     };
 
     // Check U-turn on the merged subtree
-    let turning = outer.turning || check_uturn(&left, &right, mass, scratch);
+    let turning = outer.turning || check_uturn(&left, &right, mass);
 
     TreeResult {
         left,
@@ -661,13 +654,8 @@ fn leapfrog(
 ///
 /// For a constant Euclidean metric, the transform to canonical whitened
 /// coordinates cancels from these dot products.
-fn check_uturn(
-    left: &PhasePoint,
-    right: &PhasePoint,
-    mass: &MassMatrix,
-    scratch: &mut [f64],
-) -> bool {
-    mass.uturn(&left.q, &left.p, &right.q, &right.p, scratch)
+fn check_uturn(left: &PhasePoint, right: &PhasePoint, mass: &MassMatrix) -> bool {
+    mass.uturn(&left.q, &left.p, &right.q, &right.p)
 }
 
 fn log_sum_exp(a: f64, b: f64) -> f64 {
@@ -697,6 +685,7 @@ fn normalized_selection_prob(candidate_log_weight: f64, total_log_weight: f64) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::autodiff::Evaluator;
     use crate::graph::Graph;
     use rand::SeedableRng;
 
@@ -822,6 +811,71 @@ mod tests {
     }
 
     #[test]
+    fn raw_kernel_refuses_settings_it_cannot_run_with() {
+        let mut graph = Graph::new();
+        crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        let base = NutsConfig {
+            num_draws: 2,
+            num_warmup: 0,
+            step_size: 0.1,
+            ..NutsConfig::default()
+        };
+        assert!(base.validate().is_ok());
+        for (config, field) in [
+            (
+                NutsConfig {
+                    max_tree_depth: 0,
+                    ..base.clone()
+                },
+                "max_tree_depth",
+            ),
+            (
+                NutsConfig {
+                    max_tree_depth: 64,
+                    ..base.clone()
+                },
+                "max_tree_depth",
+            ),
+            (
+                NutsConfig {
+                    step_size: f64::NAN,
+                    ..base.clone()
+                },
+                "step_size",
+            ),
+            (
+                NutsConfig {
+                    target_accept: f64::NAN,
+                    ..base.clone()
+                },
+                "target_accept",
+            ),
+            (
+                NutsConfig {
+                    num_draws: usize::MAX,
+                    ..base.clone()
+                },
+                "safety limit",
+            ),
+            (
+                NutsConfig {
+                    num_warmup: usize::MAX,
+                    ..base.clone()
+                },
+                "safety limit",
+            ),
+        ] {
+            let mut rng = ChaCha8Rng::seed_from_u64(1);
+            let error = run_chain(&graph, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+            let binding = DataBinding::from_graph(&graph).unwrap();
+            let error =
+                run_chain_bound(&graph, binding, &config, &mut rng, None, None).unwrap_err();
+            assert!(error.contains(field), "{error}");
+        }
+    }
+
+    #[test]
     fn small_shape_gamma_recovers_underflow_tail_mass() {
         let mut graph = Graph::new();
         crate::distributions::Gamma::prior(&mut graph, "x", 0.001, 1.0);
@@ -916,7 +970,7 @@ mod tests {
         let zero = graph.add_constant(0.0);
         let one = graph.add_constant(1.0);
         graph.normal_logp(x, zero, one);
-        let mass = MassMatrix::from_graph(&graph);
+        let mass = MassMatrix::identity(&graph);
         let mut found_clipped_leaf = false;
         for q in [-2.0, -1.0, 0.5, 1.0, 2.0] {
             for p in [-2.0, -0.5, 0.5, 2.0] {
@@ -996,7 +1050,7 @@ mod tests {
         let narrow = graph.add_constant(0.1);
         graph.normal_logp(x, zero, narrow);
         graph.normal_logp(y, zero, one);
-        let mass = MassMatrix::from_graph(&graph);
+        let mass = MassMatrix::identity(&graph);
         let mut evaluator = Evaluator::new(&graph);
         evaluator.compute(&graph, &[0.0, 0.0]);
         let mut current = PhasePoint {

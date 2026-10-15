@@ -11,6 +11,19 @@ import pytest
 import rustmc
 
 
+def as_legacy(artifact):
+    """A version-1 copy of a fresh artifact: no exact positions, and none of
+    the energy telemetry version 3 added."""
+    legacy = copy.deepcopy(artifact)
+    legacy["version"] = 1
+    del legacy["posterior"]["unconstrained_samples"]
+    legacy["posterior"].pop("max_tree_depth", None)
+    for chain in legacy["posterior"]["transitions"]:
+        for transition in chain:
+            del transition["energy"]
+    return legacy
+
+
 def tail_builder(kind):
     data = {"y": np.ones(2)}
     if kind == "vector_beta":
@@ -35,7 +48,7 @@ def test_tail_fit_artifact_retains_finite_positions_and_replays(kind):
                           num_leapfrog_steps=1, chains=1, draws=3, warmup=1,
                           seed=17, show_progress=False)
     artifact = json.loads(fit.to_json())
-    assert artifact["version"] == 2
+    assert artifact["version"] == 3
     raw = np.asarray(artifact["posterior"]["unconstrained_samples"])
     assert raw.shape == (1, 3, width)
     assert np.all(np.isfinite(raw))
@@ -50,9 +63,7 @@ def test_tail_fit_artifact_retains_finite_positions_and_replays(kind):
     assert artifact == json.loads(restored.to_json())
 
     # A v1 artifact has no way to recover the finite position from rounded one.
-    legacy = copy.deepcopy(artifact)
-    legacy["version"] = 1
-    del legacy["posterior"]["unconstrained_samples"]
+    legacy = as_legacy(artifact)
     with pytest.raises(ValueError, match="transform support"):
         rustmc.FitResult.from_json(json.dumps(legacy))
 
@@ -62,9 +73,7 @@ def test_legacy_fit_reading_reconstructs_positions_and_upgrades_to_version_two()
     scale = builder.half_normal_prior("scale", 1.0)
     builder.normal_likelihood("obs", scale, 1.0, "y")
     fit = builder.compile().sample({}, chains=1, draws=3, warmup=3, seed=12, show_progress=False)
-    legacy = json.loads(fit.to_json())
-    legacy["version"] = 1
-    del legacy["posterior"]["unconstrained_samples"]
+    legacy = as_legacy(json.loads(fit.to_json()))
     restored = rustmc.FitResult.from_json(json.dumps(legacy))
     np.testing.assert_array_equal(restored.get_samples()["scale"], fit.get_samples()["scale"])
     np.testing.assert_allclose(restored.predict(expected=True)["obs"], fit.predict(expected=True)["obs"])
@@ -127,7 +136,10 @@ def test_global_and_batch_entrypoints_retain_raw_graph_coordinates():
 # verbatim. It must not be regenerated with the current code: an artifact the
 # current writer produces agrees with the current reader by construction, which
 # is exactly why the existing round-trip tests missed this.
-OLD_WRITER_UNIFORM = pathlib.Path(__file__).parent / "fixtures" / "graph_fit_v2_uniform.json"
+OLD_WRITER_UNIFORM = (
+    pathlib.Path(__file__).resolve().parents[1]
+    / "rust_core" / "tests" / "fixtures" / "graph_fit_v2_uniform.json"
+)
 
 
 def _previous_bounded_sigmoid(raw, lower, upper):

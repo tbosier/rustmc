@@ -10,15 +10,6 @@ import sys
 import pytest
 
 
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers", "network: test builds a wheel and/or hits the network (deselected by default)"
-    )
-    config.addinivalue_line(
-        "markers", "slow: test is slower than the rest of the suite"
-    )
-
-
 @pytest.fixture(scope="session")
 def rustmc_module():
     """
@@ -63,9 +54,9 @@ def _module_file_is_under_site_packages(mod) -> bool:
 def assert_installed_from_site_packages():
     """
     Helper fixture used by packaging tests that specifically need to prove
-    they're exercising an installed wheel and not the repo's source tree
-    (there is no pure-Python source tree to leak from today, but this
-    guards the invariant going forward).
+    they're exercising an installed wheel: it guards against importing the
+    repo's python/rustmc (or any other copy inside the checkout) instead of
+    the installed package.
     """
     def _check(mod):
         assert _module_file_is_under_site_packages(mod), (

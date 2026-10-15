@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use super::*;
 
-pub fn should_auto_noncenter(
+pub(crate) fn should_auto_noncenter(
     prior: &PriorSpec,
     auto_vector_params: &HashMap<String, usize>,
 ) -> bool {
@@ -24,7 +24,7 @@ pub fn should_auto_noncenter(
     }
 }
 
-pub fn append_raw_display_params(
+fn append_raw_display_params(
     display_params: &mut Vec<DisplayParamSpec>,
     graph: &Graph,
     start_idx: usize,
@@ -37,7 +37,7 @@ pub fn append_raw_display_params(
     }
 }
 
-pub fn build_likelihood_into_graph(
+fn build_likelihood_into_graph(
     graph: &mut Graph,
     lik: &LikelihoodSpec,
     data_map: &HashMap<String, Vec<f64>>,
@@ -54,12 +54,9 @@ pub fn build_likelihood_into_graph(
         value_node_map,
     )?;
 
-    let obs_vec = data_map
-        .get(&lik.observed_key)
-        .ok_or_else(|| {
-            ModelError::invalid(format!("Missing observed data key: {}", lik.observed_key))
-        })?
-        .clone();
+    let obs_vec = data_map.get(&lik.observed_key).ok_or_else(|| {
+        ModelError::invalid(format!("Missing observed data key: {}", lik.observed_key))
+    })?;
     let obs_idx = graph.add_named_obs_data(&lik.observed_key, &lik.name, obs_vec.clone());
 
     let linpred_node = if lik.mu_expr.is_scalar() {
@@ -74,22 +71,22 @@ pub fn build_likelihood_into_graph(
                 ModelError::invalid(format!("Normal likelihood '{}' is missing sigma", lik.name))
             })?;
             let sigma_node = resolve_sigma(sigma_spec, graph, value_node_map)?;
-            graph.normal_obs_logp(linpred_node, sigma_node, obs_idx);
+            graph.obs_logp_normal(linpred_node, sigma_node, obs_idx);
         }
         LikelihoodFamily::BernoulliLogit => {
-            validate_binary_observations(&obs_vec, &lik.name)?;
+            validate_binary_observations(obs_vec, &lik.name)?;
             graph.obs_logp_bernoulli_logit(linpred_node, obs_idx);
         }
         LikelihoodFamily::PoissonLog => {
-            validate_count_observations(&obs_vec, &lik.name)?;
+            validate_count_observations(obs_vec, &lik.name)?;
             graph.obs_logp_poisson_log(linpred_node, obs_idx);
         }
         LikelihoodFamily::ExponentialLog => {
-            validate_positive_observations(&obs_vec, &lik.name, false)?;
+            validate_positive_observations(obs_vec, &lik.name, false)?;
             graph.obs_logp_exponential_log(linpred_node, obs_idx);
         }
         LikelihoodFamily::LogNormal => {
-            validate_positive_observations(&obs_vec, &lik.name, true)?;
+            validate_positive_observations(obs_vec, &lik.name, true)?;
             let sigma_spec = lik.sigma.as_ref().ok_or_else(|| {
                 ModelError::invalid(format!(
                     "LogNormal likelihood '{}' is missing sigma",
@@ -100,7 +97,7 @@ pub fn build_likelihood_into_graph(
             graph.obs_logp_lognormal(linpred_node, sigma_node, obs_idx);
         }
         LikelihoodFamily::NegativeBinomialLog => {
-            validate_integer_observations(&obs_vec, &lik.name)?;
+            validate_integer_observations(obs_vec, &lik.name)?;
             let alpha_spec = lik.sigma.as_ref().ok_or_else(|| {
                 ModelError::invalid(format!(
                     "NegativeBinomial likelihood '{}' is missing alpha",
@@ -114,7 +111,7 @@ pub fn build_likelihood_into_graph(
     Ok(())
 }
 
-pub fn build_prior_into_graph(
+fn build_prior_into_graph(
     prior: &PriorSpec,
     graph: &mut Graph,
     vector_param_map: &mut HashMap<String, (usize, usize)>,
@@ -341,7 +338,7 @@ pub fn build_prior_into_graph(
     Ok(())
 }
 
-pub fn resolve_sigma(
+fn resolve_sigma(
     spec: &SigmaSpec,
     graph: &mut Graph,
     value_node_map: &HashMap<String, NodeId>,
@@ -402,7 +399,7 @@ pub fn compile(
         )?;
     }
 
-    for (name, expr) in &model_spec.potentials {
+    for (_, expr) in &model_spec.potentials {
         let node = build_mu_expr(
             &mut graph,
             expr,
@@ -412,7 +409,6 @@ pub fn compile(
             &value_node_map,
         )?;
         graph.add_logp_term(node);
-        let _ = name;
     }
     for (name, expr) in &model_spec.deterministics {
         if model_spec.priors.iter().any(|p| prior_name(p) == name)
@@ -472,7 +468,10 @@ pub fn compile(
     })
 }
 
-pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> ModelResult<Vec<f64>> {
+pub(crate) fn derive_display_draw(
+    raw_draw: &[f64],
+    specs: &[DisplayParamSpec],
+) -> ModelResult<Vec<f64>> {
     let mut values = HashMap::new();
     let mut out = Vec::with_capacity(specs.len());
     for spec in specs {
@@ -510,7 +509,7 @@ pub fn derive_display_draw(raw_draw: &[f64], specs: &[DisplayParamSpec]) -> Mode
     Ok(out)
 }
 
-pub fn derive_display_sample_result(
+fn derive_display_sample_result(
     raw_result: &SampleResult,
     specs: &[DisplayParamSpec],
 ) -> ModelResult<SampleResult> {
@@ -538,6 +537,7 @@ pub fn derive_display_sample_result(
         divergences: raw_result.divergences.clone(),
         transitions: raw_result.transitions.clone(),
         param_names,
+        max_tree_depth: raw_result.max_tree_depth,
     })
 }
 
@@ -559,7 +559,7 @@ fn display_specs_are_identity(raw_result: &SampleResult, specs: &[DisplayParamSp
 /// no parameter is non-centred, that copy is bit-identical to the raw draws, so
 /// a retained batch cell paid for two posteriors to hold one. Sharing the `Arc`
 /// keeps the display and raw views distinguishable without duplicating them.
-pub fn display_sample_result(
+pub(crate) fn display_sample_result(
     raw_result: &Arc<SampleResult>,
     specs: &[DisplayParamSpec],
 ) -> ModelResult<Arc<SampleResult>> {
@@ -623,7 +623,7 @@ pub(super) fn try_extract_linear(expr: &MuExpr) -> Option<(LinearTerms, Option<L
 
 /// Walk all likelihood MuExpr trees and collect param names used in MatVec ops.
 /// Returns a set of param names that should be auto-promoted to vector params.
-pub fn collect_matvec_params(
+pub(crate) fn collect_matvec_params(
     spec: &ModelSpec,
     matrix_map: &HashMap<String, (Vec<f64>, usize, usize)>,
 ) -> Result<HashMap<String, usize>, ModelError> {
@@ -696,15 +696,15 @@ pub(super) fn lookup_param_value_node(
 /// Compile a MuExpr tree into graph nodes.
 ///
 /// Parameters are resolved through `value_node_map`, which holds the
-/// *post-transform* value node for every scalar parameter. Resolving via
-/// `Graph::node_by_name` instead would return the unconstrained raw node for
+/// *post-transform* value node for every scalar parameter. Resolving by the
+/// parameter's own name instead would reach the unconstrained raw node for
 /// any transformed prior (HalfNormal, Exponential, LogNormal, Uniform, Gamma,
 /// Beta), silently putting a log-scale value into the linear predictor.
 ///
 /// When the tree is a pure linear combination (Σ βₖ xₖ + optional intercept),
 /// this emits a single FusedLinearMu op instead of individual
 /// ScalarMulData / VectorAdd / ScalarBroadcastAdd nodes.
-pub fn build_mu_expr(
+fn build_mu_expr(
     graph: &mut Graph,
     expr: &MuExpr,
     data_map: &HashMap<String, Vec<f64>>,

@@ -3,19 +3,16 @@
 //! Proper Gaussian coefficient priors are independent of variance priors.
 //! Coefficients are static latent states with exactly zero innovation variance;
 //! every forecast path retains one joint coefficient/state/variance draw.
-use crate::bayesian_forecast::InverseGammaPrior;
 use crate::forecast_common::{
     check_forecast_size, overdispersed_positive, require_finite_observations, run_gibbs_chains,
-    sample_inverse_gamma, simulate_draws, split_paths, GibbsSchedule,
+    simulate_draws, split_paths, standard_normal, GibbsSchedule, InverseGammaPrior,
+    REGRESSION_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN,
+    REGRESSION_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
-use rand_chacha::ChaCha8Rng;
-use rand_distr::{Distribution, StandardNormal};
 
-/// `"\0REG_FIT"`.
-const FIT_SEED_DOMAIN: u64 = 0x0052_4547_5F46_4954;
-/// `"REG_PRED"`.
-const FORECAST_SEED_DOMAIN: u64 = 0x5245_475F_5052_4544;
+/// How fit warnings name this model's sampler.
+const SAMPLER_NAME: &str = "joint conjugate Gibbs/FFBS";
 
 #[derive(Clone, Debug)]
 pub struct GaussianCoefficientPrior {
@@ -47,7 +44,9 @@ pub struct RegressionConfig {
     pub num_warmup: usize,
     pub thinning: usize,
     pub seed: u64,
-    /// A structural seasonal observation uses coordinates zero and one.
+    /// Set by `from_seasonal`: the structural model is the seasonal
+    /// local-level template, so the second state path is the seasonal effect
+    /// rather than a slope. The sampler does not read it.
     pub seasonal: bool,
 }
 
@@ -131,6 +130,25 @@ impl RegressionConfig {
             seasonal: true,
         })
     }
+
+    /// Whether the structural model is the local-linear-trend template that
+    /// `from_trend` builds: two states with transition `[[1, 1], [0, 1]]`
+    /// and a sampled innovation variance on each. Its level and slope
+    /// variances mix as slowly as in the local-linear-trend sampler.
+    pub fn is_local_linear_trend(&self) -> bool {
+        !self.seasonal
+            && self.structural_model.dimension() == 2
+            && self.structural_model.transition() == [1.0, 1.0, 0.0, 1.0]
+            && self.samples_first_two_variances()
+    }
+
+    /// Whether exactly the first two state variances are sampled, in either
+    /// order.
+    fn samples_first_two_variances(&self) -> bool {
+        let mut indices = self.innovation_indices.clone();
+        indices.sort_unstable();
+        indices == [0, 1]
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -147,7 +165,7 @@ pub struct RegressionPosterior {
     pub chains: Vec<Vec<RegressionDraw>>,
 }
 
-pub type Paths = Vec<Vec<Vec<f64>>>;
+pub use crate::forecast_common::Paths;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RegressionForecast {
     pub level_paths: Paths,
@@ -161,34 +179,13 @@ pub struct RegressionForecast {
 fn invalid(message: &str) -> StateSpaceError {
     StateSpaceError::InvalidParameter(message.into())
 }
-fn draw_variance(
-    prior: InverseGammaPrior,
-    count: usize,
-    ss: f64,
-    rng: &mut ChaCha8Rng,
-) -> Result<f64, StateSpaceError> {
-    Ok(sample_inverse_gamma(
-        prior.shape + count as f64 / 2.0,
-        prior.scale + ss / 2.0,
-        rng,
-    )?)
-}
-fn normal(rng: &mut ChaCha8Rng) -> f64 {
-    StandardNormal.sample(rng)
-}
-
 pub fn fit_regression(
     y: &[f64],
     design: &[Vec<f64>],
     config: &RegressionConfig,
 ) -> Result<RegressionPosterior, StateSpaceError> {
-    if y.iter().any(|x| x.is_infinite()) {
-        return Err(invalid(
-            "observations may be finite or NaN, but not infinite",
-        ));
-    }
-    // One finite observation per inferred variance, the observation variance
-    // included.
+    // No infinite observations, and one finite observation per inferred
+    // variance, the observation variance included.
     let observed =
         require_finite_observations(y, config.innovation_indices.len() + 1, "regression")?;
     if design.len() != y.len() {
@@ -280,7 +277,7 @@ pub fn fit_regression(
                         (pair[1][index] - predicted).powi(2)
                     })
                     .sum();
-                *variance = draw_variance(prior, y.len(), ss, rng)?;
+                *variance = prior.conditional_draw(y.len(), ss, rng)?;
             }
             let ss = y
                 .iter()
@@ -299,8 +296,9 @@ pub fn fit_regression(
                     (y - structural - regression).powi(2)
                 })
                 .sum();
-            *observation_variance =
-                draw_variance(config.observation_variance_prior, observed, ss, rng)?;
+            *observation_variance = config
+                .observation_variance_prior
+                .conditional_draw(observed, ss, rng)?;
             Ok(retain.then(|| {
                 let state = states.last().expect("validated nonempty data");
                 RegressionDraw {
@@ -319,6 +317,81 @@ pub fn fit_regression(
 }
 
 impl RegressionPosterior {
+    /// Variances, regression coefficients and every terminal structural state.
+    pub fn diagnostics(&self) -> crate::diagnostics::DiagnosticsReport {
+        let mut names = self.config.variance_names.clone();
+        names.push("observation_variance".into());
+        names.extend(
+            (0..self.config.coefficient_prior.mean.len()).map(|i| format!("coefficient[{i}]")),
+        );
+        names.extend(
+            (0..self.config.structural_model.dimension()).map(|i| format!("terminal_state[{i}]")),
+        );
+        let samples = self
+            .chains
+            .iter()
+            .map(|chain| {
+                chain
+                    .iter()
+                    .map(|draw| {
+                        let mut values = draw.variances.clone();
+                        values.push(draw.observation_variance);
+                        values.extend_from_slice(&draw.coefficients);
+                        values.extend_from_slice(&draw.terminal_state);
+                        values
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        crate::forecast_diagnostics::parameter_diagnostics(&samples, &names)
+    }
+
+    /// Every failed or unavailable check of this fit (see
+    /// [`crate::diagnostics::fit_warnings`]), followed by a
+    /// `known_limitation` record when the structural model is the local
+    /// linear trend or the seasonal local level, whose state variances this
+    /// sampler mixes slowly.
+    pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        use crate::diagnostics::warnings::slow_state_variance_mixing;
+        // A terminal state that no innovation or initial variance can reach
+        // (a zero transition row with no innovation pins it to 0) is
+        // deterministic, so it is declared constant. Every other state has
+        // positive prior variance, and so positive posterior variance.
+        let constant: Vec<String> = self
+            .config
+            .structural_model
+            .deterministic_coordinates(&self.config.innovation_indices)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, deterministic)| *deterministic)
+            .map(|(i, _)| format!("terminal_state[{i}]"))
+            .collect();
+        let mut warnings = crate::diagnostics::fit_warnings(
+            &self.diagnostics(),
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian {
+                sampler: SAMPLER_NAME,
+                constant: &constant,
+            },
+        );
+        // Ranges measured by benchmarks/state_variance_mixing.py, which
+        // samples both state variances; a config that fixes them has nothing
+        // to mix.
+        if self.config.is_local_linear_trend() {
+            warnings.push(slow_state_variance_mixing(
+                "the level and slope variances of a local linear trend fitted with exog",
+                1.057,
+                2.621,
+            ));
+        } else if self.config.seasonal && self.config.samples_first_two_variances() {
+            warnings.push(slow_state_variance_mixing(
+                "the level and seasonal variances of a seasonal local level fitted with exog",
+                1.012,
+                1.423,
+            ));
+        }
+        warnings
+    }
+
     pub fn forecast(
         &self,
         design: &[Vec<f64>],
@@ -390,7 +463,8 @@ impl RegressionPosterior {
                             .zip(&next)
                             .map(|(a, b)| a * b)
                             .sum::<f64>();
-                    let observation = mean + normal(rng) * draw.observation_variance.sqrt();
+                    let observation =
+                        mean + standard_normal(rng) * draw.observation_variance.sqrt();
                     total += observation;
                     if !total.is_finite() || next.iter().any(|v| !v.is_finite()) {
                         return Err(StateSpaceError::NumericalFailure(
@@ -466,8 +540,8 @@ pub fn fourier_design(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::seeding::chain_seed;
     use rand::SeedableRng;
+    use rand_chacha::ChaCha8Rng;
 
     #[test]
     fn coefficient_prior_validates_itself_and_fourier_width_matches_rows() {
@@ -496,15 +570,6 @@ mod tests {
         assert!(fourier_width(1, 1).is_err());
     }
 
-    #[test]
-    fn fit_and_forecast_seed_domains_are_distinct() {
-        for chain in 0..4 {
-            assert_ne!(
-                chain_seed(42, chain, FIT_SEED_DOMAIN),
-                chain_seed(42, chain, FORECAST_SEED_DOMAIN)
-            );
-        }
-    }
     #[test]
     fn joint_static_regression_matches_analytic_posterior_and_future_covariance() {
         let y = vec![1.0, 2.0, f64::NAN, 4.0];
@@ -618,15 +683,137 @@ mod tests {
         }
     }
     #[test]
+    fn deterministic_states_and_fixed_variances_raise_no_false_failure() {
+        use crate::diagnostics::{WarningCode, WarningStatus};
+        let y: Vec<f64> = (0..30).map(|t| (t as f64 * 0.3).sin()).collect();
+        let x: Vec<Vec<f64>> = (0..30).map(|t| vec![t as f64 / 30.0]).collect();
+        let fails = |posterior: &RegressionPosterior, code| {
+            posterior
+                .warnings()
+                .iter()
+                .filter(|w| w.code == code && w.status == WarningStatus::Fail)
+                .count()
+        };
+
+        // A state with a zero transition and no process variance is 0 after
+        // its first step: its constant terminal draws are not a stuck chain.
+        let mut zero = config();
+        zero.structural_model = LinearGaussianStateSpace::new(
+            1,
+            vec![0.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        zero.innovation_indices.clear();
+        zero.variance_priors.clear();
+        zero.variance_names.clear();
+        let posterior = fit_regression(&y, &x, &zero).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::DiagnosticsUnavailable), 0);
+
+        // A seasonal local level whose state variances are fixed samples none,
+        // so it has none to mix slowly.
+        let prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.4,
+        };
+        let seasonal = crate::bayesian_seasonal::BayesianSeasonalLocalLevelConfig {
+            period: 4,
+            initial_level: 0.0,
+            initial_seasonal_effects: vec![0.0; 4],
+            initial_level_variance: 4.0,
+            initial_seasonal_variance: 1.0,
+            level_variance_prior: prior,
+            seasonal_variance_prior: prior,
+            observation_variance_prior: prior,
+            num_chains: 2,
+            num_warmup: 50,
+            num_draws: 100,
+            thinning: 1,
+            seed: 5,
+        };
+        let mut fixed =
+            RegressionConfig::from_seasonal(&seasonal, config().coefficient_prior).unwrap();
+        let sampled = fixed.clone();
+        fixed.innovation_indices.clear();
+        fixed.variance_priors.clear();
+        fixed.variance_names.clear();
+        fixed.num_draws = 100;
+        fixed.num_warmup = 50;
+        let posterior = fit_regression(&y, &x, &fixed).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 0);
+        let mut sampled = sampled;
+        sampled.num_draws = 100;
+        sampled.num_warmup = 50;
+        let posterior = fit_regression(&y, &x, &sampled).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 1);
+
+        // The same model with its sampled variances listed in the other order.
+        let mut reversed = sampled;
+        reversed.innovation_indices.reverse();
+        reversed.variance_priors.reverse();
+        reversed.variance_names.reverse();
+        let posterior = fit_regression(&y, &x, &reversed).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 1);
+    }
+
+    #[test]
+    fn only_states_no_variance_can_reach_are_deterministic() {
+        // Seasonal local level, period 4: the level and the current seasonal
+        // effect have innovations; the two lag coordinates have none but copy
+        // the seasonal effect, so all four vary.
+        let seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            4,
+            0.1,
+            0.1,
+            1.0,
+            0.0,
+            vec![0.0; 4],
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(seasonal.deterministic_coordinates(&[0, 1]), vec![false; 4]);
+        // A random walk with no innovation keeps its initial variance.
+        let static_level = LinearGaussianStateSpace::new(
+            1,
+            vec![1.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        assert_eq!(static_level.deterministic_coordinates(&[]), vec![false]);
+        // A zero transition row with no innovation forgets the initial state.
+        let zero = LinearGaussianStateSpace::new(
+            1,
+            vec![0.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        assert_eq!(zero.deterministic_coordinates(&[]), vec![true]);
+        assert_eq!(zero.deterministic_coordinates(&[0]), vec![false]);
+    }
+
+    #[test]
     fn seeded_recovery_and_pool_independence() {
         let mut rng = ChaCha8Rng::seed_from_u64(188);
         let mut level = 0.0;
-        let x: Vec<Vec<f64>> = (0..250).map(|_| vec![normal(&mut rng)]).collect();
+        let x: Vec<Vec<f64>> = (0..250).map(|_| vec![standard_normal(&mut rng)]).collect();
         let y: Vec<f64> = x
             .iter()
             .map(|x| {
-                level += normal(&mut rng) * 0.02_f64.sqrt();
-                level + 1.8 * x[0] + normal(&mut rng) * 0.1_f64.sqrt()
+                level += standard_normal(&mut rng) * 0.02_f64.sqrt();
+                level + 1.8 * x[0] + standard_normal(&mut rng) * 0.1_f64.sqrt()
             })
             .collect();
         let fit = fit_regression(&y, &x, &config()).unwrap();

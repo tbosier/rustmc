@@ -132,7 +132,7 @@ impl ModelFit {
     }
 
     /// The graph predictions are evaluated on: the training data when neither
-    /// inputs nor sizes are given, otherwise [`bind_prediction`] over them.
+    /// inputs nor sizes are given, otherwise the training structure bound to them.
     pub fn prediction_graph(
         &self,
         inputs: Option<DataInputs>,
@@ -268,7 +268,7 @@ impl ModelFit {
             for (block, head) in values.iter_mut().zip(&heads) {
                 let aux = head.aux.map(|node| evaluator.scalar_at(node));
                 for i in 0..head.n_obs {
-                    let eta = evaluator.vec_elem(head.linpred, i, graph);
+                    let eta = evaluator.vec_elem(head.linpred, i);
                     block.push(
                         if expected {
                             crate::observation::mean(head.family, eta, aux)
@@ -322,7 +322,7 @@ impl ModelFit {
         let values = self.evaluate_chunks(graph, lens.len(), |evaluator, blocks| {
             for ((block, (_, node)), len) in blocks.iter_mut().zip(&graph.deterministics).zip(&lens)
             {
-                block.extend((0..(*len).max(1)).map(|i| evaluator.vec_elem(*node, i, graph)));
+                block.extend((0..(*len).max(1)).map(|i| evaluator.vec_elem(*node, i)));
             }
             Ok(())
         })?;
@@ -368,10 +368,18 @@ impl ModelFit {
         let n_draws = self.num_draws();
         let total = self.num_chains() * n_draws;
         let starts: Vec<usize> = (0..total).step_by(EVALUATION_CHUNK).collect();
+        if starts.is_empty() {
+            return Ok(vec![Vec::new(); n_outputs]);
+        }
+        // Split the graph's data into a binding once, not once per chunk: each
+        // chunk's evaluator then shares its `Arc`s instead of copying every
+        // data vector and design matrix again.
+        let binding = DataBinding::from_graph(graph)
+            .map_err(|error| ModelError::invalid(error.to_string()))?;
         let chunks = starts
             .into_par_iter()
             .map(|start| {
-                let mut evaluator = Evaluator::try_new(graph)
+                let mut evaluator = Evaluator::try_with_binding(graph, binding.clone())
                     .map_err(|error| ModelError::invalid(error.to_string()))?;
                 let mut out = vec![Vec::new(); n_outputs];
                 for flat in start..(start + EVALUATION_CHUNK).min(total) {
@@ -421,7 +429,7 @@ fn pointwise_log_likelihood(
             crate::observation::log_density(
                 head.family,
                 observed,
-                evaluator.vec_elem(head.linpred, i, graph),
+                evaluator.vec_elem(head.linpred, i),
                 aux,
             )
             .map_err(ModelError::invalid)?,
