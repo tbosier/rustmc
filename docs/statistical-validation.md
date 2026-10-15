@@ -48,16 +48,19 @@ the accepted band is about 0.65 to 1.00, and 256 replicates narrow it to about 0
 not caught at all. The report records the tolerance it used as `coverage_tolerance`.
 
 The fixed reference cases above run at `target_accept=0.95`, not the shipped 0.80.
-The two Rust gates below run at the shipped defaults.
+The exactness gate below runs at the shipped defaults. The Rust recovery suite runs at
+the shipped `target_accept=0.8`, with its own draws, warmup and tree depths (2000 or
+4000 draws, 1000 to 1500 warmup, tree depth 8 to 12), so it does not test the shipped draw and
+warmup counts.
 
 ## Exactness at the shipped defaults
 
 `rust_core/tests/exactness.rs` fits targets whose moments are known in closed form,
 so the only error left is Monte Carlo error. Every fit uses `SamplerConfig::default()`
 apart from the seed: NUTS, 4 chains, 500 warmup, 1000 draws, `target_accept=0.8`,
-metric `auto`, tree depth 10. A fit passes when it has no divergences, every
-coordinate's bulk ESS is at least 400, and these standardized errors are all below 4
-Monte Carlo standard errors (MCSE):
+metric `auto`, tree depth 10. A fit passes when it has no divergences, the bulk ESS of
+every series whose Monte Carlo standard error (MCSE) is used below is at least 400, and
+these standardized errors are all below 4 MCSE:
 
 - each coordinate's mean against its exact mean, with the MCSE the diagnostics report;
 - each coordinate's variance: the draws of `(x - exact mean)^2` have expectation exactly
@@ -191,9 +194,7 @@ because HMC fails them. On these well-conditioned targets the adapted step size 
 steps near a full period of a standardized Gaussian coordinate, so a transition returns
 almost to where it started. At seed 2102 on the independent normals the worst
 coordinate's bulk ESS is 6 and the largest R-hat 1.78; at seed 2202 on the correlated
-target the worst bulk ESS is 86. Earlier one-off runs on the previous version of these
-targets (correlation 0.8) put the integration time at 5.4 to 6.2 per chain, and with 10
-steps the worst bulk ESS rose to 2164.
+target the worst bulk ESS is 86.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture hmc_
@@ -244,6 +245,7 @@ diagnostic signal. None of these checks establishes calibration under misspecifi
 ## Known limitation: local linear trend
 
 None of these gates covers the forecasting samplers' mixing. The local-linear-trend
-Gibbs sampler is known to mix slowly on its level and slope variances: on a synthetic
-series with 4 chains, 300 warmup and 500 draws their R-hat ranged from 1.05 to 1.9.
-ROADMAP.md and the `BayesianLocalLinearTrend` documentation describe it.
+Gibbs sampler is known to mix slowly on its level and slope variances. ROADMAP.md
+reports R-hat from 1.05 to 1.9 for them on a synthetic series with 4 chains, 300 warmup
+and 500 draws; that figure is ROADMAP's, not a run of this page. The
+`BayesianLocalLinearTrend` documentation describes the limitation.
