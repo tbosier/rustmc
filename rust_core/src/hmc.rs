@@ -34,6 +34,14 @@ pub struct TransitionStats {
     /// HMC proposal energy error, or NUTS selected-state energy error (which
     /// can be zero when the initial state is selected).
     pub energy_error: f64,
+    /// The Hamiltonian of the state the transition ends in: the negative log
+    /// density plus the kinetic energy of its momentum under the metric the
+    /// transition ran with. HMC: the proposal's when it was accepted, else the
+    /// starting state's with the momentum drawn for this transition. NUTS: the
+    /// selected state's. This is the `energy` sample statistic of Stan, PyMC
+    /// and ArviZ, from which E-BFMI is computed. NaN when it was not recorded
+    /// (a fit loaded from a version 1 or 2 artifact).
+    pub energy: f64,
     pub divergent: bool,
     pub step_size: f64,
     pub num_leapfrog_steps: usize,
@@ -367,6 +375,13 @@ pub(crate) fn run_chain_with_evaluator(
                 accepted: accepted_transition,
                 accept_prob,
                 energy_error,
+                // Read off values the accept step already computed; no new
+                // evaluation and no RNG draw.
+                energy: if accepted_transition {
+                    h_prop
+                } else {
+                    h_current
+                },
                 divergent,
                 step_size: step_size_used,
                 num_leapfrog_steps: steps_taken,
@@ -464,6 +479,53 @@ mod tests {
             .count() as f64
             / posterior_transitions.len() as f64;
         assert_eq!(chain.accept_rate, posterior_accept_rate);
+    }
+
+    /// `energy` is the Hamiltonian of the state the transition leaves the
+    /// chain in, so `energy + log density at the retained position` is that
+    /// state's kinetic energy, which is finite and non-negative whether the
+    /// proposal was accepted (the proposal's state) or rejected (the starting
+    /// position with this transition's momentum).
+    ///
+    /// At stationarity on a standard normal with the unit metric, the
+    /// Hamiltonian's expectation is `E[q^2 / 2] + E[p^2 / 2] - log p(0) =
+    /// 1 - log p(0)`. Recording a rejected proposal's energy instead of the
+    /// retained state's biases that mean upwards by the rejected energy
+    /// errors: with this seed and step size (about a fifth of the proposals
+    /// rejected) the correct mean is 0.006 from the expectation and the wrong
+    /// one 0.25, so the bound of 0.05 separates them.
+    #[test]
+    fn hmc_energy_is_the_hamiltonian_of_the_retained_state() {
+        let graph = simple_gaussian_graph();
+        let config = HmcConfig {
+            step_size: 1.6,
+            num_leapfrog_steps: 3,
+            num_draws: 20_000,
+            num_warmup: 0,
+            ..HmcConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(11);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.3]), None)
+            .expect("continuous test model must run");
+        let mut evaluator = crate::autodiff::Evaluator::try_new(&graph).unwrap();
+        let (mut accepted, mut rejected) = (0, 0);
+        for (transition, draw) in chain.transitions.iter().zip(&chain.samples) {
+            evaluator.compute(&graph, draw);
+            let kinetic = transition.energy + evaluator.total_logp;
+            assert!(kinetic.is_finite() && kinetic >= -1e-12, "{kinetic}");
+            if transition.accepted {
+                accepted += 1;
+            } else {
+                rejected += 1;
+            }
+        }
+        // Both branches of the energy bookkeeping are exercised.
+        assert!(accepted > 0 && rejected > 0, "{accepted} / {rejected}");
+        evaluator.compute(&graph, &[0.0]);
+        let expected = 1.0 - evaluator.total_logp;
+        let mean = chain.transitions.iter().map(|t| t.energy).sum::<f64>()
+            / chain.transitions.len() as f64;
+        assert!((mean - expected).abs() < 0.05, "{mean} vs {expected}");
     }
 
     #[test]

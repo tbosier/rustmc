@@ -297,6 +297,22 @@ impl PyStructuralFit {
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         forecast_diagnostics::diagnostics_list(py, &self.inner.diagnostics())
     }
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let sampler = if self.inner.config.student_df.is_some() {
+            "gibbs_ffbs_student_t"
+        } else {
+            "gibbs_ffbs_structural"
+        };
+        let warnings = py.allow_threads(|| {
+            rustmc_core::diagnostics::fit_warnings(
+                &self.inner.diagnostics(),
+                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian { sampler },
+            )
+        });
+        forecast_diagnostics::warnings_list(py, &warnings)
+    }
     fn summary(&self) -> String {
         self.inner.diagnostics().to_table_with_sampler(Some(
             if self.inner.config.student_df.is_some() {

@@ -17,7 +17,10 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::diagnostics::DiagnosticsReport;
+use crate::diagnostics::warnings::known_limitation;
+use crate::diagnostics::{
+    fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry, R_HAT_THRESHOLD,
+};
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
     path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
@@ -29,6 +32,29 @@ use crate::forecast_diagnostics::parameter_diagnostics;
 use rand_chacha::ChaCha8Rng;
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
+
+/// How fit warnings name this model's sampler.
+const SAMPLER_NAME: &str = "conjugate Gibbs/FFBS";
+
+/// The documented mixing problem of the local-linear-trend Gibbs sampler, as
+/// a failed `known_limitation` check.
+///
+/// It is a failure rather than an unavailable check because a fit's own
+/// R-hat can pass by chance while the sampler is known to mix the level and
+/// slope variances slowly; batch triage should flag the fit until the user
+/// has checked it with longer chains and filters this code out.
+pub fn local_linear_trend_limitation() -> FitWarning {
+    known_limitation(
+        R_HAT_THRESHOLD,
+        format!(
+            "known limitation: the local-linear-trend Gibbs sampler mixes the level and slope \
+             variances slowly; on simulated series fitted with 4 chains, 300 warmup and 500 \
+             draws their R-hat ranged from 1.05 to 2.06, above the {R_HAT_THRESHOLD} threshold, \
+             so check level_variance and slope_variance with longer chains before trusting \
+             this fit (see the local-linear-trend section of docs/reference.md)"
+        ),
+    )
+}
 
 /// Configuration for a fitted Bayesian local-linear-trend model.
 #[derive(Debug, Clone)]
@@ -113,6 +139,21 @@ impl LocalLinearTrendPosterior {
             })
             .collect::<Vec<_>>();
         parameter_diagnostics(&samples, &names)
+    }
+
+    /// Every failed or unavailable check of this fit (see
+    /// [`fit_warnings`]), followed by [`local_linear_trend_limitation`],
+    /// which every local-linear-trend fit carries whatever its diagnostics
+    /// show.
+    pub fn warnings(&self) -> Vec<FitWarning> {
+        let mut warnings = fit_warnings(
+            &self.diagnostics(),
+            SamplerTelemetry::NonHamiltonian {
+                sampler: SAMPLER_NAME,
+            },
+        );
+        warnings.push(local_linear_trend_limitation());
+        warnings
     }
 
     /// Pair every posterior draw with one coherent future state/observation path.

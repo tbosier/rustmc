@@ -103,6 +103,11 @@ impl ForecastFit for PyBayesianRegressionFit {
     fn report(&self) -> DiagnosticsReport {
         self.posterior.diagnostics()
     }
+    /// The core rule, plus the local-linear-trend limitation for a trend
+    /// fitted with `exog`.
+    fn warnings(&self) -> Vec<rustmc_core::diagnostics::FitWarning> {
+        self.posterior.warnings()
+    }
     fn shape(&self) -> (usize, usize) {
         chain_shape(&self.posterior.chains)
     }
@@ -146,6 +151,12 @@ impl PyBayesianRegressionFit {
     }
     fn diagnostics<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         fit_diagnostics(py, self)
+    }
+
+    /// Every failed or unavailable check of this fit, one dict per check;
+    /// see the fit warnings section of the reference.
+    fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        fit_warning_list(py, self)
     }
     #[getter]
     fn sampler_stats<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {

@@ -2004,6 +2004,7 @@ fn result_with_draws(chains: &[&[f64]]) -> SampleResult {
         divergences: vec![0; chains.len()],
         transitions: chains.iter().map(|_| Vec::new()).collect(),
         param_names: vec!["theta".to_string()],
+        max_tree_depth: None,
     }
 }
 

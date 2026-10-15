@@ -96,7 +96,7 @@ artifact format: the older data-owning Rust `CompiledModelArtifact` and the
 
 ## Saving a fitted graph model
 
-`fit.to_json()` creates a `rustmc.graph-fit` version 2 artifact, and
+`fit.to_json()` creates a `rustmc.graph-fit` version 3 artifact, and
 `rustmc.FitResult.from_json(text)` restores it. This fitted artifact includes the
 compiled declarative model, keyed training data, every stored chain/draw position,
 parameter names/order, and sampler telemetry. Unlike a compiled-model artifact,
@@ -133,3 +133,10 @@ Version 1 fits remain readable when their constrained values can be inverted to
 finite valid positions; their original coordinates cannot be recovered exactly
 after a rounded transformation. Saving a restored version 1 fit upgrades it to
 version 2 using the reconstructed coordinates.
+
+Version 3 adds the energy of every transition and, for NUTS, the maximum tree depth
+the chains ran with, which E-BFMI and tree-depth saturation are computed from (see
+[fit warnings](reference.md#fit-warnings-and-batch-triage)). Versions 1 and 2 store
+neither, so a fit restored from one reports those two checks as unavailable, and
+saving it writes version 2 again, which readers older than version 3 can still load.
+A version 1 or 2 artifact that carries energies is refused.

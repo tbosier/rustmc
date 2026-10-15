@@ -201,7 +201,7 @@ pub fn sample_target<T: LogDensity + ?Sized>(
             })
             .collect::<Result<Vec<_>, String>>()
     })??;
-    Ok(SampleResult::from_chains(chains, names))
+    Ok(SampleResult::from_chains(chains, names, &config))
 }
 
 #[cfg(test)]
