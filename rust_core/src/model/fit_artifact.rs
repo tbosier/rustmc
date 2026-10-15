@@ -395,9 +395,9 @@ fn validate_posterior(
         .param_transforms
         .iter()
         .any(|transform| !matches!(transform, ParamTransform::Identity));
-    if version == 2 && transformed && posterior.unconstrained_samples.is_none() {
+    if version >= 2 && transformed && posterior.unconstrained_samples.is_none() {
         return Err(invalid(
-            "version 2 requires unconstrained posterior positions for transformed parameters",
+            "versions 2 and 3 require unconstrained posterior positions for transformed parameters",
         ));
     }
     if let Some(positions) = &posterior.unconstrained_samples {
@@ -494,7 +494,8 @@ fn validate_posterior(
 ///
 /// Version 3 stores a finite energy for every transition, and the maximum
 /// tree depth exactly when the transitions are NUTS ones (every one has a tree
-/// depth), no deeper than that maximum. Earlier versions store neither.
+/// depth), each between 1 (every NUTS transition attempts one doubling) and
+/// that maximum. Earlier versions store neither.
 fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult<Option<usize>> {
     let all = || posterior.transitions.iter().flatten();
     if version < 3 {
@@ -517,7 +518,11 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
         Some(limit)
             if nuts
                 && (1..=63).contains(&limit)
-                && all().all(|transition| transition.tree_depth <= Some(limit)) =>
+                && all().all(|transition| {
+                    transition
+                        .tree_depth
+                        .is_some_and(|depth| (1..=limit).contains(&depth))
+                }) =>
         {
             Ok(Some(limit))
         }

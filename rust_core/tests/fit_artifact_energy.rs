@@ -1,7 +1,7 @@
 //! Version 3 of the `rustmc.graph-fit` artifact keeps the energy telemetry
 //! E-BFMI and tree-depth saturation need, and fits from older artifacts,
-//! which have none, still load, report those checks as unknown, and save in
-//! the version they came from.
+//! which have none, still load, report those checks as unknown, and save as
+//! version 2, which every reader since version 2 loads.
 use rustmc_core::data::{DataInputs, MatrixBinding};
 use rustmc_core::model::{GraphModel, ModelFit};
 use rustmc_core::sampler::{SamplerConfig, SamplerType};
@@ -126,7 +126,26 @@ fn inconsistent_energy_telemetry_is_rejected() {
     let nuts = json(&fit(SamplerType::Nuts));
     let hmc = json(&fit(SamplerType::Hmc));
     type Corruption = fn(&mut Value);
-    let cases: [(&str, &Value, Corruption, &str); 6] = [
+    let cases: [(&str, &Value, Corruption, &str); 8] = [
+        (
+            "a tree depth of 0, which no NUTS transition has",
+            &nuts,
+            |a| {
+                a["posterior"]["transitions"][1][4]["tree_depth"] = 0.into();
+            },
+            "maximum tree depth disagrees",
+        ),
+        (
+            "version 3 without the exact positions of a transformed parameter",
+            &nuts,
+            |a| {
+                a["posterior"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("unconstrained_samples");
+            },
+            "require unconstrained posterior positions",
+        ),
         (
             "an energy missing in version 3",
             &nuts,
