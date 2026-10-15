@@ -6,8 +6,10 @@
 //! The gate, per coordinate of a fit at the shipped defaults:
 //!
 //! - no divergent transitions;
-//! - bulk ESS at least [`MIN_ESS_BULK`], so the MCSEs below are estimated from
-//!   enough effective draws to trust;
+//! - bulk ESS at least [`MIN_ESS_BULK`] for the coordinate, for its squared
+//!   deviations and (once per fit) for the squared norm below: every MCSE the
+//!   gate divides by is estimated from enough effective draws to trust, so
+//!   chains that disagree cannot pass by inflating an MCSE;
 //! - mean: `|mean - exact mean| < MAX_MCSE * mcse_mean`;
 //! - variance: the draws of `(x - exact mean)^2` have expectation exactly the
 //!   exact variance, so their mean is held to the same bound, with an MCSE
@@ -71,7 +73,7 @@ impl Path {
 /// Both paths evaluate the same density: the custom target directly, the
 /// graph as a `mat_vec_mul` node observed at `c` with unit noise.
 pub struct GaussianTarget {
-    pub name: &'static str,
+    pub name: String,
     pub a: Vec<f64>,
     pub c: Vec<f64>,
     pub means: Vec<f64>,
@@ -103,7 +105,7 @@ impl GaussianTarget {
             c[i] = means[i] / sds[i];
         }
         Self {
-            name: "independent normals",
+            name: String::from("independent normals"),
             a,
             c,
             means,
@@ -118,7 +120,8 @@ impl GaussianTarget {
     /// `w_i = (z_i - rho z_(i-1)) / sqrt(1 - rho^2)` with
     /// `z = (x - mean) / sd`. A diagonal metric cannot remove this
     /// correlation. At 50 dimensions and `rho = 0.95` the correlation
-    /// matrix's condition number is 989 and the covariance's 1481.
+    /// matrix's condition number is 989 and the covariance's 1481; at
+    /// `rho = 0.8`, 77 and 116.
     pub fn correlated(dimension: usize, rho: f64) -> Self {
         let means: Vec<f64> = (0..dimension).map(|i| 1.0 - 0.05 * i as f64).collect();
         let sds: Vec<f64> = (0..dimension).map(|i| 1.0 + 0.5 * (i % 3) as f64).collect();
@@ -134,7 +137,7 @@ impl GaussianTarget {
         }
         let c = mat_vec(&a, &means, dimension);
         Self {
-            name: "correlated Gaussian",
+            name: format!("correlated Gaussian, rho {rho}"),
             a,
             c,
             means,
@@ -213,7 +216,7 @@ impl GaussianTarget {
         graph.normal_obs_logp(mu, scale, observed);
 
         Self {
-            name: "conjugate regression",
+            name: String::from("conjugate regression"),
             a,
             c,
             means,
@@ -543,12 +546,24 @@ pub fn check(label: &str, fit: &SampleResult, target: &GaussianTarget) -> Outcom
             format!("{} divergent transitions", report.divergences),
         ));
     }
-    if let Some((i, e)) = worst(&ess_bulk, |e| -e) {
-        if !at_least(e, MIN_ESS_BULK) {
-            failures.push((
-                Check::BulkEss,
-                format!("coordinate {i} has bulk ESS {e:.1}, below {MIN_ESS_BULK}"),
-            ));
+    let squared_ess_bulk: Vec<f64> = squared_report.params.iter().map(|p| p.ess_bulk).collect();
+    for (series, ess) in [
+        ("coordinate", &ess_bulk),
+        ("squared deviation of coordinate", &squared_ess_bulk),
+        ("squared norm", &vec![squared_norm.ess_bulk]),
+    ] {
+        if let Some((i, e)) = worst(ess, |e| -e) {
+            if !at_least(e, MIN_ESS_BULK) {
+                let which = if series == "squared norm" {
+                    String::from("the squared norm")
+                } else {
+                    format!("{series} {i}")
+                };
+                failures.push((
+                    Check::BulkEss,
+                    format!("{which} has bulk ESS {e:.1}, below {MIN_ESS_BULK}"),
+                ));
+            }
         }
     }
     if let Some((i, z)) = worst(&mean_z, f64::abs) {
@@ -607,6 +622,7 @@ pub fn gate_cases() -> Vec<(GaussianTarget, Path, u64)> {
     vec![
         (GaussianTarget::independent_normals(100), Path::Custom, 2101),
         (GaussianTarget::independent_normals(100), Path::Graph, 2111),
+        (GaussianTarget::correlated(50, 0.8), Path::Custom, 2201),
         (GaussianTarget::correlated(50, 0.95), Path::Custom, 2201),
         (GaussianTarget::correlated(50, 0.95), Path::Graph, 2211),
         (GaussianTarget::conjugate_regression(), Path::Graph, 2301),

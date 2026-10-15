@@ -20,7 +20,7 @@
 #[path = "exactness_support/mod.rs"]
 mod exactness_support;
 
-use exactness_support::{check, fit, gate_cases, label, Check, Outcome};
+use exactness_support::{check, fit, gate_cases, label, Outcome, MAX_MCSE};
 use rayon::prelude::*;
 use rustmc_core::fault_injection::{self, Fault};
 use std::sync::Mutex;
@@ -67,10 +67,14 @@ fn outcomes(fault: Fault) -> Vec<Outcome> {
     outcomes
 }
 
+/// Whether some finite standardized error reached 4 MCSE. A NaN error also
+/// fails the gate, but it would not show that the fault moved the draws, so
+/// it does not count here.
 fn failed_a_moment_check(outcome: &Outcome) -> bool {
-    outcome.failed(Check::Mean)
-        || outcome.failed(Check::Variance)
-        || outcome.failed(Check::SquaredNorm)
+    let detected = |z: &f64| z.is_finite() && z.abs() >= MAX_MCSE;
+    outcome.mean_z.iter().any(detected)
+        || outcome.variance_z.iter().any(detected)
+        || detected(&outcome.squared_norm_z)
 }
 
 fn assert_every_fit_fails_a_moment_check(fault: Fault) {
@@ -134,13 +138,18 @@ fn detection_rate_over_seeds() {
             let caught = outcomes.iter().filter(|o| failed_a_moment_check(o)).count();
             let per_coordinate = outcomes
                 .iter()
-                .filter(|o| o.failed(Check::Mean) || o.failed(Check::Variance))
+                .filter(|o| {
+                    o.mean_z
+                        .iter()
+                        .chain(&o.variance_z)
+                        .any(|z| z.is_finite() && z.abs() >= MAX_MCSE)
+                })
                 .count();
-            let mut norm: Vec<f64> = outcomes.iter().map(|o| o.squared_norm_z).collect();
+            let mut norm: Vec<f64> = outcomes.iter().map(|o| o.squared_norm_z.abs()).collect();
             norm.sort_by(f64::total_cmp);
             println!(
                 "{fault:?}, {}: caught {caught}/{seeds}; per-coordinate checks alone \
-                 {per_coordinate}/{seeds}; squared-norm error median {:.2}, smallest {:.2} MCSE",
+                 {per_coordinate}/{seeds}; squared-norm error size median {:.2}, smallest {:.2} MCSE",
                 label(&target, path),
                 norm[norm.len() / 2],
                 norm[0]

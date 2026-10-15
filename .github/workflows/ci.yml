@@ -33,8 +33,9 @@ jobs:
         run: cargo test --release -p rustmc_core --test prediction_streams -- --ignored
       # Power controls for the exactness gate (rust_core/tests/exactness.rs):
       # the same gate against NUTS kernels broken on purpose must fail. The
-      # fault-injection feature compiles the fault hooks in; it is off in
-      # every other build.
+      # fault-injection feature compiles the fault hooks in. No other test
+      # step enables it; clippy's --all-features build compiles the hooks but
+      # runs nothing, and they do nothing until a test selects a fault.
       - name: Check the exactness gate fails on injected sampler faults
         run: cargo test --release -p rustmc_core --features fault-injection --test exactness_power
       - name: Verify publishable Rust crate archive
