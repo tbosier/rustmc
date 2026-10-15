@@ -411,7 +411,7 @@ fn validate_posterior(
     // Each draw costs a full target and gradient evaluation, so chains are
     // checked in parallel; the first failure in chain order is reported, as
     // a sequential scan would.
-    let validated: Vec<ModelResult<Vec<Vec<f64>>>> = (0..chains)
+    let validated: Vec<ModelResult<ValidatedChain>> = (0..chains)
         .into_par_iter()
         .map(|chain_index| {
             validate_chain(
@@ -426,7 +426,11 @@ fn validate_posterior(
             )
         })
         .collect();
-    let validated_positions = validated.into_iter().collect::<ModelResult<Vec<_>>>()?;
+    let (validated_positions, potentials): (Vec<_>, Vec<_>) = validated
+        .into_iter()
+        .collect::<ModelResult<Vec<_>>>()?
+        .into_iter()
+        .unzip();
     if posterior.accept_rates.len() != chains
         || posterior.step_sizes.len() != chains
         || posterior.divergences.len() != chains
@@ -470,6 +474,9 @@ fn validate_posterior(
                 "warmup flags do not match the posterior draw count",
             ));
         }
+        if version >= 3 {
+            validate_draw_energies(&chain[warmup..], &potentials[chain_index])?;
+        }
         let divergences = chain.iter().filter(|t| !t.is_warmup && t.divergent).count();
         if divergences != posterior.divergences[chain_index] {
             return Err(invalid(
@@ -495,7 +502,9 @@ fn validate_posterior(
 /// Version 3 stores a finite energy for every transition, and the maximum
 /// tree depth exactly when the transitions are NUTS ones (every one has a tree
 /// depth), each between 1 (every NUTS transition attempts one doubling) and
-/// that maximum. Earlier versions store neither.
+/// that maximum, with a leapfrog step count a tree of that depth can take.
+/// Earlier versions store neither. Draw energies are checked against the
+/// draws' potential energies in [`validate_draw_energies`].
 fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult<Option<usize>> {
     let all = || posterior.transitions.iter().flatten();
     if version < 3 {
@@ -514,6 +523,19 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
     }
     let nuts = all().all(|transition| transition.tree_depth.is_some());
     let hmc = all().all(|transition| transition.tree_depth.is_none());
+    // Each of a tree's `depth` doublings takes at least one leapfrog step and
+    // the k-th at most 2^(k-1), so the tree takes `depth..=2^depth - 1`. A
+    // depth of 0 is refused with the limit below.
+    if all().any(|transition| {
+        transition.tree_depth.is_some_and(|depth| {
+            let steps = transition.num_leapfrog_steps;
+            (1..64).contains(&depth) && (steps < depth || steps > (1usize << depth) - 1)
+        })
+    }) {
+        return Err(invalid(
+            "a tree depth disagrees with its transition's leapfrog step count",
+        ));
+    }
     match posterior.max_tree_depth {
         Some(limit)
             if nuts
@@ -535,18 +557,43 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
 
 /// Check one chain's draws, returning their unconstrained positions when
 /// `retain_positions` asks for them (and an empty list otherwise).
+/// A chain's retained unconstrained positions (empty unless they are kept)
+/// and the potential energy, the negative log target, at every draw.
+type ValidatedChain = (Vec<Vec<f64>>, Vec<f64>);
+
+/// Check that each draw transition's energy is at least the potential energy
+/// at the draw it ended in. The Hamiltonian is that potential plus a kinetic
+/// energy that is never negative, so a lower energy cannot have come from the
+/// sampler. The tolerance allows for rounding in a dense metric's kinetic
+/// energy.
+fn validate_draw_energies(transitions: &[TransitionStats], potentials: &[f64]) -> ModelResult<()> {
+    if transitions
+        .iter()
+        .zip(potentials)
+        .any(|(transition, &potential)| {
+            transition.energy < potential - 1e-9 * (1.0 + potential.abs())
+        })
+    {
+        return Err(invalid(
+            "a stored energy is below the potential energy at its draw",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_chain(
     chain: &[Vec<f64>],
     stored_positions: Option<&Vec<Vec<f64>>>,
     draws: usize,
     graph: &Graph,
     retain_positions: bool,
-) -> ModelResult<Vec<Vec<f64>>> {
+) -> ModelResult<ValidatedChain> {
     if chain.len() != draws {
         return Err(invalid("posterior draw counts differ between chains"));
     }
     let mut evaluator = Evaluator::try_new(graph).map_err(|error| invalid(&error.to_string()))?;
     let mut positions = Vec::with_capacity(if retain_positions { draws } else { 0 });
+    let mut potentials = Vec::with_capacity(draws);
     for (draw_index, draw) in chain.iter().enumerate() {
         if draw.len() != graph.param_count || draw.iter().any(|value| !value.is_finite()) {
             return Err(invalid(
@@ -592,9 +639,10 @@ fn validate_chain(
                 "posterior position has a nonfinite target density or gradient",
             ));
         }
+        potentials.push(-evaluator.total_logp);
         if retain_positions {
             positions.push(position);
         }
     }
-    Ok(positions)
+    Ok((positions, potentials))
 }

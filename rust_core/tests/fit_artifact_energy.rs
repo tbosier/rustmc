@@ -126,7 +126,41 @@ fn inconsistent_energy_telemetry_is_rejected() {
     let nuts = json(&fit(SamplerType::Nuts));
     let hmc = json(&fit(SamplerType::Hmc));
     type Corruption = fn(&mut Value);
-    let cases: [(&str, &Value, Corruption, &str); 8] = [
+    let cases: [(&str, &Value, Corruption, &str); 11] = [
+        (
+            "a depth-1 tree with more than one leapfrog step",
+            &nuts,
+            |a| {
+                let transition = a["posterior"]["transitions"][0]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|t| t["num_leapfrog_steps"].as_u64().unwrap() > 1)
+                    .unwrap();
+                transition["tree_depth"] = 1.into();
+            },
+            "disagrees with its transition's leapfrog step count",
+        ),
+        (
+            "more leapfrog steps than a tree of its depth holds",
+            &nuts,
+            |a| {
+                let transition = &mut a["posterior"]["transitions"][1][5];
+                let depth = transition["tree_depth"].as_u64().unwrap();
+                transition["num_leapfrog_steps"] = (1u64 << depth).into();
+            },
+            "disagrees with its transition's leapfrog step count",
+        ),
+        (
+            "a draw energy below the potential energy at its draw",
+            &hmc,
+            |a| {
+                let warmup = a["posterior"]["transitions"][0].as_array().unwrap().len()
+                    - a["posterior"]["samples"][0].as_array().unwrap().len();
+                a["posterior"]["transitions"][0][warmup + 2]["energy"] = (-1.0e6).into();
+            },
+            "below the potential energy",
+        ),
         (
             "a tree depth of 0, which no NUTS transition has",
             &nuts,
