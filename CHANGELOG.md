@@ -6,6 +6,222 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-14
+
+This release collects a repository-wide cleanup review and the first item three
+judges chose from seven experts' proposals for where rustmc goes next: test the
+sampler at the settings users run it with, and tell a user fitting many models which
+fits to distrust. It is grouped by piece of work, newest first.
+
+The tier-1 work does not change seeded draws. The draws of eight seeded fits (graph
+NUTS with a diagonal and a dense metric, graph HMC, a `ModelBuilder` spec through
+`rustmc.sample`, local level, local linear trend with and without `exog`, and the
+conjugate autoregression) hash identically before and after it. The cleanup changes
+seeded draws only where its entries say so.
+
+### Breaking changes
+
+- Rust struct literals of these types need the new fields:
+  `hmc::TransitionStats::energy`, `sampler::SampleResult::max_tree_depth`,
+  `diagnostics::ChainTransitionDiagnostics::{e_bfmi, tree_depth_saturation}` and
+  `diagnostics::TransitionDiagnosticsReport::{max_tree_depth_limit,
+  total_tree_depth_saturation}`.
+- A saved fit is written as version 3 of the `rustmc.graph-fit` artifact, which
+  releases before 0.14.0 cannot load. Versions 1 and 2 still load, and a fit loaded
+  from one, which has no energies to store, is saved as version 2.
+- The Rust API removals listed under the cleanup review below.
+
+### Fit warnings and batch triage
+
+#### Added
+
+- `warnings()` on `FitResult`, on each `BatchResult` of a `BatchFit`, on every
+  forecasting fit, and on `ForecastBatchFit` (a dict by cell ID, `None` for a failed
+  cell). Each record has a
+  `code`, a `status` of `"fail"` or `"unavailable"`, the `parameter` or `chain` it is
+  about, the `value`, the `threshold` and a one-line `message` that states the
+  threshold. The checks are R-hat above 1.01, bulk or tail ESS below 400, any
+  divergence, a chain's E-BFMI below 0.3, any tree that reached `max_tree_depth`,
+  and diagnostics that could not be computed. A check a sampler has no statistic for
+  (divergences, E-BFMI and tree depth for every forecasting fit) is reported once as
+  `"unavailable"`, never as a pass. The rule is implemented once, in
+  `rustmc_core::diagnostics::fit_warnings`, and every binding calls it. The codes,
+  thresholds and their sources are in the fit warnings section of the reference.
+- `flagged(ignore=None)` on `BatchFit` and `ForecastBatchFit`: the IDs of
+  successful cells with at least one failed check, in batch order. Failed cells are
+  in `errors`. An unknown code in `ignore` raises `ValueError`.
+- Every local-linear-trend fit, including a trend fitted with `exog` (a
+  `BayesianRegressionFit`), carries a `known_limitation` record with status
+  `"fail"` for the documented slow mixing of its level and slope variances, so
+  `flagged()` lists those cells until `ignore=["known_limitation"]` leaves the
+  record out. The reference's local-linear-trend section gives the R-hat ranges it
+  is based on and the command that reproduces them.
+- Each HMC and NUTS transition records the Hamiltonian of the state it ended in
+  (`TransitionStats::energy`). It is read off values the sampler already computed,
+  with no new evaluation and no RNG draw.
+- `transition_diagnostics()` reports per-chain E-BFMI, computed as ArviZ's `bfmi`
+  computes it, and per-chain and total tree-depth saturation. `to_arviz()` exports
+  `energy` and `tree_depth` in `sample_stats`, so `az.bfmi(fit.to_arviz())` agrees
+  with them.
+- Rust: `diagnostics::{fit_warnings, has_failure, e_bfmi, FitWarning, WarningCode,
+  WarningStatus, SamplerTelemetry, R_HAT_THRESHOLD, ESS_THRESHOLD,
+  E_BFMI_THRESHOLD, compute_transition_diagnostics_with_max_tree_depth}`,
+  `SampleResult::warnings`, `warnings()` on the local-linear-trend and regression
+  posteriors, `RegressionConfig::is_local_linear_trend` and
+  `bayesian_trend::local_linear_trend_limitation`.
+
+#### Changed
+
+- Loading a version-3 artifact also refuses telemetry no sampler could have
+  produced: a tree depth of 0, a NUTS tree whose leapfrog step count does not fit
+  its depth (between d and 2^d - 1 steps for depth d), a draw energy below the
+  potential energy at its draw, and a tree-depth limit that disagrees with the
+  recorded depths.
+
+### Exactness gates at the shipped defaults
+
+#### Added
+
+- `rust_core/tests/exactness.rs` (it began in the cleanup as
+  `analytic_posteriors.rs`): NUTS at the shipped defaults must reproduce the exact
+  moments of a 100-dimensional independent normal, 50-dimensional correlated normals
+  (correlation 0.8 and 0.95) and a conjugate regression, through both `sample_target`
+  and the graph path, within 4 Monte Carlo standard errors per coordinate, plus a
+  squared-norm check.
+- The test-only cargo feature `fault-injection` and the doc-hidden
+  `rustmc_core::fault_injection` module, off by default. CI checks that the exactness
+  gate fails under a biased multinomial merge and under a step size 30% too large
+  with no Metropolis correction.
+
+#### Changed
+
+- The Rust recovery suite runs at the shipped `target_accept` of 0.80 instead of
+  0.999. `RUSTMC_RECOVERY_TARGET_ACCEPT` and `RUSTMC_RECOVERY_SEED_OFFSET` rerun it
+  at other settings.
+- The statistical-validation page documents the exactness gate's false-alarm rate,
+  that the default `metric="auto"` does not choose a dense metric on an
+  ill-conditioned target, and static HMC's resonance at 15 leapfrog steps.
+
+### Cleanup review (2026-10-14)
+
+Eight reviewers read the codebase for dead code, duplicated logic, unsupported
+claims and Rust practice, and a second reviewer checked each finding against the
+code before it was acted on. The fixes went in as five workstreams (sampler engine;
+autodiff, graph and numerics; forecasting samplers; Python bindings; tests, CI and
+docs), and each workstream was reviewed again before merging. **Seeded draws are
+unchanged** except where an entry below says otherwise.
+
+#### Changed
+
+- **HMC rejects a trajectory that leaves the support.** A leapfrog step that lands
+  where the log density is not finite now ends the trajectory as a divergence: the
+  proposal is rejected, `energy_error` is +inf, `accept_prob` is 0 and
+  `num_leapfrog_steps` counts the steps taken. Before, only the endpoint was judged,
+  so a trajectory could pass through such a point and still be accepted. Draws
+  change only for chains where this happened. NUTS already ended the tree at such a
+  leaf; that is now tested.
+- **Custom targets treat a non-finite density as outside the support.** A NaN or
+  +inf density, or a non-finite or unwritten gradient, at a point reached during
+  sampling (including the initial step-size search) is handled like `-inf`: a NUTS
+  leaf there diverges and an HMC trajectory that reaches it is rejected. Before, it
+  failed the whole fit. An `Err` from the target still ends the fit, and an explicit
+  `init` must still evaluate finitely.
+- Transition telemetry (`mean_energy_error`, `max_abs_energy_error`,
+  `mean_step_size`) now describes post-warmup transitions only, so `mean_step_size`
+  is the adapted step size. Before, early-warmup blow-ups were averaged in. Each
+  chain's `max_abs_energy_error` is now its own; it used to be the running maximum
+  over that chain and every chain before it.
+- Dynamic GLM fits skip elliptical-slice updates on blocks whose prior scale is zero,
+  including the default `shared_process_sd=0`. The posterior is the same, but seeded
+  draws, forecasts and `likelihood_evaluations` change for those configurations.
+- Dynamic GLM forecasts sample Poisson rates up to 2^53 − 1 instead of failing
+  above 1e15.
+- Forecasting-sampler diagnostics (R-hat, bulk and tail ESS, MCSE) are reported from
+  four retained draws per chain, the rule HMC and NUTS fits already used, instead of
+  six. `sampler_stats['diagnostics_available']` follows the same rule.
+- When several chains fail in a Gibbs, AR, hurdle or forecast-simulation run, the
+  error reported is always the first failing chain's in chain order, whatever the
+  thread count. All chains run to completion before the error is returned.
+- `LinearGaussianStateSpace` stores a process covariance that is asymmetric within
+  the symmetry tolerance with its lower triangle mirrored, which is the matrix the
+  constructor validated. `filter`, `smooth` and FFBS now succeed on such inputs where
+  they could fail with "square-root Kalman recursion failed". Exactly symmetric
+  inputs are unchanged.
+- A scalar Student-t density whose `nu` or `sigma` is outside its support now has a
+  zero gradient, matching its constant −inf density, instead of NaN.
+- An unexpected data key suggests the closest required key (within two edits,
+  counted in characters) instead of the first one alphabetically.
+- Hand-built graphs whose observation nodes or parameter metadata disagree are
+  refused with `GraphShapeError` instead of panicking inside a sampler worker.
+- `fit_batch` on `BayesianLocalLevel`, `BayesianSeasonalLocalLevel`,
+  `BayesianLocalLinearTrend`, `BayesianAR` and `BayesianHurdleLogNormal`: `warmup`
+  and `thin` default to `None` (500 and 1 for Gibbs cells). A batch whose cells are
+  all `BayesianAR` refuses any explicit `warmup` or `thin`, including `500` and `1`,
+  which it used to accept and ignore. A mixed batch whose Gibbs cell has bad data is
+  no longer mistaken for an all-AR batch.
+- Sampler option checks that depend only on the call's arguments, including the
+  draw and transition size limits, run before the model is compiled or bound. In a
+  call with two problems, an oversized request is now reported ahead of a model
+  error such as `ParameterError`.
+- Indexing a forecast batch or reading `.results` no longer copies each cell's
+  posterior and paths.
+- Every Python class except `ModelBuilder` is frozen (immutable). None had setters.
+- Rust: `SamplerConfig::validate` and `BatchSampleConfig::validate` use the Python
+  bindings' messages ("chains must be >= 1" and so on). `hmc::run_chain` and
+  `nuts::run_chain` return `Err` for settings they cannot run with instead of running
+  or aborting on allocation. `forecast_common::sorted_quantile` returns NaN for an
+  empty slice or a probability outside [0, 1] instead of panicking or extrapolating.
+
+#### Performance (no change in output)
+
+- Posterior prediction, log-likelihood and deterministics no longer copy the
+  dataset for every 64-draw chunk, and `GraphModel::log_density` no longer copies it
+  twice per call. Fits no longer copy the whole posterior while assembling results.
+- LogNormal likelihoods cache ln(y) once per binding. Vector Student-t, Gamma and
+  half-normal priors compute their constant terms once. Reverse mode reuses forward
+  values for exp, sqrt and pow.
+- A correlated process covariance is factored once instead of at every forecast
+  step.
+
+#### Added
+
+- `prior_sampling::prior_predictive_seeded`, which reproduces Python's
+  `sample_prior_predictive` for the same seed from Rust.
+- `impl FromStr for MetricKind`, `HmcConfig::validate`, `NutsConfig::validate`,
+  `BatchSampleConfig::to_sampler_config`, `SampleResult::mean_accept_rate`,
+  `std::error::Error` for `GraphShapeError`, and
+  `diagnostics::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN`.
+- `forecast_common::{BayesianForecastError, InverseGammaPrior, ForecastQuantile,
+  PosteriorPredictiveForecast}`; the `bayesian_forecast::` paths still work.
+
+#### Removed (Rust API; nothing outside `rustmc_core` used these)
+
+- `sampler::batch_sample_graphs` and `sampler::BatchModelResult`. Use
+  `sample_batch_cells` with `BatchSeedPolicy::PositionV0`.
+- `MassMatrix::from_graph` (use `MassMatrix::identity`) and
+  `MassMatrixAccumulator::from_graph`. `MassMatrix::uturn` no longer takes a scratch
+  slice.
+- `Graph::node_by_name` and `Graph::add_node_as_logp` (use `add_logp_term`).
+  `Evaluator::vec_elem` drops its unused `&Graph` argument.
+- The `forecast_diagnostics` and `progress` modules are crate-private.
+  `rustmc_core::model` re-exports its API by name; the lowering and validation
+  helpers it used to export are private or crate-private. So are
+  `prior_sampling::{log_gamma, logit_beta, log_half_normal, sample_prior_raw}`.
+- The Python extension no longer depends on serde, serde_json, rand or rand_chacha.
+- The unused `test` extra and `scripts/verify_wheel_install.py`.
+
+#### Tests, CI and docs
+
+- The fit-artifact fixtures live in `rust_core/tests/fixtures/`, so the published
+  crate's tests build from the crate archive. CI builds them from the packaged crate.
+- CI builds the abi3 Linux wheel once and tests it on Python 3.9 to 3.14. Editable
+  source installs run on 3.11 and 3.12. The separate release-version job is folded
+  into the test job.
+- The NUTS module header states that rustmc omits the extra U-turn checks across
+  merged subtrees that Stan (since 2.21.0) and PyMC apply.
+- The statistical-validation page states the coverage band the calibration check
+  accepts at 32, 64 and 256 replicates and the `target_accept` each gate runs at.
+
 ## [0.13.0] - 2026-09-24
 
 An earlier revision of this file dated 0.13.0 to 2026-09-18, but nothing was tagged
@@ -683,7 +899,8 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/tbosier/rustmc/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tbosier/rustmc/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tbosier/rustmc/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/tbosier/rustmc/compare/v0.10.0...v0.11.0

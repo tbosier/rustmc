@@ -1,6 +1,6 @@
 [package]
 name = "rustmc_core"
-version = "0.13.0"
+version = "0.14.0"
 edition = "2021"
 # Set by the standard library, not by a dependency: `is_multiple_of` on unsigned
 # integers is stable from 1.87. CI's `msrv` job checks this crate's library, tests
