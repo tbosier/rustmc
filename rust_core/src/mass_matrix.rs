@@ -594,8 +594,12 @@ impl AccumulatorBlock {
 
 /// Effective number of independent draws behind a window's covariance,
 /// from the average lag-one autocorrelation `rho` across coordinates:
-/// `n (1 - rho) / (1 + rho)`, the AR(1) approximation. Antithetic chains
-/// (`rho < 0`) are credited with no more than `n`.
+/// `n (1 - rho²) / (1 + rho²)`, the AR(1) approximation for a second moment.
+/// A sample (co)variance of Gaussian AR(1) draws has the variance of one from
+/// that many independent draws (the lag-k autocorrelation of the centred
+/// products is `rho^2k`); the mean's factor `(1 - rho) / (1 + rho)` would
+/// undercount, most on the strongly correlated targets a dense metric is
+/// for. Antithetic chains (`rho < 0`) are credited with no more than `n`.
 fn effective_draws(
     count: usize,
     mean: &[f64],
@@ -621,7 +625,8 @@ fn effective_draws(
     } else {
         0.0
     };
-    n * (1.0 - rho) / (1.0 + rho)
+    let rho2 = rho * rho;
+    n * (1.0 - rho2) / (1.0 + rho2)
 }
 
 /// Draws per dimension from which a dense estimate is used unshrunk.
@@ -1053,9 +1058,9 @@ mod tests {
 
     #[test]
     fn autocorrelated_isotropic_draws_stay_diagonal() {
-        // MCMC draws are not independent: an AR(1) chain with coefficient 0.6
-        // carries a quarter of the information of independent draws, so the
-        // sample covariance's noise is that of a quarter of the draws. Judged
+        // MCMC draws are not independent: the sample covariance of an AR(1)
+        // chain with coefficient 0.6 has the noise of about 47% as many
+        // independent draws, (1 - 0.36) / (1 + 0.36). Judged
         // by the independent-draw noise bound, many of these windows looked
         // correlated enough to go dense.
         let dim = 40;
