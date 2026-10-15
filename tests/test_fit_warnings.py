@@ -222,6 +222,63 @@ def test_gibbs_and_conjugate_fits_report_the_unavailable_checks():
         assert_messages_state_thresholds(fit.warnings())
 
 
+def limitations(fit):
+    return [w for w in fit.warnings() if w["code"] == "known_limitation"]
+
+
+def structural(*components):
+    return rustmc.StructuralModel(
+        list(components),
+        observation_variance=rustmc.VarianceParameter.inverse_gamma(3.0, 0.4),
+    )
+
+
+def trend_component(level, slope, damping=1.0):
+    return rustmc.StructuralComponent.trend(
+        "trend", level, slope, initial_mean=[0.0, 0.0],
+        initial_covariance=[[4.0, 0.0], [0.0, 1.0]], damping=damping,
+    )
+
+
+def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not():
+    prior = rustmc.InverseGammaPrior(3.0, 0.4)
+    seasonal = rustmc.BayesianSeasonalLocalLevel(
+        period=4, level_variance_prior=prior, seasonal_variance_prior=prior,
+        observation_variance_prior=prior,
+    )
+    ig = rustmc.VarianceParameter.inverse_gamma(3.0, 0.4)
+    fixed = rustmc.VarianceParameter.fixed(0.1)
+    schedule = dict(chains=2, draws=100, warmup=100, seed=4)
+    y = series(5)
+    carrying = {
+        "seasonal": seasonal.fit(y, **schedule),
+        "seasonal with exog": seasonal.fit(y, **schedule, **exog_options()),
+        "structural trend": structural(trend_component(ig, ig)).fit(y, **schedule),
+        "damped structural trend, slope fixed": structural(
+            trend_component(ig, fixed, damping=0.9)
+        ).fit(y, **schedule),
+    }
+    for label, fit in carrying.items():
+        records = limitations(fit)
+        assert len(records) == 1, (label, records)
+        assert records[0]["status"] == "fail" and records[0]["threshold"] == 1.01
+        assert "1.01" in records[0]["message"] and "docs/reference.md" in records[0]["message"]
+    level = rustmc.StructuralComponent.level("level", ig, 0.0, 4.0)
+    clean = {
+        "local level": local_level().fit(y, **schedule),
+        "structural level": structural(level).fit(y, **schedule),
+        "structural trend, variances fixed": structural(
+            trend_component(fixed, fixed)
+        ).fit(y, **schedule),
+    }
+    for label, fit in clean.items():
+        assert limitations(fit) == [], label
+
+    batch = seasonal.fit_batch([series(6), series(7)], ids=["a", "b"], chains=2, draws=100,
+                               warmup=100)
+    assert batch.flagged() == ["a", "b"]
+
+
 def test_local_linear_trend_with_exog_carries_the_limitation_and_local_level_does_not():
     schedule = dict(chains=2, draws=100, warmup=100, seed=2)
     trend = local_linear_trend().fit(series(2), **schedule, **exog_options())

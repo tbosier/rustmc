@@ -53,14 +53,15 @@ seeded draws only where its entries say so.
 - `flagged(ignore=None)` on `BatchFit` and `ForecastBatchFit`: the IDs of
   successful cells with at least one failed check, in batch order. Failed cells are
   in `errors`. An unknown code in `ignore` raises `ValueError`.
-- Every `BayesianLocalLinearTrend` fit, including one fitted with `exog` (a
-  `BayesianRegressionFit`), carries a `known_limitation` record with status
-  `"fail"` for the documented slow mixing of its level and slope variances, so
-  `flagged()` lists those cells until `ignore=["known_limitation"]` leaves the
-  record out. The reference's local-linear-trend section gives the R-hat ranges it
-  is based on and the command that reproduces them. A `StructuralModel` trend
-  component does not get the record, although its level variance mixes slowly too;
-  its ordinary R-hat and ESS checks still apply.
+- A `known_limitation` record with status `"fail"` on every fit of a sampler that
+  mixes its state variances slowly: `BayesianLocalLinearTrend` and
+  `BayesianSeasonalLocalLevel`, each with or without `exog`, and a `StructuralModel`
+  with a trend component that has an inferred variance. `flagged()` lists those cells
+  until `ignore=["known_limitation"]` leaves the record out. The record goes on a
+  sampler whose worst R-hat was above 1.01 in all ten settings of the new
+  `benchmarks/state_variance_mixing.py`; each record states its sampler's range. The
+  local level was above 1.01 in nine of the ten and carries no record. The
+  reference's slow state-variance mixing section has the table and the command.
 - Each HMC and NUTS transition records the Hamiltonian of the state it ended in
   (`TransitionStats::energy`). It is read off values the sampler already computed,
   with no new evaluation and no RNG draw.
@@ -71,8 +72,9 @@ seeded draws only where its entries say so.
 - Rust: `diagnostics::{fit_warnings, has_failure, e_bfmi, FitWarning, WarningCode,
   WarningStatus, SamplerTelemetry, R_HAT_THRESHOLD, ESS_THRESHOLD,
   E_BFMI_THRESHOLD, compute_transition_diagnostics_with_max_tree_depth}`,
-  `SampleResult::warnings`, `warnings()` on the local-linear-trend and regression
-  posteriors, `RegressionConfig::is_local_linear_trend` and
+  `SampleResult::warnings`, `warnings()` on the local-linear-trend, seasonal
+  local-level, regression and structural posteriors,
+  `RegressionConfig::is_local_linear_trend`, `structural::Component::is_trend` and
   `bayesian_trend::local_linear_trend_limitation`.
 
 #### Changed

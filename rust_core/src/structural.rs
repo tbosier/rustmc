@@ -80,6 +80,21 @@ pub struct Component {
     pub regression: bool,
 }
 impl Component {
+    /// Whether this component has the shape [`Component::trend`] builds: a
+    /// level and a slope, transition `[[1, phi], [0, phi]]` and observation
+    /// `[1, 0]`, whatever its damping `phi`.
+    pub fn is_trend(&self) -> bool {
+        let t = &self.transition;
+        t.len() == 4
+            && t[0] == 1.0
+            && t[2] == 0.0
+            && t[1] == t[3]
+            && t[1] > 0.0
+            && t[1] <= 1.0
+            && self.observation == [1.0, 0.0]
+            && self.innovations.len() == 2
+            && !self.regression
+    }
     pub fn level(name: String, innovation: VarianceParameter, mean: f64, variance: f64) -> Self {
         Self {
             name,
@@ -643,6 +658,40 @@ impl StructuralPosterior {
             &self.parameter_samples(),
             &self.parameter_names(),
         )
+    }
+    /// Every failed or unavailable check of this fit (see
+    /// [`crate::diagnostics::fit_warnings`]), followed by a
+    /// `known_limitation` record for each trend component with an inferred
+    /// variance, whose level and slope variances this sampler mixes slowly.
+    pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        let sampler = if self.config.student_df.is_some() {
+            "gibbs_ffbs_student_t"
+        } else {
+            "gibbs_ffbs_structural"
+        };
+        let mut warnings = crate::diagnostics::fit_warnings(
+            &self.diagnostics(),
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian { sampler },
+        );
+        for component in &self.config.components {
+            let inferred = component
+                .innovations
+                .iter()
+                .any(|v| matches!(v, VarianceParameter::InverseGamma { .. }));
+            if component.is_trend() && inferred {
+                // Range over damping 1 and 0.9, measured by
+                // benchmarks/state_variance_mixing.py.
+                warnings.push(crate::diagnostics::warnings::slow_state_variance_mixing(
+                    &format!(
+                        "the level and slope variances of the trend component '{}'",
+                        component.name
+                    ),
+                    1.063,
+                    2.587,
+                ));
+            }
+        }
+        warnings
     }
     pub fn forecast(
         &self,

@@ -121,3 +121,9 @@ when `observations`, `parameters` and `chains` are changed in a config. They are
 identical workloads: `run.py` declares the coefficients as one vector parameter, while
 two of the removed scripts used separate scalar priors and one added an intercept. The
 removed scripts remain in the repository history.
+
+`benchmarks/state_variance_mixing.py` measures how slowly each Gibbs/FFBS forecasting
+sampler mixes its state variances: the worst split R-hat over three seeds in ten settings
+(five regimes, 200 and 1000 points) at 4 chains, 300 warmup and 500 draws, with data
+simulated from each model's own process. The R-hat ranges in the `known_limitation` fit
+warnings and in the reference's slow state-variance mixing section come from it.

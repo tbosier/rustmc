@@ -313,32 +313,10 @@ so inspect multi-chain convergence.
 ### Known limitation: slow mixing of the level and slope variances
 
 The local-linear-trend Gibbs sampler mixes `level_variance` and `slope_variance`
-slowly. On simulated series of 200 and 1000 points in five regimes, three data seeds
-each, fitted with 4 chains, 300 warmup and 500 draws, the worst R-hat per setting
-ranged from 1.06 to 2.06 for the level variance and from 1.05 to 1.42 for the slope
-variance, against the 1.01 threshold. A single fit's R-hat can pass by chance, so
-every `BayesianLocalLinearTrendFit.warnings()` includes a `known_limitation` record
-with status `"fail"`, and `ForecastBatchFit.flagged()` lists every local-linear-trend
-cell. Check those two variances with longer chains, then leave the record out with
-`flagged(ignore=["known_limitation"])`.
-
-A trend fitted with `exog` returns a `BayesianRegressionFit` from the joint
-regression sampler, which draws the same two variances given sampled states and
-carries the same record. With one regressor on 200-point series in the balanced and
-near-zero level variance regimes, three seeds each, its worst R-hat was 1.43 and 1.52
-for the level variance and 1.13 and 1.16 for the slope variance (the benchmark's
-`--other-models` rows). A `StructuralModel` trend component does not carry the record.
-Its level variance mixes slowly too, with a worst R-hat of 1.78 and 1.68 in the same
-rows, so read its ordinary R-hat and ESS warnings.
-
-The figures come from the mixing benchmark kept on the `fix/llt-variance-mixing`
-branch, run against a build of this release from the repository root:
-
-```bash
-git show e9039d8:benchmarks/llt_variance_mixing.py > llt_variance_mixing.py
-./scripts/dev_pytest.sh -q tests/test_smoke.py  # builds the extension into .pybuild
-PYTHONPATH=.pybuild python llt_variance_mixing.py
-```
+slowly, so every `BayesianLocalLinearTrendFit.warnings()`, and every trend fitted with
+`exog`, includes a `known_limitation` record with status `"fail"`. The measurements and
+the other samplers that carry the record are in
+[slow state-variance mixing](#slow-state-variance-mixing).
 
 ## Bayesian autoregression AR(p)
 
@@ -730,7 +708,7 @@ list means every check ran and passed.
 | `divergences` | any draw transition diverged (more than 0) | Stan's divergence check |
 | `e_bfmi` | a chain's E-BFMI is below 0.3 | Betancourt (2016); 0.3 is where Stan and ArviZ warn |
 | `tree_depth_saturation` | any draw transition's NUTS tree reached `max_tree_depth` (more than 0) | Stan's tree-depth check |
-| `known_limitation` | always, for a sampler with a documented problem: today the local-linear-trend fit | the problem's own threshold, R-hat 1.01 |
+| `known_limitation` | always, for a sampler listed under [slow state-variance mixing](#slow-state-variance-mixing) | R-hat 1.01, which those samplers exceed in every setting measured |
 
 A parameter whose draws are finite but do not vary has no R-hat or ESS. In an HMC or
 NUTS fit every parameter is sampled, so that means a chain is stuck, and the
@@ -783,6 +761,41 @@ folding, and localization: an improved R-hat for assessing convergence of MCMC",
 *Bayesian Analysis* 16(2). Betancourt (2016), "Diagnosing suboptimal cotangent
 disintegrations in Hamiltonian Monte Carlo", arXiv:1604.00695.
 
+
+### Slow state-variance mixing
+
+The Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
+and several mix those variances slowly. `benchmarks/state_variance_mixing.py` fits each
+sampler to series simulated from its own model in five regimes at 200 and 1000 points,
+three data seeds each, with 4 chains, 300 warmup and 500 draws, and takes the worst
+R-hat over the seeds in each of the ten settings. A fit's own R-hat can pass by chance,
+so a sampler whose worst R-hat was above 1.01 in all ten settings carries a
+`known_limitation` record with status `"fail"` in every fit, and `flagged()` lists its
+cells. Check those variances with longer chains, then leave the record out with
+`flagged(ignore=["known_limitation"])`.
+
+| Fit | Worst R-hat over the ten settings | Record |
+|-----|-----------------------------------|--------|
+| `BayesianLocalLinearTrend` | level 1.062 to 2.056, slope 1.051 to 1.421 | yes |
+| `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
+| `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, when at least one of its two variances is inferred |
+| `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
+| `BayesianSeasonalLocalLevel` with `exog` | level 1.012 to 1.221, seasonal 1.034 to 1.423 | yes |
+| `BayesianLocalLevel` | process 1.004 to 1.171, above 1.01 in nine of the ten settings | no |
+
+The local level's one setting at or below 1.01 is the near-zero observation variance
+regime at 200 points, where the data pin down the states. Its R-hat was 1.06 to 1.17 in
+the other nine, so read its ordinary R-hat and ESS warnings with that in mind. Samplers
+not in the table were not measured and carry no record; that includes `StructuralModel`
+level, seasonal and regression components and the local level fitted with `exog`.
+
+```bash
+./scripts/dev_pytest.sh -q tests/test_smoke.py  # builds the extension into .pybuild
+PYTHONPATH=.pybuild python -m benchmarks.state_variance_mixing
+```
+
+The local-linear-trend rows reproduce the figures of the earlier
+`llt_variance_mixing` benchmark (commit `e9039d8`) exactly.
 ## `ParamRef` and `Expr` operators
 
 ```python

@@ -17,10 +17,8 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::diagnostics::warnings::known_limitation;
-use crate::diagnostics::{
-    fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry, R_HAT_THRESHOLD,
-};
+use crate::diagnostics::warnings::slow_state_variance_mixing;
+use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry};
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
     path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
@@ -44,15 +42,11 @@ const SAMPLER_NAME: &str = "conjugate Gibbs/FFBS";
 /// slope variances slowly; batch triage should flag the fit until the user
 /// has checked it with longer chains and filters this code out.
 pub fn local_linear_trend_limitation() -> FitWarning {
-    known_limitation(
-        R_HAT_THRESHOLD,
-        format!(
-            "known limitation: the local-linear-trend Gibbs sampler mixes the level and slope \
-             variances slowly; on simulated series fitted with 4 chains, 300 warmup and 500 \
-             draws their R-hat ranged from 1.05 to 2.06, above the {R_HAT_THRESHOLD} threshold, \
-             so check level_variance and slope_variance with longer chains before trusting \
-             this fit (see the local-linear-trend section of docs/reference.md)"
-        ),
+    // Range measured by benchmarks/state_variance_mixing.py.
+    slow_state_variance_mixing(
+        "the local-linear-trend Gibbs sampler's level and slope variances",
+        1.051,
+        2.056,
     )
 }
 

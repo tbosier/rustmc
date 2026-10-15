@@ -6,7 +6,8 @@
 //! inverse-gamma priors. Latent states are updated jointly with multivariate
 //! FFBS, so missing observations retain their calendar positions.
 
-use crate::diagnostics::DiagnosticsReport;
+use crate::diagnostics::warnings::slow_state_variance_mixing;
+use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry};
 use crate::forecast_common::{
     check_forecast_size, invalid_config, numerical, overdispersed_positive, path_means,
     path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws, split_paths,
@@ -16,6 +17,9 @@ use crate::forecast_common::{
 };
 use crate::forecast_diagnostics::parameter_diagnostics;
 use crate::state_space::LinearGaussianStateSpace;
+
+/// How fit warnings name this model's sampler.
+const SAMPLER_NAME: &str = "conjugate Gibbs/FFBS";
 
 #[derive(Debug, Clone)]
 pub struct BayesianSeasonalLocalLevelConfig {
@@ -146,6 +150,26 @@ impl SeasonalLocalLevelPosterior {
             })
             .collect::<Vec<_>>();
         parameter_diagnostics(&samples, &names)
+    }
+
+    /// Every failed or unavailable check of this fit (see
+    /// [`fit_warnings`]), followed by a `known_limitation` record for the
+    /// slow mixing of the level and seasonal variances, which every seasonal
+    /// local-level fit carries whatever its diagnostics show.
+    pub fn warnings(&self) -> Vec<FitWarning> {
+        let mut warnings = fit_warnings(
+            &self.diagnostics(),
+            SamplerTelemetry::NonHamiltonian {
+                sampler: SAMPLER_NAME,
+            },
+        );
+        // Range measured by benchmarks/state_variance_mixing.py.
+        warnings.push(slow_state_variance_mixing(
+            "the seasonal local-level Gibbs sampler's level and seasonal variances",
+            1.011,
+            1.595,
+        ));
+        warnings
     }
 
     pub fn forecast(

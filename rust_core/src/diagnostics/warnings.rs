@@ -422,3 +422,25 @@ pub(crate) fn known_limitation(threshold: f64, message: String) -> FitWarning {
     )
     .message(message)
 }
+
+/// The known limitation of a Gibbs sampler that draws its state variances
+/// given sampled states and mixes them slowly.
+///
+/// `subject` names the sampler and its variances, for example "the
+/// seasonal local-level Gibbs sampler's level and seasonal variances".
+/// `low` and `high` are the range, over the ten settings of
+/// `benchmarks/state_variance_mixing.py` (five regimes, 200 and 1000 points,
+/// 4 chains, 300 warmup, 500 draws), of the worst R-hat over three seeds; a
+/// sampler gets this record only when `low` is above [`R_HAT_THRESHOLD`].
+pub(crate) fn slow_state_variance_mixing(subject: &str, low: f64, high: f64) -> FitWarning {
+    known_limitation(
+        R_HAT_THRESHOLD,
+        format!(
+            "known limitation: {subject} mix slowly; on simulated series fitted with 4 chains, \
+             300 warmup and 500 draws their worst R-hat ranged from {low:.3} to {high:.3}, above \
+             the {R_HAT_THRESHOLD} threshold in every setting measured, so check them with \
+             longer chains before trusting this fit (see the slow state-variance mixing \
+             section of docs/reference.md)"
+        ),
+    )
+}

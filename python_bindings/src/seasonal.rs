@@ -203,6 +203,10 @@ impl ForecastFit for PyBayesianSeasonalLocalLevelFit {
     fn report(&self) -> DiagnosticsReport {
         self.posterior.diagnostics()
     }
+    /// The core rule plus the sampler's known mixing limitation.
+    fn warnings(&self) -> Vec<rustmc_core::diagnostics::FitWarning> {
+        self.posterior.warnings()
+    }
     fn shape(&self) -> (usize, usize) {
         chain_shape(&self.posterior.chains)
     }

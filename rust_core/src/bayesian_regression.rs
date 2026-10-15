@@ -339,18 +339,31 @@ impl RegressionPosterior {
     }
 
     /// Every failed or unavailable check of this fit (see
-    /// [`crate::diagnostics::fit_warnings`]), followed by
-    /// [`crate::bayesian_trend::local_linear_trend_limitation`] when the
-    /// structural model is the local linear trend.
+    /// [`crate::diagnostics::fit_warnings`]), followed by a
+    /// `known_limitation` record when the structural model is the local
+    /// linear trend or the seasonal local level, whose state variances this
+    /// sampler mixes slowly.
     pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        use crate::diagnostics::warnings::slow_state_variance_mixing;
         let mut warnings = crate::diagnostics::fit_warnings(
             &self.diagnostics(),
             crate::diagnostics::SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
             },
         );
+        // Ranges measured by benchmarks/state_variance_mixing.py.
         if self.config.is_local_linear_trend() {
-            warnings.push(crate::bayesian_trend::local_linear_trend_limitation());
+            warnings.push(slow_state_variance_mixing(
+                "the level and slope variances of a local linear trend fitted with exog",
+                1.057,
+                2.621,
+            ));
+        } else if self.config.seasonal {
+            warnings.push(slow_state_variance_mixing(
+                "the level and seasonal variances of a seasonal local level fitted with exog",
+                1.012,
+                1.423,
+            ));
         }
         warnings
     }
