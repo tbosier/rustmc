@@ -717,15 +717,17 @@ list means every check ran and passed.
 | `r_hat` | a parameter's rank-normalized split R-hat is above 1.01 | Vehtari et al. (2021) |
 | `ess_bulk` | a parameter's bulk ESS is below 400 | Vehtari et al. (2021): 100 per chain at 4 chains |
 | `ess_tail` | a parameter's tail ESS is below 400 | Vehtari et al. (2021) |
-| `diagnostics_unavailable` | R-hat and ESS cannot be computed: fewer than 4 draws per chain, or a non-finite draw | 4 is two draws per split half, the fewest the split statistics use |
+| `diagnostics_unavailable` | R-hat and ESS cannot be computed: fewer than 4 draws per chain, a non-finite draw, or, in an HMC or NUTS fit, draws that do not vary | 4 is two draws per split half, the fewest the split statistics use |
 | `divergences` | any draw transition diverged (more than 0) | Stan's divergence check |
 | `e_bfmi` | a chain's E-BFMI is below 0.3 | Betancourt (2016); 0.3 is where Stan and ArviZ warn |
 | `tree_depth_saturation` | any draw transition's NUTS tree reached `max_tree_depth` (more than 0) | Stan's tree-depth check |
 | `known_limitation` | always, for a sampler with a documented problem: today the local-linear-trend fit | the problem's own threshold, R-hat 1.01 |
 
-A parameter whose draws are finite but do not vary, such as a variance fixed by the
-model, has no R-hat or ESS; it gets a `diagnostics_unavailable` record with status
-`"unavailable"`, which does not flag the fit.
+A parameter whose draws are finite but do not vary has no R-hat or ESS. In an HMC or
+NUTS fit every parameter is sampled, so that means a chain is stuck, and the
+`diagnostics_unavailable` record has status `"fail"`. In a forecasting fit it is usually
+a variance the model fixes, so the record has status `"unavailable"`, which does not
+flag the fit.
 
 Divergences, E-BFMI and tree-depth saturation exist only for Hamiltonian trajectories.
 Forecasting fits (Gibbs/FFBS, elliptical slice, exact conjugate draws, runoff) report
@@ -734,9 +736,11 @@ tree-depth saturation that way. A fit restored from an artifact older than versi
 has no energies or tree-depth limit and reports those two checks as unavailable.
 Unavailable is never a pass.
 
-E-BFMI is computed per chain over the draw transitions exactly as ArviZ's `bfmi`
-does: the sum of squared differences of successive energies over the sum of squared
-deviations of the energies from their mean. `to_arviz()` exports the energies as
+E-BFMI is computed per chain over the draw transitions as the ratio ArviZ's `bfmi`
+computes: the sum of squared differences of successive energies over the sum of
+squared deviations of the energies from their mean. The deviations are taken after
+subtracting the chain's first energy, which leaves the ratio unchanged and keeps it
+accurate when the log density carries a large constant. `to_arviz()` exports the energies as
 `energy`, so `az.bfmi(fit.to_arviz())` returns the per-chain `e_bfmi` values of
 `transition_diagnostics()`. A NUTS transition's tree depth counts the doubling that
 ended its tree, so a transition counts as saturated when its tree used the last

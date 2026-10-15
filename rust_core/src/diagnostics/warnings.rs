@@ -20,7 +20,9 @@
 //! - R-hat and ESS need at least
 //!   [`MIN_DIAGNOSTIC_DRAWS_PER_CHAIN`](super::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN)
 //!   finite draws per chain; a fit with fewer, or with a non-finite draw,
-//!   fails `diagnostics_unavailable`.
+//!   fails `diagnostics_unavailable`. So does an HMC or NUTS parameter whose
+//!   draws do not vary (a stuck chain); for other samplers that is a value
+//!   the model fixes, and the check is only unavailable.
 use super::{DiagnosticsReport, TransitionDiagnosticsReport, MIN_DIAGNOSTIC_DRAWS_PER_CHAIN};
 
 /// Rank-normalized split R-hat above this fails.
@@ -166,8 +168,9 @@ pub fn fit_warnings(
     telemetry: SamplerTelemetry<'_>,
 ) -> Vec<FitWarning> {
     let mut warnings = Vec::new();
+    let hamiltonian = matches!(telemetry, SamplerTelemetry::Hamiltonian(_));
     for parameter in &report.params {
-        parameter_warnings(report.num_draws, parameter, &mut warnings);
+        parameter_warnings(report.num_draws, parameter, hamiltonian, &mut warnings);
     }
     match telemetry {
         SamplerTelemetry::Hamiltonian(transitions) => {
@@ -183,6 +186,7 @@ pub fn fit_warnings(
 fn parameter_warnings(
     num_draws: usize,
     parameter: &super::ParamDiagnostics,
+    hamiltonian: bool,
     warnings: &mut Vec<FitWarning>,
 ) {
     use WarningCode::*;
@@ -227,24 +231,26 @@ fn parameter_warnings(
             .collect();
         if !missing.is_empty() {
             // Enough finite draws, but too uniform for a variance-based
-            // statistic: a fixed parameter, or a chain that never moves.
+            // statistic. Every parameter of an HMC or NUTS fit is sampled (or
+            // derived from sampled ones), so there a chain is stuck and the fit
+            // fails; a Gibbs model can fix a value, which is only unavailable.
+            let statistic = match missing.len() {
+                1 => format!("{} is", missing[0]),
+                _ => format!("{} are", missing.join(" and ")),
+            };
+            let (status, cause) = if hamiltonian {
+                (Fail, "a chain is stuck")
+            } else {
+                (Unavailable, "as for a fixed value")
+            };
             warnings.push(
-                FitWarning::new(
-                    DiagnosticsUnavailable,
-                    Unavailable,
-                    f64::NAN,
-                    minimum as f64,
-                )
-                .parameter(name)
-                .message(format!(
-                    "{} of '{name}' unavailable: its draws do not vary enough to \
-                         estimate it, as for a fixed value (at least {minimum} varying draws \
-                         per chain are needed)",
-                    match missing.len() {
-                        1 => format!("{} is", missing[0]),
-                        _ => format!("{} are", missing.join(" and ")),
-                    }
-                )),
+                FitWarning::new(DiagnosticsUnavailable, status, f64::NAN, minimum as f64)
+                    .parameter(name)
+                    .message(format!(
+                        "{statistic} of '{name}' unavailable: its draws do not vary enough to \
+                         estimate it, {cause} (at least {minimum} varying draws per chain are \
+                         needed)"
+                    )),
             );
         }
     }
@@ -334,9 +340,10 @@ fn hamiltonian_warnings(transitions: &TransitionDiagnosticsReport, warnings: &mu
                     FitWarning::new(TreeDepthSaturation, Fail, saturated as f64, COUNT_THRESHOLD)
                         .message(format!(
                             "{saturated} of {draws} draw transitions reached the maximum tree \
-                             depth of {limit}, above the threshold of {COUNT_THRESHOLD}; their \
-                             trajectories were cut short, so the chain explores slowly (raise \
-                             max_tree_depth or reparameterize)"
+                             depth of {limit}, above the threshold of {COUNT_THRESHOLD}; those \
+                             trees used every doubling the limit allows, so the limit may have \
+                             cut their trajectories short (raise max_tree_depth or \
+                             reparameterize)"
                         )),
                 );
             }

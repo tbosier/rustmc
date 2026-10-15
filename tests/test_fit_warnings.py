@@ -49,8 +49,13 @@ def codes(warnings, status="fail"):
 
 
 def assert_messages_state_thresholds(warnings):
+    """Each message states its threshold in one of the rule's phrasings; a bare
+    number is not enough, since "7 of 1000" contains the 0 of a count check."""
     for warning in warnings:
-        assert format(warning["threshold"], "g") in warning["message"], warning
+        t = format(warning["threshold"], "g")
+        phrasings = [f"the {t} threshold", f"threshold of {t}", f"fails above {t}",
+                     f"fails below {t}", f"the {t} they need", f"at least {t} "]
+        assert any(p in warning["message"] for p in phrasings), warning
 
 
 def assert_hamiltonian_checks_unavailable_once(warnings):

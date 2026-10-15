@@ -132,14 +132,26 @@ fn failures(warnings: &[FitWarning]) -> Vec<&FitWarning> {
         .collect()
 }
 
-/// Every record states the threshold it was judged against.
+/// Every record states the threshold it was judged against, in one of the
+/// phrasings the rule uses; a bare number is not enough, since a count such
+/// as "7 of 1000" can contain the digit of a threshold of 0 by accident.
 fn assert_messages_state_thresholds(warnings: &[FitWarning]) {
     for warning in warnings {
+        let t = format!("{}", warning.threshold);
+        let phrasings = [
+            format!("the {t} threshold"),
+            format!("threshold of {t}"),
+            format!("fails above {t}"),
+            format!("fails below {t}"),
+            format!("the {t} they need"),
+            format!("at least {t} "),
+        ];
         assert!(
-            warning.message.contains(&format!("{}", warning.threshold)),
-            "{:?} does not state its threshold {}: {}",
+            phrasings
+                .iter()
+                .any(|p| warning.message.contains(p.as_str())),
+            "{:?} does not state its threshold {t}: {}",
             warning.code,
-            warning.threshold,
             warning.message
         );
     }
@@ -338,6 +350,34 @@ fn every_local_linear_trend_fit_carries_its_known_limitation() {
     assert_eq!(limitation[0].threshold, 1.01);
     assert_eq!(limitation[0].status, WarningStatus::Fail);
     assert!(limitation[0].message.contains("docs/reference.md"));
+    assert_messages_state_thresholds(&warnings);
+}
+
+/// A chain that never moves leaves its draws constant, so R-hat and ESS do
+/// not exist. In an HMC or NUTS fit that is a failure, not a fixed value:
+/// a step size of 1e-100 cannot move a position of 1.
+#[test]
+fn a_stuck_hamiltonian_chain_fails() {
+    let config = SamplerConfig {
+        sampler: SamplerType::Hmc,
+        num_chains: 1,
+        // The fewest allowed; one dual-averaging update leaves the step tiny.
+        num_warmup: 1,
+        num_draws: 200,
+        num_leapfrog_steps: 1,
+        step_size: 1e-100,
+        ..defaults(1)
+    };
+    let result = sample_target(&StandardNormals(1), config, Some(vec![vec![1.0]])).unwrap();
+    assert!(result.samples[0].iter().all(|draw| draw[0] == 1.0));
+    let warnings = hamiltonian_warnings(&result);
+    let stuck: Vec<_> = warnings
+        .iter()
+        .filter(|w| w.code == WarningCode::DiagnosticsUnavailable)
+        .collect();
+    assert_eq!(stuck.len(), 1, "{warnings:#?}");
+    assert_eq!(stuck[0].status, WarningStatus::Fail);
+    assert!(stuck[0].message.contains("stuck"));
     assert_messages_state_thresholds(&warnings);
 }
 

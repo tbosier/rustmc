@@ -501,10 +501,12 @@ pub(crate) fn mean_accept_rate(accept_rates: &[f64]) -> f64 {
 /// Energy Bayesian fraction of missing information (E-BFMI) of one chain's
 /// energies, in draw order.
 ///
-/// This is ArviZ's `bfmi`: the mean squared difference of successive energies
-/// over their variance, both with `n - 1` in the denominator, so it equals the
-/// sum of squared successive differences over the sum of squared deviations
-/// from the mean. Betancourt (2016) proposes it; values below 0.3 suggest the
+/// This is the ratio ArviZ's `bfmi` computes: the mean squared difference of
+/// successive energies over their variance, both with `n - 1` in the
+/// denominator, so it equals the sum of squared successive differences over
+/// the sum of squared deviations from the mean. The deviations are taken
+/// after subtracting the first energy, which leaves the ratio unchanged but
+/// keeps it accurate when the energies share a large offset. Betancourt (2016) proposes it; values below 0.3 suggest the
 /// momentum resampling cannot move the chain through the energy levels the
 /// posterior needs. NaN when it is undefined: fewer than two energies, a
 /// non-finite energy, or energies that never change.
@@ -513,8 +515,15 @@ pub fn e_bfmi(energies: &[f64]) -> f64 {
     if n < 2 || energies.iter().any(|energy| !energy.is_finite()) {
         return f64::NAN;
     }
-    let mean = energies.iter().sum::<f64>() / n as f64;
-    let deviations: f64 = energies.iter().map(|e| (e - mean) * (e - mean)).sum();
+    // Measured from the first energy: the ratio does not change, and a large
+    // constant offset in the energies (a log density of -1e15, say) no longer
+    // swamps the mean that the deviations are taken from.
+    let origin = energies[0];
+    let mean = energies.iter().map(|e| e - origin).sum::<f64>() / n as f64;
+    let deviations: f64 = energies
+        .iter()
+        .map(|e| (e - origin - mean) * (e - origin - mean))
+        .sum();
     let differences: f64 = energies
         .windows(2)
         .map(|pair| (pair[1] - pair[0]) * (pair[1] - pair[0]))
@@ -2257,6 +2266,28 @@ mod tests {
             })
             .collect();
         assert!(e_bfmi(&walk) < 0.01, "{}", e_bfmi(&walk));
+    }
+
+    /// A constant in the log density shifts every energy without changing
+    /// E-BFMI. At 2^50 the energies are exact multiples of 0.25 and their sum
+    /// is far beyond 2^53, where summing them directly lost the mean.
+    #[test]
+    fn e_bfmi_ignores_a_large_shared_offset() {
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let steps: Vec<f64> = (0..2_000)
+            .map(|_| {
+                let z: f64 = StandardNormal.sample(&mut rng);
+                (z * 8.0).round() * 0.25
+            })
+            .collect();
+        let offset = 2f64.powi(50);
+        let shifted: Vec<f64> = steps.iter().map(|x| x + offset).collect();
+        assert!(steps.iter().zip(&shifted).all(|(x, s)| s - offset == *x));
+        let (plain, far) = (e_bfmi(&steps), e_bfmi(&shifted));
+        assert!(
+            plain.is_finite() && (plain - far).abs() < 1e-12 * plain,
+            "{plain} vs {far}"
+        );
     }
 
     #[test]
