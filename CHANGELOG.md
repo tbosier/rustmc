@@ -8,20 +8,24 @@ versioning while the public API is stabilized.
 
 ### Changed
 
-- `metric="auto"` judges a warmup window's estimation noise by the effective draws of
-  a covariance, `n (1 - rho^2) / (1 + rho^2)`, instead of those of a mean,
-  `n (1 - rho) / (1 + rho)`, which undercounted most on strongly correlated targets.
+- `metric="auto"` judges a warmup window's estimation noise by the least, over
+  coordinates, of `n (1 - rho_i^2) / (1 + rho_i^2)`, the effective draws of each
+  coordinate's sample variance, instead of `n (1 - rho) / (1 + rho)` for the average
+  lag-one autocorrelation `rho`, which undercounted on strongly correlated targets.
   On the exactness gate's 0.95-correlated 50-dimensional graph target it now chooses
-  a dense block and spends 32.5 to 35.2 leapfrog steps per unit of bulk ESS at the
-  gate seeds instead of 317 to 683 (forced dense: 25 to 27); that case's median over
-  the cost record's ten seeds falls from 519 to 34.8. On the nine targets of the new
-  `benchmarks/auto_metric_targets.py`, ten seeds each, the median cost of every target
-  the sampler fits soundly stays within 5% of the old count's at 1000 and at 500
-  warmup iterations, and on a curved two-dimensional target the old and new counts
-  give nearly the same results over 40 seeds; see the statistical-validation page.
-  **Seeded draws change** for an `auto` fit whose warmup now chooses dense. The
-  exactness cost, detection and false-alarm records are rerun as
-  `benchmarks/results/2026-10-15-exactness*`.
+  a dense block, at 40.2 to 122.5 leapfrog steps per unit of bulk ESS at the gate
+  seeds instead of 316 to 683 (forced dense: 25 to 27), and a median of 70.5 instead
+  of 519 over the cost record's ten seeds. Taking the least count rather than one for
+  the average `rho` keeps it from trusting noise when only some coordinates mix
+  slowly. On the nine targets of the new `benchmarks/auto_metric_targets.py`, ten seeds
+  each, the isotropic regressions and the noncentered eight schools are unchanged
+  seed for seed, the correlated and logistic regressions cost up to 4.4% more in the
+  median paired ratio (28% on the worst seed), and the two targets every metric fails
+  on change in one or two seeds; on the curved target 6 of 40 seeds change, three for
+  better and three for worse. The fits are saved under
+  `benchmarks/results/2026-10-15-*`; see the statistical-validation page. **Seeded
+  draws change** for an `auto` fit whose warmup now chooses dense. The exactness cost,
+  detection and false-alarm records are rerun as `benchmarks/results/2026-10-15-exactness*`.
 
 ## [0.14.0] - 2026-10-14
 
