@@ -6,6 +6,157 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Added
+
+- `TimeDesign` and `DesignTerm`, in Python and as `rustmc_core::time_design`, build
+  named regression columns for a training window and the forecast horizon after it:
+  level shifts (`step`), one-period effects (`pulse`), slope changes (`ramp`),
+  temporary effects with a fixed geometric decay rate (`decay`), Fourier terms,
+  piecewise-linear trend changepoints at given positions or on a Prophet-style grid
+  over the first `fraction` of a window, and named columns the caller supplies.
+  `future(steps)` evaluates the same columns at the positions after the training
+  window, so the generated forecast columns continue the training columns without a
+  separate start position; values the caller supplies are only checked for length
+  and finiteness. The columns work as
+  `exog` for the Bayesian regression forecasters, `StructuralModel` and the dynamic
+  GLMs. Changepoint coefficients get the models' Gaussian priors, which shrink like
+  ridge regression; there is no sparse prior and no break detection. See
+  `docs/interventions.md` and `examples/interventions_forecast.py`.
+- Decisions from predictive draws. `rustmc.decide(draws, loss)` returns the decision
+  with the lowest expected loss, estimated from the draws, and
+  `rustmc.expected_loss(draws, decision, loss)` the average loss of a given one;
+  `ForecastDraws.optimal_decision` and `ForecastDraws.expected_loss` do the same for a
+  forecast. Built-in losses are `AsymmetricLinearLoss(under=, over=)` (pinball; its
+  optimum is the `under / (under + over)` quantile by the rule behind every interval,
+  which can sit up to one gap between draws from the exact minimiser of the average),
+  `SquaredLoss` (the mean), `AbsoluteLoss` (the median) and `PiecewiseLinearLoss`; a
+  Python function of the decision and each draw also works. Losses without a known
+  optimum are minimised over candidate decisions only, up to 201 points across the
+  draws by default. With `(chain, draw, horizon)` draws, `steps=` decides on the total
+  over those steps within each path. The result reports the expected-loss curve, a
+  Monte Carlo standard error of the expected loss from the split-chain effective
+  sample size, and a batch-means standard error of the decision from contiguous
+  blocks of each chain. The latter is `nan` for grid searches, where batch means
+  understated the spread of the decision threefold on a coarse grid. In repeated
+  simulation the first matched the observed spread of the estimate to within 7% for
+  independent and AR(1) φ = 0.8 draws (300 and 400 replicates, in
+  `tests/test_decision.py` and the `rustmc_core::decision` tests). The second ran 3%
+  to 7% below the observed spread of the decision in 3,000-replicate runs of the
+  pinball optimum (the ignored test
+  `decision_mcse_calibration_over_3000_replicates`); the default tests hold it to
+  within 20%. The math is in `rustmc_core::decision`. See `docs/decisions.md` and
+  `examples/reserve_decision.py`.
+- Calibration diagnostics for forecasts and rolling backtests. `pit` gives PIT values
+  from predictive draws, with ties broken at random by default, so that the values
+  for a correct count or hurdle forecast are close to uniform rather than piled on a
+  few points; `pit_histogram` counts them in equal bins. `calibration_table` gives
+  empirical coverage of central intervals at 19 levels from 5% to 95%, a 95% Wilson
+  interval for each, and the mean interval width, per horizon step or pooled.
+  `point_accuracy` gives MAE, RMSE, WAPE and MASE of the predictive mean or median.
+  `BacktestResult` gains `pit()`, `pit_histogram()`, `calibration()`, `accuracy()`
+  and `baseline()`, and `compare_backtests` reports accuracy and calibration of
+  several results side by side over the origins they all completed. The statistics
+  are computed in the new `rustmc_core::forecast_evaluation`. Limitations, stated in
+  the documentation where each is described: PIT values from overlapping folds and
+  from the steps of one path are dependent, so no uniformity p-value is provided and
+  the Wilson intervals, which assume independence, are typically too narrow for
+  backtests; and interval coverage of a count forecast exceeds the nominal level even
+  when the forecast is right. See `examples/forecast_calibration.py`.
+- **Forecast reconciliation.** `rustmc.reconcile(draws, hierarchy, method=...)` makes
+  the forecasts of a hierarchy add up draw by draw, keeping chain, draw and step, and
+  returns a `ReconciledForecast` with the draws, node names, means, quantiles and
+  intervals. `rustmc.Hierarchy` is built from an explicit 0/1 summing matrix, which
+  may describe a grouped structure, or from each bottom series' labels, which gives
+  a nested hierarchy with a documented node order and path names such as
+  `BU1/IDN3/cust17`. The methods are bottom-up, top-down by average historical
+  proportions or by forecast proportions, OLS, WLS with structural or variance
+  scaling, and MinT with Schäfer–Strimmer shrinkage of one-step residuals.
+  `reconcile` accepts `(chain, draw, node, step)` arrays, per-node dicts,
+  `ForecastDraws`, `ForecastBatchForecast` and `BayesianHierarchicalForecast`. The
+  arithmetic is in `rustmc_core::reconciliation`. On a simulated hierarchy with
+  correlated errors, over 1,000 seeded replications, MinT's mean squared error was
+  0.38 of the incoherent base forecasts' and its CRPS 0.66; WLS with structural
+  scaling was worse than the base there (1.12 on both). Draws must be joint draws of
+  all nodes: draws generated independently per node still add up, but their
+  intervals ignore the correlation between node errors. See
+  `docs/reconciliation.md` and `examples/forecast_reconciliation.py`.
+- `ForecastDraws.from_result` labels the series of a `ReconciledForecast` with its
+  node names.
+
+### Changed
+
+- `backtest` keeps each fold's baseline draws in the new
+  `BacktestFold.baseline_samples` and a read-only copy of the observations in the new
+  `BacktestResult.observations`, so a backtest also holds 1,000 baseline paths per
+  fold in memory. Both fields default to `None`, so existing constructor calls still work.
+  Scores and `summary()` are unchanged.
+- **The local-linear-trend sampler integrates the states out, and its seeded
+  output changes.** `BayesianLocalLinearTrend.fit` without `exog`, and trend cells
+  of `fit_batch` without `exog`, used to draw the state path by FFBS and then each
+  variance given the states. That mixed slowly. On simulated series in five regimes
+  and two lengths, fitted with 4 chains, 300 warmup and 500 draws, the level
+  variance's worst R-hat in each setting was 1.06 to 2.06 and its smallest bulk ESS
+  6 to 58 out of 2000 draws. Each variance now takes one slice-sampling step on its
+  conditional given the other two, with the likelihood computed exactly by a Kalman
+  filter, and retained draws sample the terminal state from its filtered
+  distribution. On the same series no variance's R-hat exceeded 1.008, and the
+  smallest bulk ESS in each setting, over the three variances, was 388 to 1538.
+  The target posterior is the same. In the benchmark, on a short series, both
+  samplers' means lie within 1.8 Monte Carlo standard errors of means computed by
+  quadrature, and a unit test holds the new sampler to within 4 of them.
+  A fit took 2.0 to 2.3 times as long in the recorded run, and the level variance's
+  bulk ESS per second rose 3.7 to 96 times. In the low signal-to-noise regime, where
+  the old sampler already mixed the observation variance, that variance's ESS per
+  second fell to 0.57 to 0.68 of its old value. An interweaving (ASIS) update added
+  to the old sampler was tried first, as a prototype that was not kept. On the
+  twelve series of the new mixing test it raised the level variance's bulk ESS from
+  6–15 only to 13–181. The other figures are from `benchmarks/llt_variance_mixing.py`,
+  with raw output in `benchmarks/results/2026-09-27-llt-variance-mixing*`.
+  `sampler_stats["sampler"]` for these fits now reads
+  `"Gibbs over variances with states integrated out (slice steps)"`.
+- The trend fitted with `exog`, `StructuralModel` trends, the seasonal model and the
+  local level still draw their variances given sampled states. The same benchmark
+  shows them mixing slowly; see ROADMAP.md.
+- `BayesianLocalLinearTrend` fits without `exog` no longer carry the
+  `known_limitation` record that 0.14.0 put on every one, so `flagged()` lists their
+  cells only for a failed check. On `benchmarks/state_variance_mixing.py` the level
+  and slope variances' worst R-hat is now 1.001 to 1.008 in all ten settings, against
+  1.051 to 2.056 in 0.14.0. A trend fitted with `exog` still carries the record. Fit
+  warnings name the sampler as `sampler_stats["sampler"]` does.
+
+### Removed
+
+- Rust: `bayesian_trend::local_linear_trend_limitation`, which described the
+  sampler 0.14.0 replaced.
+
+### Fixed
+
+- The local-linear-trend sampler's Kalman filter carries each state covariance as
+  the level's variance, the slope's regression on the level and the slope's variance
+  given the level (an `L D L'` factorization) instead of as the covariance matrix.
+  With an initial covariance many orders of magnitude above the variances, forming
+  the covariances lost the slope variance to cancellation: with an initial covariance
+  of diag(1.6e16, 4e15) and five observations, the log likelihood the slice sampler
+  targets was off by 0.16 (the likelihood by 15%), and the slope variance after the
+  second observation came out as 1.0 instead of 0.606. In the new form an observation
+  only rescales the level's variance, and the predicted level variance and slope
+  variance given the level are sums of non-negative terms. The initial slope variance
+  given the level is the determinant over the level variance, with the determinant
+  from Kahan's fused multiply-add algorithm on the matrix scaled by a power of two, and
+  products whose intermediate values would leave the range of normal doubles are
+  combined as logarithms. Unit tests hold the log likelihood to within 1e-12 of its
+  value against the same recursion in exact rational arithmetic in twelve cases, and
+  in ten of them the terminal filtered means and covariance as well: that one, a
+  correlated diffuse prior with missing observations, a level variance 32 orders of
+  magnitude below a correlated slope's, state variances 39 orders of magnitude above
+  the observation variance, four at scales from 1e-200 to 1e300, and two initial
+  covariances within rounding of singular. The sampler's check that the initial
+  covariance is positive definite uses the same determinant; the Python constructor
+  and the trend fitted with `exog` keep their own checks. At ordinary scales the log
+  likelihood agrees with the general state-space filter's to within 1e-10 of its
+  magnitude, as before, but seeded draws change. 0.14.0's sampler has the same
+  weakness.
+
 ## [0.14.0] - 2026-10-14
 
 This release collects a repository-wide cleanup review and the first item three

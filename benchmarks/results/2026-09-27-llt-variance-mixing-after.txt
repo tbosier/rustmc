@@ -1,0 +1,81 @@
+rustmc 0.13.0 (/home/taylo/projects/rustmc/.claude/worktrees/fix-llt-variance-mixing/.pybuild/rustmc/__init__.py)
+script checkout revision e9039d8c2d78da93bdd739ba3990e06bdfbc0958
+python 3.12.9, numpy 2.4.2, x86_64 Linux, AMD Ryzen 9 5900X 12-Core Processor, 24 logical CPUs, RAYON_NUM_THREADS=unset (one thread per logical CPU)
+command: python -m benchmarks.llt_variance_mixing --other-models
+
+## Local-linear-trend mixing
+chains=4 warmup=300 draws=500 seeds=[0, 1, 2] (data seed s, sampler seed 100 + s); priors InverseGamma(shape, scale) {'level': (2.0, 0.01), 'slope': (2.0, 0.001), 'observation': (2.0, 0.1)}; initial level y[0], slope 0, variances 10 and 1
+R-hat is the worst over seeds, ESS the smallest, ESS/s the median; median is the median over seeds of the posterior median; cover is how many seeds' central 90% intervals contain the truth
+regime                              n variance      R-hat   bulk   tail    ESS/s     truth    median cover
+balanced                          200 level         1.001    889   1055    19189  5.00e-02  7.32e-03  1/3
+balanced                          200 slope         1.007   1345   1163    21607  5.00e-03  3.49e-03  2/3
+balanced                          200 observation   1.001   1100    990    26243  3.00e-01  2.87e-01  3/3
+                                  200 fit seconds   0.063 (median)
+balanced                         1000 level         1.008    388    676     1669  5.00e-02  3.55e-02  3/3
+balanced                         1000 slope         1.006    474    996     2322  5.00e-03  4.51e-03  3/3
+balanced                         1000 observation   1.007    539    980     2083  3.00e-01  3.11e-01  3/3
+                                 1000 fit seconds   0.261 (median)
+near-zero slope variance          200 level         1.004   1351   1342    25670  5.00e-02  7.51e-03  0/3
+near-zero slope variance          200 slope         1.005   1449   1361    28249  1.00e-06  3.26e-04  0/3
+near-zero slope variance          200 observation   1.002   1403   1311    28528  3.00e-01  2.99e-01  3/3
+                                  200 fit seconds   0.054 (median)
+near-zero slope variance         1000 level         1.002   1164   1027     4928  5.00e-02  3.41e-02  0/3
+near-zero slope variance         1000 slope         1.001   1404    956     6456  1.00e-06  1.36e-04  0/3
+near-zero slope variance         1000 observation   1.006   1223   1449     5582  3.00e-01  3.21e-01  3/3
+                                 1000 fit seconds   0.259 (median)
+near-zero level variance          200 level         1.005    918   1103    18695  1.00e-06  7.51e-03  0/3
+near-zero level variance          200 slope         1.004   1098   1321    26910  2.00e-03  1.30e-03  2/3
+near-zero level variance          200 observation   1.002   1426   1287    31616  3.00e-01  2.65e-01  2/3
+                                  200 fit seconds   0.052 (median)
+near-zero level variance         1000 level         1.002   1286   1384     5563  1.00e-06  5.52e-03  0/3
+near-zero level variance         1000 slope         1.002   1441   1342     6292  2.00e-03  1.51e-03  3/3
+near-zero level variance         1000 observation   1.002   1510   1027     6512  3.00e-01  2.96e-01  3/3
+                                 1000 fit seconds   0.266 (median)
+low signal-to-noise               200 level         1.007   1592   1232    30913  5.00e-03  5.55e-03  3/3
+low signal-to-noise               200 slope         1.001   1538   1304    33157  5.00e-04  3.78e-04  3/3
+low signal-to-noise               200 observation   1.003   1868   1344    37539  1.00e+00  9.01e-01  2/3
+                                  200 fit seconds   0.052 (median)
+low signal-to-noise              1000 level         1.003   1275   1294     5971  5.00e-03  5.65e-03  3/3
+low signal-to-noise              1000 slope         1.002   1586   1300     6532  5.00e-04  4.27e-04  3/3
+low signal-to-noise              1000 observation   1.002   1920   1384     7159  1.00e+00  9.94e-01  3/3
+                                 1000 fit seconds   0.276 (median)
+near-zero observation variance    200 level         1.007    460    652     8168  5.00e-02  2.73e-02  0/3
+near-zero observation variance    200 slope         1.002    622   1076    11035  5.00e-03  3.34e-03  2/3
+near-zero observation variance    200 observation   1.006    670    981    11890  1.00e-04  1.39e-02  0/3
+                                  200 fit seconds   0.056 (median)
+near-zero observation variance   1000 level         1.006    479    787     1737  5.00e-02  3.48e-02  0/3
+near-zero observation variance   1000 slope         1.004    766    805     3124  5.00e-03  5.30e-03  3/3
+near-zero observation variance   1000 observation   1.006    613    864     2209  1.00e-04  7.43e-03  0/3
+                                 1000 fit seconds   0.292 (median)
+
+## Posterior summaries for comparing builds
+series: simulate((0.3, 0.05, 0.2), n=40, seed=5) with y[17] missing; priors InverseGamma((3.0, 0.1), (3.0, 0.01), (3.0, 2.0)); initial state N([0, 0], diag(4, 1)); chains=4 warmup=1000 draws=25000 seeds=(1, 2); z is (mean - quadrature mean) / MCSE
+quantity               seed       mean      MCSE quadrature     z        sd       q05       q50       q95  bulk ESS
+level_variance            1    0.12111   0.00053    0.12100   0.2   0.09803   0.02176   0.09218   0.31351     32541
+slope_variance            1    0.02030   0.00010    0.02026   0.4   0.01984   0.00322   0.01367   0.05871     33266
+observation_variance      1    0.32256   0.00040    0.32279  -0.6   0.10389   0.19047   0.30442   0.51522     70844
+terminal_level            1    2.53784   0.00146    2.53615   1.2   0.44315   1.80072   2.54151   3.25940     92561
+terminal_slope            1    0.64514   0.00110    0.64359   1.4   0.28880   0.20426   0.62843   1.14548     69490
+level_variance            2    0.12177   0.00053    0.12100   1.5   0.09788   0.02184   0.09266   0.31493     32851
+slope_variance            2    0.02010   0.00010    0.02026  -1.6   0.01963   0.00322   0.01352   0.05838     33324
+observation_variance      2    0.32208   0.00040    0.32279  -1.8   0.10397   0.18962   0.30378   0.51632     72185
+terminal_level            2    2.53445   0.00145    2.53615  -1.2   0.44396   1.79571   2.53929   3.25664     93709
+terminal_slope            2    0.64211   0.00110    0.64359  -1.4   0.28852   0.20050   0.62537   1.13972     69447
+
+## Samplers not changed here: state variances drawn given sampled states
+n=200, chains=4 warmup=300 draws=500 seeds=[0, 1, 2]; the same series and priors as above (the seasonal variance takes the slope prior); worst R-hat and smallest bulk ESS over seeds
+regime                          model                            variance                R-hat   bulk
+balanced                        local level                      process_variance        1.025    143
+balanced                        seasonal local level (period 4)  level_variance          1.030    171
+balanced                        seasonal local level (period 4)  seasonal_variance       1.349     10
+balanced                        StructuralModel trend            trend.innovation[0]     1.778      6
+balanced                        StructuralModel trend            trend.innovation[1]     1.128     27
+balanced                        trend with exog                  level_variance          1.432      8
+balanced                        trend with exog                  slope_variance          1.132     34
+near-zero level variance        local level                      process_variance        1.016    189
+near-zero level variance        seasonal local level (period 4)  level_variance          1.029    117
+near-zero level variance        seasonal local level (period 4)  seasonal_variance       1.113     35
+near-zero level variance        StructuralModel trend            trend.innovation[0]     1.679      7
+near-zero level variance        StructuralModel trend            trend.innovation[1]     1.131     25
+near-zero level variance        trend with exog                  level_variance          1.516      8
+near-zero level variance        trend with exog                  slope_variance          1.159     17

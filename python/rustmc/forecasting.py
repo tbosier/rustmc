@@ -117,9 +117,11 @@ class ForecastDraws:
                 result.dates if dates is None else tuple(dates),
                 result.series if series is None else tuple(series), result.metadata)
         if series is None:
-            from ._rustmc import BayesianHierarchicalForecast
+            from ._rustmc import BayesianHierarchicalForecast, ReconciledForecast
             if isinstance(result, BayesianHierarchicalForecast):
                 series = result.program_names
+            elif isinstance(result, ReconciledForecast):
+                series = result.node_names
         return cls(result.observation_samples, _conditional_mean_samples(result),
             None if dates is None else tuple(dates), None if series is None else tuple(series),
             {"source": type(result).__name__, "uncertainty_kind": getattr(result, "uncertainty_kind", "posterior_predictive")})
@@ -151,12 +153,27 @@ class ForecastDraws:
         """Sum within each joint panel draw, preserving cross-series dependence."""
         if self.observation_samples.ndim != 4:
             raise ValueError("aggregation requires a series axis")
+        if weights is None and self.metadata.get("source") == "ReconciledForecast":
+            raise ValueError("these series are the nodes of a reconciled hierarchy, which already "
+                "include their totals, so summing them counts each bottom series once per level; "
+                "use the total node's draws, or pass weights")
         weight = np.ones(self.observation_samples.shape[2]) if weights is None else np.asarray(weights, dtype=float)
         if weight.shape != (self.observation_samples.shape[2],) or not np.isfinite(weight).all():
             raise ValueError("weights must contain one finite value per series")
         mean = None if self.mean_samples is None else np.einsum("cdsh,s->cdh", self.mean_samples, weight)
         return ForecastDraws(np.einsum("cdsh,s->cdh", self.observation_samples, weight), mean, self.dates,
             metadata={**self.metadata, "aggregation_weights": weight.tolist()})
+
+    def expected_loss(self, decision: float, loss: Any, *, steps: Sequence[int] | None = None) -> Any:
+        """Expected loss of ``decision`` over the observation draws; see ``rustmc.expected_loss``."""
+        from ._rustmc import expected_loss
+        return expected_loss(self, decision, loss, steps=steps)
+
+    def optimal_decision(self, loss: Any, *, steps: Sequence[int] | None = None,
+        candidates: Any = None, method: str = "auto") -> Any:
+        """Decision minimising expected loss over the observation draws; see ``rustmc.decide``."""
+        from ._rustmc import decide
+        return decide(self, loss, steps=steps, candidates=candidates, method=method)
 
     def save(self, path: str | Path) -> None:
         """Store a versioned NumPy archive without Python pickle payloads."""

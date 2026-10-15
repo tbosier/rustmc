@@ -49,8 +49,9 @@ Duplicate IDs, wrong batch lengths, or invalid execution options always raise.
 `batch.diagnostics()` maps successful IDs to parameter reports and failed IDs to
 `None`; `batch.warnings()` maps them to fit warnings the same way, and
 `batch.flagged()` lists the successful IDs with a failed check (see
-[fit warnings](reference.md#fit-warnings-and-batch-triage)). A local-linear-trend or seasonal local-level cell, with or without `exog`, is always
-flagged, for its [known limitation](reference.md#slow-state-variance-mixing). Forecast errors follow the same contract, including previous fit failures.
+[fit warnings](reference.md#fit-warnings-and-batch-triage)). A seasonal local-level
+cell, with or without `exog`, and a local-linear-trend cell fitted with `exog` are
+always flagged, for their [known limitation](reference.md#slow-state-variance-mixing). Forecast errors follow the same contract, including previous fit failures.
 
 One private Rayon pool serves the entire call, including nested chain work. `threads`
 and `chunk_size` must be positive; the default worker limit is one. Native execution
@@ -75,7 +76,9 @@ platform; floating-point libraries can differ across platforms.
 
 Batch forecasts preserve each model's paired posterior parameters and coherent future
 path. Aggregation across cells represents independent series and introduces no shared
-shocks or hierarchical dependence.
+shocks or hierarchical dependence. To make the forecasts of a hierarchy's nodes add
+up, see [forecast reconciliation](reconciliation.md), which also explains what
+independent draws mean there.
 
 All five fitted models and hierarchical Gibbs fits expose `summary()`, `diagnostics()`,
 `warnings()`, and a `sampler_stats` dictionary. Parameter reports reuse rank-normalized folded split

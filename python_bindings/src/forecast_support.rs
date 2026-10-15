@@ -15,7 +15,9 @@
 //!   `StructuralModel` and its JSON).
 //! - plain `ValueError`: argument checks every model shares - array
 //!   conversion, interval levels, quantile probabilities, batch options such
-//!   as `errors=` and `threads=`, and `fourier_design` arguments.
+//!   as `errors=` and `threads=`, and `fourier_design`, `DesignTerm` and
+//!   `TimeDesign` arguments; and every refusal from forecast reconciliation,
+//!   which fits no model.
 use crate::data_input::real_numbers;
 use crate::{arviz_from_groups, forecast_diagnostics, InferenceError, StateSpaceError};
 use ndarray::{Array2, Array3, ArrayD, IxDyn};

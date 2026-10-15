@@ -664,8 +664,8 @@ impl PyForecastBatchFit {
     }
     /// IDs of the successful cells with at least one failed check, in batch
     /// order. Checks whose code is in `ignore` do not count, so
-    /// `flagged(ignore=["known_limitation"])` leaves out local-linear-trend
-    /// cells that fail nothing else. Failed cells are not listed: they have
+    /// `flagged(ignore=["known_limitation"])` leaves out cells of a slowly
+    /// mixing sampler that fail nothing else. Failed cells are not listed: they have
     /// no fit, and their errors are in `errors`.
     #[pyo3(signature = (ignore=None))]
     fn flagged(&self, py: Python<'_>, ignore: Option<Vec<String>>) -> PyResult<Vec<String>> {

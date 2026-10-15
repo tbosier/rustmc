@@ -9,8 +9,9 @@ particular model: [structural composition](structural-forecasting.md),
 [sparse amounts](sparse-amounts.md), and [payment runoff](runoff.md).
 
 These models do not use `ModelBuilder` or the NUTS sampler. Each has its own
-constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models,
-exact conjugate draws for AR, block elliptical slice sampling for dynamic GLMs, and for
+constructor and its own kernel: Gibbs with FFBS for the Gaussian state-space models
+(the local linear trend without `exog` integrates its states out instead), exact
+conjugate draws for AR, block elliptical slice sampling for dynamic GLMs, and for
 runoff either exact conjugate draws or latent-count Gibbs, depending on whether every
 ultimate total is known. A fit's `sampler_stats` names the one that ran. Where the
 draws are exact and independent there is no warmup and no convergence period, so read
@@ -95,6 +96,92 @@ produce NaN scores, which summaries omit. Infinite losses (for example, an
 unrepresentably large squared error) remain infinite in summaries rather than
 being omitted. Coverage and widths are pointwise, not simultaneous bands.
 
+## Check calibration and sharpness
+
+A lower CRPS says one forecaster did better overall. It does not say whether the
+uncertainty each one claimed was right. Continuing from the backtest above:
+
+```python
+comparison = r.compare_backtests({"structural": result, "baseline": result.baseline()})
+print(comparison)                     # accuracy and calibration, one column each
+
+table = result.calibration()          # 19 levels from 5% to 95%, per horizon step
+table["level"], table["coverage"], table["coverage_lower"], table["width"]
+overall = result.calibration(by_horizon=False)
+print(result.accuracy(period=1))      # MAE, RMSE, WAPE and MASE per horizon step
+values = result.pit()                 # (fold, horizon) PIT values
+print(result.pit_histogram(bins=5))   # PIT counts per bin
+```
+
+`result.baseline()` returns the baseline's forecasts as a `BacktestResult` of their
+own, so every method below applies to it too. `compare_backtests` takes any number of
+named results, scores only the origins every one of them forecast successfully, and
+refuses results that hold different outcomes at an origin. Its `excluded` field lists
+the origins it dropped. It reports, for each result:
+
+- **Accuracy of the point forecast**: `mae`, `rmse`, `wape` (`sum |error| / sum
+  |actual|`) and `mase`. The point forecast is the predictive mean; pass
+  `point="median"` for the median, which is the better point forecast for absolute
+  error. `mase` divides each absolute error by the fold's in-sample mean absolute
+  difference between observations `period` steps apart, so pass `period=12` for a
+  monthly series to scale by the seasonal naive error. Each fold has its own scale,
+  and `mase` averages the scaled errors, so it is not MAE divided by one scale. Nor is
+  it a ratio against the baseline's error on the same outcomes: a multi-step forecast
+  can beat the baseline and still have a MASE above 1.
+- **Accuracy of the whole forecast**: `crps` and `wis`, as in `summary()`. They come
+  from the scores stored in each fold, so `crps` is reported only when every scored
+  fold holds its scores, and `wis` only when, in addition, every result was
+  backtested with the same `levels`.
+- **Calibration**: `coverage_<level>`, the share of outcomes inside the central
+  interval of that nominal level, for `levels=(.5, .8, .95)` by default, and
+  `coverage_error`, the mean absolute gap between empirical and nominal coverage over
+  the 19 levels. Interval bounds count as inside, so for a forecast with atoms, such
+  as counts or a hurdle model's zeros, coverage exceeds the level even when the
+  forecast is exactly right: a forecast that is always zero covers at every level.
+  For such forecasts, judge calibration by the randomised PIT below.
+- **Sharpness**: `width_<level>`, the mean width of those intervals. Good coverage
+  from very wide intervals is not a good forecast, so read coverage and width
+  together.
+
+`calibration()` returns `level`, then `coverage`, its 95% Wilson interval
+`coverage_lower` and `coverage_upper`, and `width`, each shaped `(horizon, level)`,
+and `count`, the outcomes behind each row. Only outcomes that were observed count,
+for coverage and width alike.
+
+The PIT value of an outcome is the predictive probability of a value at or below it.
+If the forecasts are calibrated, PIT values are roughly uniform: a histogram with too
+many values in its outer bins means intervals that are too narrow, and too many in
+the middle means intervals that are too wide. A count forecast has ties, so its
+plain PIT is not uniform even when the forecast is exactly right. `pit()` therefore
+breaks ties at random by default: with `n` draws, `below` of them smaller than the
+outcome and `ties` equal to it, the value is `(below + u * (ties + 1)) / (n + 1)` for
+a uniform `u` drawn from `seed` and the fold's origin. This is exactly uniform when
+the outcome and the draws are independent draws from one distribution, whether that
+is a count, a continuous amount, or a hurdle model's mix of zeros and amounts. MCMC
+draws are correlated with each other, so even for a correct model the uniformity is
+approximate.
+`randomized=False` gives the plain fraction of draws at or below the outcome.
+
+These outcomes are not independent. Folds that overlap share outcomes and most of
+their training data, and the horizon steps of one forecast share its errors. For a
+random walk forecast with its own true predictive distribution, the PIT values at
+steps 1 and 2 of one fold have a correlation of about 0.7, and those at step 2 of
+neighbouring folds about 0.5 (`tests/test_forecast_calibration.py`). So:
+
+- the Wilson interval treats every outcome as an independent trial. When outcomes
+  are positively correlated, as in that example, it is too narrow, by an amount
+  rustmc cannot estimate from the backtest;
+- rustmc does not compute a uniformity test or p-value for the PIT values. A
+  standard test assumes independent values, which these are not, so its p-value
+  would not mean what it says. Read the histogram and the coverage table as
+  descriptions.
+
+A `BacktestResult` from `backtest` keeps a read-only copy of the observations in
+`observations`, for MASE, and each fold keeps its baseline draws in
+`baseline_samples`. A `BacktestResult` built without observations reports no `mase`.
+The [forecast calibration example](examples/forecast-calibration.md) runs this
+comparison for a seasonal model and the seasonal naive baseline, with its output.
+
 The [retained calibration study](https://github.com/tbosier/rustmc/blob/main/benchmarks/results/2026-09-09-calibration.md)
 uses 32 independently generated datasets per model and reports convergence, coverage,
 CRPS, and Monte Carlo uncertainty. Its companion pilot retains short-run convergence
@@ -161,7 +248,22 @@ scores["crps"], scores["coverage_0.95"], scores["width_0.95"]
 lower, upper = np.quantile(baseline.reshape(-1, 4), [.025, .975], axis=0)
 r.interval_score(actual, lower, upper, alpha=.05)
 r.seasonal_naive(y[:16], 4, 2)                 # (4,) point forecast
+
+r.pit(baseline, actual)                        # (4,) PIT values
+r.pit_histogram(r.pit(baseline, actual), bins=4)
+r.calibration_table(baseline, actual, levels=(.5, .9))   # coverage and width
+r.point_accuracy(baseline, actual, training=y[:16], period=2)
 ```
+
+`pit`, `pit_histogram`, `calibration_table` and `point_accuracy` are the functions
+behind the backtest methods in [the section above](#check-calibration-and-sharpness),
+applied to one forecast. `calibration_table` and `point_accuracy` group by the last
+axis of `actual` unless `by_horizon=False`. `point_accuracy` reports `mase` only when
+given `training`, shaped `(*series, time)` for `actual` shaped `(*series, horizon)`. A
+missing outcome is skipped. A zero denominator in WAPE or MASE gives zero when the
+error is zero and infinity otherwise; `mase` is NaN if a series has no observed pair
+`period` steps apart. A single forecast has few outcomes, so its coverage table is
+mostly a check that the shapes are right.
 
 `backtest(model, observations, *, horizon, ...)` wraps this loop over rolling origins
 and returns a `BacktestResult` whose `.folds` are `BacktestFold` records. Its `errors`

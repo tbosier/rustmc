@@ -5,9 +5,13 @@ from .evaluation import (
     BacktestFold, BacktestResult, backtest, crps, interval_score,
     naive_forecast, score_forecast, seasonal_naive, weighted_interval_score,
 )
+from .evaluation import (
+    BacktestComparison, calibration_table, compare_backtests, pit, pit_histogram, point_accuracy,
+)
 from .forecasting import (
     ForecastDraws, ForecastSession, NamedDesign, ScenarioForecast, forecast_scenarios,
 )
+from .reconciliation import reconcile
 
 # The public API, and nothing else.  Importing the two submodules below binds
 # them as package attributes, so without this list `from rustmc import *` also
@@ -20,6 +24,9 @@ from .forecasting import (
 # tests/test_namespace.py derives what belongs here from the extension's own
 # exports and fails naming anything unlisted, so this list cannot silently rot.
 __all__ = [
+    "AbsoluteLoss",
+    "AsymmetricLinearLoss",
+    "BacktestComparison",
     "BacktestFold",
     "BacktestResult",
     "BatchFit",
@@ -52,9 +59,12 @@ __all__ = [
     "BayesianTrendForecast",
     "BoundModel",
     "CompiledModel",
+    "Decision",
+    "DesignTerm",
     "DirichletMultinomialRunoff",
     "DynamicGLMFit",
     "DynamicGLMForecast",
+    "ExpectedLoss",
     "Expr",
     "FitResult",
     "ForecastBatchFit",
@@ -63,6 +73,7 @@ __all__ = [
     "ForecastResult",
     "ForecastSession",
     "GaussianCoefficientPrior",
+    "Hierarchy",
     "InferenceError",
     "InverseGammaPrior",
     "KalmanFilterResult",
@@ -74,24 +85,36 @@ __all__ = [
     "NormalInverseGammaPrior",
     "ParamRef",
     "ParameterError",
+    "PiecewiseLinearLoss",
+    "ReconciledForecast",
     "RunoffFit",
     "ScenarioForecast",
+    "SquaredLoss",
     "StateSpaceError",
     "StructuralComponent",
     "StructuralFit",
     "StructuralForecast",
     "StructuralModel",
+    "TimeDesign",
     "VarianceParameter",
     "VectorParamRef",
     "backtest",
     "batch_sample",
+    "calibration_table",
+    "compare_backtests",
     "crps",
+    "decide",
+    "expected_loss",
     "forecast_cell_seed",
     "forecast_scenarios",
     "fourier_design",
     "hurdle_lognormal_logp",
     "interval_score",
     "naive_forecast",
+    "pit",
+    "pit_histogram",
+    "point_accuracy",
+    "reconcile",
     "sample",
     "sample_prior_predictive",
     "score_forecast",

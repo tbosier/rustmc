@@ -960,7 +960,7 @@ fn has_enough_split_draws(split: &[Vec<f64>]) -> bool {
 }
 
 /// ESS of the mean from split chains.
-fn ess_raw(chains: &[Vec<f64>]) -> f64 {
+pub(crate) fn ess_raw(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
     if !has_enough_split_draws(&split) {
         return f64::NAN;
