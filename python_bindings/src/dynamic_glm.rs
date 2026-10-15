@@ -276,6 +276,7 @@ impl PyDynamicGLMFit {
                 &self.posterior.diagnostics(),
                 rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian {
                     sampler: "block_elliptical_slice",
+                    constant: &[],
                 },
             )
         });

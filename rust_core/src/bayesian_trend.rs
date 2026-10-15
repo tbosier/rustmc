@@ -144,6 +144,7 @@ impl LocalLinearTrendPosterior {
             &self.diagnostics(),
             SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
+                constant: &[],
             },
         );
         warnings.push(local_linear_trend_limitation());

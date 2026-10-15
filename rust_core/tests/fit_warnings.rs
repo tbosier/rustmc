@@ -265,6 +265,7 @@ fn gibbs_fits_report_hamiltonian_checks_as_unavailable_never_as_passes() {
         &posterior.diagnostics(),
         SamplerTelemetry::NonHamiltonian {
             sampler: "conjugate Gibbs/FFBS",
+            constant: &[],
         },
     );
     for code in [
@@ -302,8 +303,8 @@ fn too_few_draws_fail_and_a_fixed_parameter_is_only_unavailable() {
     }
     assert_messages_state_thresholds(&warnings);
 
-    // A variance fixed by the model is constant in every chain: its R-hat
-    // and ESS do not exist, which is not a failure of the fit.
+    // Two parameters whose draws are constant in every chain: their R-hat
+    // and ESS do not exist.
     let mut fixed = result.diagnostics();
     fixed.num_draws = 100;
     for parameter in &mut fixed.params {
@@ -312,16 +313,30 @@ fn too_few_draws_fail_and_a_fixed_parameter_is_only_unavailable() {
         parameter.ess_bulk = f64::NAN;
         parameter.ess_tail = f64::NAN;
     }
-    let warnings = fit_warnings(&fixed, SamplerTelemetry::NonHamiltonian { sampler: "test" });
-    let unavailable: Vec<_> = warnings
+    let availability = |constant: &[String]| -> Vec<WarningStatus> {
+        fit_warnings(
+            &fixed,
+            SamplerTelemetry::NonHamiltonian {
+                sampler: "test",
+                constant,
+            },
+        )
         .iter()
         .filter(|w| w.code == WarningCode::DiagnosticsUnavailable)
-        .collect();
-    assert_eq!(unavailable.len(), 2);
-    assert!(unavailable
-        .iter()
-        .all(|w| w.status == WarningStatus::Unavailable));
-    assert!(failures(&warnings).is_empty(), "{warnings:#?}");
+        .map(|w| w.status)
+        .collect()
+    };
+    // Declared as quantities the model can hold constant (a fixed
+    // variance): only unavailable, which is not a failure of the fit.
+    let names: Vec<String> = fixed.params.iter().map(|p| p.name.clone()).collect();
+    assert_eq!(availability(&names), [WarningStatus::Unavailable; 2]);
+    // Not declared: the sampler draws them, so constant draws mean a stuck
+    // chain or a numerical collapse, and fail.
+    assert_eq!(availability(&[]), [WarningStatus::Fail; 2]);
+    assert_eq!(
+        availability(&names[..1]),
+        [WarningStatus::Unavailable, WarningStatus::Fail]
+    );
 }
 
 #[test]

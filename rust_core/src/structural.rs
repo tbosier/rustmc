@@ -669,9 +669,29 @@ impl StructuralPosterior {
         } else {
             "gibbs_ffbs_structural"
         };
+        // A fixed variance is constant by construction; everything else is
+        // drawn and should vary.
+        let variances = self.config.components.iter().flat_map(|c| &c.innovations);
+        let mut constant: Vec<String> = self
+            .config
+            .variance_names()
+            .into_iter()
+            .zip(variances)
+            .filter(|(_, v)| matches!(v, VarianceParameter::Fixed(_)))
+            .map(|(name, _)| name)
+            .collect();
+        if matches!(
+            self.config.observation_variance,
+            VarianceParameter::Fixed(_)
+        ) {
+            constant.push("observation_variance".into());
+        }
         let mut warnings = crate::diagnostics::fit_warnings(
             &self.diagnostics(),
-            crate::diagnostics::SamplerTelemetry::NonHamiltonian { sampler },
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian {
+                sampler,
+                constant: &constant,
+            },
         );
         for component in &self.config.components {
             let inferred = component

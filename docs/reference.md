@@ -704,20 +704,21 @@ list means every check ran and passed.
 | `r_hat` | a parameter's rank-normalized split R-hat is above 1.01 | Vehtari et al. (2021) |
 | `ess_bulk` | a parameter's bulk ESS is below 400 | Vehtari et al. (2021): 100 per chain at 4 chains |
 | `ess_tail` | a parameter's tail ESS is below 400 | Vehtari et al. (2021) |
-| `diagnostics_unavailable` | R-hat and ESS cannot be computed: fewer than 4 draws per chain, a non-finite draw, or, in an HMC or NUTS fit, draws that do not vary | 4 is two draws per split half, the fewest the split statistics use |
+| `diagnostics_unavailable` | R-hat and ESS cannot be computed: fewer than 4 draws per chain, a non-finite draw, or draws that do not vary for a quantity the model does not hold constant | 4 is two draws per split half, the fewest the split statistics use |
 | `divergences` | any draw transition diverged (more than 0) | Stan's divergence check |
 | `e_bfmi` | a chain's E-BFMI is below 0.3 | Betancourt (2016); 0.3 is where Stan and ArviZ warn |
 | `tree_depth_saturation` | any draw transition's NUTS tree reached `max_tree_depth` (more than 0) | Stan's tree-depth check |
 | `known_limitation` | always, for a sampler listed under [slow state-variance mixing](#slow-state-variance-mixing) | R-hat 1.01, which those samplers exceed in every setting measured |
 
-A parameter whose draws are finite but do not vary has no R-hat or ESS. In an HMC or
-NUTS fit every parameter is sampled, so that means a chain is stuck, and the
-`diagnostics_unavailable` record has status `"fail"`. A forecasting model can fix a
-value (a `StructuralModel` variance set with `VarianceParameter.fixed`), and the rule
-cannot tell that apart from draws that collapsed numerically, for example a level
-sampled on data near 1e16 where the posterior spread is below double precision. So in a
-forecasting fit the record has status `"unavailable"`, which does not flag the fit;
-read the `unavailable` records of a fit whose parameters should all vary.
+A parameter whose draws are finite but do not vary has no R-hat or ESS. A model
+declares the quantities it can hold constant: a `StructuralModel` variance set with
+`VarianceParameter.fixed`, and a runoff cohort's `ultimate`, a count that is known for a
+closed cohort and whose posterior can sit on one value. For those the
+`diagnostics_unavailable` record has status `"unavailable"`, which does not flag the
+fit. Every other quantity is drawn by the sampler, so draws that do not vary mean a
+stuck chain or draws that collapsed below floating-point resolution (for example a
+level sampled on data near 1e16 with unit-scale variances), and the record has status
+`"fail"`.
 
 Divergences, E-BFMI and tree-depth saturation exist only for Hamiltonian trajectories.
 Forecasting fits (Gibbs/FFBS, elliptical slice, exact conjugate draws, runoff) report

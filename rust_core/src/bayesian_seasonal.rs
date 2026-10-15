@@ -161,6 +161,7 @@ impl SeasonalLocalLevelPosterior {
             &self.diagnostics(),
             SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
+                constant: &[],
             },
         );
         // Range measured by benchmarks/state_variance_mixing.py.

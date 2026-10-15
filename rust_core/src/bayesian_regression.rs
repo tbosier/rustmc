@@ -349,6 +349,7 @@ impl RegressionPosterior {
             &self.diagnostics(),
             crate::diagnostics::SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
+                constant: &[],
             },
         );
         // Ranges measured by benchmarks/state_variance_mixing.py.

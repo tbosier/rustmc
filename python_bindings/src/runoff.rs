@@ -137,9 +137,22 @@ impl PyRunoffFit {
     fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
         let sampler = self.sampler();
         let warnings = py.allow_threads(|| {
+            let report = self.inner.diagnostics();
+            // An ultimate is a count: known exactly for a closed cohort, and
+            // its posterior can sit on one value, so constant draws are not
+            // a failure. Lag probabilities and intensities are continuous.
+            let constant: Vec<String> = report
+                .params
+                .iter()
+                .map(|p| p.name.clone())
+                .filter(|name| name.starts_with("ultimate["))
+                .collect();
             rustmc_core::diagnostics::fit_warnings(
-                &self.inner.diagnostics(),
-                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian { sampler },
+                &report,
+                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian {
+                    sampler,
+                    constant: &constant,
+                },
             )
         });
         crate::forecast_diagnostics::warnings_list(py, &warnings)

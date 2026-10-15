@@ -53,6 +53,11 @@ seeded draws only where its entries say so.
 - `flagged(ignore=None)` on `BatchFit` and `ForecastBatchFit`: the IDs of
   successful cells with at least one failed check, in batch order. Failed cells are
   in `errors`. An unknown code in `ignore` raises `ValueError`.
+- A quantity whose draws do not vary fails `diagnostics_unavailable` unless the model
+  declares it can hold it constant: a fixed `StructuralModel` variance or a runoff
+  `ultimate`. So a stuck chain, or draws that collapsed below floating-point
+  resolution, flag a forecasting fit as they flag an HMC or NUTS fit.
+  `SamplerTelemetry::NonHamiltonian` takes the declared names as `constant`.
 - A `known_limitation` record with status `"fail"` on every fit of a sampler that
   mixes its state variances slowly: `BayesianLocalLinearTrend` and
   `BayesianSeasonalLocalLevel`, each with or without `exog`, and a `StructuralModel`

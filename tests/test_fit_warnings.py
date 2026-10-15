@@ -176,6 +176,42 @@ def test_gibbs_fits_report_hamiltonian_checks_as_unavailable_never_as_passes():
     assert all(warning["status"] in {"fail", "unavailable"} for warning in warnings)
 
 
+def constant_records(fit):
+    return {
+        w["parameter"]: w["status"]
+        for w in fit.warnings()
+        if w["code"] == "diagnostics_unavailable"
+    }
+
+
+def test_collapsed_draws_fail_and_values_the_model_holds_constant_do_not():
+    # A level sampled on data near 1e16 with unit-scale variances: its
+    # posterior spread is below double precision, so every draw is equal.
+    prior = rustmc.InverseGammaPrior(3.0, 0.4)
+    collapsed = rustmc.BayesianLocalLevel(
+        process_variance_prior=prior, observation_variance_prior=prior,
+        initial_mean=1e16, initial_variance=1.0,
+    )
+    fit = collapsed.fit(np.full(30, 1e16), chains=4, draws=300, warmup=200, seed=1)
+    assert constant_records(fit) == {"terminal_level": "fail"}
+    assert_messages_state_thresholds(fit.warnings())
+    batch = collapsed.fit_batch([np.full(30, 1e16), series(1) + 1e16], ids=["flat", "noisy"],
+                                chains=4, draws=300, warmup=200)
+    assert "flat" in batch.flagged()
+
+    # A fixed StructuralModel variance is constant by construction.
+    ig = rustmc.VarianceParameter.inverse_gamma(3.0, 0.4)
+    level = rustmc.StructuralComponent.level("level", rustmc.VarianceParameter.fixed(0.1), 0.0, 4.0)
+    model = rustmc.StructuralModel([level], observation_variance=ig)
+    fit = model.fit(series(2), chains=2, draws=100, warmup=100, seed=2)
+    assert constant_records(fit) == {"level.innovation[0]": "unavailable"}
+
+    # A closed runoff cohort's ultimate is its known total.
+    runoff = rustmc.DirichletMultinomialRunoff([2, 3], total_shape=4, total_rate=0.2)
+    fit = runoff.fit(np.array([[3.0, 1.0], [2.0, np.nan]]), [0, 1], 1, draws=400, chains=2, seed=3)
+    assert constant_records(fit) == {"ultimate[0]": "unavailable"}
+
+
 def exog_options(n=80):
     return dict(
         exog=np.linspace(-1.0, 1.0, n)[:, None],

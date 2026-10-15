@@ -20,11 +20,11 @@
 //! - R-hat and ESS need at least
 //!   [`MIN_DIAGNOSTIC_DRAWS_PER_CHAIN`](super::MIN_DIAGNOSTIC_DRAWS_PER_CHAIN)
 //!   finite draws per chain; a fit with fewer, or with a non-finite draw,
-//!   fails `diagnostics_unavailable`. So does an HMC or NUTS parameter whose
-//!   draws do not vary (a stuck chain). Other samplers can fix a value (a
-//!   `StructuralModel` variance set to `VarianceParameter::Fixed`), and the
-//!   rule cannot tell that from draws that collapsed numerically, so there
-//!   the check is only unavailable and does not flag the fit.
+//!   fails `diagnostics_unavailable`. So does a parameter whose draws do not
+//!   vary (a stuck chain, or draws that collapsed numerically), unless the
+//!   model declares it can hold that quantity constant (see
+//!   [`SamplerTelemetry::NonHamiltonian`]); then the check is only
+//!   unavailable and does not flag the fit.
 use super::{DiagnosticsReport, TransitionDiagnosticsReport, MIN_DIAGNOSTIC_DRAWS_PER_CHAIN};
 
 /// Rank-normalized split R-hat above this fails.
@@ -158,8 +158,14 @@ pub enum SamplerTelemetry<'a> {
     /// [`crate::sampler::SampleResult::transition_diagnostics`].
     Hamiltonian(&'a TransitionDiagnosticsReport),
     /// A sampler without Hamiltonian trajectories (Gibbs, elliptical slice,
-    /// conjugate draws), named as the messages should name it.
-    NonHamiltonian { sampler: &'a str },
+    /// conjugate draws), named as the messages should name it. `constant`
+    /// names the reported quantities the model can hold constant (a fixed
+    /// variance, a count whose posterior is one value); draws that do not
+    /// vary are unavailable for those and a failure for every other one.
+    NonHamiltonian {
+        sampler: &'a str,
+        constant: &'a [String],
+    },
 }
 
 /// Every failed or unavailable check of one fit, in a fixed order: each
@@ -170,15 +176,25 @@ pub fn fit_warnings(
     telemetry: SamplerTelemetry<'_>,
 ) -> Vec<FitWarning> {
     let mut warnings = Vec::new();
-    let hamiltonian = matches!(telemetry, SamplerTelemetry::Hamiltonian(_));
+    let (hamiltonian, constant): (bool, &[String]) = match telemetry {
+        SamplerTelemetry::Hamiltonian(_) => (true, &[]),
+        SamplerTelemetry::NonHamiltonian { constant, .. } => (false, constant),
+    };
     for parameter in &report.params {
-        parameter_warnings(report.num_draws, parameter, hamiltonian, &mut warnings);
+        let held_constant = constant.contains(&parameter.name);
+        parameter_warnings(
+            report.num_draws,
+            parameter,
+            hamiltonian,
+            held_constant,
+            &mut warnings,
+        );
     }
     match telemetry {
         SamplerTelemetry::Hamiltonian(transitions) => {
             hamiltonian_warnings(transitions, &mut warnings);
         }
-        SamplerTelemetry::NonHamiltonian { sampler } => {
+        SamplerTelemetry::NonHamiltonian { sampler, .. } => {
             non_hamiltonian_warnings(sampler, &mut warnings);
         }
     }
@@ -189,6 +205,7 @@ fn parameter_warnings(
     num_draws: usize,
     parameter: &super::ParamDiagnostics,
     hamiltonian: bool,
+    held_constant: bool,
     warnings: &mut Vec<FitWarning>,
 ) {
     use WarningCode::*;
@@ -233,17 +250,23 @@ fn parameter_warnings(
             .collect();
         if !missing.is_empty() {
             // Enough finite draws, but too uniform for a variance-based
-            // statistic. Every parameter of an HMC or NUTS fit is sampled (or
-            // derived from sampled ones), so there a chain is stuck and the fit
-            // fails; a Gibbs model can fix a value, which is only unavailable.
+            // statistic. Only a quantity the model declares it can hold
+            // constant is merely unavailable; any other sampled quantity has
+            // a stuck chain or draws that collapsed numerically, and fails.
             let statistic = match missing.len() {
                 1 => format!("{} is", missing[0]),
                 _ => format!("{} are", missing.join(" and ")),
             };
-            let (status, cause) = if hamiltonian {
-                (Fail, "a chain is stuck")
+            let (status, cause) = if held_constant {
+                (Unavailable, "as the model can hold it constant")
+            } else if hamiltonian {
+                (Fail, "so a chain is stuck")
             } else {
-                (Unavailable, "as for a fixed value")
+                (
+                    Fail,
+                    "although the sampler draws it, so a chain is stuck or its draws \
+                     collapsed below floating-point resolution",
+                )
             };
             warnings.push(
                 FitWarning::new(DiagnosticsUnavailable, status, f64::NAN, minimum as f64)

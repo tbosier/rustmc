@@ -339,6 +339,7 @@ pub(crate) trait ForecastFit {
             &self.report(),
             SamplerTelemetry::NonHamiltonian {
                 sampler: self.sampler(),
+                constant: &[],
             },
         )
     }
