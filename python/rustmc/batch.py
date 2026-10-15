@@ -3,19 +3,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
-import copy
 import sqlite3
 import tempfile
 import threading
+import warnings
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Iterable, Iterator, Optional
 
-from typing import TYPE_CHECKING
-
-from ._rustmc import BoundModel
-
-if TYPE_CHECKING:
-    from ._rustmc import FitResult
+from ._rustmc import FitResult
 
 
 @dataclass(frozen=True)
@@ -27,44 +22,23 @@ class BatchItem:
     item has an ``error``, no fit and no warnings: no check ran.
     """
     id: str
-    fit: FitResult | None = None
+    fit: Optional[FitResult] = None
     diagnostics: tuple[dict[str, Any], ...] = ()
-    error: str | None = None
+    error: Optional[str] = None
     warnings: tuple[dict[str, Any], ...] = ()
 
 
 _NO_INIT = object()
 
 
-def _copied(value: Any) -> Any:
-    """A deep copy of ``value``. Memoryviews, which deepcopy refuses, are
-    copied into new memory, also inside lists, tuples and dicts. A value that
-    still cannot be copied, such as a generator, is passed as given:
-    sample_batch then validates it, and collects the error, as for any input."""
-    if isinstance(value, memoryview):
-        return memoryview(value.tobytes()).cast(value.format, value.shape)
-    if type(value) in (list, tuple):
-        return type(value)(_copied(entry) for entry in value)
-    if type(value) is dict:
-        return {key: _copied(entry) for key, entry in value.items()}
-    try:
-        return copy.deepcopy(value)
-    except Exception:
-        return value
-
-
-def _snapshot(data: Any) -> Any:
-    """Copy a dataset when it is read, so that a source may reuse its
-    buffers: binding happens only when the whole chunk is sampled. A deep copy
-    keeps every type, mask and malformed entry, so that sample_batch validates
-    what the source gave. A value that cannot be copied at all, such as a
-    generator, is passed as given; it is not a buffer to reuse. A bound model
-    is immutable and is passed as given."""
-    if isinstance(data, Mapping):
-        return {key: _copied(value) for key, value in data.items()}
-    if isinstance(data, BoundModel):
-        return data
-    return _copied(data)
+def _report_failed_close(error: BaseException, cleanup: Exception) -> None:
+    """Attach a failure to close the input to the error being raised: as a
+    note where Python has them (3.11 on), otherwise as a warning."""
+    message = f"closing the input also failed: {cleanup!r}"
+    if hasattr(error, "add_note"):
+        error.add_note(message)
+    else:
+        warnings.warn(message, RuntimeWarning, stacklevel=3)
 
 
 class BatchStream(Iterator[BatchItem]):
@@ -127,8 +101,7 @@ class BatchStream(Iterator[BatchItem]):
                 except Exception as cleanup:
                     # The error that stopped iteration is the one raised; the
                     # input stays open, and close() can be called again.
-                    if hasattr(error, "add_note"):
-                        error.add_note(f"closing the input also failed: {cleanup!r}")
+                    _report_failed_close(error, cleanup)
                 raise
 
     def close(self) -> None:
@@ -170,8 +143,7 @@ class BatchStream(Iterator[BatchItem]):
         try:
             self.close()
         except Exception as cleanup:
-            if hasattr(error, "add_note"):
-                error.add_note(f"closing the input also failed: {cleanup!r}")
+            _report_failed_close(error, cleanup)
         return False
 
     def _iterate(self, compiled, chunk_size, retention, shared, completed_ids, selected, sampling):
@@ -213,17 +185,17 @@ class BatchStream(Iterator[BatchItem]):
                                 connection.execute("UPDATE ids SET seen=1 WHERE id=?", (name,))
                                 continue
                             connection.execute("INSERT INTO ids VALUES (?, 1)", (name,))
-                            # Read and copy now, like the data, so that a reused
-                            # buffer cannot change an earlier job's start.
                             # An explicit None is passed on, for sample_batch to
                             # reject; only an ID the mapping lacks gets no start.
                             if callable(initial):
-                                positions = _copied(initial(name, data))
+                                positions = initial(name, data)
                             elif initial is not None and name in initial:
-                                positions = _copied(initial[name])
+                                positions = initial[name]
                             else:
                                 positions = _NO_INIT
-                            chunk.append((name, _snapshot(data), positions))
+                            # Held as given until the chunk is sampled, like
+                            # sample_batch's own inputs.
+                            chunk.append((name, data, positions))
                         data = pair = positions = None
                         connection.commit()
                         if not chunk:
@@ -289,8 +261,9 @@ def sample_iter(compiled: Any, datasets: Iterable[tuple[str, Any]], **kwargs: An
     Sampling options match CompiledModel.sample_batch and are checked when the
     stream is created. Keep IDs and the base seed unchanged, and make an ``init``
     callable a function of the ID and data, to reproduce jobs across chunk sizes,
-    order, and resumed runs. Each dataset, and the positions an ``init`` callable
-    returns, are deep-copied when read, so a source may reuse its buffers. Caller-retained BatchItems and a caller-materialized input
+    order, and resumed runs. Datasets and initial positions are held as given until
+    their chunk is sampled, so a source must not change or reuse their buffers
+    before then. Caller-retained BatchItems and a caller-materialized input
     list still use memory.
     """
     return BatchStream(compiled, datasets, **kwargs)

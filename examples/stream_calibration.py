@@ -19,8 +19,7 @@ def main():
         for item in results:
             # Persist all four: the warnings hold the checks, such as
             # divergences, that a parameter's diagnostics row does not.
-            codes = [warning["code"] for warning in item.warnings]
-            print(item.id, item.error or (item.diagnostics, codes))
+            print(item.id, item.error or (item.diagnostics, item.warnings))
 
 
 if __name__ == "__main__":
