@@ -523,13 +523,15 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
     }
     let nuts = all().all(|transition| transition.tree_depth.is_some());
     let hmc = all().all(|transition| transition.tree_depth.is_none());
-    // Each of a tree's `depth` doublings takes at least one leapfrog step and
-    // the k-th at most 2^(k-1), so the tree takes `depth..=2^depth - 1`. A
-    // depth of 0 is refused with the limit below.
+    // The k-th doubling takes at most 2^(k-1) leapfrog steps, and it stops
+    // early only on a divergence or U-turn, which also ends the tree. So every
+    // doubling before the last ran in full, and a tree of depth d took
+    // `2^(d-1)..=2^d - 1` steps. A depth of 0 is refused with the limit below.
     if all().any(|transition| {
         transition.tree_depth.is_some_and(|depth| {
             let steps = transition.num_leapfrog_steps;
-            (1..64).contains(&depth) && (steps < depth || steps > (1usize << depth) - 1)
+            (1..64).contains(&depth)
+                && (steps < 1usize << (depth - 1) || steps > (1usize << depth) - 1)
         })
     }) {
         return Err(invalid(

@@ -30,6 +30,9 @@ seeded draws only where its entries say so.
   releases before 0.14.0 cannot load. Versions 1 and 2 still load, and a fit loaded
   from one, which has no energies to store, is saved as version 2.
 - The Rust API removals listed under the cleanup review below.
+- Python: a `fit_batch` whose cells are all `BayesianAR` now raises `ValueError` for
+  any explicit `warmup` or `thin`, including `warmup=500` and `thin=1`, which 0.13.0
+  accepted and ignored. Omit them, or pass `None`.
 
 ### Fit warnings and batch triage
 
@@ -50,12 +53,14 @@ seeded draws only where its entries say so.
 - `flagged(ignore=None)` on `BatchFit` and `ForecastBatchFit`: the IDs of
   successful cells with at least one failed check, in batch order. Failed cells are
   in `errors`. An unknown code in `ignore` raises `ValueError`.
-- Every local-linear-trend fit, including a trend fitted with `exog` (a
+- Every `BayesianLocalLinearTrend` fit, including one fitted with `exog` (a
   `BayesianRegressionFit`), carries a `known_limitation` record with status
   `"fail"` for the documented slow mixing of its level and slope variances, so
   `flagged()` lists those cells until `ignore=["known_limitation"]` leaves the
   record out. The reference's local-linear-trend section gives the R-hat ranges it
-  is based on and the command that reproduces them.
+  is based on and the command that reproduces them. A `StructuralModel` trend
+  component does not get the record, although its level variance mixes slowly too;
+  its ordinary R-hat and ESS checks still apply.
 - Each HMC and NUTS transition records the Hamiltonian of the state it ended in
   (`TransitionStats::energy`). It is read off values the sampler already computed,
   with no new evaluation and no RNG draw.
@@ -74,7 +79,7 @@ seeded draws only where its entries say so.
 
 - Loading a version-3 artifact also refuses telemetry no sampler could have
   produced: a tree depth of 0, a NUTS tree whose leapfrog step count does not fit
-  its depth (between d and 2^d - 1 steps for depth d), a draw energy below the
+  its depth (between 2^(d-1) and 2^d - 1 steps for depth d), a draw energy below the
   potential energy at its draw, and a tree-depth limit that disagrees with the
   recorded depths.
 
@@ -83,11 +88,12 @@ seeded draws only where its entries say so.
 #### Added
 
 - `rust_core/tests/exactness.rs` (it began in the cleanup as
-  `analytic_posteriors.rs`): NUTS at the shipped defaults must reproduce the exact
-  moments of a 100-dimensional independent normal, 50-dimensional correlated normals
-  (correlation 0.8 and 0.95) and a conjugate regression, through both `sample_target`
-  and the graph path, within 4 Monte Carlo standard errors per coordinate, plus a
-  squared-norm check.
+  `analytic_posteriors.rs`): NUTS at the shipped defaults must reproduce exact
+  posterior moments within 4 Monte Carlo standard errors per coordinate, plus a
+  squared-norm check, in six cases: a 100-dimensional independent normal through
+  both `sample_target` and the graph path, a 50-dimensional normal with correlation
+  0.8 through `sample_target`, one with correlation 0.95 through both, and a
+  conjugate regression through the graph path.
 - The test-only cargo feature `fault-injection` and the doc-hidden
   `rustmc_core::fault_injection` module, off by default. CI checks that the exactness
   gate fails under a biased multinomial merge and under a step size 30% too large
@@ -165,7 +171,9 @@ unchanged** except where an entry below says otherwise.
   error such as `ParameterError`.
 - Indexing a forecast batch or reading `.results` no longer copies each cell's
   posterior and paths.
-- Every Python class except `ModelBuilder` is frozen (immutable). None had setters.
+- Every class the native extension defines, except `ModelBuilder`, is frozen
+  (immutable). None had setters. Pure-Python classes such as `ForecastSession` are
+  unchanged.
 - Rust: `SamplerConfig::validate` and `BatchSampleConfig::validate` use the Python
   bindings' messages ("chains must be >= 1" and so on). `hmc::run_chain` and
   `nuts::run_chain` return `Err` for settings they cannot run with instead of running
