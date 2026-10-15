@@ -117,6 +117,17 @@ versioning while the public API is stabilized.
 - The trend fitted with `exog`, `StructuralModel` trends, the seasonal model and the
   local level still draw their variances given sampled states. The same benchmark
   shows them mixing slowly; see ROADMAP.md.
+- `BayesianLocalLinearTrend` fits without `exog` no longer carry the
+  `known_limitation` record that 0.14.0 put on every one, so `flagged()` lists their
+  cells only for a failed check. On `benchmarks/state_variance_mixing.py` the level
+  and slope variances' worst R-hat is now 1.001 to 1.008 in all ten settings, against
+  1.051 to 2.056 in 0.14.0. A trend fitted with `exog` still carries the record. Fit
+  warnings name the sampler as `sampler_stats["sampler"]` does.
+
+### Removed
+
+- Rust: `bayesian_trend::local_linear_trend_limitation`, which described the
+  sampler 0.14.0 replaced.
 
 ## [0.14.0] - 2026-10-14
 

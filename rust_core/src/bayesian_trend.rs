@@ -26,7 +26,6 @@
 //! Independent chains execute on the active Rayon pool (or its global pool),
 //! while indexed collection preserves deterministic chain ordering.
 
-use crate::diagnostics::warnings::slow_state_variance_mixing;
 use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry};
 use crate::forecast_common::{
     check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
@@ -40,24 +39,9 @@ use rand_chacha::ChaCha8Rng;
 
 const SYMMETRY_TOLERANCE: f64 = 1e-10;
 
-/// How fit warnings name this model's sampler.
-const SAMPLER_NAME: &str = "conjugate Gibbs/FFBS";
-
-/// The documented mixing problem of the local-linear-trend Gibbs sampler, as
-/// a failed `known_limitation` check.
-///
-/// It is a failure rather than an unavailable check because a fit's own
-/// R-hat can pass by chance while the sampler is known to mix the level and
-/// slope variances slowly; batch triage should flag the fit until the user
-/// has checked it with longer chains and filters this code out.
-pub fn local_linear_trend_limitation() -> FitWarning {
-    // Range measured by benchmarks/state_variance_mixing.py.
-    slow_state_variance_mixing(
-        "the local-linear-trend Gibbs sampler's level and slope variances",
-        1.051,
-        2.056,
-    )
-}
+/// How fit warnings name this model's sampler; `sampler_stats["sampler"]`
+/// in the Python bindings uses the same words.
+const SAMPLER_NAME: &str = "Gibbs over variances with states integrated out (slice steps)";
 
 /// Configuration for a fitted Bayesian local-linear-trend model.
 #[derive(Debug, Clone)]
@@ -144,20 +128,18 @@ impl LocalLinearTrendPosterior {
         parameter_diagnostics(&samples, &names)
     }
 
-    /// Every failed or unavailable check of this fit (see
-    /// [`fit_warnings`]), followed by [`local_linear_trend_limitation`],
-    /// which every local-linear-trend fit carries whatever its diagnostics
-    /// show.
+    /// Every failed or unavailable check of this fit (see [`fit_warnings`]).
+    /// With the states integrated out the sampler mixes its variances well
+    /// in every setting of `benchmarks/state_variance_mixing.py`, so it
+    /// carries no `known_limitation` record.
     pub fn warnings(&self) -> Vec<FitWarning> {
-        let mut warnings = fit_warnings(
+        fit_warnings(
             &self.diagnostics(),
             SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
                 constant: &[],
             },
-        );
-        warnings.push(local_linear_trend_limitation());
-        warnings
+        )
     }
 
     /// Pair every posterior draw with one coherent future state/observation path.

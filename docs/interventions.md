@@ -1,7 +1,7 @@
 # Interventions and changepoints
 
 This page covers `TimeDesign`, which builds regression columns for events you know
-about — a contract change, a price change, an outage, a launch — and for changes in
+about (a contract change, a price change, an outage, a launch) and for changes in
 trend at dates you do not know. Pass its columns as `exog` to the forecasting models
 on the [regression page](regression-forecasting.md), to `StructuralModel`, or to the
 dynamic GLMs. Read it if your series has a break and you want the forecast to account

@@ -785,7 +785,7 @@ disintegrations in Hamiltonian Monte Carlo", arXiv:1604.00695.
 
 ### Slow state-variance mixing
 
-The Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
+Most Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
 and several mix those variances slowly. `benchmarks/state_variance_mixing.py` fits each
 sampler to series simulated from its own model in five regimes at 200 and 1000 points,
 three data seeds each, with 4 chains, 300 warmup and 500 draws, and takes the worst
@@ -797,7 +797,7 @@ cells. Check those variances with longer chains, then leave the record out with
 
 | Fit | Worst R-hat over the ten settings | Record |
 |-----|-----------------------------------|--------|
-| `BayesianLocalLinearTrend` | level 1.062 to 2.056, slope 1.051 to 1.421 | yes |
+| `BayesianLocalLinearTrend` | level 1.001 to 1.008, slope 1.001 to 1.007, with the states integrated out (0.14.0, sampling the states: level 1.062 to 2.056, slope 1.051 to 1.421) | no |
 | `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
 | `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, in the configuration measured: both state variances and the observation variance inferred, Gaussian observations, and damping from 0.9 to 1 |
 | `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |

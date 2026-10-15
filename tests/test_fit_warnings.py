@@ -389,17 +389,14 @@ def test_local_linear_trend_with_exog_carries_the_limitation_and_local_level_doe
     assert "trend" in batch.flagged()
 
 
-def test_local_linear_trend_carries_its_known_limitation_into_triage():
+def test_local_linear_trend_carries_no_known_limitation_into_triage():
+    # The sampler integrates the states out and mixes its variances well, so
+    # its fits carry no limitation record; only a failed check flags them.
     fit = local_linear_trend().fit(series(2), chains=2, draws=100, warmup=100, seed=2)
-    limitation = [w for w in fit.warnings() if w["code"] == "known_limitation"]
-    assert len(limitation) == 1
-    assert limitation[0]["status"] == "fail"
-    assert limitation[0]["threshold"] == 1.01
-    assert "1.01" in limitation[0]["message"]
-    assert "docs/reference.md" in limitation[0]["message"]
+    assert "known_limitation" not in codes(fit.warnings())
+    assert_messages_state_thresholds(fit.warnings())
 
-    # Autoregressions are exact independent draws, so their cells are clean;
-    # the trend cells are flagged by the limitation until it is ignored.
+    # Autoregressions are exact independent draws, so their cells are clean.
     ar = rustmc.BayesianAutoRegression(
         1, rustmc.NormalInverseGammaPrior([0.0, 0.0], np.eye(2), 3.0, 1.0)
     )
@@ -418,11 +415,11 @@ def test_local_linear_trend_carries_its_known_limitation_into_triage():
     for id in ["ar-1", "ar-2"]:
         assert codes(warnings[id]) == set(), warnings[id]
         assert_hamiltonian_checks_unavailable_once(warnings[id])
-    assert batch.flagged() == ["trend-1", "trend-2"]
-    still_failing = [
-        id for id in ["trend-1", "trend-2"] if codes(warnings[id]) - {"known_limitation"}
-    ]
-    assert batch.flagged(ignore=["known_limitation"]) == still_failing
+    for id in ["trend-1", "trend-2"]:
+        assert "known_limitation" not in codes(warnings[id]), warnings[id]
+    failing = [id for id in ids if any(w["status"] == "fail" for w in warnings[id])]
+    assert batch.flagged() == failing
+    assert batch.flagged(ignore=["known_limitation"]) == failing
     for cell in warnings.values():
         assert_messages_state_thresholds(cell)
 
