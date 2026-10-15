@@ -10,6 +10,8 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from ._rustmc import BoundModel
+
 
 @dataclass(frozen=True)
 class BatchItem:
@@ -26,12 +28,30 @@ class BatchItem:
     warnings: tuple[dict[str, Any], ...] = ()
 
 
-def _snapshot(value: Any) -> Any:
-    """A deep copy, taken when a dataset or its initial positions are read,
-    so that a source may reuse its buffers: binding happens only when the
-    whole chunk is sampled. The copy keeps every type, mask and malformed
-    entry, so that sample_batch validates exactly what the source gave."""
-    return copy.deepcopy(value)
+_NO_INIT = object()
+
+
+def _copied(value: Any) -> Any:
+    """A deep copy of ``value``, or ``value`` itself if it cannot be copied:
+    sample_batch then validates it, and collects the error, as given."""
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
+
+
+def _snapshot(data: Any) -> Any:
+    """Copy a dataset when it is read, so that a source may reuse its
+    buffers: binding happens only when the whole chunk is sampled. A deep copy
+    keeps every type, mask and malformed entry, so that sample_batch validates
+    what the source gave. A value that cannot be deep-copied, such as a
+    memoryview, is passed as given and must not be reused before its chunk is
+    sampled. A bound model is immutable and is passed as given."""
+    if isinstance(data, Mapping):
+        return {key: _copied(value) for key, value in data.items()}
+    if isinstance(data, BoundModel):
+        return data
+    return _copied(data)
 
 
 class BatchStream(Iterator[BatchItem]):
@@ -88,31 +108,37 @@ class BatchStream(Iterator[BatchItem]):
                 # Exhausted normally: a failure to clean up is the news.
                 self.close()
                 raise
-            except BaseException:
+            except BaseException as error:
                 try:
                     self.close()
-                except Exception:
-                    pass  # the error that stopped iteration is the one to report
+                except Exception as cleanup:
+                    # The error that stopped iteration is the one raised; the
+                    # input stays open, and close() can be called again.
+                    if hasattr(error, "add_note"):
+                        error.add_note(f"closing the input also failed: {cleanup!r}")
                 raise
 
     def close(self) -> None:
         """Release the current chunk and its ledger, and close the input
-        iterator if it has a ``close`` method. The input is closed even if
-        releasing the chunk fails. From another thread, this waits for a
-        ``next()`` in progress to return."""
+        iterator if it has a ``close`` method, then drop the stream's
+        references to both. The input is closed even if releasing the chunk
+        fails, and if closing the input fails, calling this again retries it.
+        From another thread, this waits for a ``next()`` in progress to return."""
         lock = getattr(self, "_lock", None)
         if lock is None:  # construction failed; there is nothing to close
             return
         with lock:
-            if self._closed:
-                return
             self._closed = True
+            iterator, self._iterator = self._iterator, None
             try:
-                self._iterator.close()
+                if iterator is not None:
+                    iterator.close()
             finally:
-                close = getattr(self._source, "close", None)
+                source = self._source
+                close = getattr(source, "close", None)
                 if close is not None:
-                    close()
+                    close()  # on failure the source is kept for a retry
+                self._source = None
 
     def __del__(self) -> None:
         try:
@@ -164,12 +190,14 @@ class BatchStream(Iterator[BatchItem]):
                         connection.execute("INSERT INTO ids VALUES (?, 1)", (name,))
                         # Read and copy now, like the data, so that a reused
                         # buffer cannot change an earlier job's start.
+                        # An explicit None is passed on, for sample_batch to
+                        # reject; only an ID the mapping lacks gets no start.
                         if callable(initial):
-                            positions = _snapshot(initial(name, data))
+                            positions = _copied(initial(name, data))
                         elif initial is not None and name in initial:
-                            positions = _snapshot(initial[name])
+                            positions = _copied(initial[name])
                         else:
-                            positions = None
+                            positions = _NO_INIT
                         chunk.append((name, _snapshot(data), positions))
                     data = pair = positions = None
                     connection.commit()
@@ -185,7 +213,8 @@ class BatchStream(Iterator[BatchItem]):
                         return
                     options = {"show_progress": False, **sampling}
                     options.pop("init", None)
-                    starts = {name: positions for name, _, positions in chunk if positions is not None}
+                    starts = {name: positions for name, _, positions in chunk
+                              if positions is not _NO_INIT}
                     if starts:
                         options["init"] = starts
                     batch = compiled.sample_batch(
@@ -194,26 +223,31 @@ class BatchStream(Iterator[BatchItem]):
                     )
                     # Nothing of this chunk's input outlives its sampling.
                     del options, starts
-                    errors = batch.errors
                     names = [name for name, _, _ in chunk]
-                    del chunk
-                    for name in names:
-                        if name in errors:
-                            yield BatchItem(name, error=errors[name])
-                            continue
-                        result = batch.get(name)
-                        diagnostics = result.diagnostics()
-                        if selected is not None:
-                            lookup = {item["name"]: item for item in diagnostics}
-                            unknown = set(selected)-lookup.keys()
-                            if unknown:
-                                raise ValueError(f"unknown diagnostic parameters: {sorted(unknown)}")
-                            diagnostics = [lookup[key] for key in selected]
-                        item = BatchItem(name, result.fit if retention == "full" else None,
-                                         tuple(diagnostics), warnings=tuple(result.warnings()))
-                        yield item
-                        del result, item, diagnostics
-                    del batch, errors, names
+                    chunk = None
+                    result = item = diagnostics = None
+                    try:
+                        errors = batch.errors
+                        for name in names:
+                            if name in errors:
+                                yield BatchItem(name, error=errors[name])
+                                continue
+                            result = batch.get(name)
+                            diagnostics = result.diagnostics()
+                            if selected is not None:
+                                lookup = {entry["name"]: entry for entry in diagnostics}
+                                unknown = set(selected)-lookup.keys()
+                                if unknown:
+                                    raise ValueError(f"unknown diagnostic parameters: {sorted(unknown)}")
+                                diagnostics = [lookup[key] for key in selected]
+                            item = BatchItem(name, result.fit if retention == "full" else None,
+                                             tuple(diagnostics), warnings=tuple(result.warnings()))
+                            yield item
+                            result = item = diagnostics = None
+                    finally:
+                        # A traceback kept by the caller keeps this frame; it
+                        # must not keep the chunk's fits with it.
+                        batch = errors = names = result = item = diagnostics = None
             finally:
                 connection.close()
 
