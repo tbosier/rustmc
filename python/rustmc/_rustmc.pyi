@@ -8,9 +8,12 @@ Inputs declared _FloatArray require native float64 ndarrays; ArrayLike/Sequence
 inputs also accept compatible Python sequences. Optional ArviZ objects use Any
 because ArviZ is an optional dependency.
 """
+from collections.abc import Iterable
 from typing import Any, Callable, Literal, Sequence, TypedDict, overload
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+from .batch import BatchStream
 
 _FloatArray = NDArray[np.float64]
 _UIntArray = NDArray[np.uint64]
@@ -971,7 +974,9 @@ class CompiledModel:
         init: ArrayLike | None = None,
         metric: Literal["auto", "diag", "dense"] = "auto",
     ) -> FitResult: ...
-    def sample_iter(self, datasets: Any, **options: Any) -> Any: ...
+    def sample_iter(
+        self, datasets: Iterable[tuple[str, _Data | BoundModel]], **options: Any
+    ) -> BatchStream: ...
     def sample_batch(
         self,
         datasets: Sequence[_Data | BoundModel],

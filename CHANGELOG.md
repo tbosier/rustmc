@@ -83,14 +83,18 @@ versioning while the public API is stabilized.
 - `ForecastDraws.from_result` labels the series of a `ReconciledForecast` with its
   node names.
 - `CompiledModel.sample_iter(datasets, ...)` fits a lazy stream of `(stable_id, data)`
-  pairs one chunk at a time and yields a `BatchItem` per dataset, in input order,
-  with its ID, fit (or `None` under `retention="summary"`), diagnostics, error and
-  fit warnings. Only the current chunk's inputs and fits are held. Duplicate IDs are
-  detected through a temporary SQLite ledger on disk rather than a set in memory.
-  `completed_ids` skips jobs finished in an earlier run, and IDs with the base seed
-  reproduce the draws of `sample_batch` across chunk sizes and input order. A
-  restart reruns jobs from their seeds; it does not resume partially sampled chains.
-  See `docs/streaming-batches.md` and `examples/stream_calibration.py`.
+  pairs one chunk at a time and yields a `BatchItem` for each dataset that is not
+  skipped as completed, in input order, with its ID, fit (or `None` under
+  `retention="summary"`), diagnostics, error and fit warnings. The previous chunk's
+  data, initial positions and fits are released before the next chunk is read.
+  Datasets and the positions an `init` callable returns are copied when read, so a
+  source may reuse its buffers. Duplicate IDs are detected through a SQLite ledger in
+  the temporary directory rather than a set in memory. `completed_ids` skips jobs
+  finished in an earlier run, and IDs with the base seed reproduce the draws of
+  `sample_batch` across chunk sizes and input order. A restart reruns jobs from their
+  seeds; it does not resume partially sampled chains. Each chunk is sampled before
+  any of its items is yielded, so an exception mid-chunk means rerunning that chunk's
+  unyielded jobs. See `docs/streaming-batches.md` and `examples/stream_calibration.py`.
 
 ### Changed
 

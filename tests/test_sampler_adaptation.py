@@ -117,6 +117,9 @@ def sampling_paths(builder, data, options):
             compiled.sample_batch([data, data], metric=metric, **options)),
         "batch_sample": lambda metric: steps(
             r.batch_sample([(model, data), (model, data)], metric=metric, **options)),
+        "sample_iter": lambda metric: steps(
+            item.fit for item in compiled.sample_iter(
+                [("a", data), ("b", data)], metric=metric, **options)),
     }
 
 
@@ -144,6 +147,7 @@ def test_metric_option_is_validated_and_forwarded():
         lambda: compiled.sample(data, metric="unit", **options),
         lambda: compiled.sample_batch([data], metric="bogus", **options),
         lambda: r.batch_sample([(model, data)], metric="bogus", **options),
+        lambda: compiled.sample_iter([("a", data)], metric="bogus", **options),
     ):
         with pytest.raises(ValueError, match="metric"):
             call()
