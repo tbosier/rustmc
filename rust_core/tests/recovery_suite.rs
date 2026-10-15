@@ -895,7 +895,8 @@ fn eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean() {
     let result = sample_graph(graph, 110, 2000, 1000, 10, suite_target_accept());
     let report = result.diagnostics();
     assert_health(&report, HEALTHY_RHAT, HEALTHY_ESS, 0);
-    // The window is 2.0, not the 0.5 this seed happens to land inside. Even with
+    // The window is 2.0, not the 0.5 this seed landed inside at the suite's
+    // former target_accept of 0.999. Even with
     // tau known, the weighted location estimator for these eight scales has
     // sampling standard deviation `[sum_i 1 / (tau^2 + sigma_i^2)]^(-1/2)` =
     // 1.135, so a 0.5 window would hold only about a third of datasets drawn the
@@ -930,7 +931,8 @@ fn eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean() {
     // Group effects: a prior-only sampler reports z = 0 for all eight. Eight
     // schools is only weakly informative about them, so the claim is modest but
     // real - the posterior keeps at most 85% of the prior-only error. The
-    // measured figure for this seed is 79%.
+    // measured figure for this seed was 79% at the suite's former
+    // target_accept of 0.999.
     let z_true: Vec<f64> = theta_true
         .iter()
         .map(|theta| (theta - mu_true) / tau_true)
