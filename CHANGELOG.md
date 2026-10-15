@@ -6,6 +6,18 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Added
+
+- `CompiledModel.sample_iter(datasets, ...)` fits a lazy stream of `(stable_id, data)`
+  pairs one chunk at a time and yields a `BatchItem` per dataset, in input order,
+  with its ID, fit (or `None` under `retention="summary"`), diagnostics, error and
+  fit warnings. Only the current chunk's inputs and fits are held. Duplicate IDs are
+  detected through a temporary SQLite ledger on disk rather than a set in memory.
+  `completed_ids` skips jobs finished in an earlier run, and IDs with the base seed
+  reproduce the draws of `sample_batch` across chunk sizes and input order. A
+  restart reruns jobs from their seeds; it does not resume partially sampled chains.
+  See `docs/streaming-batches.md` and `examples/stream_calibration.py`.
+
 ## [0.14.0] - 2026-10-14
 
 This release collects a repository-wide cleanup review and the first item three

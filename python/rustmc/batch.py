@@ -11,11 +11,16 @@ from typing import Any, Iterable, Iterator
 
 @dataclass(frozen=True)
 class BatchItem:
-    """One dataset's fit or error. Summary retention releases posterior draws."""
+    """One dataset's fit or error. Summary retention releases posterior draws.
+
+    ``warnings`` holds the fit's failed or unavailable checks, as
+    ``BatchResult.warnings()`` reports them, under either retention.
+    """
     id: str
     fit: Any = None
     diagnostics: tuple[dict[str, Any], ...] = ()
     error: str | None = None
+    warnings: tuple[dict[str, Any], ...] = ()
 
 
 class BatchStream(Iterator[BatchItem]):
@@ -140,7 +145,7 @@ class BatchStream(Iterator[BatchItem]):
                                 raise ValueError(f"unknown diagnostic parameters: {sorted(unknown)}")
                             diagnostics = [lookup[key] for key in selected]
                         item = BatchItem(name, result.fit if retention == "full" else None,
-                                         tuple(diagnostics))
+                                         tuple(diagnostics), warnings=tuple(result.warnings()))
                         yield item
                         del result, item, diagnostics
                     del batch, chunk, errors

@@ -100,3 +100,19 @@ def test_initial_positions_are_selected_by_id_across_chunks():
                                           eager.get(item.id).get_samples_2d()["mu"])
     with pytest.raises(ValueError, match="unknown dataset ID"):
         list(compiled.sample_iter(jobs(1), init={"typo": [[.1], [.2]]}, **OPTIONS))
+
+
+def test_summary_retention_keeps_fit_warnings():
+    compiled = model()
+    eager = compiled.sample_batch([data for _, data in jobs(3)], ids=[name for name, _ in jobs(3)], **OPTIONS)
+    with compiled.sample_iter(jobs(3), chunk_size=2, retention="summary", **OPTIONS) as stream:
+        items = list(stream)
+    assert [item.id for item in items] == ["job-0", "job-1", "job-2"]
+    for item in items:
+        assert item.fit is None
+        assert list(item.warnings) == eager.get(item.id).warnings()
+    # Too few draws for the rank-based checks, so every fit has a warning.
+    with compiled.sample_iter(jobs(1), retention="summary", **{**OPTIONS, "draws": 3}) as stream:
+        (item,) = list(stream)
+    assert item.warnings and item.warnings == tuple(compiled.sample_batch(
+        [data for _, data in jobs(1)], ids=["job-0"], **{**OPTIONS, "draws": 3}).get("job-0").warnings())
