@@ -368,3 +368,49 @@ def test_batch_item_annotations_resolve_at_runtime():
     import typing
     hints = typing.get_type_hints(mc.BatchItem)
     assert hints["fit"] == typing.Optional[mc.FitResult]
+
+
+def test_completed_ids_must_not_be_a_single_string():
+    with pytest.raises(TypeError, match="single string"):
+        model().sample_iter(jobs(2), completed_ids="job-1", **OPTIONS)
+
+
+def test_a_source_whose_close_raises_stop_iteration_is_reported():
+    class Source:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            raise StopIteration("cleanup failed")
+
+    with pytest.raises(RuntimeError, match="closing the input failed"):
+        list(model().sample_iter(Source(), **OPTIONS))
+
+
+def test_a_warnings_filter_that_raises_does_not_replace_the_error():
+    import warnings
+    from rustmc import batch
+
+    class ErrorWithoutNotes:
+        """Stands in for an exception before Python 3.11, which has no notes."""
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        batch._report_failed_close(ErrorWithoutNotes(), OSError("cleanup failure"))
+
+
+def test_the_ledger_directory_is_removed_when_the_stream_ends(monkeypatch, tmp_path):
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    assert list(model().sample_iter(jobs(2), **OPTIONS))
+    stream = model().sample_iter(jobs(4), chunk_size=1, **OPTIONS)
+    next(stream)
+    assert list(tmp_path.iterdir())
+    stream.close()
+    assert list(tmp_path.iterdir()) == []
+    with pytest.raises(ValueError):
+        list(model().sample_iter([("a", {"missing": [1.]})], **OPTIONS))
+    assert list(tmp_path.iterdir()) == []

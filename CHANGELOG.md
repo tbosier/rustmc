@@ -12,7 +12,8 @@ versioning while the public API is stabilized.
   pairs one chunk at a time and yields a `BatchItem` for each dataset that is not
   skipped as completed, in input order, with its ID, fit (or `None` under
   `retention="summary"`), diagnostics, error and fit warnings. The previous chunk's
-  data, initial positions and fits are released before the next chunk is read.
+  data, initial positions and fits are released before the next chunk is read, apart
+  from an `init` mapping, which is held whole.
   Datasets and initial positions are held as given until their chunk is sampled, so
   a source must not change or reuse their buffers before then. Duplicate IDs are detected through a SQLite ledger in
   the temporary directory rather than a set in memory. `completed_ids` skips jobs

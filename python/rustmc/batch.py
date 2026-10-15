@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -38,7 +39,10 @@ def _report_failed_close(error: BaseException, cleanup: Exception) -> None:
     if hasattr(error, "add_note"):
         error.add_note(message)
     else:
-        warnings.warn(message, RuntimeWarning, stacklevel=3)
+        try:
+            warnings.warn(message, RuntimeWarning, stacklevel=3)
+        except Exception:
+            pass  # a warnings filter that raises must not replace the error
 
 
 class BatchStream(Iterator[BatchItem]):
@@ -65,6 +69,8 @@ class BatchStream(Iterator[BatchItem]):
         if isinstance(initial, Mapping):
             for key in initial:
                 self._validate_id(key, "init keys")
+        if isinstance(completed_ids, (str, bytes)):
+            raise TypeError("completed_ids must be an iterable of IDs, not a single string")
         selected = None if parameters is None else tuple(parameters)
         if selected is not None and (not selected or len(set(selected)) != len(selected)):
             raise ValueError("parameters must be a nonempty list of unique names")
@@ -123,7 +129,11 @@ class BatchStream(Iterator[BatchItem]):
                 source = self._source
                 close = getattr(source, "close", None)
                 if close is not None:
-                    close()  # on failure the source is kept for a retry
+                    try:
+                        close()  # on failure the source is kept for a retry
+                    except StopIteration as stop:
+                        # Raised from here it would read as the end of the stream.
+                        raise RuntimeError(f"closing the input failed: {stop!r}") from stop
                 self._source = None
 
     def __del__(self) -> None:
@@ -150,7 +160,9 @@ class BatchStream(Iterator[BatchItem]):
         # IDs live on disk: an in-memory "seen" set would grow with the job count.
         # The ledger is temporary. Callers persist results and supply completed IDs
         # on restart; no adaptation or partially sampled chain is resumed.
-        with tempfile.TemporaryDirectory(prefix="rustmc-batch-") as directory:
+        directory = tempfile.mkdtemp(prefix="rustmc-batch-")
+        failure = None
+        try:
             # The stream may be advanced on one thread and closed on another.
             connection = sqlite3.connect(Path(directory)/"ids.sqlite", check_same_thread=False)
             try:
@@ -248,6 +260,20 @@ class BatchStream(Iterator[BatchItem]):
                         errors = names = result = item = diagnostics = None
             finally:
                 connection.close()
+        except GeneratorExit:
+            raise  # close(): a failure to remove the ledger is close()'s to raise
+        except BaseException as error:
+            failure = error
+            raise
+        finally:
+            if failure is None:
+                shutil.rmtree(directory)
+            else:
+                # The error that stopped iteration is the one to raise.
+                try:
+                    shutil.rmtree(directory)
+                except OSError as cleanup:
+                    _report_failed_close(failure, cleanup)
 
     @staticmethod
     def _validate_id(name, what="dataset IDs"):

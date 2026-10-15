@@ -21,8 +21,12 @@ every dataset fits each chunk's datasets to the last contents. Yield new arrays,
 copy them in the generator. With `retention="full"` (the default),
 each successful item also has a `.fit` for prediction. Summary retention releases
 posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic rows.
-Sampling options are those of `sample_batch` and are checked when the stream is
-created, so a bad option fails at once even when every job is already complete.
+Sampling options are those of `sample_batch`. What `sample_batch` checks before it
+samples any dataset (option names, values and ranges) is checked when the stream is
+created, so such a mistake fails at once even when every job is already complete;
+limits that depend on the model, such as the size of the draws a fit would hold, are
+checked when a chunk is sampled. `completed_ids` must be an iterable of IDs: a single
+string is rejected rather than read as its characters.
 
 A failed fit has an `.error`, no fit and empty `.warnings`: no check ran on it, so test
 `.error` first. For a successful fit, under either retention, `.warnings` holds the
@@ -32,7 +36,8 @@ every check passed, not that the posterior is right. Inspect the diagnostics too
 
 Memory is bounded by the current input chunk, its fits, and worker scratch space: the
 previous chunk's data, initial positions and fits are released before the next chunk
-is read, unless you keep them. An exception you keep after the stream stops holds no
+is read, unless you keep them or they belong to an `init` mapping, which the stream
+holds whole until it is closed. An exception you keep after the stream stops holds no
 chunk or fit the stream made; the arguments you passed, such as an `init` mapping,
 stay referenced as long as it does. An input list you build also occupies memory. The stream
 tracks IDs in a SQLite file with a bounded page cache, so duplicate detection does not
