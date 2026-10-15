@@ -661,30 +661,49 @@ impl StructuralPosterior {
     }
     /// Every failed or unavailable check of this fit (see
     /// [`crate::diagnostics::fit_warnings`]), followed by a
-    /// `known_limitation` record for each trend component with an inferred
-    /// variance, whose level and slope variances this sampler mixes slowly.
+    /// `known_limitation` record for each trend component whose level and
+    /// slope variances are both inferred, with Gaussian observations: the
+    /// configuration measured to mix those variances slowly.
     pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
         let sampler = if self.config.student_df.is_some() {
             "gibbs_ffbs_student_t"
         } else {
             "gibbs_ffbs_structural"
         };
-        // A fixed variance is constant by construction; everything else is
-        // drawn and should vary.
-        let variances = self.config.components.iter().flat_map(|c| &c.innovations);
+        // A fixed variance is constant by construction. A terminal state can
+        // be deterministic only if its own innovation is fixed at zero (an AR
+        // coordinate with coefficient 0 then stays at 0), or if a zero
+        // observation variance pins the states to the data. Everything else
+        // is drawn and should vary.
+        let innovations: Vec<&VarianceParameter> = self
+            .config
+            .components
+            .iter()
+            .flat_map(|c| &c.innovations)
+            .collect();
         let mut constant: Vec<String> = self
             .config
             .variance_names()
             .into_iter()
-            .zip(variances)
+            .zip(&innovations)
             .filter(|(_, v)| matches!(v, VarianceParameter::Fixed(_)))
             .map(|(name, _)| name)
             .collect();
+        let exact_observations = matches!(
+            self.config.observation_variance,
+            VarianceParameter::Fixed(v) if v == 0.0
+        );
         if matches!(
             self.config.observation_variance,
             VarianceParameter::Fixed(_)
         ) {
             constant.push("observation_variance".into());
+        }
+        for (i, innovation) in innovations.iter().enumerate() {
+            if exact_observations || matches!(innovation, VarianceParameter::Fixed(v) if *v == 0.0)
+            {
+                constant.push(format!("terminal_state[{i}]"));
+            }
         }
         let mut warnings = crate::diagnostics::fit_warnings(
             &self.diagnostics(),
@@ -694,11 +713,14 @@ impl StructuralPosterior {
             },
         );
         for component in &self.config.components {
-            let inferred = component
+            // Only the measured configuration: both variances inferred and
+            // Gaussian observations. With one variance fixed the other can mix
+            // well, and the Student-t sampler was not measured.
+            let both_inferred = component
                 .innovations
                 .iter()
-                .any(|v| matches!(v, VarianceParameter::InverseGamma { .. }));
-            if component.is_trend() && inferred {
+                .all(|v| matches!(v, VarianceParameter::InverseGamma { .. }));
+            if component.is_trend() && both_inferred && self.config.student_df.is_none() {
                 // Range over damping 1 and 0.9, measured by
                 // benchmarks/state_variance_mixing.py.
                 warnings.push(crate::diagnostics::warnings::slow_state_variance_mixing(

@@ -803,6 +803,28 @@ impl DynamicGlmPosterior {
             &self.parameter_names(),
         )
     }
+    /// Every failed or unavailable check of this fit (see
+    /// [`crate::diagnostics::fit_warnings`]). With both process scales zero
+    /// the states are identically zero, so the terminal states are declared
+    /// constant; `coefficient_sd` is positive, so coefficients always vary.
+    pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        let constant: Vec<String> =
+            if self.config.process_sd == 0.0 && self.config.shared_process_sd == 0.0 {
+                self.parameter_names()
+                    .into_iter()
+                    .filter(|name| name.starts_with("terminal_state["))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+        crate::diagnostics::fit_warnings(
+            &self.diagnostics(),
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian {
+                sampler: "block_elliptical_slice",
+                constant: &constant,
+            },
+        )
+    }
     pub fn forecast(
         &self,
         steps: usize,

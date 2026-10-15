@@ -206,6 +206,22 @@ def test_collapsed_draws_fail_and_values_the_model_holds_constant_do_not():
     fit = model.fit(series(2), chains=2, draws=100, warmup=100, seed=2)
     assert constant_records(fit) == {"level.innovation[0]": "unavailable"}
 
+    # A state whose innovation is fixed at zero and whose AR coefficient is 0
+    # stays at 0, so its terminal value is constant by construction.
+    zero_ar = rustmc.StructuralComponent.ar(
+        "ar", [0.0], rustmc.VarianceParameter.fixed(0.0), [0.0], [[1.0]]
+    )
+    model = rustmc.StructuralModel([zero_ar], observation_variance=rustmc.VarianceParameter.fixed(1.0))
+    fit = model.fit(np.zeros(20), chains=4, draws=200, warmup=100, seed=1)
+    assert "fail" not in constant_records(fit).values(), constant_records(fit)
+
+    # With both process scales zero the dynamic GLM's states are identically
+    # zero; they are not a stuck chain.
+    glm = rustmc.BayesianDynamicPoisson(process_sd=0.0, shared_process_sd=0.0)
+    fit = glm.fit([[0.0, 1.0, 2.0, 1.0, 3.0, 2.0]], chains=2, warmup=50, draws=100)
+    records = constant_records(fit)
+    assert records and set(records.values()) == {"unavailable"}, records
+
     # A closed runoff cohort's ultimate is its known total.
     runoff = rustmc.DirichletMultinomialRunoff([2, 3], total_shape=4, total_rate=0.2)
     fit = runoff.fit(np.array([[3.0, 1.0], [2.0, np.nan]]), [0, 1], 1, draws=400, chains=2, seed=3)
@@ -290,8 +306,8 @@ def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not
         "seasonal": seasonal.fit(y, **schedule),
         "seasonal with exog": seasonal.fit(y, **schedule, **exog_options()),
         "structural trend": structural(trend_component(ig, ig)).fit(y, **schedule),
-        "damped structural trend, slope fixed": structural(
-            trend_component(ig, fixed, damping=0.9)
+        "damped structural trend": structural(
+            trend_component(ig, ig, damping=0.9)
         ).fit(y, **schedule),
     }
     for label, fit in carrying.items():
@@ -303,6 +319,10 @@ def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not
     clean = {
         "local level": local_level().fit(y, **schedule),
         "structural level": structural(level).fit(y, **schedule),
+        # Only both variances inferred was measured to mix slowly.
+        "structural trend, slope fixed": structural(
+            trend_component(ig, fixed, damping=0.9)
+        ).fit(y, **schedule),
         "structural trend, variances fixed": structural(
             trend_component(fixed, fixed)
         ).fit(y, **schedule),
@@ -310,8 +330,12 @@ def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not
     for label, fit in clean.items():
         assert limitations(fit) == [], label
 
+    # The batch path keeps the record on every cell, whatever else fails.
     batch = seasonal.fit_batch([series(6), series(7)], ids=["a", "b"], chains=2, draws=100,
                                warmup=100)
+    assert all(
+        "known_limitation" in codes(cell) for cell in batch.warnings().values()
+    )
     assert batch.flagged() == ["a", "b"]
 
 

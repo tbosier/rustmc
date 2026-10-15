@@ -712,8 +712,11 @@ list means every check ran and passed.
 
 A parameter whose draws are finite but do not vary has no R-hat or ESS. A model
 declares the quantities it can hold constant: a `StructuralModel` variance set with
-`VarianceParameter.fixed`, and a runoff cohort's `ultimate`, a count that is known for a
-closed cohort and whose posterior can sit on one value. For those the
+`VarianceParameter.fixed`; a `StructuralModel` terminal state whose innovation is fixed at
+0, or every terminal state when the observation variance is fixed at 0; a dynamic GLM's
+terminal states when `process_sd` and `shared_process_sd` are both 0; and a runoff
+cohort's `ultimate`, a count that is known for a closed cohort and whose posterior can sit
+on one value. For those the
 `diagnostics_unavailable` record has status `"unavailable"`, which does not flag the
 fit. Every other quantity is drawn by the sampler, so draws that do not vary mean a
 stuck chain or draws that collapsed below floating-point resolution (for example a
@@ -779,16 +782,17 @@ cells. Check those variances with longer chains, then leave the record out with
 |-----|-----------------------------------|--------|
 | `BayesianLocalLinearTrend` | level 1.062 to 2.056, slope 1.051 to 1.421 | yes |
 | `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
-| `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, when at least one of its two variances is inferred |
+| `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, when both variances are inferred and observations are Gaussian, the configuration measured |
 | `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
 | `BayesianSeasonalLocalLevel` with `exog` | level 1.012 to 1.221, seasonal 1.034 to 1.423 | yes |
 | `BayesianLocalLevel` | process 1.004 to 1.171, above 1.01 in nine of the ten settings | no |
 
 The local level's one setting at or below 1.01 is the near-zero observation variance
-regime at 200 points, where the data pin down the states. Its R-hat was 1.06 to 1.17 in
-the other nine, so read its ordinary R-hat and ESS warnings with that in mind. Samplers
+regime at 200 points, where the data pin down the states. Its R-hat was 1.022 to 1.171
+in the other nine, so read its ordinary R-hat and ESS warnings with that in mind. Samplers
 not in the table were not measured and carry no record; that includes `StructuralModel`
-level, seasonal and regression components and the local level fitted with `exog`.
+level, seasonal and regression components, a trend component with one variance fixed,
+the Student-t structural sampler and the local level fitted with `exog`.
 
 ```bash
 ./scripts/dev_pytest.sh -q tests/test_smoke.py  # builds the extension into .pybuild

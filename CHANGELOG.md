@@ -54,14 +54,16 @@ seeded draws only where its entries say so.
   successful cells with at least one failed check, in batch order. Failed cells are
   in `errors`. An unknown code in `ignore` raises `ValueError`.
 - A quantity whose draws do not vary fails `diagnostics_unavailable` unless the model
-  declares it can hold it constant: a fixed `StructuralModel` variance or a runoff
+  declares it can hold it constant: a fixed `StructuralModel` variance, a structural
+  terminal state with a zero innovation (or any, with a zero observation variance), a
+  dynamic GLM's terminal states when both process scales are 0, or a runoff
   `ultimate`. So a stuck chain, or draws that collapsed below floating-point
   resolution, flag a forecasting fit as they flag an HMC or NUTS fit.
   `SamplerTelemetry::NonHamiltonian` takes the declared names as `constant`.
 - A `known_limitation` record with status `"fail"` on every fit of a sampler that
   mixes its state variances slowly: `BayesianLocalLinearTrend` and
   `BayesianSeasonalLocalLevel`, each with or without `exog`, and a `StructuralModel`
-  with a trend component that has an inferred variance. `flagged()` lists those cells
+  trend component whose two variances are both inferred, with Gaussian observations. `flagged()` lists those cells
   until `ignore=["known_limitation"]` leaves the record out. The record goes on a
   sampler whose worst R-hat was above 1.01 in all ten settings of the new
   `benchmarks/state_variance_mixing.py`; each record states its sampler's range. The
@@ -78,7 +80,7 @@ seeded draws only where its entries say so.
   WarningStatus, SamplerTelemetry, R_HAT_THRESHOLD, ESS_THRESHOLD,
   E_BFMI_THRESHOLD, compute_transition_diagnostics_with_max_tree_depth}`,
   `SampleResult::warnings`, `warnings()` on the local-linear-trend, seasonal
-  local-level, regression and structural posteriors,
+  local-level, regression, structural and dynamic GLM posteriors,
   `RegressionConfig::is_local_linear_trend`, `structural::Component::is_trend` and
   `bayesian_trend::local_linear_trend_limitation`.
 

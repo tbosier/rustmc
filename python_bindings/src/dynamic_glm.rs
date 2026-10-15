@@ -271,15 +271,7 @@ impl PyDynamicGLMFit {
     /// Every failed or unavailable check of this fit, one dict per check;
     /// see the fit warnings section of the reference.
     fn warnings<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
-        let warnings = py.allow_threads(|| {
-            rustmc_core::diagnostics::fit_warnings(
-                &self.posterior.diagnostics(),
-                rustmc_core::diagnostics::SamplerTelemetry::NonHamiltonian {
-                    sampler: "block_elliptical_slice",
-                    constant: &[],
-                },
-            )
-        });
+        let warnings = py.allow_threads(|| self.posterior.warnings());
         forecast_diagnostics::warnings_list(py, &warnings)
     }
     fn summary(&self) -> String {
