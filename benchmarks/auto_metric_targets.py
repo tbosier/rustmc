@@ -1,7 +1,7 @@
 """Cost of ``metric="auto"`` on a range of targets, against ``diag`` and ``dense``.
 
 Run: python -m benchmarks.auto_metric_targets [--seeds N] [--warmup N]
-[--metrics auto,diag,dense]
+[--metrics auto,diag,dense] [--json PATH]
 (with the build to measure on PYTHONPATH)
 
 Every target holds at least one vector parameter, so that ``auto`` may choose a dense
@@ -14,9 +14,12 @@ statistical-validation page quotes such a comparison.
 from __future__ import annotations
 
 import argparse
+import json
 
 import numpy as np
 import rustmc as rmc
+
+from benchmarks.build_provenance import build_provenance
 
 CHAINS = 4
 WARMUP = 1000
@@ -132,12 +135,14 @@ def main():
     parser.add_argument("--warmup", type=int, default=WARMUP)
     parser.add_argument("--metrics", default="auto,diag,dense")
     parser.add_argument("--targets", default=",".join(TARGETS))
+    parser.add_argument("--json", help="save every fit's figures here")
     args = parser.parse_args()
     seeds = range(1, args.seeds + 1)
     print(f"rustmc {rmc.__version__} ({rmc.__file__})")
     print(f"chains={CHAINS} warmup={args.warmup} draws={DRAWS} seeds={list(seeds)}")
     print(f"{'target':34s} {'metric':6s} {'steps/ESS':>9s} {'worst':>9s} "
           f"{'divergent fits':>14s} {'worst R-hat':>11s}")
+    fits = []
     for name in args.targets.split(","):
         compiled, data = TARGETS[name]()
         for metric in args.metrics.split(","):
@@ -147,12 +152,20 @@ def main():
                                       seed=seed, metric=metric, show_progress=False)
                 rows = fit.diagnostics()
                 report = fit.transition_diagnostics()
-                costs.append(report["total_leapfrog_steps"]
-                             / min(row["ess_bulk"] for row in rows))
+                ess = min(row["ess_bulk"] for row in rows)
+                costs.append(report["total_leapfrog_steps"] / ess)
                 divergent += report["total_divergences"] > 0
                 r_hats.append(max(row["r_hat"] for row in rows))
+                fits.append({"target": name, "metric": metric, "seed": seed,
+                             "leapfrog_steps": report["total_leapfrog_steps"],
+                             "min_bulk_ess": ess, "max_r_hat": r_hats[-1],
+                             "divergences": report["total_divergences"]})
             print(f"{name:34s} {metric:6s} {np.median(costs):9.1f} {max(costs):9.1f} "
                   f"{divergent:>9d} / {len(seeds):<2d} {max(r_hats):11.4f}", flush=True)
+    if args.json:
+        with open(args.json, "w") as handle:
+            json.dump({"build": build_provenance(rmc), "chains": CHAINS, "warmup": args.warmup,
+                       "draws": DRAWS, "fits": fits}, handle, indent=1)
 
 
 if __name__ == "__main__":
