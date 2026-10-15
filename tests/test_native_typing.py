@@ -169,6 +169,39 @@ def _split_type_arguments(inner):
 _FIT_WARNING_KEYS = {"code", "status", "parameter", "chain", "value", "threshold", "message"}
 
 
+def _stub_assignment(name):
+    for node in _stub().body:
+        if isinstance(node, ast.Assign) and [ast.unparse(t) for t in node.targets] == [name]:
+            return node.value
+    raise AssertionError(f"_rustmc.pyi has no {name}")
+
+
+def _literal_values(node):
+    """The strings of a `Literal[...]` annotation node."""
+    elements = node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+    return {ast.literal_eval(element) for element in elements}
+
+
+def _fit_warning_fields():
+    """Each `_FitWarning` key and a check of its value, read from the stub.
+
+    A `Literal[...]` field (directly or through `_WarningCode`) must be one
+    of its strings; every other field must match its annotation."""
+    fields = _stub_assignment("_FitWarning").args[1]
+    checks = {}
+    for key, annotation in zip(fields.keys, fields.values):
+        if ast.unparse(annotation) == "_WarningCode":
+            annotation = _stub_assignment("_WarningCode")
+        text = ast.unparse(annotation)
+        if text.startswith("Literal["):
+            allowed = _literal_values(annotation)
+            checks[ast.literal_eval(key)] = lambda value, allowed=allowed: value in allowed
+        else:
+            checks[ast.literal_eval(key)] = lambda value, text=text: _value_matches(value, text)
+    assert set(checks) == _FIT_WARNING_KEYS
+    return checks
+
+
 def _annotation_is_known(annotation):
     """Whether `_value_matches` can decide this annotation *at all*.
 
@@ -248,8 +281,13 @@ def _value_matches(value, annotation):
     if annotation.startswith("_Diagnostic"):
         return isinstance(value, dict)
     if annotation == "_FitWarning":
-        # The record's keys are its whole contract.
-        return isinstance(value, dict) and set(value) == _FIT_WARNING_KEYS
+        # Exactly the stub's keys, each value of its declared type or literal.
+        checks = _fit_warning_fields()
+        return (
+            isinstance(value, dict)
+            and set(value) == set(checks)
+            and all(check(value[key]) for key, check in checks.items())
+        )
     return isinstance(value, getattr(importlib.import_module("rustmc"), annotation))
 
 
