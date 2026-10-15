@@ -300,10 +300,11 @@ The Gaussian partial-pooling case uses noncentered effects. Centered funnel and
 centered eight-schools cases remain negative controls: poor recovery must produce a
 diagnostic signal. None of these checks establishes calibration under misspecification.
 
-## Known limitation: local linear trend
+## Known limitation: forecasting samplers' mixing
 
-None of these gates covers the forecasting samplers' mixing. The local-linear-trend
-Gibbs sampler is known to mix slowly on its level and slope variances. ROADMAP.md
-reports R-hat from 1.05 to 1.9 for them on a synthetic series with 4 chains, 300 warmup
-and 500 draws; that figure is ROADMAP's, not a run of this page. The
-`BayesianLocalLinearTrend` documentation describes the limitation.
+None of these gates covers the forecasting samplers' mixing. Several Gibbs/FFBS
+samplers mix their state variances slowly, including the local linear trend fitted
+with `exog`; the plain local linear trend integrates its states out and does not.
+`benchmarks/state_variance_mixing.py` measures them, and the reference's
+[slow state-variance mixing](reference.md#slow-state-variance-mixing) section lists
+which fits carry a `known_limitation` record.

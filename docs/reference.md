@@ -323,7 +323,7 @@ those states, and mixed slowly. On simulated series in five regimes and two leng
 fitted with 4 chains, 300 warmup and 500 draws, the level variance's worst R-hat in
 each setting was 1.06 to 2.06, and its smallest bulk ESS 6 to 58 out of 2000 draws.
 On the same series no variance's R-hat now exceeds 1.008, and the smallest bulk ESS
-in each setting is 388 to 1920. A fit takes about twice as long. The level variance
+in each setting, over the three variances, is 388 to 1538. A fit takes about twice as long. The level variance
 mixes least well in the balanced regime at 1000 points and when the observation
 variance is near zero, where its smallest bulk ESS is 388 to 479.
 

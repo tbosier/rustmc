@@ -393,7 +393,7 @@ def test_local_linear_trend_carries_no_known_limitation_into_triage():
     # The sampler integrates the states out and mixes its variances well, so
     # its fits carry no limitation record; only a failed check flags them.
     fit = local_linear_trend().fit(series(2), chains=2, draws=100, warmup=100, seed=2)
-    assert "known_limitation" not in codes(fit.warnings())
+    assert all(w["code"] != "known_limitation" for w in fit.warnings()), fit.warnings()
     assert_messages_state_thresholds(fit.warnings())
 
     # Autoregressions are exact independent draws, so their cells are clean.
@@ -416,7 +416,7 @@ def test_local_linear_trend_carries_no_known_limitation_into_triage():
         assert codes(warnings[id]) == set(), warnings[id]
         assert_hamiltonian_checks_unavailable_once(warnings[id])
     for id in ["trend-1", "trend-2"]:
-        assert "known_limitation" not in codes(warnings[id]), warnings[id]
+        assert all(w["code"] != "known_limitation" for w in warnings[id]), warnings[id]
     failing = [id for id in ids if any(w["status"] == "fail" for w in warnings[id])]
     assert batch.flagged() == failing
     assert batch.flagged(ignore=["known_limitation"]) == failing

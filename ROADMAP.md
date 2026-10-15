@@ -8,10 +8,10 @@ comparisons written with `ModelBuilder` run on the graph-based NUTS/HMC sampler.
 forecasting models — structural, seasonal, AR, dynamic GLM, hurdle, runoff, and the
 Gaussian hierarchy — are hand-written samplers that do not use that graph, its
 autodiff, or its samplers at all. Nor are they one kernel: Gibbs with FFBS for the
-Gaussian state-space models (the local linear trend integrates its states out
-instead), exact conjugate draws for AR, block elliptical slice sampling for dynamic
-GLMs, and for runoff either exact conjugate draws or latent-count Gibbs, depending on
-whether every ultimate total is known.
+Gaussian state-space models (the local linear trend without `exog` integrates its
+states out instead), exact conjugate draws for AR, block elliptical slice sampling
+for dynamic GLMs, and for runoff either exact conjugate draws or latent-count Gibbs,
+depending on whether every ultimate total is known.
 
 What they share is worth stating precisely, because it decides which work pays off
 twice. `diagnostics` is common to every model. The batch executor is shared inside

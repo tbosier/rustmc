@@ -246,7 +246,7 @@ impl ForecastFit for PyBayesianLocalLinearTrendFit {
     fn report(&self) -> DiagnosticsReport {
         self.posterior.diagnostics()
     }
-    /// The core rule plus the sampler's known mixing limitation.
+    /// The core rule; this sampler carries no known mixing limitation.
     fn warnings(&self) -> Vec<rustmc_core::diagnostics::FitWarning> {
         self.posterior.warnings()
     }

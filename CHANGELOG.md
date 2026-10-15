@@ -100,7 +100,7 @@ versioning while the public API is stabilized.
   conditional given the other two, with the likelihood computed exactly by a Kalman
   filter, and retained draws sample the terminal state from its filtered
   distribution. On the same series no variance's R-hat exceeded 1.008, and the
-  smallest bulk ESS in each setting was 388 to 1920.
+  smallest bulk ESS in each setting, over the three variances, was 388 to 1538.
   The target posterior is the same. In the benchmark, on a short series, both
   samplers' means lie within 1.8 Monte Carlo standard errors of means computed by
   quadrature, and a unit test holds the new sampler to within 4 of them.
