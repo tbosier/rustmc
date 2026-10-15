@@ -87,8 +87,8 @@ versioning while the public API is stabilized.
   skipped as completed, in input order, with its ID, fit (or `None` under
   `retention="summary"`), diagnostics, error and fit warnings. The previous chunk's
   data, initial positions and fits are released before the next chunk is read.
-  Datasets and the positions an `init` callable returns are deep-copied when read, so
-  a source may reuse its buffers. Duplicate IDs are detected through a SQLite ledger in
+  Datasets and initial positions are held as given until their chunk is sampled, so
+  a source must not change or reuse their buffers before then. Duplicate IDs are detected through a SQLite ledger in
   the temporary directory rather than a set in memory. `completed_ids` skips jobs
   finished in an earlier run, and IDs with the base seed reproduce the draws of
   `sample_batch` across chunk sizes and input order, given an `init` that depends

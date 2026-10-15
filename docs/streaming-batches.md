@@ -12,12 +12,13 @@ with compiled.sample_iter(
         save(item.id, item.error, item.diagnostics, item.warnings)
 ```
 
-`datasets` can be a generator. `save` is your own result sink. Each dataset, and the
-positions an `init` callable returns, are deep-copied when they are read, so a
-generator may refill and yield the same buffers; the copy keeps types and masks, so
-`sample_batch` validates what the source gave. Memoryviews are copied too. A bound model
-is passed as given, being immutable, and so is a value that cannot be copied at all,
-such as a generator. With `retention="full"` (the default),
+`datasets` can be a generator. `save` is your own result sink. Each dataset and its
+initial positions are held as given, as `sample_batch` holds its inputs, until their
+chunk is sampled, which is before any of the chunk's items is yielded. A source must
+therefore not change or reuse a dataset's buffers, or those of positions an `init`
+callable returned, until then: a generator that refills one array and yields it for
+every dataset fits each chunk's datasets to the last contents. Yield new arrays, or
+copy them in the generator. With `retention="full"` (the default),
 each successful item also has a `.fit` for prediction. Summary retention releases
 posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic rows.
 Sampling options are those of `sample_batch` and are checked when the stream is
@@ -31,8 +32,9 @@ every check passed, not that the posterior is right. Inspect the diagnostics too
 
 Memory is bounded by the current input chunk, its fits, and worker scratch space: the
 previous chunk's data, initial positions and fits are released before the next chunk
-is read, unless you keep them. An exception you keep after the stream stops holds
-none of them either. An input list you build also occupies memory. The stream
+is read, unless you keep them. An exception you keep after the stream stops holds no
+chunk or fit the stream made; the arguments you passed, such as an `init` mapping,
+stay referenced as long as it does. An input list you build also occupies memory. The stream
 tracks IDs in a SQLite file with a bounded page cache, so duplicate detection does not
 retain every ID in Python memory. The file uses space proportional to the job count in
 the temporary directory (`TMPDIR`); where that directory is in memory, as with tmpfs,
@@ -56,9 +58,10 @@ batch, removes the temporary ID ledger, closes a closeable input iterator, and d
 stream's references to both; it closes the input even if releasing the batch fails. It
 may be called from another thread than the one iterating, and then waits for a
 `next()` in progress to return. A failure to close the input is raised, also when the
-stream ends normally; when the stream stops on another error, that error is raised
-with a note about the failed close, also when leaving a `with` block, and calling
-`.close()` again retries it. A stream that is garbage
+stream ends normally; when the stream stops on another error, that error is raised,
+also when leaving a `with` block, with a note about the failed close (a
+`RuntimeWarning` before Python 3.11, which has no notes), and calling `.close()` again
+retries it. A stream that is garbage
 collected unclosed closes itself, but when that
 happens is up to Python. No next chunk starts until the current chunk is consumed.
 Native worker count applies to each chunk; pool creation currently occurs once per
