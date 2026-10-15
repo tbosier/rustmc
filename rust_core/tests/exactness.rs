@@ -23,7 +23,9 @@
 //!   diagonal metric) and through a graph (one vector parameter, where the
 //!   auto metric may choose a dense block);
 //! - a 50-dimensional Gaussian with AR(1) correlation 0.95 (correlation
-//!   matrix condition number 989, covariance 1481), through both paths;
+//!   matrix condition number 989, covariance 1481), through both paths, and
+//!   the same with correlation 0.8 (condition numbers 77 and 116) through the
+//!   custom-target path, the case this gate started with;
 //! - a 10-coefficient Bayesian linear regression with known noise, whose
 //!   posterior is computed in closed form, through a graph written as a user
 //!   would write it.
@@ -36,22 +38,20 @@
 //! steps per bulk ESS, warmup included, as JSON. Both are described, with
 //! their results, in docs/statistical-validation.md.
 //!
-//! Static HMC does not pass, and its two cases are ignored reproducers rather
-//! than checks loosened until they pass. On these well-conditioned targets
-//! the adapted step size puts the default 15 leapfrog steps at an integration
-//! time close to the 2*pi period of a standardized Gaussian coordinate, so a
-//! transition returns almost to where it started. The ignored tests print
-//! what they find; the figures quoted in docs/statistical-validation.md come
-//! from those runs or from the one-off runs that page names.
+//! Static HMC does not pass, and its two cases (the independent normals and
+//! the rho 0.8 correlated Gaussian) are ignored reproducers rather than
+//! checks loosened until they pass. The ignored tests print what they find,
+//! and docs/statistical-validation.md quotes those runs.
 #[path = "exactness_support/mod.rs"]
 mod exactness_support;
 
 use exactness_support::{
-    check, fit, fit_with, gate_cases, label, nominal_false_alarm_rate, with_sampler, within, Check,
-    GaussianTarget, Outcome, Path, MAX_MCSE, NOMINAL_EXCEEDANCE,
+    check, default_config, fit, fit_with, gate_cases, label, nominal_false_alarm_rate,
+    with_sampler, within, Check, GaussianTarget, Outcome, Path, MAX_MCSE, NOMINAL_EXCEEDANCE,
 };
 use rayon::prelude::*;
-use rustmc_core::sampler::SamplerType;
+use rustmc_core::mass_matrix::MetricKind;
+use rustmc_core::sampler::{SamplerConfig, SamplerType};
 use std::collections::BTreeMap;
 
 fn gate(target: GaussianTarget, path: Path, seed: u64) {
@@ -72,11 +72,16 @@ fn nuts_matches_the_exact_moments_of_a_hundred_independent_normals_in_a_graph() 
 
 #[test]
 fn nuts_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
+    gate(GaussianTarget::correlated(50, 0.8), Path::Custom, 2201);
+}
+
+#[test]
+fn nuts_matches_the_exact_moments_of_an_ill_conditioned_fifty_dimensional_gaussian() {
     gate(GaussianTarget::correlated(50, 0.95), Path::Custom, 2201);
 }
 
 #[test]
-fn nuts_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian_in_a_graph() {
+fn nuts_matches_the_exact_moments_of_an_ill_conditioned_fifty_dimensional_gaussian_in_a_graph() {
     gate(GaussianTarget::correlated(50, 0.95), Path::Graph, 2211);
 }
 
@@ -100,10 +105,17 @@ fn the_gate_cases_are_the_tested_ones() {
         ),
         ("independent normals (100 dimensions), graph path", 2111),
         (
-            "correlated Gaussian (50 dimensions), custom target path",
+            "correlated Gaussian, rho 0.8 (50 dimensions), custom target path",
             2201,
         ),
-        ("correlated Gaussian (50 dimensions), graph path", 2211),
+        (
+            "correlated Gaussian, rho 0.95 (50 dimensions), custom target path",
+            2201,
+        ),
+        (
+            "correlated Gaussian, rho 0.95 (50 dimensions), graph path",
+            2211,
+        ),
         ("conjugate regression (10 dimensions), graph path", 2301),
     ]
     .map(|(l, s)| (l.to_string(), s));
@@ -114,7 +126,7 @@ fn the_gate_cases_are_the_tested_ones() {
 /// default 15 leapfrog steps, static HMC's integration time lands near a full
 /// period of these Gaussians and some coordinates barely move.
 #[test]
-#[ignore = "open finding: default static HMC nearly resonates on well-conditioned Gaussians"]
+#[ignore = "open finding: default static HMC fails the gate on Gaussian targets"]
 fn hmc_matches_the_exact_moments_of_a_hundred_independent_normals() {
     let target = GaussianTarget::independent_normals(100);
     let fit = fit_with(&target, Path::Custom, with_sampler(2102, SamplerType::Hmc));
@@ -123,15 +135,43 @@ fn hmc_matches_the_exact_moments_of_a_hundred_independent_normals() {
     outcome.assert_passed();
 }
 
-/// Reproducer for the same open finding on the correlated target.
+/// Reproducer for the same open finding on the rho 0.8 correlated target.
 #[test]
-#[ignore = "open finding: default static HMC nearly resonates on well-conditioned Gaussians"]
+#[ignore = "open finding: default static HMC fails the gate on Gaussian targets"]
 fn hmc_matches_the_exact_moments_of_a_correlated_fifty_dimensional_gaussian() {
-    let target = GaussianTarget::correlated(50, 0.95);
+    let target = GaussianTarget::correlated(50, 0.8);
     let fit = fit_with(&target, Path::Custom, with_sampler(2202, SamplerType::Hmc));
     let outcome = check("HMC, 50 correlated Gaussian coordinates", &fit, &target);
     println!("{}", outcome.summary());
     outcome.assert_passed();
+}
+
+/// What the auto metric buys on the ill-conditioned target's graph path,
+/// against a diagonal and a dense metric, at the shipped defaults otherwise.
+/// Prints each fit's summary for three seeds per metric.
+///
+/// ```text
+/// cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+///     metric_choice_on_the_ill_conditioned_graph_target
+/// ```
+#[test]
+#[ignore = "measurement: prints the cost of each metric; run by hand"]
+fn metric_choice_on_the_ill_conditioned_graph_target() {
+    let target = GaussianTarget::correlated(50, 0.95);
+    for metric in [MetricKind::Auto, MetricKind::Diagonal, MetricKind::Dense] {
+        for seed in 2211..2214 {
+            let config = SamplerConfig {
+                metric,
+                ..default_config(seed)
+            };
+            let outcome = check(
+                &format!("{metric:?}, seed {seed}"),
+                &fit_with(&target, Path::Graph, config),
+                &target,
+            );
+            println!("{}", outcome.summary());
+        }
+    }
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -268,6 +308,17 @@ fn false_alarm_rate_over_seeds() {
     );
     if let Ok(path) = std::env::var("RUSTMC_EXACTNESS_JSON") {
         let report = serde_json::json!({
+            "format": "rustmc.exactness-false-alarm",
+            "version": 1,
+            "revision": command_output("git", &["rev-parse", "HEAD"]),
+            "dirty": command_output("git", &["status", "--porcelain"]).map(|s| !s.is_empty()),
+            "cpu_model": cpu_model(),
+            "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).ok(),
+            "command": format!(
+                "RUSTMC_EXACTNESS_SEEDS={seeds} RUSTMC_EXACTNESS_JSON=<path> cargo test \
+                 --release -p rustmc_core --test exactness -- --ignored --nocapture \
+                 false_alarm_rate_over_seeds"
+            ),
             "nominal_exceedance_per_check": NOMINAL_EXCEEDANCE,
             "cases": records,
             "wall_seconds": started.elapsed().as_secs_f64(),
