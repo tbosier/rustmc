@@ -55,20 +55,22 @@ seeded draws only where its entries say so.
   in `errors`. An unknown code in `ignore` raises `ValueError`.
 - A quantity whose draws do not vary fails `diagnostics_unavailable` unless the model
   declares it can hold it constant: a fixed `StructuralModel` variance, a structural
-  terminal state with a zero innovation, a dynamic GLM's terminal states when both process scales are 0, or a runoff
+  or exog-regression terminal state that no innovation or initial variance can reach,
+  a dynamic GLM's terminal states when both process scales are 0, or a runoff
   `ultimate`. So a stuck chain, or draws that collapsed below floating-point
   resolution, flag a forecasting fit as they flag an HMC or NUTS fit.
   `SamplerTelemetry::NonHamiltonian` takes the declared names as `constant`.
 - A `known_limitation` record with status `"fail"` on every fit of a sampler that
   mixes its state variances slowly: `BayesianLocalLinearTrend` and
   `BayesianSeasonalLocalLevel`, each with or without `exog`, and a `StructuralModel`
-  trend component whose two variances are both inferred, with Gaussian observations. `flagged()` lists those cells
-  until `ignore=["known_limitation"]` leaves the record out. The record goes on a
-  sampler whose worst R-hat was above 1.01 in all ten settings of the new
-  `benchmarks/state_variance_mixing.py`; each record states its sampler's range. The
-  local level was above 1.01 in seven of its eight distinct settings and carries no
-  record. The
-  reference's slow state-variance mixing section has the table and the command.
+  trend component in the configuration measured: both state variances and the
+  observation variance inferred, Gaussian observations, and damping from 0.9 to 1.
+  `flagged()` lists those cells until `ignore=["known_limitation"]` leaves the record
+  out. The record goes on a sampler whose worst R-hat was above 1.01 in all ten
+  settings of the new `benchmarks/state_variance_mixing.py`; each record states its
+  sampler's range. The local level was above 1.01 in seven of its eight distinct
+  settings and carries no record. The reference's slow state-variance mixing section
+  has the table and the command.
 - Each HMC and NUTS transition records the Hamiltonian of the state it ended in
   (`TransitionStats::energy`). It is read off values the sampler already computed,
   with no new evaluation and no RNG draw.

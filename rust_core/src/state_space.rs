@@ -480,6 +480,33 @@ impl LinearGaussianStateSpace {
         &self.process_covariance
     }
 
+    /// For each coordinate, whether its state has zero variance at every time
+    /// after the first transition, whatever the data: no innovation enters it,
+    /// and no coordinate with initial or innovation variance feeds it through
+    /// the transition. A coordinate in `sampled` counts as having an innovation
+    /// whatever its current variance. Read off the matrices' zero patterns, so a
+    /// variance that cancels numerically still counts as varying.
+    pub(crate) fn deterministic_coordinates(&self, sampled: &[usize]) -> Vec<bool> {
+        let d = self.dimension;
+        let innovation =
+            |i: usize| sampled.contains(&i) || self.process_covariance[i * d + i] != 0.0;
+        // Coordinates reachable by a path of one or more transitions from a
+        // coordinate that has variance at some time.
+        let mut reached = vec![false; d];
+        let mut stack: Vec<usize> = (0..d)
+            .filter(|&j| innovation(j) || self.initial_covariance[j * d + j] != 0.0)
+            .collect();
+        while let Some(j) = stack.pop() {
+            for (i, seen) in reached.iter_mut().enumerate() {
+                if self.transition[i * d + j] != 0.0 && !*seen {
+                    *seen = true;
+                    stack.push(i);
+                }
+            }
+        }
+        (0..d).map(|i| !innovation(i) && !reached[i]).collect()
+    }
+
     /// Simulate the complete next state, including fixed correlated innovations.
     pub fn simulate_transition<R: Rng + ?Sized>(
         &self,

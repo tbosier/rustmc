@@ -139,7 +139,15 @@ impl RegressionConfig {
         !self.seasonal
             && self.structural_model.dimension() == 2
             && self.structural_model.transition() == [1.0, 1.0, 0.0, 1.0]
-            && self.innovation_indices == [0, 1]
+            && self.samples_first_two_variances()
+    }
+
+    /// Whether exactly the first two state variances are sampled, in either
+    /// order.
+    fn samples_first_two_variances(&self) -> bool {
+        let mut indices = self.innovation_indices.clone();
+        indices.sort_unstable();
+        indices == [0, 1]
     }
 }
 
@@ -345,18 +353,18 @@ impl RegressionPosterior {
     /// sampler mixes slowly.
     pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
         use crate::diagnostics::warnings::slow_state_variance_mixing;
-        // A structural coordinate whose variance is not sampled and is zero
-        // can be deterministic (a zero transition row then pins it to 0), so
-        // its terminal state is declared constant. Sampled variances are
-        // positive and the coefficient prior is proper, so the rest vary.
-        let model = &self.config.structural_model;
-        let d = model.dimension();
-        let constant: Vec<String> = (0..d)
-            .filter(|i| {
-                !self.config.innovation_indices.contains(i)
-                    && model.process_covariance()[i * d + i] == 0.0
-            })
-            .map(|i| format!("terminal_state[{i}]"))
+        // A terminal state that no innovation or initial variance can reach
+        // (a zero transition row with no innovation pins it to 0) is
+        // deterministic, so it is declared constant. Every other state has
+        // positive prior variance, and so positive posterior variance.
+        let constant: Vec<String> = self
+            .config
+            .structural_model
+            .deterministic_coordinates(&self.config.innovation_indices)
+            .into_iter()
+            .enumerate()
+            .filter(|(_, deterministic)| *deterministic)
+            .map(|(i, _)| format!("terminal_state[{i}]"))
             .collect();
         let mut warnings = crate::diagnostics::fit_warnings(
             &self.diagnostics(),
@@ -374,7 +382,7 @@ impl RegressionPosterior {
                 1.057,
                 2.621,
             ));
-        } else if self.config.seasonal && self.config.innovation_indices == [0, 1] {
+        } else if self.config.seasonal && self.config.samples_first_two_variances() {
             warnings.push(slow_state_variance_mixing(
                 "the level and seasonal variances of a seasonal local level fitted with exog",
                 1.012,
@@ -742,6 +750,58 @@ mod tests {
         sampled.num_warmup = 50;
         let posterior = fit_regression(&y, &x, &sampled).unwrap();
         assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 1);
+
+        // The same model with its sampled variances listed in the other order.
+        let mut reversed = sampled;
+        reversed.innovation_indices.reverse();
+        reversed.variance_priors.reverse();
+        reversed.variance_names.reverse();
+        let posterior = fit_regression(&y, &x, &reversed).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 1);
+    }
+
+    #[test]
+    fn only_states_no_variance_can_reach_are_deterministic() {
+        // Seasonal local level, period 4: the level and the current seasonal
+        // effect have innovations; the two lag coordinates have none but copy
+        // the seasonal effect, so all four vary.
+        let seasonal = LinearGaussianStateSpace::seasonal_local_level(
+            4,
+            0.1,
+            0.1,
+            1.0,
+            0.0,
+            vec![0.0; 4],
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        assert_eq!(seasonal.deterministic_coordinates(&[0, 1]), vec![false; 4]);
+        // A random walk with no innovation keeps its initial variance.
+        let static_level = LinearGaussianStateSpace::new(
+            1,
+            vec![1.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        assert_eq!(static_level.deterministic_coordinates(&[]), vec![false]);
+        // A zero transition row with no innovation forgets the initial state.
+        let zero = LinearGaussianStateSpace::new(
+            1,
+            vec![0.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        assert_eq!(zero.deterministic_coordinates(&[]), vec![true]);
+        assert_eq!(zero.deterministic_coordinates(&[0]), vec![false]);
     }
 
     #[test]

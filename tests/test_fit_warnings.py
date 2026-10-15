@@ -206,6 +206,14 @@ def test_collapsed_draws_fail_and_values_the_model_holds_constant_do_not():
     fit = model.fit(series(2), chains=2, draws=100, warmup=100, seed=2)
     assert constant_records(fit) == {"level.innovation[0]": "unavailable"}
 
+    # A level whose innovation is fixed at zero keeps its initial variance, so
+    # its terminal draws should vary; collapsed near 1e16 they fail.
+    fixed_zero = rustmc.VarianceParameter.fixed(0.0)
+    static = rustmc.StructuralComponent.level("level", fixed_zero, 1e16, 1.0)
+    model = rustmc.StructuralModel([static], observation_variance=rustmc.VarianceParameter.fixed(1.0))
+    fit = model.fit(np.full(30, 1e16), chains=2, draws=20, warmup=5, seed=1)
+    assert constant_records(fit)["terminal_state[0]"] == "fail", constant_records(fit)
+
     # A state whose innovation is fixed at zero and whose AR coefficient is 0
     # stays at 0, so its terminal value is constant by construction.
     zero_ar = rustmc.StructuralComponent.ar(
@@ -322,6 +330,13 @@ def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not
         # Only both variances inferred was measured to mix slowly.
         "structural trend, slope fixed": structural(
             trend_component(ig, fixed, damping=0.9)
+        ).fit(y, **schedule),
+        # Nor were a fixed observation variance or damping below 0.9.
+        "structural trend, observation variance fixed": rustmc.StructuralModel(
+            [trend_component(ig, ig)], observation_variance=fixed
+        ).fit(y, **schedule),
+        "structural trend, damping 0.5": structural(
+            trend_component(ig, ig, damping=0.5)
         ).fit(y, **schedule),
         "structural trend, variances fixed": structural(
             trend_component(fixed, fixed)

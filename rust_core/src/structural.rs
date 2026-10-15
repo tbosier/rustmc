@@ -661,19 +661,20 @@ impl StructuralPosterior {
     }
     /// Every failed or unavailable check of this fit (see
     /// [`crate::diagnostics::fit_warnings`]), followed by a
-    /// `known_limitation` record for each trend component whose level and
-    /// slope variances are both inferred, with Gaussian observations: the
-    /// configuration measured to mix those variances slowly.
+    /// `known_limitation` record for each trend component in the
+    /// configuration measured to mix its variances slowly: level, slope and
+    /// observation variances inferred, Gaussian observations, and damping
+    /// from 0.9 to 1.
     pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
         let sampler = if self.config.student_df.is_some() {
             "gibbs_ffbs_student_t"
         } else {
             "gibbs_ffbs_structural"
         };
-        // A fixed variance is constant by construction. A terminal state can
-        // be deterministic only if its own innovation is fixed at zero (an AR
-        // coordinate with coefficient 0 then stays at 0); the observation
-        // variance must be positive. Everything else is drawn and should vary.
+        // A fixed variance is constant by construction. A terminal state is
+        // deterministic only if no innovation or initial variance can reach
+        // it (an AR coordinate with coefficient 0 and its innovation fixed at
+        // 0 stays at 0). Everything else is drawn and should vary.
         let innovations: Vec<&VarianceParameter> = self
             .config
             .components
@@ -694,9 +695,18 @@ impl StructuralPosterior {
         ) {
             constant.push("observation_variance".into());
         }
-        for (i, innovation) in innovations.iter().enumerate() {
-            if matches!(innovation, VarianceParameter::Fixed(v) if *v == 0.0) {
-                constant.push(format!("terminal_state[{i}]"));
+        // The template holds each inferred variance at its positive prior
+        // mode, so its zero pattern is the configuration's. If it cannot be
+        // built, nothing is declared and a constant state fails.
+        if let Ok(template) = self.config.template() {
+            for (i, deterministic) in template
+                .deterministic_coordinates(&[])
+                .into_iter()
+                .enumerate()
+            {
+                if deterministic {
+                    constant.push(format!("terminal_state[{i}]"));
+                }
             }
         }
         let mut warnings = crate::diagnostics::fit_warnings(
@@ -707,14 +717,25 @@ impl StructuralPosterior {
             },
         );
         for component in &self.config.components {
-            // Only the measured configuration: both variances inferred and
-            // Gaussian observations. With one variance fixed the other can mix
-            // well, and the Student-t sampler was not measured.
+            // Only the measured configuration: both state variances and the
+            // observation variance inferred, Gaussian observations, and damping
+            // from 0.9 to 1. With a variance fixed the others can mix well,
+            // and the Student-t sampler and stronger damping were not measured.
             let both_inferred = component
                 .innovations
                 .iter()
                 .all(|v| matches!(v, VarianceParameter::InverseGamma { .. }));
-            if component.is_trend() && both_inferred && self.config.student_df.is_none() {
+            let observation_inferred = matches!(
+                self.config.observation_variance,
+                VarianceParameter::InverseGamma { .. }
+            );
+            // A trend's transition is [[1, phi], [0, phi]], so phi is entry 1.
+            if component.is_trend()
+                && (0.9..=1.0).contains(&component.transition[1])
+                && both_inferred
+                && observation_inferred
+                && self.config.student_df.is_none()
+            {
                 // Range over damping 1 and 0.9, measured by
                 // benchmarks/state_variance_mixing.py.
                 warnings.push(crate::diagnostics::warnings::slow_state_variance_mixing(
