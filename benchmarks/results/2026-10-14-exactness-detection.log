@@ -1,0 +1,22 @@
+    Finished `release` profile [optimized] target(s) in 0.11s
+     Running tests/exactness_power.rs (target/release/deps/exactness_power-e0bb7aa0156c645f)
+
+running 1 test
+FavourNewSubtree, independent normals (100 dimensions), custom target path: caught 188/200; per-coordinate checks alone 18/200; squared-norm error size median 7.94, smallest 1.98 MCSE
+FavourNewSubtree, independent normals (100 dimensions), graph path: caught 187/200; per-coordinate checks alone 27/200; squared-norm error size median 7.35, smallest 1.20 MCSE
+FavourNewSubtree, correlated Gaussian, rho 0.8 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 20/200; squared-norm error size median 10.50, smallest 6.17 MCSE
+FavourNewSubtree, correlated Gaussian, rho 0.95 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 182/200; squared-norm error size median 11.57, smallest 6.98 MCSE
+FavourNewSubtree, correlated Gaussian, rho 0.95 (50 dimensions), graph path: caught 200/200; per-coordinate checks alone 11/200; squared-norm error size median 9.17, smallest 4.65 MCSE
+FavourNewSubtree, conjugate regression (10 dimensions), graph path: caught 195/200; per-coordinate checks alone 49/200; squared-norm error size median 5.82, smallest 3.13 MCSE
+OverstepWithoutMetropolis, independent normals (100 dimensions), custom target path: caught 200/200; per-coordinate checks alone 157/200; squared-norm error size median 21.49, smallest 12.37 MCSE
+test detection_rate_over_seeds has been running for over 60 seconds
+OverstepWithoutMetropolis, independent normals (100 dimensions), graph path: caught 200/200; per-coordinate checks alone 168/200; squared-norm error size median 21.45, smallest 11.45 MCSE
+OverstepWithoutMetropolis, correlated Gaussian, rho 0.8 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 0/200; squared-norm error size median 17.70, smallest 12.15 MCSE
+OverstepWithoutMetropolis, correlated Gaussian, rho 0.95 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 0/200; squared-norm error size median 17.04, smallest 12.13 MCSE
+OverstepWithoutMetropolis, correlated Gaussian, rho 0.95 (50 dimensions), graph path: caught 200/200; per-coordinate checks alone 1/200; squared-norm error size median 17.17, smallest 12.67 MCSE
+OverstepWithoutMetropolis, conjugate regression (10 dimensions), graph path: caught 200/200; per-coordinate checks alone 179/200; squared-norm error size median 13.71, smallest 8.89 MCSE
+96.7 s
+test detection_rate_over_seeds ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 96.75s
+

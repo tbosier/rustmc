@@ -11,6 +11,9 @@ pub mod diagnostics;
 pub mod distributions;
 pub mod dynamic_glm;
 pub mod elliptical_slice;
+#[cfg(feature = "fault-injection")]
+#[doc(hidden)]
+pub mod fault_injection;
 pub mod forecast_batch;
 pub mod forecast_common;
 pub(crate) mod forecast_diagnostics;
