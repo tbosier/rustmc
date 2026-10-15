@@ -129,6 +129,34 @@ versioning while the public API is stabilized.
 - Rust: `bayesian_trend::local_linear_trend_limitation`, which described the
   sampler 0.14.0 replaced.
 
+### Fixed
+
+- The local-linear-trend sampler's Kalman filter carries each state covariance as
+  the level's variance, the slope's regression on the level and the slope's variance
+  given the level (an `L D L'` factorization) instead of as the covariance matrix.
+  With an initial covariance many orders of magnitude above the variances, forming
+  the covariances lost the slope variance to cancellation: with an initial covariance
+  of diag(1.6e16, 4e15) and five observations, the log likelihood the slice sampler
+  targets was off by 0.16 (the likelihood by 15%), and the slope variance after the
+  second observation came out as 1.0 instead of 0.606. In the new form an observation
+  only rescales the level's variance, and the predicted level variance and slope
+  variance given the level are sums of non-negative terms. The initial slope variance
+  given the level is the determinant over the level variance, with the determinant
+  from Kahan's fused multiply-add algorithm on the matrix scaled by a power of two, and
+  products whose intermediate values would leave the range of normal doubles are
+  combined as logarithms. Unit tests hold the log likelihood to within 1e-12 of its
+  value against the same recursion in exact rational arithmetic in twelve cases, and
+  in ten of them the terminal filtered means and covariance as well: that one, a
+  correlated diffuse prior with missing observations, a level variance 32 orders of
+  magnitude below a correlated slope's, state variances 39 orders of magnitude above
+  the observation variance, four at scales from 1e-200 to 1e300, and two initial
+  covariances within rounding of singular. The sampler's check that the initial
+  covariance is positive definite uses the same determinant; the Python constructor
+  and the trend fitted with `exog` keep their own checks. At ordinary scales the log
+  likelihood agrees with the general state-space filter's to within 1e-10 of its
+  magnitude, as before, but seeded draws change. 0.14.0's sampler has the same
+  weakness.
+
 ## [0.14.0] - 2026-10-14
 
 This release collects a repository-wide cleanup review and the first item three

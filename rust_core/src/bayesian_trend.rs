@@ -28,8 +28,8 @@
 
 use crate::diagnostics::{fit_warnings, DiagnosticsReport, FitWarning, SamplerTelemetry};
 use crate::forecast_common::{
-    check_forecast_size, cholesky_into, invalid_config, numerical, overdispersed_positive,
-    path_means, path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
+    check_forecast_size, invalid_config, numerical, overdispersed_positive, path_means,
+    path_quantiles, require_finite_observations, run_gibbs_chains, simulate_draws,
     slice_sample_positive, split_paths, standard_normal, validate_positive_variance,
     BayesianForecastError, ForecastQuantile, GibbsSchedule, InverseGammaPrior,
     TREND_FIT_SEED_DOMAIN as FIT_SEED_DOMAIN, TREND_FORECAST_SEED_DOMAIN as FORECAST_SEED_DOMAIN,
@@ -340,8 +340,10 @@ fn log_marginal_likelihood(
     initial_covariance: [f64; 4],
     [level_variance, slope_variance, observation_variance]: [f64; 3],
 ) -> f64 {
+    let Ok(mut covariance) = StateCovariance::new(symmetrized(initial_covariance)) else {
+        return f64::NEG_INFINITY;
+    };
     let mut mean = initial_mean;
-    let mut covariance = initial_covariance;
     let mut log_likelihood = 0.0;
     for &observation in observations {
         let step = kalman_step(
@@ -374,31 +376,200 @@ fn log_marginal_likelihood(
 
 const LOG_2_PI: f64 = 1.837_877_066_409_345_5;
 
+/// A state covariance as `L D L'` with `L = [[1, 0], [beta, 1]]` and
+/// `D = diag(level, slope_given_level)`: the level's variance, the slope's
+/// regression on the level, and the slope's variance given the level.
+///
+/// Forming the covariance itself lost the slope variance to cancellation once
+/// the initial covariance was many orders of magnitude above the variances:
+/// each predicted entry was a huge number plus a small one, and the update
+/// keeps only the small part. In this form an observation of the level leaves
+/// `beta` and `slope_given_level` unchanged and scales `level`, and the
+/// predicted `slope_given_level` and `level` are sums of non-negative terms.
+/// What can still cancel is `1 + beta`, and the predicted level/slope
+/// covariance when `beta` lies between -1 and 0.
+#[derive(Debug, Clone, Copy)]
+struct StateCovariance {
+    level: f64,
+    beta: f64,
+    slope_given_level: f64,
+}
+
+impl StateCovariance {
+    /// Fails unless the level variance and the slope's variance given the
+    /// level are positive and every part is finite, which for a symmetric
+    /// 2 x 2 matrix is positive definiteness. The slope's variance given the
+    /// level is the determinant over the level variance. The determinant
+    /// comes from Kahan's fused multiply-add algorithm, on the matrix scaled
+    /// by a power of two so that its largest entry is near one, which keeps it
+    /// accurate to a few rounding errors relative to itself however much
+    /// `level slope` and `cross^2` cancel. `slope - cross * (cross / level)`,
+    /// used before, was 60% off for `[[0.1, 0.3], [0.3, 0.9]]` and zero for a
+    /// positive definite `[[0.3, -0.7], [-0.7, 1.6333333333333333]]`.
+    fn new(covariance: [f64; 4]) -> Result<Self, ()> {
+        let [level, cross, _, slope] = covariance;
+        let largest = level.abs().max(slope.abs()).max(cross.abs());
+        let slope_given_level = if largest.is_finite() && largest > 0.0 {
+            // Multiplying by a power of two is exact, in two halves so that
+            // neither factor overflows.
+            let exponent = -(largest.log2().floor() as i32);
+            let half = 2f64.powi(exponent / 2);
+            let rest = 2f64.powi(exponent - exponent / 2);
+            let [scaled_level, scaled_cross, scaled_slope] =
+                [level, cross, slope].map(|value| value * half * rest);
+            let square = scaled_cross * scaled_cross;
+            let product = scaled_level * scaled_slope;
+            if product.is_finite() && product.abs() >= f64::MIN_POSITIVE / f64::EPSILON {
+                let rounding = (-scaled_cross).mul_add(scaled_cross, square);
+                (scaled_level.mul_add(scaled_slope, -square) + rounding)
+                    / scaled_level
+                    / half
+                    / rest
+            } else {
+                // `level slope` is far below `largest^2`, so for a positive
+                // definite matrix `cross^2` is too, and the plain form does
+                // not cancel; unscaled, its small entries keep their digits.
+                slope - cross * (cross / level)
+            }
+        } else {
+            f64::NAN
+        };
+        let candidate = Self {
+            level,
+            beta: cross / level,
+            slope_given_level,
+        };
+        if candidate.is_valid() {
+            Ok(candidate)
+        } else {
+            Err(())
+        }
+    }
+
+    /// The covariance of `[level + slope + eta, slope + zeta]`, with `eta`
+    /// and `zeta` independent of variances `level_variance` and
+    /// `slope_variance`. Writing `slope = beta level + e`, the predicted
+    /// level's noise-free part is `x = (1 + beta) level + e` and the slope's
+    /// is `w = beta level + e`; `Var(w | x)` is `level slope_given_level /
+    /// Var(x)` exactly, which avoids subtracting `Cov(w, x)^2 / Var(x)`.
+    fn predicted(self, level_variance: f64, slope_variance: f64) -> Self {
+        let Self {
+            level,
+            beta,
+            slope_given_level,
+        } = self;
+        let rise = 1.0 + beta;
+        let x_variance = scaled_product(&[rise, rise, level], &[]) + slope_given_level;
+        let cross = scaled_product(&[beta, rise, level], &[]) + slope_given_level;
+        let predicted_level = x_variance + level_variance;
+        Self {
+            level: predicted_level,
+            beta: cross / predicted_level,
+            slope_given_level: slope_variance
+                + scaled_product(&[level, slope_given_level], &[x_variance])
+                + scaled_product(
+                    &[cross, cross, level_variance],
+                    &[x_variance, predicted_level],
+                ),
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.level.is_finite()
+            && self.beta.is_finite()
+            && self.slope_given_level.is_finite()
+            && self.level > 0.0
+            && self.slope_given_level > 0.0
+    }
+
+    #[cfg(test)]
+    fn matrix(&self) -> [f64; 4] {
+        let cross = self.beta * self.level;
+        [
+            self.level,
+            cross,
+            cross,
+            self.beta * cross + self.slope_given_level,
+        ]
+    }
+}
+
+/// The product of `numerators` divided by the product of `denominators`.
+///
+/// Multiplying and dividing in turn is exact to rounding and is what this
+/// returns whenever every intermediate value stays in the normal range. When
+/// one would overflow or underflow although the result need not, as with a
+/// variance of 1e-100 against one of 1e300, the magnitudes are combined as
+/// logarithms instead, at a relative cost of about 1e-13.
+fn scaled_product(numerators: &[f64], denominators: &[f64]) -> f64 {
+    if numerators
+        .iter()
+        .chain(denominators)
+        .any(|x| *x == 0.0 || !x.is_finite())
+    {
+        // Zeros, infinities and NaNs give what the plain product gives,
+        // except that a zero numerator over finite, nonzero denominators is
+        // zero even where their product would underflow to zero.
+        if numerators.contains(&0.0)
+            && numerators.iter().all(|x| x.is_finite())
+            && denominators.iter().all(|x| *x != 0.0 && x.is_finite())
+        {
+            return 0.0;
+        }
+        return numerators.iter().product::<f64>() / denominators.iter().product::<f64>();
+    }
+    let in_range = |value: f64| value.is_finite() && value.abs() >= f64::MIN_POSITIVE;
+    let mut value = 1.0;
+    let mut direct = true;
+    for index in 0..numerators.len().max(denominators.len()) {
+        if let Some(&numerator) = numerators.get(index) {
+            value *= numerator;
+            direct &= in_range(value);
+        }
+        if let Some(&denominator) = denominators.get(index) {
+            value /= denominator;
+            direct &= in_range(value);
+        }
+        if !direct {
+            break;
+        }
+    }
+    if direct {
+        return value;
+    }
+    let sign: f64 = numerators
+        .iter()
+        .chain(denominators)
+        .map(|value| value.signum())
+        .product();
+    let log_magnitude = numerators.iter().map(|value| value.abs().ln()).sum::<f64>()
+        - denominators
+            .iter()
+            .map(|value| value.abs().ln())
+            .sum::<f64>();
+    sign * log_magnitude.exp()
+}
+
 /// One Kalman filter prediction and, for a non-missing observation, update.
 struct KalmanStep {
     predicted_mean: [f64; 2],
-    predicted_covariance: [f64; 4],
+    predicted_covariance: StateCovariance,
     filtered_mean: [f64; 2],
-    filtered_covariance: [f64; 4],
+    filtered_covariance: StateCovariance,
     /// The one-step prediction error and its variance; `None` when missing.
     innovation: Option<(f64, f64)>,
 }
 
 fn kalman_step(
     mean: [f64; 2],
-    covariance: [f64; 4],
+    covariance: StateCovariance,
     observation: f64,
     level_variance: f64,
     slope_variance: f64,
     observation_variance: f64,
 ) -> KalmanStep {
     let predicted_mean = [mean[0] + mean[1], mean[1]];
-    let predicted_covariance = [
-        covariance[0] + covariance[1] + covariance[2] + covariance[3] + level_variance,
-        covariance[1] + covariance[3],
-        covariance[2] + covariance[3],
-        covariance[3] + slope_variance,
-    ];
+    let predicted_covariance = covariance.predicted(level_variance, slope_variance);
     if observation.is_nan() {
         return KalmanStep {
             predicted_mean,
@@ -408,29 +579,24 @@ fn kalman_step(
             innovation: None,
         };
     }
-    let innovation_variance = predicted_covariance[0] + observation_variance;
+    let innovation_variance = predicted_covariance.level + observation_variance;
     let innovation = observation - predicted_mean[0];
-    let gain = [
-        predicted_covariance[0] / innovation_variance,
-        predicted_covariance[2] / innovation_variance,
-    ];
-    let filtered_mean = [
-        predicted_mean[0] + gain[0] * innovation,
-        predicted_mean[1] + gain[1] * innovation,
-    ];
-    // Algebraically equivalent to the Joseph update for scalar H=[1,0].
-    let filtered_covariance = [
-        predicted_covariance[0] * observation_variance / innovation_variance,
-        predicted_covariance[1] * observation_variance / innovation_variance,
-        predicted_covariance[2] * observation_variance / innovation_variance,
-        predicted_covariance[3]
-            - predicted_covariance[2] * predicted_covariance[1] / innovation_variance,
-    ];
+    // The gain P H' / S is [level, beta level] / S.
+    let level_gain = predicted_covariance.level / innovation_variance;
     KalmanStep {
         predicted_mean,
         predicted_covariance,
-        filtered_mean,
-        filtered_covariance: symmetrized(filtered_covariance),
+        filtered_mean: [
+            predicted_mean[0] + level_gain * innovation,
+            predicted_mean[1] + predicted_covariance.beta * level_gain * innovation,
+        ],
+        filtered_covariance: StateCovariance {
+            level: scaled_product(
+                &[predicted_covariance.level, observation_variance],
+                &[innovation_variance],
+            ),
+            ..predicted_covariance
+        },
         innovation: Some((innovation, innovation_variance)),
     }
 }
@@ -451,7 +617,8 @@ fn sample_terminal_state(
     validate_positive_variance("observation", observation_variance)?;
 
     let mut mean = initial_mean;
-    let mut covariance = initial_covariance;
+    let mut covariance = StateCovariance::new(symmetrized(initial_covariance))
+        .map_err(|_| invalid_config(NOT_POSITIVE_DEFINITE))?;
     for (time, &observation) in observations.iter().enumerate() {
         let step = kalman_step(
             mean,
@@ -479,8 +646,20 @@ fn sample_terminal_state(
         mean = step.filtered_mean;
         covariance = step.filtered_covariance;
     }
-    sample_bivariate_normal(mean, covariance, rng)
+    let level_deviation = covariance.level.sqrt();
+    let z0 = standard_normal(rng);
+    let z1 = standard_normal(rng);
+    let draw = [
+        mean[0] + level_deviation * z0,
+        mean[1] + covariance.beta * level_deviation * z0 + covariance.slope_given_level.sqrt() * z1,
+    ];
+    if draw.iter().any(|value| !value.is_finite()) {
+        return Err(numerical("normal simulation produced a non-finite draw"));
+    }
+    Ok(draw)
 }
+
+const NOT_POSITIVE_DEFINITE: &str = "initial covariance must be strictly positive definite";
 
 fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError> {
     if covariance.iter().any(|value| !value.is_finite()) {
@@ -496,8 +675,8 @@ fn validate_covariance(covariance: [f64; 4]) -> Result<(), BayesianForecastError
     if (covariance[1] - covariance[2]).abs() > SYMMETRY_TOLERANCE * scale {
         return Err(invalid_config("initial covariance must be symmetric"));
     }
-    cholesky_2x2(symmetrized(covariance))
-        .map_err(|_| invalid_config("initial covariance must be strictly positive definite"))?;
+    StateCovariance::new(symmetrized(covariance))
+        .map_err(|_| invalid_config(NOT_POSITIVE_DEFINITE))?;
     Ok(())
 }
 
@@ -505,48 +684,15 @@ fn validate_computed_state(
     name: &str,
     time: usize,
     mean: [f64; 2],
-    covariance: [f64; 4],
+    covariance: StateCovariance,
 ) -> Result<(), BayesianForecastError> {
-    if mean
-        .iter()
-        .chain(covariance.iter())
-        .any(|value| !value.is_finite())
-    {
+    if mean.iter().any(|value| !value.is_finite()) || !covariance.is_valid() {
         return Err(numerical(format!(
-            "{name} state at time {time} contains a non-finite value"
+            "{name} state at time {time} is not finite or its covariance is not \
+             positive definite"
         )));
     }
-    cholesky_2x2(symmetrized(covariance)).map_err(|_| {
-        numerical(format!(
-            "{name} covariance at time {time} is not positive definite"
-        ))
-    })?;
     Ok(())
-}
-
-fn sample_bivariate_normal(
-    mean: [f64; 2],
-    covariance: [f64; 4],
-    rng: &mut ChaCha8Rng,
-) -> Result<[f64; 2], BayesianForecastError> {
-    let factor = cholesky_2x2(symmetrized(covariance))
-        .map_err(|_| numerical("normal covariance is not positive definite"))?;
-    let z0 = standard_normal(rng);
-    let z1 = standard_normal(rng);
-    let draw = [
-        mean[0] + factor[0] * z0,
-        mean[1] + factor[2] * z0 + factor[3] * z1,
-    ];
-    if draw.iter().any(|value| !value.is_finite()) {
-        return Err(numerical("normal simulation produced a non-finite draw"));
-    }
-    Ok(draw)
-}
-
-fn cholesky_2x2(matrix: [f64; 4]) -> Result<[f64; 4], ()> {
-    let mut factor = [0.0; 4];
-    cholesky_into(&matrix, 2, &mut factor)?;
-    Ok(factor)
 }
 
 fn symmetrized(matrix: [f64; 4]) -> [f64; 4] {
@@ -805,6 +951,334 @@ mod tests {
         )
         .unwrap();
         assert!(state.iter().all(|value| value.is_finite()));
+    }
+
+    /// Filtered mean and covariance after the last observation.
+    fn filtered_moments(
+        observations: &[f64],
+        initial_mean: [f64; 2],
+        initial_covariance: [f64; 4],
+        [level_variance, slope_variance, observation_variance]: [f64; 3],
+    ) -> ([f64; 2], [f64; 4]) {
+        let mut mean = initial_mean;
+        let mut covariance = StateCovariance::new(initial_covariance).unwrap();
+        for &observation in observations {
+            let step = kalman_step(
+                mean,
+                covariance,
+                observation,
+                level_variance,
+                slope_variance,
+                observation_variance,
+            );
+            mean = step.filtered_mean;
+            covariance = step.filtered_covariance;
+        }
+        (mean, covariance.matrix())
+    }
+
+    #[test]
+    fn filter_matches_exact_arithmetic_at_extreme_scales() {
+        // References: the covariance-form recursion in exact rational
+        // arithmetic over the stored doubles, with logarithms to 80 digits,
+        // rounded once to f64. The log likelihood and the terminal filtered
+        // moments are held to 1e-12 relative to their own value.
+        let check = |observations: &[f64],
+                     initial_mean: [f64; 2],
+                     initial_covariance: [f64; 4],
+                     variances: [f64; 3],
+                     log_likelihood: f64,
+                     mean: [f64; 2],
+                     [level, cross, slope]: [f64; 3]| {
+            let within = |actual: f64, expected: f64, what: &str| {
+                assert!(
+                    (actual - expected).abs() <= 1e-12 * expected.abs(),
+                    "{what}: {actual} vs {expected}"
+                );
+            };
+            let actual =
+                log_marginal_likelihood(observations, initial_mean, initial_covariance, variances);
+            within(actual, log_likelihood, "log likelihood");
+            let (actual_mean, actual_covariance) =
+                filtered_moments(observations, initial_mean, initial_covariance, variances);
+            within(actual_mean[0], mean[0], "level mean");
+            within(actual_mean[1], mean[1], "slope mean");
+            within(actual_covariance[0], level, "level variance");
+            within(actual_covariance[1], cross, "covariance");
+            within(actual_covariance[3], slope, "slope variance");
+        };
+
+        // A diffuse prior. Forming the covariances lost the slope variance to
+        // cancellation: 1.0 instead of 0.606 after the second observation,
+        // and a log likelihood of -41.7417 instead of -41.5781 after five.
+        let diffuse = [1.6e16, 0.0, 0.0, 4e15];
+        let variances = [0.001, 0.005, 0.3];
+        let (_, covariance) = filtered_moments(&[0.2, 0.5], [0.0, 0.0], diffuse, variances);
+        assert!((covariance[3] - 0.605_999_999_999_999_9).abs() <= 1e-12 * 0.606);
+        check(
+            &[0.2, 0.5, 0.9, 1.6, 2.4],
+            [0.0, 0.0],
+            diffuse,
+            variances,
+            -41.578_134_755_573_7,
+            [2.224_074_003_817_692, 0.555_295_936_142_006_8],
+            [
+                0.181_997_498_933_898_72,
+                0.062_763_917_468_787_65,
+                0.039_835_298_566_320_385,
+            ],
+        );
+        // Correlated and diffuse, with gaps.
+        check(
+            &[0.2, 0.5, f64::NAN, 0.9, 1.6, f64::NAN, 2.4, 3.1],
+            [0.3, -0.2],
+            [1e14, 3e13, 3e13, 5e13],
+            [0.02, 1e-4, 0.05],
+            -35.974_651_551_754_924,
+            [2.944_282_898_627_642_4, 0.408_958_239_577_601_3],
+            [
+                0.030_600_620_342_382_47,
+                0.005_190_843_558_056_528,
+                0.004_600_827_976_011_987,
+            ],
+        );
+        // A level variance 32 orders of magnitude below a correlated slope's.
+        check(
+            &[0.2, 0.5, 0.9, 1.6, 2.4],
+            [0.0, 0.0],
+            [1.0, 1e16, 1e16, 2e32],
+            variances,
+            -42.225_379_782_673_66,
+            [2.152_791_316_733_353_4, 0.502_916_908_877_962_8],
+            [
+                0.166_094_092_689_349_35,
+                0.051_077_981_046_541_87,
+                0.031_248_389_072_539_802,
+            ],
+        );
+        // State variances 39 orders of magnitude above the observation's.
+        check(
+            &[0.2, 0.5, 0.9],
+            [0.0, 0.0],
+            [1.4, 0.25, 0.25, 0.8],
+            [2e39, 2e39, 0.3],
+            -139.302_483_266_822_66,
+            [0.9, 0.3],
+            [0.3, 0.18, 3.2e39],
+        );
+    }
+
+    #[test]
+    fn filter_keeps_moments_whose_intermediate_products_leave_the_range() {
+        // As above, at scales where some product of two moments leaves the
+        // range of normal doubles although every moment is inside it:
+        // 1e-100 / 1e300 and 1e-200 * 1e-200 underflow, and (1 + 1e160)^2 and
+        // 1e200 * 1e200 overflow.
+        let check = |observations: &[f64],
+                     initial_covariance: [f64; 4],
+                     variances: [f64; 3],
+                     log_likelihood: f64,
+                     mean: [f64; 2],
+                     covariance: [f64; 3]| {
+            let within = |actual: f64, expected: f64, what: &str| {
+                assert!(
+                    (actual - expected).abs() <= 1e-12 * expected.abs(),
+                    "{what}: {actual} vs {expected}"
+                );
+            };
+            within(
+                log_marginal_likelihood(observations, [0.0, 0.0], initial_covariance, variances),
+                log_likelihood,
+                "log likelihood",
+            );
+            let (actual_mean, actual_covariance) =
+                filtered_moments(observations, [0.0, 0.0], initial_covariance, variances);
+            within(actual_mean[0], mean[0], "level mean");
+            within(actual_mean[1], mean[1], "slope mean");
+            within(actual_covariance[0], covariance[0], "level variance");
+            within(actual_covariance[1], covariance[1], "covariance");
+            within(actual_covariance[3], covariance[2], "slope variance");
+        };
+        check(
+            &[0.0, 1e-49, 2e-49],
+            [1e300, 0.0, 0.0, 1e-100],
+            [1e-101, 1e-110, 1e-100],
+            -151.275_536_874_383_36,
+            [1.677_419_354_869_927e-49, 6.451_612_903_673_256e-50],
+            [
+                6.774_193_548_595_213e-101,
+                3.225_806_451_945_89e-101,
+                3.548_387_098_359_001_4e-101,
+            ],
+        );
+        check(
+            &[0.0, 0.0, 0.0],
+            [1e-200, 1e-40, 1e-40, 2e120],
+            [1e120, 1e120, 1e120],
+            -419.652_038_540_723_1,
+            [0.0, 0.0],
+            [
+                8.217_054_263_565_892e119,
+                4.186_046_511_627_907e119,
+                1.930_232_558_139_534_8e120,
+            ],
+        );
+        check(
+            &[0.0, 1e-100, 2e-100],
+            [1e-200, 0.0, 0.0, 1e-200],
+            [1e-200, 1e-200, 1e-200],
+            685.506_289_540_285_8,
+            [1.855_855_855_855_855_8e-100, 7.387_387_387_387_387e-101],
+            [
+                8.198_198_198_198_198e-201,
+                4.234_234_234_234_234e-201,
+                1.954_954_954_954_955e-200,
+            ],
+        );
+        check(
+            &[0.0, 1e100, 2e100],
+            [1e200, 0.0, 0.0, 1e200],
+            [1e200, 1e200, 1e200],
+            -696.044_766_256_141_5,
+            [1.855_855_855_855_856e100, 7.387_387_387_387_387e99],
+            [
+                8.198_198_198_198_197e199,
+                4.234_234_234_234_234e199,
+                1.954_954_954_954_955e200,
+            ],
+        );
+    }
+
+    #[test]
+    fn nearly_singular_initial_covariances_keep_their_conditional_variance() {
+        // As above. The first two initial covariances are within rounding of
+        // singular, where `slope - cross * (cross / level)` was 60% off in the
+        // first and zero in the second; the fourth is too, at a scale of
+        // 1e-200. The third has a predicted level/slope covariance of exactly
+        // zero at a scale where its square underflows.
+        let within = |actual: f64, expected: f64, what: &str| {
+            assert!(
+                (actual - expected).abs() <= 1e-12 * expected.abs(),
+                "{what}: {actual} vs {expected}"
+            );
+        };
+        let near = [0.1, 0.3, 0.3, 0.9];
+        let observations = [0.0, 1e-8, 2e-8];
+        within(
+            log_marginal_likelihood(&observations, [0.0, 0.0], near, [1e-18; 3]),
+            32.172_911_894_631_33,
+            "log likelihood",
+        );
+        let (mean, covariance) = filtered_moments(&observations, [0.0, 0.0], near, [1e-18; 3]);
+        within(mean[0], 1.958_740_519_677_019e-8, "level mean");
+        within(mean[1], 9.131_379_361_621_454e-9, "slope mean");
+        within(covariance[0], 8.671_130_520_517_601e-19, "level variance");
+        within(covariance[1], 5.097_116_885_300_212e-19, "covariance");
+        within(covariance[3], 2.125_708_817_957_939_3e-18, "slope variance");
+
+        let ordinary = [0.3, -0.7, -0.7, 1.633_333_333_333_333_3];
+        within(
+            log_marginal_likelihood(&[0.0, 1.0, 2.0], [0.0, 0.0], ordinary, [0.1; 3]),
+            -3.056_691_072_876_306,
+            "log likelihood",
+        );
+
+        let tiny = [2e-200, -1e-200, -1e-200, 1e-200];
+        within(
+            log_marginal_likelihood(&[0.0; 3], [0.0, 0.0], tiny, [1e-200, 1e-200, 1.0]),
+            -2.756_815_599_614_018,
+            "log likelihood",
+        );
+        let (_, covariance) = filtered_moments(&[0.0; 3], [0.0, 0.0], tiny, [1e-200, 1e-200, 1.0]);
+        within(covariance[0], 1.3e-199, "level variance");
+        within(covariance[1], 5e-200, "covariance");
+        within(covariance[3], 4e-200, "slope variance");
+
+        let small = [1e-200, 9e-200, 9e-200, 8.100_000_000_000_001e-199];
+        let observations = [0.0, 1e-107, 2e-107];
+        within(
+            log_marginal_likelihood(&observations, [0.0, 0.0], small, [1e-217; 3]),
+            645.816_834_999_266,
+            "log likelihood",
+        );
+        let (mean, covariance) = filtered_moments(&observations, [0.0, 0.0], small, [1e-217; 3]);
+        within(mean[0], 1.916_145_444_730_270_6e-107, "level mean");
+        within(mean[1], 8.186_003_498_246_669e-108, "slope mean");
+        within(covariance[0], 8.432_347_421_309_251e-218, "level variance");
+        within(covariance[1], 4.567_935_237_934_298e-218, "covariance");
+        within(
+            covariance[3],
+            2.008_573_745_349_052_3e-217,
+            "slope variance",
+        );
+    }
+
+    #[test]
+    fn singular_and_indefinite_initial_covariances_are_rejected() {
+        let tiny = f64::from_bits(1); // the smallest positive subnormal
+                                      // Determinant zero or negative over the stored doubles, several within
+                                      // rounding of zero.
+        for covariance in [
+            [1.0, 1.0, 1.0, 1.0],
+            [25.0, 205.0, 205.0, 1681.0],
+            [
+                28.912_952_978_830_806,
+                10.119_949_964_411_749,
+                10.119_949_964_411_749,
+                3.542_128_241_179_009,
+            ],
+            [3.0, 3.872_983_346_207_417, 3.872_983_346_207_417, 5.0],
+            [3e-200, 5.5e-199, 5.5e-199, 1.008_333_333_333_333_4e-197],
+            [1e-320, 1e-320, 1e-320, 1e-320],
+            [2.0 * tiny, 3.0 * tiny, 3.0 * tiny, 4.0 * tiny],
+            [1.0, 2.0, 2.0, 1.0],
+            [-1.0, 0.0, 0.0, 1.0],
+        ] {
+            let error = validate_covariance(covariance).unwrap_err();
+            assert!(
+                error.to_string().contains(NOT_POSITIVE_DEFINITE),
+                "{covariance:?}: {error}"
+            );
+        }
+        // Determinant positive, all but the last within rounding of zero.
+        for covariance in [
+            [0.3, -0.7, -0.7, 1.633_333_333_333_333_3],
+            [1.0, 1.732_050_807_568_877_2, 1.732_050_807_568_877_2, 3.0],
+            [0.1, 0.3, 0.3, 0.9],
+            [
+                1e-200,
+                6.999_999_999_999_999e-200,
+                6.999_999_999_999_999e-200,
+                4.899_999_999_999_999e-199,
+            ],
+            [0.3, 1.0, 1.0, 3.333_333_333_333_333_5],
+            [1.0, 0.999_999_999, 0.999_999_999, 1.0],
+        ] {
+            assert!(validate_covariance(covariance).is_ok(), "{covariance:?}");
+        }
+    }
+
+    #[test]
+    fn scaled_products_survive_intermediate_overflow_and_underflow() {
+        let relative = |actual: f64, expected: f64| {
+            assert!(
+                (actual - expected).abs() <= 1e-13 * expected.abs(),
+                "{actual} vs {expected}"
+            );
+        };
+        // In range throughout: the plain product, exactly.
+        assert_eq!(scaled_product(&[-2.0, 3.0], &[4.0]), -1.5);
+        // An intermediate subnormal, 1e-320, on the way to 1e-120.
+        relative(scaled_product(&[1e-200, 1e-120], &[1.0, 1e-200]), 1e-120);
+        // An intermediate overflow, 1e500, on the way to 1e-100, with a sign.
+        relative(
+            scaled_product(&[-1e200, 1e200], &[1e-100, 1e300, 1e300]),
+            -1e-100,
+        );
+        // A zero numerator is zero whatever the denominators' product does.
+        assert_eq!(scaled_product(&[0.0, 1e-200], &[1e-200, 1e-200]), 0.0);
+        assert!(scaled_product(&[1.0], &[0.0]).is_infinite());
+        assert!(scaled_product(&[f64::NAN], &[1.0]).is_nan());
     }
 
     #[test]
