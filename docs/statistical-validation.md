@@ -277,9 +277,11 @@ coordinates and seeds, the mean errors are close to what a correct MCSE predicts
 to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation 0.998 to 1.006),
 though on the 0.8 correlated target 0.020% were beyond 4 against 0.0063%. The variance
 errors have nearly the right spread (standard deviation 1.006 to 1.037) but a heavier
-lower tail: 0.018% to 0.048% beyond 4 MCSE, three to eight times nominal, and 135 of the
-136 variance failures were below the exact value (the 35 mean failures split 19
-below, 16 above). The likely reason is that the squared deviations are right-skewed: a sample
+lower tail: 0.018% to 0.048% beyond 4 MCSE, three to eight times nominal. In 135 of the
+136 fits that failed a variance check, the worst variance error was below the exact
+value (in the 35 that failed a mean check, the worst mean error was below in 19 and
+above in 16); the records keep only each fit's worst error, so the split over all
+exceedances is not known. The likely reason is that the squared deviations are right-skewed: a sample
 whose squared deviations happen to be small also has a small estimated MCSE, so the
 self-normalised error reaches far below zero more often than above. The ESS floor also
 fails on its own on the 0.95 correlated target, in 26 fits of the custom path, which

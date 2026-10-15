@@ -703,9 +703,12 @@ fn dense_beats_diagonal(cov: &[f64], dim: usize, effective_draws: f64) -> bool {
     // differed from diagonal, while equicorrelated (rho = 0.9) blocks of 30 to
     // 150 dimensions still went dense and took 5 to 12 times fewer steps.
     // That calibration counted a mean's effective draws of the average
-    // autocorrelation; the least second-moment count used now gives a lower
-    // threshold for the same window, and the calibration was not rerun with
-    // it. The unit tests below and benchmarks/auto_metric_noise.py check it.
+    // autocorrelation. The least second-moment count used now can be larger
+    // than that count for the same window, when the coordinates mix at
+    // similar speeds, or much smaller, when one mixes far more slowly than
+    // the rest; the threshold moves the other way. The calibration was not
+    // rerun with it; the unit tests below and benchmarks/auto_metric_noise.py
+    // are what check it.
     const MARGIN: f64 = 8.0;
     const ITERATIONS: usize = 100;
     let ratio = dim as f64 / effective_draws;
