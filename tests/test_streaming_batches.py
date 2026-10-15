@@ -22,19 +22,33 @@ def jobs(count=7):
 OPTIONS = dict(chains=2, warmup=30, draws=40, threads=2, seed=17, show_progress=False)
 
 
+class Tracked(np.ndarray):
+    """An array whose deep copies, the ones the stream keeps, are recorded."""
+    copies = []
+
+    def __deepcopy__(self, memo):
+        duplicate = np.ndarray.copy(self).view(Tracked)
+        Tracked.copies.append(weakref.ref(duplicate))
+        return duplicate
+
+
+def live_copies():
+    gc.collect()
+    return sum(ref() is not None for ref in Tracked.copies)
+
+
 def test_stream_is_lazy_closes_source_and_bounds_live_payloads():
-    alive = []
+    Tracked.copies.clear()
     consumed = []
     closed = []
     def source():
         try:
             for i in range(50):
-                gc.collect()
-                assert sum(ref() is not None for ref in alive) <= 3
-                data = np.full(100, .5)
-                alive.append(weakref.ref(data))
+                # While a dataset is read, the stream holds only the copies of
+                # those read before it in the same chunk.
+                assert live_copies() <= 2
                 consumed.append(i)
-                yield str(i), {"y": data}
+                yield str(i), {"y": np.full(100, .5).view(Tracked)}
         finally:
             closed.append(True)
     with model().sample_iter(source(), chunk_size=3, retention="summary", **OPTIONS) as stream:
@@ -43,9 +57,8 @@ def test_stream_is_lazy_closes_source_and_bounds_live_payloads():
         assert len(consumed) == 3
         assert first.fit is None and first.diagnostics
         assert len(list(stream)) == 49
-    gc.collect()
     assert closed == [True]
-    assert all(ref() is None for ref in alive)
+    assert live_copies() == 0
 
 
 def test_draws_match_eager_batch_across_chunks_order_and_resume():
@@ -91,7 +104,7 @@ def test_early_close_stops_consumption_and_parameter_selection():
 
 def test_initial_positions_are_selected_by_id_across_chunks():
     compiled = model()
-    initial = {name: [[.1], [.2]] for name, _ in jobs()}
+    initial = {name: [[.1 * i], [.2 * i]] for i, (name, _) in enumerate(jobs())}
     eager = compiled.sample_batch([data for _, data in jobs()],
         ids=[name for name, _ in jobs()], init=initial, **OPTIONS)
     for init in (initial, lambda name, data: initial[name]):
@@ -151,20 +164,17 @@ def test_init_mapping_keys_must_be_strings():
 
 
 def test_previous_chunk_initial_positions_are_released_before_the_next_chunk_is_read():
-    alive = []
+    Tracked.copies.clear()
 
     def source():
         # While a dataset is read, only the starts of the datasets read before
         # it in the same chunk are alive: at most one, with chunks of two.
         for name, data in jobs(6):
-            gc.collect()
-            assert sum(ref() is not None for ref in alive) <= 1
+            assert live_copies() <= 1
             yield name, data
 
     def start(name, data):
-        positions = np.array([[.1], [.2]])
-        alive.append(weakref.ref(positions))
-        return positions
+        return np.array([[.1], [.2]]).view(Tracked)
 
     with model().sample_iter(source(), chunk_size=2, init=start, **OPTIONS) as stream:
         assert len(list(stream)) == 6
@@ -173,18 +183,36 @@ def test_previous_chunk_initial_positions_are_released_before_the_next_chunk_is_
 def test_close_from_another_thread_closes_the_source():
     import threading
     closed = []
+    reading = threading.Event()
+    release = threading.Event()
 
     def source():
         try:
-            yield from jobs()
+            for index, pair in enumerate(jobs()):
+                if index == 2:  # the second chunk's first read
+                    reading.set()
+                    release.wait(5)
+                yield pair
         finally:
             closed.append(True)
 
     stream = model().sample_iter(source(), chunk_size=2, **OPTIONS)
     next(stream)
-    worker = threading.Thread(target=stream.close)
-    worker.start()
-    worker.join()
+    next(stream)
+    results = []
+    iterating = threading.Thread(target=lambda: results.append(next(stream)))
+    iterating.start()
+    assert reading.wait(5)
+    # close() from here, while the other thread is inside next(): it waits.
+    closing = threading.Thread(target=stream.close)
+    closing.start()
+    closing.join(0.2)
+    assert closing.is_alive() and closed == []
+    release.set()
+    iterating.join(5)
+    closing.join(5)
+    assert not closing.is_alive()
+    assert results and results[0].id == "job-2"
     assert closed == [True]
     assert list(stream) == []
 
@@ -206,3 +234,49 @@ def test_sampling_options_are_checked_when_the_stream_is_created():
     with pytest.raises(ValueError, match="metric"):
         model().sample_iter(jobs(2), completed_ids=["job-0", "job-1"],
                             **{**OPTIONS, "metric": "bogus"})
+
+
+def test_malformed_and_masked_data_is_validated_as_sample_batch_validates_it():
+    compiled = model()
+    good = {"y": [0., 1.]}
+    for bad in ({"y": [[1., 2.], [3.]]}, {"y": np.ma.array([100., 0.], mask=[True, False])}):
+        inputs = [("good", good), ("bad", bad), ("later", good)]
+        eager = compiled.sample_batch([data for _, data in inputs], ids=["good", "bad", "later"],
+                                      errors="collect", **OPTIONS)
+        assert list(eager.errors) == ["bad"]
+        items = list(compiled.sample_iter(inputs, chunk_size=3, errors="collect", **OPTIONS))
+        assert [item.id for item in items] == ["good", "bad", "later"]
+        assert items[1].error == eager.errors["bad"]
+        assert items[0].fit is not None and items[2].fit is not None
+    # A malformed initial position is the native layer's to report, per cell.
+    inputs = [("good", good), ("bad", good)]
+    items = list(compiled.sample_iter(inputs, chunk_size=2, errors="collect",
+                                      init={"bad": [["oops"]]}, **OPTIONS))
+    assert items[0].fit is not None and items[1].error
+
+
+def test_a_source_that_fails_to_close_is_reported_at_the_end():
+    class Source:
+        def __init__(self):
+            self.items = iter(list(jobs(1)))
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self.items)
+
+        def close(self):
+            raise RuntimeError("source cleanup failed")
+
+    with pytest.raises(RuntimeError, match="source cleanup failed"):
+        list(model().sample_iter(Source(), **OPTIONS))
+
+
+def test_init_for_an_id_only_listed_as_completed_is_reported():
+    with pytest.raises(ValueError, match="unknown dataset ID 'absent'"):
+        list(model().sample_iter([], completed_ids=["absent"], init={"absent": [[0.], [0.]]},
+                                 **OPTIONS))
+    # An ID a dataset had, and that was skipped as completed, is known.
+    assert list(model().sample_iter(jobs(1), completed_ids=["job-0"],
+                                    init={"job-0": [[0.], [0.]]}, **OPTIONS)) == []

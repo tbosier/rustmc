@@ -3,12 +3,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Mapping
+import copy
 import sqlite3
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Iterable, Iterator
-
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -26,12 +26,12 @@ class BatchItem:
     warnings: tuple[dict[str, Any], ...] = ()
 
 
-def _snapshot(data: Any) -> Any:
-    """Copy a dataset's arrays when it is read, so that a source may reuse
-    its buffers: binding happens only when the whole chunk is sampled."""
-    if isinstance(data, Mapping):
-        return {key: np.array(value, copy=True) for key, value in data.items()}
-    return data
+def _snapshot(value: Any) -> Any:
+    """A deep copy, taken when a dataset or its initial positions are read,
+    so that a source may reuse its buffers: binding happens only when the
+    whole chunk is sampled. The copy keeps every type, mask and malformed
+    entry, so that sample_batch validates exactly what the source gave."""
+    return copy.deepcopy(value)
 
 
 class BatchStream(Iterator[BatchItem]):
@@ -68,6 +68,9 @@ class BatchStream(Iterator[BatchItem]):
         compiled.sample_batch([], ids=[], shared=shared, chunk_size=chunk_size,
                               seed_policy="cell_id_v1", **options)
         self._source = iter(datasets)
+        # Serialises next() and close(): a close from another thread waits
+        # for a next() in progress to return.
+        self._lock = threading.RLock()
         self._iterator = self._iterate(compiled, chunk_size, retention, shared,
                                        completed_ids, selected, sampling)
         self._closed = False
@@ -76,30 +79,40 @@ class BatchStream(Iterator[BatchItem]):
         return self
 
     def __next__(self) -> BatchItem:
-        if self._closed:
-            raise StopIteration
-        try:
-            return next(self._iterator)
-        except BaseException:
+        with self._lock:
+            if self._closed:
+                raise StopIteration
             try:
+                return next(self._iterator)
+            except StopIteration:
+                # Exhausted normally: a failure to clean up is the news.
                 self.close()
-            except Exception:
-                pass  # the error that stopped iteration is the one to report
-            raise
+                raise
+            except BaseException:
+                try:
+                    self.close()
+                except Exception:
+                    pass  # the error that stopped iteration is the one to report
+                raise
 
     def close(self) -> None:
         """Release the current chunk and its ledger, and close the input
         iterator if it has a ``close`` method. The input is closed even if
-        releasing the chunk fails."""
-        if self._closed:
+        releasing the chunk fails. From another thread, this waits for a
+        ``next()`` in progress to return."""
+        lock = getattr(self, "_lock", None)
+        if lock is None:  # construction failed; there is nothing to close
             return
-        self._closed = True
-        try:
-            self._iterator.close()
-        finally:
-            close = getattr(self._source, "close", None)
-            if close is not None:
-                close()
+        with lock:
+            if self._closed:
+                return
+            self._closed = True
+            try:
+                self._iterator.close()
+            finally:
+                close = getattr(self._source, "close", None)
+                if close is not None:
+                    close()
 
     def __del__(self) -> None:
         try:
@@ -152,9 +165,9 @@ class BatchStream(Iterator[BatchItem]):
                         # Read and copy now, like the data, so that a reused
                         # buffer cannot change an earlier job's start.
                         if callable(initial):
-                            positions = np.array(initial(name, data), dtype=float, copy=True)
+                            positions = _snapshot(initial(name, data))
                         elif initial is not None and name in initial:
-                            positions = np.array(initial[name], dtype=float, copy=True)
+                            positions = _snapshot(initial[name])
                         else:
                             positions = None
                         chunk.append((name, _snapshot(data), positions))
@@ -163,7 +176,11 @@ class BatchStream(Iterator[BatchItem]):
                     if not chunk:
                         if isinstance(initial, Mapping):
                             for key in initial:
-                                if connection.execute("SELECT 1 FROM ids WHERE id=?", (key,)).fetchone() is None:
+                                # Completed IDs are in the ledger too, but only
+                                # those a dataset had are marked seen.
+                                seen = connection.execute(
+                                    "SELECT 1 FROM ids WHERE id=? AND seen=1", (key,)).fetchone()
+                                if seen is None:
                                     raise ValueError(f"initialization supplied for unknown dataset ID {key!r}")
                         return
                     options = {"show_progress": False, **sampling}
@@ -210,10 +227,10 @@ def sample_iter(compiled: Any, datasets: Iterable[tuple[str, Any]], **kwargs: An
     """Fit a lazy sequence of (ID, data) pairs with bounded chunk retention.
 
     Sampling options match CompiledModel.sample_batch and are checked when the
-    stream is created. Keep IDs and the base seed unchanged to reproduce jobs
-    across chunk sizes, order, and resumed runs. Each dataset's arrays, and the
-    positions an ``init`` callable returns, are copied when read, so a source may
-    reuse its buffers. Caller-retained BatchItems and a caller-materialized input
+    stream is created. Keep IDs and the base seed unchanged, and make an ``init``
+    callable a function of the ID and data, to reproduce jobs across chunk sizes,
+    order, and resumed runs. Each dataset, and the positions an ``init`` callable
+    returns, are deep-copied when read, so a source may reuse its buffers. Caller-retained BatchItems and a caller-materialized input
     list still use memory.
     """
     return BatchStream(compiled, datasets, **kwargs)

@@ -12,9 +12,10 @@ with compiled.sample_iter(
         save(item.id, item.diagnostics, item.error)
 ```
 
-`datasets` can be a generator. `save` is your own result sink. Each dataset's arrays,
-and the positions an `init` callable returns, are copied when they are read, so a
-generator may refill and yield the same buffers. With `retention="full"` (the default),
+`datasets` can be a generator. `save` is your own result sink. Each dataset, and the
+positions an `init` callable returns, are deep-copied when they are read, so a
+generator may refill and yield the same buffers; the copy keeps types and masks, so
+`sample_batch` validates exactly what the source gave. With `retention="full"` (the default),
 each successful item also has a `.fit` for prediction. Summary retention releases
 posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic rows.
 Sampling options are those of `sample_batch` and are checked when the stream is
@@ -50,12 +51,17 @@ Failed jobs should not be marked completed unless you intend to skip them.
 Use the context manager or call `.close()` when stopping early. It releases the current
 batch, removes the temporary ID ledger and closes a closeable input iterator, which it
 closes even if releasing the batch fails; it may be called from another thread than the
-one iterating. A stream that is garbage collected unclosed closes itself, but when that
+one iterating, and then waits for a `next()` in progress to return. A failure to close
+the input is raised, also when the stream ends normally. A stream that is garbage
+collected unclosed closes itself, but when that
 happens is up to Python. No next chunk starts until the current chunk is consumed.
 Native worker count applies to each chunk; pool creation currently occurs once per
 chunk.
 
 `init` accepts a mapping from dataset ID to positions, whose keys must be strings, or
-a callable `(id, data) -> positions` that is called as each dataset is read. A supplied
-mapping stays in caller memory; use a callable for an unbounded source. Mapping IDs
-that no dataset had are reported when the stream ends.
+a callable `(id, data) -> positions` that is called as each dataset is read and not
+for completed ones. Draws reproduce across chunk sizes, input order and restarts only
+if the callable gives each ID the same positions whatever the order of the calls: a
+function of the ID and data, not of a shared random generator. A supplied mapping
+stays in caller memory; use a callable for an unbounded source. Mapping IDs that no
+dataset had, counting only datasets that were read, are reported when the stream ends.
