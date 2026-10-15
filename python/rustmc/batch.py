@@ -8,13 +8,16 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+import numpy as np
+
 
 @dataclass(frozen=True)
 class BatchItem:
     """One dataset's fit or error. Summary retention releases posterior draws.
 
-    ``warnings`` holds the fit's failed or unavailable checks, as
-    ``BatchResult.warnings()`` reports them, under either retention.
+    ``warnings`` holds a successful fit's failed or unavailable checks, as
+    ``BatchResult.warnings()`` reports them, under either retention. A failed
+    item has an ``error``, no fit and no warnings: no check ran.
     """
     id: str
     fit: Any = None
@@ -23,12 +26,21 @@ class BatchItem:
     warnings: tuple[dict[str, Any], ...] = ()
 
 
+def _snapshot(data: Any) -> Any:
+    """Copy a dataset's arrays when it is read, so that a source may reuse
+    its buffers: binding happens only when the whole chunk is sampled."""
+    if isinstance(data, Mapping):
+        return {key: np.array(value, copy=True) for key, value in data.items()}
+    return data
+
+
 class BatchStream(Iterator[BatchItem]):
     """Lazy chunks; close the stream to release its current batch and input iterator."""
     def __init__(self, compiled: Any, datasets: Iterable[tuple[str, Any]], *,
                  chunk_size: int = 16, retention: str = "full", shared: Any = None,
                  completed_ids: Iterable[str] = (), parameters: Iterable[str] | None = None,
                  **sampling: Any):
+        self._closed = True  # until construction succeeds, there is nothing to close
         if isinstance(chunk_size, bool) or not isinstance(chunk_size, int) or chunk_size < 1:
             raise ValueError("chunk_size must be a positive integer")
         if retention not in ("full", "summary"):
@@ -43,13 +55,22 @@ class BatchStream(Iterator[BatchItem]):
         initial = sampling.get("init")
         if initial is not None and not isinstance(initial, Mapping) and not callable(initial):
             raise TypeError("init must be an ID mapping or a callable (id, data) -> positions")
-        self._source = iter(datasets)
-        self._closed = False
+        if isinstance(initial, Mapping):
+            for key in initial:
+                self._validate_id(key, "init keys")
         selected = None if parameters is None else tuple(parameters)
         if selected is not None and (not selected or len(set(selected)) != len(selected)):
             raise ValueError("parameters must be a nonempty list of unique names")
+        # Check every sampling option now, as sample_batch does, rather than
+        # when the first unfinished job arrives, which a restart may never reach.
+        options = {"show_progress": False, **sampling}
+        options.pop("init", None)
+        compiled.sample_batch([], ids=[], shared=shared, chunk_size=chunk_size,
+                              seed_policy="cell_id_v1", **options)
+        self._source = iter(datasets)
         self._iterator = self._iterate(compiled, chunk_size, retention, shared,
                                        completed_ids, selected, sampling)
+        self._closed = False
 
     def __iter__(self) -> BatchStream:
         return self
@@ -60,16 +81,31 @@ class BatchStream(Iterator[BatchItem]):
         try:
             return next(self._iterator)
         except BaseException:
-            self.close()
+            try:
+                self.close()
+            except Exception:
+                pass  # the error that stopped iteration is the one to report
             raise
 
     def close(self) -> None:
-        if not self._closed:
-            self._closed = True
+        """Release the current chunk and its ledger, and close the input
+        iterator if it has a ``close`` method. The input is closed even if
+        releasing the chunk fails."""
+        if self._closed:
+            return
+        self._closed = True
+        try:
             self._iterator.close()
+        finally:
             close = getattr(self._source, "close", None)
             if close is not None:
                 close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def __enter__(self) -> BatchStream:
         return self
@@ -83,7 +119,8 @@ class BatchStream(Iterator[BatchItem]):
         # The ledger is temporary. Callers persist results and supply completed IDs
         # on restart; no adaptation or partially sampled chain is resumed.
         with tempfile.TemporaryDirectory(prefix="rustmc-batch-") as directory:
-            connection = sqlite3.connect(Path(directory)/"ids.sqlite")
+            # The stream may be advanced on one thread and closed on another.
+            connection = sqlite3.connect(Path(directory)/"ids.sqlite", check_same_thread=False)
             try:
                 connection.execute("PRAGMA cache_size=-1024")
                 connection.execute("PRAGMA temp_store=FILE")
@@ -92,6 +129,7 @@ class BatchStream(Iterator[BatchItem]):
                     self._validate_id(name)
                     connection.execute("INSERT OR IGNORE INTO ids VALUES (?, 0)", (name,))
                 connection.commit()
+                initial = sampling.get("init")
                 while True:
                     chunk = []
                     # Skipped completed jobs do not occupy a sampling slot.
@@ -111,28 +149,38 @@ class BatchStream(Iterator[BatchItem]):
                             connection.execute("UPDATE ids SET seen=1 WHERE id=?", (name,))
                             continue
                         connection.execute("INSERT INTO ids VALUES (?, 1)", (name,))
-                        chunk.append((name, data))
+                        # Read and copy now, like the data, so that a reused
+                        # buffer cannot change an earlier job's start.
+                        if callable(initial):
+                            positions = np.array(initial(name, data), dtype=float, copy=True)
+                        elif initial is not None and name in initial:
+                            positions = np.array(initial[name], dtype=float, copy=True)
+                        else:
+                            positions = None
+                        chunk.append((name, _snapshot(data), positions))
+                    data = pair = positions = None
                     connection.commit()
                     if not chunk:
-                        initial = sampling.get("init")
                         if isinstance(initial, Mapping):
                             for key in initial:
                                 if connection.execute("SELECT 1 FROM ids WHERE id=?", (key,)).fetchone() is None:
                                     raise ValueError(f"initialization supplied for unknown dataset ID {key!r}")
                         return
                     options = {"show_progress": False, **sampling}
-                    initial = options.pop("init", None)
-                    if callable(initial):
-                        options["init"] = {name: initial(name, data) for name, data in chunk}
-                    elif initial is not None:
-                        options["init"] = {name: initial[name] for name, _ in chunk if name in initial}
+                    options.pop("init", None)
+                    starts = {name: positions for name, _, positions in chunk if positions is not None}
+                    if starts:
+                        options["init"] = starts
                     batch = compiled.sample_batch(
-                        [data for _, data in chunk], ids=[name for name, _ in chunk],
+                        [data for _, data, _ in chunk], ids=[name for name, _, _ in chunk],
                         shared=shared, chunk_size=chunk_size, seed_policy="cell_id_v1", **options,
                     )
+                    # Nothing of this chunk's input outlives its sampling.
+                    del options, starts
                     errors = batch.errors
-                    for index in range(len(chunk)):
-                        name = chunk[index][0]
+                    names = [name for name, _, _ in chunk]
+                    del chunk
+                    for name in names:
                         if name in errors:
                             yield BatchItem(name, error=errors[name])
                             continue
@@ -148,23 +196,24 @@ class BatchStream(Iterator[BatchItem]):
                                          tuple(diagnostics), warnings=tuple(result.warnings()))
                         yield item
                         del result, item, diagnostics
-                    del batch, chunk, errors
-                    # Avoid holding the final source payload across the next chunk.
-                    data = pair = None
+                    del batch, errors, names
             finally:
                 connection.close()
 
     @staticmethod
-    def _validate_id(name):
+    def _validate_id(name, what="dataset IDs"):
         if not isinstance(name, str) or not name:
-            raise ValueError("dataset IDs must be nonempty strings")
+            raise ValueError(f"{what} must be nonempty strings")
 
 
 def sample_iter(compiled: Any, datasets: Iterable[tuple[str, Any]], **kwargs: Any) -> BatchStream:
     """Fit a lazy sequence of (ID, data) pairs with bounded chunk retention.
 
-    Sampling options match CompiledModel.sample_batch. Keep IDs and the base seed
-    unchanged to reproduce jobs across chunk sizes, order, and resumed runs.
-    Caller-retained BatchItems and a caller-materialized input list still use memory.
+    Sampling options match CompiledModel.sample_batch and are checked when the
+    stream is created. Keep IDs and the base seed unchanged to reproduce jobs
+    across chunk sizes, order, and resumed runs. Each dataset's arrays, and the
+    positions an ``init`` callable returns, are copied when read, so a source may
+    reuse its buffers. Caller-retained BatchItems and a caller-materialized input
+    list still use memory.
     """
     return BatchStream(compiled, datasets, **kwargs)

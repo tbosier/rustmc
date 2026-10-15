@@ -54,7 +54,7 @@ def test_draws_match_eager_batch_across_chunks_order_and_resume():
     for chunk in (1, 3):
         with compiled.sample_iter(reversed(list(jobs())),chunk_size=chunk,completed_ids=iter(["job-2"]), **OPTIONS) as stream:
             results = list(stream)
-        assert len(results) == 6
+        assert [result.id for result in results] == [f"job-{i}" for i in (6, 5, 4, 3, 1, 0)]
         for result in results:
             np.testing.assert_array_equal(result.fit.get_samples_2d()["mu"],eager.get(result.id).get_samples_2d()["mu"])
 
@@ -116,3 +116,93 @@ def test_summary_retention_keeps_fit_warnings():
         (item,) = list(stream)
     assert item.warnings and item.warnings == tuple(compiled.sample_batch(
         [data for _, data in jobs(1)], ids=["job-0"], **{**OPTIONS, "draws": 3}).get("job-0").warnings())
+
+
+def test_reused_source_and_init_buffers_keep_each_job_its_own_values():
+    compiled = model()
+    expected = {name: data for name, data in jobs(4)}
+    starts = {name: np.array([[float(i)], [float(i) + 0.5]]) for i, name in enumerate(expected)}
+    eager = compiled.sample_batch(list(expected.values()), ids=list(expected),
+                                  init=starts, **OPTIONS)
+
+    def reusing_source():
+        buffer = np.empty(3)
+        for name, data in expected.items():
+            buffer[:] = data["y"]
+            yield name, {"y": buffer}
+
+    shared_start = np.empty((2, 1))
+
+    def reusing_init(name, data):
+        shared_start[:] = starts[name]
+        return shared_start
+
+    for chunk in (1, 3):
+        with compiled.sample_iter(reusing_source(), chunk_size=chunk, init=reusing_init,
+                                  **OPTIONS) as stream:
+            for item in stream:
+                np.testing.assert_array_equal(item.fit.get_samples_2d()["mu"],
+                                              eager.get(item.id).get_samples_2d()["mu"])
+
+
+def test_init_mapping_keys_must_be_strings():
+    with pytest.raises(ValueError, match="init keys must be nonempty strings"):
+        model().sample_iter(jobs(2), init={1: [[.1], [.2]]}, **OPTIONS)
+
+
+def test_previous_chunk_initial_positions_are_released_before_the_next_chunk_is_read():
+    alive = []
+
+    def source():
+        # While a dataset is read, only the starts of the datasets read before
+        # it in the same chunk are alive: at most one, with chunks of two.
+        for name, data in jobs(6):
+            gc.collect()
+            assert sum(ref() is not None for ref in alive) <= 1
+            yield name, data
+
+    def start(name, data):
+        positions = np.array([[.1], [.2]])
+        alive.append(weakref.ref(positions))
+        return positions
+
+    with model().sample_iter(source(), chunk_size=2, init=start, **OPTIONS) as stream:
+        assert len(list(stream)) == 6
+
+
+def test_close_from_another_thread_closes_the_source():
+    import threading
+    closed = []
+
+    def source():
+        try:
+            yield from jobs()
+        finally:
+            closed.append(True)
+
+    stream = model().sample_iter(source(), chunk_size=2, **OPTIONS)
+    next(stream)
+    worker = threading.Thread(target=stream.close)
+    worker.start()
+    worker.join()
+    assert closed == [True]
+    assert list(stream) == []
+
+
+def test_failed_items_carry_an_error_and_no_warnings():
+    inputs = [("good", {"y": [0., 1.]}), ("bad", {"missing": [1.]})]
+    good, bad = model().sample_iter(inputs, chunk_size=2, errors="collect", **OPTIONS)
+    assert good.error is None and good.fit is not None
+    assert bad.error and bad.fit is None and bad.warnings == ()
+
+
+def test_sampling_options_are_checked_when_the_stream_is_created():
+    for options in ({"metric": "bogus"}, {"draws": 0}, {"threads": 0}):
+        with pytest.raises(ValueError):
+            model().sample_iter([], **{**OPTIONS, **options})
+    with pytest.raises(TypeError):
+        model().sample_iter([], typo=1)
+    # Every job already complete: the options are still checked.
+    with pytest.raises(ValueError, match="metric"):
+        model().sample_iter(jobs(2), completed_ids=["job-0", "job-1"],
+                            **{**OPTIONS, "metric": "bogus"})
