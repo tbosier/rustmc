@@ -345,3 +345,54 @@ def test_close_drops_the_input_and_a_failed_chunk_keeps_no_fits():
         traceback = traceback.tb_next
     held = [value for frame in frames for value in frame.f_locals.values()]
     assert not any(type(value).__name__ in ("BatchFit", "BatchResult") for value in held)
+
+
+def test_a_reused_memoryview_keeps_each_job_its_own_data():
+    compiled = model()
+    expected = {name: data for name, data in jobs(4)}
+    eager = compiled.sample_batch(list(expected.values()), ids=list(expected), **OPTIONS)
+
+    def reusing_source():
+        buffer = np.empty(3)
+        for name, data in expected.items():
+            buffer[:] = data["y"]
+            yield name, {"y": memoryview(buffer)}
+
+    for chunk in (1, 3):
+        for item in compiled.sample_iter(reusing_source(), chunk_size=chunk, **OPTIONS):
+            np.testing.assert_array_equal(item.fit.get_samples_2d()["mu"],
+                                          eager.get(item.id).get_samples_2d()["mu"])
+
+
+def test_a_kept_exception_holds_no_inputs_after_an_early_failure():
+    def failing_source():
+        yield "a", {"y": np.full(3, .5).view(Tracked)}
+        raise RuntimeError("read failed")
+
+    kept = []
+    Tracked.copies.clear()
+    for source, error in ((failing_source(), RuntimeError),
+                          (iter([("a", {"y": np.full(3, .5).view(Tracked)}),
+                                 ("b", {"missing": [1.]})]), ValueError)):
+        stream = model().sample_iter(source, chunk_size=2, **OPTIONS)
+        with pytest.raises(error) as raised:
+            list(stream)
+        stream.close()
+        kept.append(raised.value)
+    assert live_copies() == 0
+
+
+def test_leaving_a_with_block_on_an_error_keeps_that_error():
+    class Source:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise ValueError("original read error")
+
+        def close(self):
+            raise OSError("cleanup failure")
+
+    with pytest.raises(ValueError, match="original read error"):
+        with model().sample_iter(Source(), **OPTIONS) as stream:
+            next(stream)
