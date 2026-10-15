@@ -15,7 +15,9 @@ with compiled.sample_iter(
 `datasets` can be a generator. `save` is your own result sink. Each dataset, and the
 positions an `init` callable returns, are deep-copied when they are read, so a
 generator may refill and yield the same buffers; the copy keeps types and masks, so
-`sample_batch` validates exactly what the source gave. With `retention="full"` (the default),
+`sample_batch` validates what the source gave. A bound model is passed as given, as is
+a value that cannot be deep-copied, such as a `memoryview`: do not reuse its buffer
+before its chunk has been yielded. With `retention="full"` (the default),
 each successful item also has a `.fit` for prediction. Summary retention releases
 posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic rows.
 Sampling options are those of `sample_batch` and are checked when the stream is
@@ -49,10 +51,12 @@ per-ID streams. This reruns jobs from their seeds, not from partially sampled ch
 Failed jobs should not be marked completed unless you intend to skip them.
 
 Use the context manager or call `.close()` when stopping early. It releases the current
-batch, removes the temporary ID ledger and closes a closeable input iterator, which it
-closes even if releasing the batch fails; it may be called from another thread than the
-one iterating, and then waits for a `next()` in progress to return. A failure to close
-the input is raised, also when the stream ends normally. A stream that is garbage
+batch, removes the temporary ID ledger, closes a closeable input iterator, and drops the
+stream's references to both; it closes the input even if releasing the batch fails. It
+may be called from another thread than the one iterating, and then waits for a
+`next()` in progress to return. A failure to close the input is raised, also when the
+stream ends normally; when the stream stops on another error, that error is raised
+with a note about the failed close, and calling `.close()` again retries it. A stream that is garbage
 collected unclosed closes itself, but when that
 happens is up to Python. No next chunk starts until the current chunk is consumed.
 Native worker count applies to each chunk; pool creation currently occurs once per
@@ -60,7 +64,8 @@ chunk.
 
 `init` accepts a mapping from dataset ID to positions, whose keys must be strings, or
 a callable `(id, data) -> positions` that is called as each dataset is read and not
-for completed ones. Draws reproduce across chunk sizes, input order and restarts only
+for completed ones. An ID the mapping lacks gets a random start; positions of `None`
+are passed on, and are an error for that dataset as in `sample_batch`. Draws reproduce across chunk sizes, input order and restarts only
 if the callable gives each ID the same positions whatever the order of the calls: a
 function of the ID and data, not of a shared random generator. A supplied mapping
 stays in caller memory; use a callable for an unbounded source. Mapping IDs that no

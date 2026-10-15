@@ -280,3 +280,68 @@ def test_init_for_an_id_only_listed_as_completed_is_reported():
     # An ID a dataset had, and that was skipped as completed, is known.
     assert list(model().sample_iter(jobs(1), completed_ids=["job-0"],
                                     init={"job-0": [[0.], [0.]]}, **OPTIONS)) == []
+
+
+def test_inputs_that_cannot_be_copied_are_passed_as_given():
+    compiled = model()
+    bound = compiled.bind({"y": np.array([0., 1.])}, id="bound")
+    view = memoryview(np.array([0., 1.]))
+    items = list(compiled.sample_iter(
+        [("bound", bound), ("view", {"y": view}), ("generator", {"y": (x for x in [0.])}),
+         ("later", {"y": [1.]})], chunk_size=4, errors="collect", **OPTIONS))
+    assert [item.id for item in items] == ["bound", "view", "generator", "later"]
+    assert items[0].fit is not None and items[1].fit is not None and items[3].fit is not None
+    assert items[2].error
+
+
+def test_an_explicit_none_start_is_an_error_not_a_random_start():
+    for init in ({"a": None}, lambda name, data: None):
+        (item,) = model().sample_iter([("a", {"y": [0.]})], errors="collect", init=init,
+                                      **OPTIONS)
+        assert item.error and "init" in item.error
+
+
+def test_a_cleanup_failure_after_an_error_is_noted_and_close_retries():
+    class Source:
+        closes = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise RuntimeError("read failed")
+
+        def close(self):
+            Source.closes += 1
+            if Source.closes == 1:
+                raise OSError("cleanup failed")
+
+    stream = model().sample_iter(Source(), **OPTIONS)
+    with pytest.raises(RuntimeError, match="read failed") as raised:
+        next(stream)
+    if hasattr(raised.value, "__notes__"):
+        assert "cleanup failed" in raised.value.__notes__[0]
+    stream.close()
+    assert Source.closes == 2
+
+
+def test_close_drops_the_input_and_a_failed_chunk_keeps_no_fits():
+    payload = [np.full(100, .5).view(Tracked) for _ in range(4)]
+    watched = weakref.ref(payload[0])
+    stream = model().sample_iter(iter([(str(i), {"y": data}) for i, data in enumerate(payload)]),
+                                 chunk_size=1, **OPTIONS)
+    next(stream)
+    del payload
+    stream.close()
+    gc.collect()
+    assert watched() is None
+
+    with pytest.raises(ValueError, match="unknown diagnostic") as raised:
+        list(model().sample_iter(jobs(2), retention="summary", parameters=["nope"], **OPTIONS))
+    frames = []
+    traceback = raised.value.__traceback__
+    while traceback is not None:
+        frames.append(traceback.tb_frame)
+        traceback = traceback.tb_next
+    held = [value for frame in frames for value in frame.f_locals.values()]
+    assert not any(type(value).__name__ in ("BatchFit", "BatchResult") for value in held)
