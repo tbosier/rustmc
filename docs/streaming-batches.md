@@ -15,8 +15,11 @@ with compiled.sample_iter(
 `datasets` can be a generator. `save` is your own result sink. With `retention="full"`
 (the default), each successful item also has a `.fit` for prediction. Summary retention
 releases posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic
-rows. Failed fits have an `.error` and no fit. Computational success does not imply
-adequate convergence; inspect the diagnostics.
+rows. Failed fits have an `.error` and no fit. Under either retention, `.warnings`
+holds the fit's failed or unavailable checks as `BatchResult.warnings()` reports them
+(see [fit warnings](reference.md#fit-warnings-and-batch-triage)); an empty tuple means
+every check passed, not that the posterior is right. Computational success does not
+imply adequate convergence; inspect the diagnostics.
 
 Memory is bounded by the current input chunk, its fits, and worker scratch space.
 Results you keep and an input list you build still occupy memory. The stream tracks

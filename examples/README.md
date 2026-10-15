@@ -22,6 +22,7 @@ a fit.
 | `arviz_example.py` | Exporting a fit to ArviZ and using its diagnostics and plots. |
 | `large_linear_regression.py` | A 500-coefficient vector parameter on the faer GEMV path. |
 | `batch_inference.py` | Many independent fits in one call, by shared schema and by differing structure. |
+| `stream_calibration.py` | A lazy stream of fits kept to diagnostic summaries, one chunk at a time. |
 
 ## Pooling and panels
 
