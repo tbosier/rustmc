@@ -75,56 +75,82 @@ these standardized errors are all below 4 MCSE:
 |---|---|---|---|---|---|---|---|
 | 100 independent normals, scales 0.5 to 2 | custom target | 2101 | 2.22 | 2.56 | 1.69 | 4180 | 1.0053 |
 | 100 independent normals | graph | 2111 | 3.93 | 2.34 | -0.15 | 4095 | 1.0050 |
+| 50-d Gaussian, AR(1) correlation 0.8 | custom target | 2201 | 0.93 | 2.22 | 1.66 | 1742 | 1.0031 |
 | 50-d Gaussian, AR(1) correlation 0.95 | custom target | 2201 | 0.92 | 1.18 | -0.33 | 696 | 1.0056 |
 | 50-d Gaussian, AR(1) correlation 0.95 | graph | 2211 | 1.63 | 2.11 | -0.50 | 606 | 1.0120 |
 | 10-coefficient regression, known noise | graph | 2301 | 1.00 | 1.21 | 0.60 | 4070 | 1.0024 |
 
-Errors are in MCSE. The correlated target's correlation matrix has condition number
-989 and its covariance 1481. The custom-target path (`target::sample_target`) gives
-every parameter a diagonal metric; the graph path holds one vector parameter, for which
-`auto` may choose a dense block. The regression's posterior is computed in closed form
-and its graph is written the way a user writes one (`vector_normal_logp` prior,
-`mat_vec_mul`, Normal likelihood with a constant scale). All five pass. The gate does
-not check R-hat: the correlated graph fit's 1.012 is above the 1.01 the release checks
-use, and the R-hat a fit reports is a warning, not a measure of its exactness.
+Errors are in MCSE; the mean and variance columns give the largest magnitude over
+coordinates. The 0.95 correlated target's correlation matrix has condition number 989
+and its covariance 1481 (77 and 116 at correlation 0.8, the case this gate started
+with). The custom-target path (`target::sample_target`) gives every parameter a
+diagonal metric; the graph path holds one vector parameter, for which `auto` may choose
+a dense block. The regression's posterior is computed in closed form and its graph is
+written the way a user writes one (`vector_normal_logp` prior, `mat_vec_mul`, Normal
+likelihood with a constant scale). All six pass. The independent-normals graph case
+passes with little room: its worst mean error is 3.93 against the bound of 4. The gate
+does not check R-hat: the correlated graph fit's 1.012 is above the 1.01 the release
+checks use, and R-hat is a warning about a fit, not a measure of its exactness.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --nocapture
 ```
 
+On the 0.95 correlated target the graph path costs about what the diagonal custom path
+does, so the default `auto` metric does not deliver what a dense metric would there. At
+gate seeds 2211 to 2213 on the graph path, `auto` spent 317 to 683 leapfrog steps
+(warmup included) per unit of the smallest bulk ESS, `diagonal` 455 to 841, and `dense`
+25 to 27, with a smallest bulk ESS of 4253 to 4397 against 460 to 942 for `auto`. This
+is a finding about the default metric, not about exactness; all nine fits but one
+diagonal fit (bulk ESS 381) pass the gate.
+
+```text
+cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+    metric_choice_on_the_ill_conditioned_graph_target
+```
+
 ### Power controls
 
 The `fault-injection` cargo feature (off by default, compiled out otherwise) adds two
-faults to the NUTS kernel, and `rust_core/tests/exactness_power.rs` requires the gate
-to fail a moment check under each, on every gate case at its gate seed and the two
-seeds after it. CI runs it.
+faults to the NUTS kernel. CI runs `rust_core/tests/exactness_power.rs`, which fits
+every gate case at its gate seed and the two seeds after it (18 fits) under each fault
+and requires a moment check to fail, meaning a finite standardized error of 4 MCSE or
+more; failing only the ESS floor or a divergence check does not count.
 
 - Biased multinomial merge: every merge of two subtrees, and every doubling, takes the
-  newer subtree's proposal whatever the weights say.
+  newer subtree's proposal whatever the weights say. Required in at least 15 of the 18
+  fits.
 - Step size 30% too large without the Metropolis correction: after warmup the kernel
   integrates with 1.3 times the adapted step size and weights every non-divergent leaf
-  equally.
+  equally. Required in all 18.
 
 ```text
 cargo test --release -p rustmc_core --features fault-injection --test exactness_power
 ```
 
-Over 200 more seeds per case (from 20,000), the gate caught:
+Both faults were caught in all 18 fits. Over 200 more seeds per case (from 20,000), the
+gate caught:
 
 | Case | Biased merge: caught | Per-coordinate checks alone | Overstep: caught | Per-coordinate checks alone |
 |---|---|---|---|---|
 | 100 independent normals, custom target | 188/200 | 18/200 | 200/200 | 157/200 |
 | 100 independent normals, graph | 187/200 | 27/200 | 200/200 | 168/200 |
-| 50-d correlated, custom target | 200/200 | 182/200 | 200/200 | 0/200 |
-| 50-d correlated, graph | 200/200 | 11/200 | 200/200 | 1/200 |
+| 50-d correlation 0.8, custom target | 200/200 | 20/200 | 200/200 | 0/200 |
+| 50-d correlation 0.95, custom target | 200/200 | 182/200 | 200/200 | 0/200 |
+| 50-d correlation 0.95, graph | 200/200 | 11/200 | 200/200 | 1/200 |
 | 10-coefficient regression, graph | 195/200 | 49/200 | 200/200 | 179/200 |
 
-The per-coordinate checks alone missed most biased merges and almost every overstep on
-the correlated target: on that target the too-large step distorts the stiff whitened
+The per-coordinate checks alone missed most biased merges, and almost every overstep
+on the correlated targets: there the too-large step distorts the stiff whitened
 directions, which barely move any one coordinate's variance. The squared-norm check was
-added for that reason; with it the median squared-norm error under the overstep was 13.7
-to 21.5 MCSE across cases, and under the biased merge 5.8 to 11.6 MCSE. The biased
-merge is a mild fault on Gaussians, and the gate misses it in up to 13 fits in 200.
+added for that reason. With it, the median size of the squared-norm error was 13.7 to
+21.5 MCSE under the overstep (smallest 8.9) and 5.8 to 11.6 MCSE under the biased
+merge. The biased merge is a mild fault on Gaussians, and the gate misses it in up to
+13 fits in 200. That is why the CI test asks for 15 of 18 rather than all 18: from
+these rates, all 18 would turn it red on about 37% of changes that move the draws with
+nothing wrong, and 15 of 18 on about 0.06%. A correct sampler fails the gate on about
+2% of fits, so it cannot reach 15. The run is recorded in
+`benchmarks/results/2026-10-14-exactness-detection.log` (97 s).
 
 ```text
 RUSTMC_EXACTNESS_SEEDS=200 cargo test --release -p rustmc_core --features fault-injection \
@@ -136,42 +162,48 @@ RUSTMC_EXACTNESS_SEEDS=200 cargo test --release -p rustmc_core --features fault-
 The correct sampler was run on every case for 2000 seeds (10,000 to 11,999). The
 nominal rate is what the moment checks would give if every standardized error were an
 independent standard normal: two checks per coordinate and the squared norm, each
-beyond 4 with probability 6.3e-5.
+beyond 4 with probability 6.3e-5. Expected nominal counts per 2000 fits are 25.3 for
+100 dimensions, 12.8 for 50 and 2.6 for 10.
 
 | Case | Fits failing the gate | Failing a moment check | Nominal | Failing the ESS floor |
 |---|---|---|---|---|
 | 100 independent normals, custom target | 53 (2.65%) | 53 (2.65%) | 1.27% | 0 |
 | 100 independent normals, graph | 47 (2.35%) | 47 (2.35%) | 1.27% | 0 |
-| 50-d correlated, custom target | 47 (2.35%) | 21 (1.05%) | 0.64% | 26 |
-| 50-d correlated, graph | 31 (1.55%) | 18 (0.90%) | 0.64% | 13 |
+| 50-d correlation 0.8, custom target | 35 (1.75%) | 35 (1.75%) | 0.64% | 0 |
+| 50-d correlation 0.95, custom target | 47 (2.35%) | 21 (1.05%) | 0.64% | 26 |
+| 50-d correlation 0.95, graph | 31 (1.55%) | 18 (0.90%) | 0.64% | 13 |
 | 10-coefficient regression, graph | 5 (0.25%) | 5 (0.25%) | 0.13% | 0 |
 
-No fit diverged. The gate fails a correct sampler about twice as often as nominal, and
-the excess is in the variance checks. Pooled over coordinates and seeds, the mean
-errors behave as a correct MCSE predicts on the independent normals and the regression
-(4.5% beyond 2 MCSE against a nominal 4.55%, standard deviation 1.00; on the
-independent normals 0.0055% beyond 4 against 0.0063%), and only slightly wider on the correlated target (4.9% beyond
-2, standard deviation 1.004 and 1.014). The variance errors have nearly the right
-spread (standard deviation 1.006 to 1.037) but a heavier lower tail: 0.018% to 0.063%
-beyond 4 MCSE, three to ten times nominal, and all 111 variance failures were below the
-exact value (the 29 mean failures split 18 below, 11 above). The squared deviations are
-right-skewed, so their standardized mean is left-skewed, more so where the ESS is
-smaller. The ESS floor also fails on its own on the correlated target, whose smallest
-bulk ESS at the defaults ranged from 410 to 942 over the ten seeds of the cost record
-below.
+No fit diverged. The moment checks fail a correct sampler more often than nominal: 2.1,
+1.9 and 2.7 times on the independent normals and the 0.8 correlated target, where the
+counts are large enough to tell. The excesses of 1.6 and 1.4 times on the 0.95
+correlated target and 1.9 times on the regression rest on 21, 18 and 5 failures and are
+not clearly outside chance. Most of the excess is in the variance checks. Pooled over
+coordinates and seeds, the mean errors are close to what a correct MCSE predicts (4.5%
+to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation 0.998 to 1.014),
+though on the 0.8 correlated target 0.020% were beyond 4 against 0.0063%. The variance
+errors have nearly the right spread (standard deviation 1.006 to 1.037) but a heavier
+lower tail: 0.018% to 0.063% beyond 4 MCSE, three to ten times nominal, and all 137
+variance failures were below the exact value (the 39 mean failures split 22 below, 17
+above). The likely reason is that the squared deviations are right-skewed: a sample
+whose squared deviations happen to be small also has a small estimated MCSE, so the
+self-normalised error reaches far below zero more often than above. The ESS floor also
+fails on its own on the 0.95 correlated target, whose smallest bulk ESS at the defaults
+ranged from 410 to 942 over the ten seeds of the cost record below.
 
-Taking the five cases together, a correct sampler fails at least one of them about 9%
+Taking the six cases together, a correct sampler fails at least one of them about 10%
 of the time. The gate seeds are fixed, so CI is deterministic, but a change that moves
 the draws has about that chance of turning the gate red with nothing wrong. Before
 treating a red gate as a bug, run the study on the change and compare it with this
-table.
+table. The 12,000 fits took 496 s on a 24-thread AMD Ryzen 9 5900X; the tallies are in
+`benchmarks/results/2026-10-14-exactness-false-alarm.json` and the output, with every
+failing fit, in the `.log` beside it.
 
 ```text
-RUSTMC_EXACTNESS_SEEDS=2000 cargo test --release -p rustmc_core --test exactness \
-    -- --ignored --nocapture false_alarm_rate_over_seeds
+RUSTMC_EXACTNESS_SEEDS=2000 RUSTMC_EXACTNESS_JSON=$PWD/false-alarm.json \
+    cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+    false_alarm_rate_over_seeds
 ```
-
-The 10,000 fits took 440 s on a 24-thread AMD Ryzen 9 5900X.
 
 ### Cost
 
@@ -179,7 +211,8 @@ The 10,000 fits took 440 s on a 24-thread AMD Ryzen 9 5900X.
 the leapfrog steps in warmup and draw transitions of all four chains divided by the
 smallest bulk ESS. The step-size searches warmup runs are not transitions and are not
 counted. Medians, warmup included: 17.6 and 17.3 for the independent normals (custom,
-graph), 553 and 519 for the correlated Gaussian, 13.4 for the regression.
+graph), 106 for the 0.8 correlated target, 553 and 519 for the 0.95 one, and 13.4 for
+the regression.
 
 ```text
 RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/2026-10-14-exactness.json \
@@ -190,11 +223,12 @@ RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/2026-10-14-exactness.json \
 ### Static HMC: an open finding
 
 The same checks on static HMC at its default 15 leapfrog steps are ignored tests,
-because HMC fails them. On these well-conditioned targets the adapted step size puts 15
-steps near a full period of a standardized Gaussian coordinate, so a transition returns
-almost to where it started. At seed 2102 on the independent normals the worst
-coordinate's bulk ESS is 6 and the largest R-hat 1.78; at seed 2202 on the correlated
-target the worst bulk ESS is 86.
+because HMC fails them. On the independent normals at seed 2102 the worst coordinate's
+bulk ESS is 6 and the largest R-hat 1.78: the adapted step size puts 15 steps near a
+full period of a standardized coordinate, so a transition returns almost to where it
+started. On the 0.8 correlated target at seed 2202 every coordinate's bulk ESS is at
+least 627, but the squared norm's is 110, below the floor, and the largest R-hat is
+1.016. Whether that second failure is the same resonance has not been shown.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture hmc_
@@ -222,19 +256,23 @@ draws, warmup and assertions, every case passed, so the suite now runs at 0.80:
 | Centred funnel (negative control, must be flagged) | 1666 | 1.0356 | 97 | 29 |
 
 That is one seeded run. With the sampler seed moved by 1 to 20
-(`RUSTMC_RECOVERY_SEED_OFFSET`; the simulated data stay the same), at 0.80 two positive
-cases failed some runs, each time on the zero-divergence requirement with exactly one
-divergence: non-centred eight schools in 6 of 20 and the non-centred hierarchical
-Poisson in 2 of 20. Every other positive case passed all 20, and both negative controls
-were flagged in all 20 (at least 61 divergences each). At 0.999 every positive case
-passed all 20, but the negative controls missed: centred eight schools in 6 of 20 (5
-with no divergences at all) and the centred funnel in 11 of 20 (divergences present,
-R-hat and ESS within the healthy standard). The suite takes 6.3 s at 0.80 and 28.8 s
-at 0.999 on one test thread.
+(`RUSTMC_RECOVERY_SEED_OFFSET`; the simulated data stay the same), 7 of the 20 runs at
+0.80 had a failing case. Two positive cases failed, each time on the zero-divergence
+requirement with exactly one divergence: non-centred eight schools in 6 of 20 runs and
+the non-centred hierarchical Poisson in 2 of 20. Every other positive case passed all
+20, and both negative controls were flagged in all 20 (at least 61 divergences each).
+At 0.999, 13 of the 20 runs had a failing case, all of them negative controls missing
+their signal: centred eight schools in 6 (5 with no divergences at all) and the centred
+funnel in 11 (divergences present, R-hat and ESS within the healthy standard); every
+positive case passed all 20. Each run's output is in
+`benchmarks/results/2026-10-14-recovery-target-accept.log`. The seeded suite took
+10.6 s at 0.80 and 61.5 s at 0.999 on one test thread, with 21 runs sharing the machine.
 
 ```text
-RUSTMC_RECOVERY_TARGET_ACCEPT=0.999 RUSTMC_RECOVERY_SEED_OFFSET=1 \
+for ta in 0.8 0.999; do for off in $(seq 0 20); do
+  RUSTMC_RECOVERY_TARGET_ACCEPT=$ta RUSTMC_RECOVERY_SEED_OFFSET=$off \
     cargo test --release -p rustmc_core --test recovery_suite -- --nocapture --test-threads 1
+done; done
 ```
 
 Rust recovery tests enforce the same convergence thresholds for positive cases.
