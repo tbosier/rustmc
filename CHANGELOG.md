@@ -55,8 +55,7 @@ seeded draws only where its entries say so.
   in `errors`. An unknown code in `ignore` raises `ValueError`.
 - A quantity whose draws do not vary fails `diagnostics_unavailable` unless the model
   declares it can hold it constant: a fixed `StructuralModel` variance, a structural
-  terminal state with a zero innovation (or any, with a zero observation variance), a
-  dynamic GLM's terminal states when both process scales are 0, or a runoff
+  terminal state with a zero innovation, a dynamic GLM's terminal states when both process scales are 0, or a runoff
   `ultimate`. So a stuck chain, or draws that collapsed below floating-point
   resolution, flag a forecasting fit as they flag an HMC or NUTS fit.
   `SamplerTelemetry::NonHamiltonian` takes the declared names as `constant`.
@@ -67,7 +66,8 @@ seeded draws only where its entries say so.
   until `ignore=["known_limitation"]` leaves the record out. The record goes on a
   sampler whose worst R-hat was above 1.01 in all ten settings of the new
   `benchmarks/state_variance_mixing.py`; each record states its sampler's range. The
-  local level was above 1.01 in nine of the ten and carries no record. The
+  local level was above 1.01 in seven of its eight distinct settings and carries no
+  record. The
   reference's slow state-variance mixing section has the table and the command.
 - Each HMC and NUTS transition records the Hamiltonian of the state it ended in
   (`TransitionStats::energy`). It is read off values the sampler already computed,

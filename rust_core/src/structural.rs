@@ -672,9 +672,8 @@ impl StructuralPosterior {
         };
         // A fixed variance is constant by construction. A terminal state can
         // be deterministic only if its own innovation is fixed at zero (an AR
-        // coordinate with coefficient 0 then stays at 0), or if a zero
-        // observation variance pins the states to the data. Everything else
-        // is drawn and should vary.
+        // coordinate with coefficient 0 then stays at 0); the observation
+        // variance must be positive. Everything else is drawn and should vary.
         let innovations: Vec<&VarianceParameter> = self
             .config
             .components
@@ -689,10 +688,6 @@ impl StructuralPosterior {
             .filter(|(_, v)| matches!(v, VarianceParameter::Fixed(_)))
             .map(|(name, _)| name)
             .collect();
-        let exact_observations = matches!(
-            self.config.observation_variance,
-            VarianceParameter::Fixed(v) if v == 0.0
-        );
         if matches!(
             self.config.observation_variance,
             VarianceParameter::Fixed(_)
@@ -700,8 +695,7 @@ impl StructuralPosterior {
             constant.push("observation_variance".into());
         }
         for (i, innovation) in innovations.iter().enumerate() {
-            if exact_observations || matches!(innovation, VarianceParameter::Fixed(v) if *v == 0.0)
-            {
+            if matches!(innovation, VarianceParameter::Fixed(v) if *v == 0.0) {
                 constant.push(format!("terminal_state[{i}]"));
             }
         }

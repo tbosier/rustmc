@@ -336,7 +336,12 @@ def test_slow_state_variance_samplers_carry_the_limitation_and_the_others_do_not
     assert all(
         "known_limitation" in codes(cell) for cell in batch.warnings().values()
     )
-    assert batch.flagged() == ["a", "b"]
+    # Ignoring every other code leaves the limitation as the only failure, so
+    # this checks that flagged() counts it.
+    others = ["r_hat", "ess_bulk", "ess_tail", "diagnostics_unavailable", "divergences",
+              "e_bfmi", "tree_depth_saturation"]
+    assert batch.flagged(ignore=others) == ["a", "b"]
+    assert batch.flagged(ignore=others + ["known_limitation"]) == []
 
 
 def test_local_linear_trend_with_exog_carries_the_limitation_and_local_level_does_not():

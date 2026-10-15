@@ -121,7 +121,13 @@ draws) went dense in a window and fell from a smallest bulk ESS of 90 with 1 div
 to 16 with 66; the other four were unchanged, and forced dense was the worst metric on
 that target. A dense metric fitted to a curved target can be worse than none, which a
 condition-number test cannot see, so changing the default needs a broader set of
-targets than these.
+targets than these. `benchmarks/curved_metric_choice.py` prints these fits; run against
+a build of this release it gives the unchanged numbers, and against a build of commit
+`d3e38f8`, which holds the tried count, the changed ones.
+
+```text
+PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice
+```
 
 ### Power controls
 

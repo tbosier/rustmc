@@ -122,8 +122,14 @@ identical workloads: `run.py` declares the coefficients as one vector parameter,
 two of the removed scripts used separate scalar priors and one added an intercept. The
 removed scripts remain in the repository history.
 
-`benchmarks/state_variance_mixing.py` measures how slowly each Gibbs/FFBS forecasting
-sampler mixes its state variances: the worst split R-hat over three seeds in ten settings
+`benchmarks/state_variance_mixing.py` measures how slowly seven Gibbs/FFBS forecasting
+fits (local level, local linear trend and seasonal local level, the last two also with
+`exog`, and a `StructuralModel` trend at damping 1 and 0.9) mix their state variances: the worst split R-hat over three seeds in ten settings
 (five regimes, 200 and 1000 points) at 4 chains, 300 warmup and 500 draws, with data
 simulated from each model's own process. The R-hat ranges in the `known_limitation` fit
 warnings and in the reference's slow state-variance mixing section come from it.
+
+`benchmarks/curved_metric_choice.py` fits a curved two-dimensional target, written as one
+vector parameter, under each `metric` for five seeds, and prints the smallest bulk ESS,
+the largest R-hat and the divergences. The statistical-validation page uses it to compare
+ways for `metric="auto"` to choose a dense block.

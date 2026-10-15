@@ -345,21 +345,36 @@ impl RegressionPosterior {
     /// sampler mixes slowly.
     pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
         use crate::diagnostics::warnings::slow_state_variance_mixing;
+        // A structural coordinate whose variance is not sampled and is zero
+        // can be deterministic (a zero transition row then pins it to 0), so
+        // its terminal state is declared constant. Sampled variances are
+        // positive and the coefficient prior is proper, so the rest vary.
+        let model = &self.config.structural_model;
+        let d = model.dimension();
+        let constant: Vec<String> = (0..d)
+            .filter(|i| {
+                !self.config.innovation_indices.contains(i)
+                    && model.process_covariance()[i * d + i] == 0.0
+            })
+            .map(|i| format!("terminal_state[{i}]"))
+            .collect();
         let mut warnings = crate::diagnostics::fit_warnings(
             &self.diagnostics(),
             crate::diagnostics::SamplerTelemetry::NonHamiltonian {
                 sampler: SAMPLER_NAME,
-                constant: &[],
+                constant: &constant,
             },
         );
-        // Ranges measured by benchmarks/state_variance_mixing.py.
+        // Ranges measured by benchmarks/state_variance_mixing.py, which
+        // samples both state variances; a config that fixes them has nothing
+        // to mix.
         if self.config.is_local_linear_trend() {
             warnings.push(slow_state_variance_mixing(
                 "the level and slope variances of a local linear trend fitted with exog",
                 1.057,
                 2.621,
             ));
-        } else if self.config.seasonal {
+        } else if self.config.seasonal && self.config.innovation_indices == [0, 1] {
             warnings.push(slow_state_variance_mixing(
                 "the level and seasonal variances of a seasonal local level fitted with exog",
                 1.012,
@@ -659,6 +674,76 @@ mod tests {
             seasonal: false,
         }
     }
+    #[test]
+    fn deterministic_states_and_fixed_variances_raise_no_false_failure() {
+        use crate::diagnostics::{WarningCode, WarningStatus};
+        let y: Vec<f64> = (0..30).map(|t| (t as f64 * 0.3).sin()).collect();
+        let x: Vec<Vec<f64>> = (0..30).map(|t| vec![t as f64 / 30.0]).collect();
+        let fails = |posterior: &RegressionPosterior, code| {
+            posterior
+                .warnings()
+                .iter()
+                .filter(|w| w.code == code && w.status == WarningStatus::Fail)
+                .count()
+        };
+
+        // A state with a zero transition and no process variance is 0 after
+        // its first step: its constant terminal draws are not a stuck chain.
+        let mut zero = config();
+        zero.structural_model = LinearGaussianStateSpace::new(
+            1,
+            vec![0.0],
+            vec![1.0],
+            vec![0.0],
+            1.0,
+            vec![0.0],
+            vec![1.0],
+        )
+        .unwrap();
+        zero.innovation_indices.clear();
+        zero.variance_priors.clear();
+        zero.variance_names.clear();
+        let posterior = fit_regression(&y, &x, &zero).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::DiagnosticsUnavailable), 0);
+
+        // A seasonal local level whose state variances are fixed samples none,
+        // so it has none to mix slowly.
+        let prior = InverseGammaPrior {
+            shape: 3.0,
+            scale: 0.4,
+        };
+        let seasonal = crate::bayesian_seasonal::BayesianSeasonalLocalLevelConfig {
+            period: 4,
+            initial_level: 0.0,
+            initial_seasonal_effects: vec![0.0; 4],
+            initial_level_variance: 4.0,
+            initial_seasonal_variance: 1.0,
+            level_variance_prior: prior,
+            seasonal_variance_prior: prior,
+            observation_variance_prior: prior,
+            num_chains: 2,
+            num_warmup: 50,
+            num_draws: 100,
+            thinning: 1,
+            seed: 5,
+        };
+        let mut fixed =
+            RegressionConfig::from_seasonal(&seasonal, config().coefficient_prior).unwrap();
+        let sampled = fixed.clone();
+        fixed.innovation_indices.clear();
+        fixed.variance_priors.clear();
+        fixed.variance_names.clear();
+        fixed.num_draws = 100;
+        fixed.num_warmup = 50;
+        let posterior = fit_regression(&y, &x, &fixed).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 0);
+        let mut sampled = sampled;
+        sampled.num_draws = 100;
+        sampled.num_warmup = 50;
+        let posterior = fit_regression(&y, &x, &sampled).unwrap();
+        assert_eq!(fails(&posterior, WarningCode::KnownLimitation), 1);
+    }
+
     #[test]
     fn seeded_recovery_and_pool_independence() {
         let mut rng = ChaCha8Rng::seed_from_u64(188);

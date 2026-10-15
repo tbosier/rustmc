@@ -713,7 +713,7 @@ list means every check ran and passed.
 A parameter whose draws are finite but do not vary has no R-hat or ESS. A model
 declares the quantities it can hold constant: a `StructuralModel` variance set with
 `VarianceParameter.fixed`; a `StructuralModel` terminal state whose innovation is fixed at
-0, or every terminal state when the observation variance is fixed at 0; a dynamic GLM's
+0; a dynamic GLM's
 terminal states when `process_sd` and `shared_process_sd` are both 0; and a runoff
 cohort's `ultimate`, a count that is known for a closed cohort and whose posterior can sit
 on one value. For those the
@@ -785,11 +785,13 @@ cells. Check those variances with longer chains, then leave the record out with
 | `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, when both variances are inferred and observations are Gaussian, the configuration measured |
 | `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
 | `BayesianSeasonalLocalLevel` with `exog` | level 1.012 to 1.221, seasonal 1.034 to 1.423 | yes |
-| `BayesianLocalLevel` | process 1.004 to 1.171, above 1.01 in nine of the ten settings | no |
+| `BayesianLocalLevel` | process 1.004 to 1.171, above 1.01 in seven of its eight distinct settings | no |
 
-The local level's one setting at or below 1.01 is the near-zero observation variance
-regime at 200 points, where the data pin down the states. Its R-hat was 1.022 to 1.171
-in the other nine, so read its ordinary R-hat and ESS warnings with that in mind. Samplers
+The local level has one state variance, so its balanced and near-zero second variance
+regimes simulate the same series and it has eight distinct settings, not ten. Its one
+setting at or below 1.01 is the near-zero observation variance regime at 200 points,
+where the data pin down the states. Its R-hat was 1.022 to 1.171 in the other seven, so
+read its ordinary R-hat and ESS warnings with that in mind. Samplers
 not in the table were not measured and carry no record; that includes `StructuralModel`
 level, seasonal and regression components, a trend component with one variance fixed,
 the Student-t structural sampler and the local level fitted with `exog`.

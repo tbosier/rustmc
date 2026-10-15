@@ -1,11 +1,12 @@
-"""Worst split R-hat of the state variances of every Gibbs/FFBS forecasting sampler.
+"""Worst split R-hat of the state variances of seven Gibbs/FFBS forecasting fits.
 
 Same protocol as benchmarks/llt_variance_mixing.py (commit e9039d8): five regimes,
 series of 200 and 1000 points, three data seeds (sampler seed 100 + s), 4 chains,
 300 warmup, 500 draws, the same inverse-gamma priors. Each model is fitted to data
 simulated from its own process. For every model, setting (regime, length) and
 variance it prints the worst R-hat over the seeds, then each variance's range of
-those worst values over the ten settings.
+those worst values over the ten settings. The local level has one state variance, so
+its "balanced" and "near-zero second variance" regimes simulate the same series.
 
 Run: python -m benchmarks.state_variance_mixing  (with the build to measure on
 PYTHONPATH). A full run takes about two minutes on 4 threads.
