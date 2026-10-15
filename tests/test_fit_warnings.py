@@ -76,7 +76,10 @@ def test_e_bfmi_equals_arviz_bfmi_on_the_exported_energies():
         assert stats["energy"].shape == (4, 1000)
         assert ("tree_depth" in stats) == (sampler == "nuts")
         ours = [chain["e_bfmi"] for chain in fit.transition_diagnostics()["chains"]]
-        np.testing.assert_allclose(ours, az.bfmi(idata), rtol=1e-12, atol=0)
+        # ArviZ 0.x returns an array, 1.x a DataTree with an `energy` variable.
+        theirs = az.bfmi(idata)
+        theirs = theirs if isinstance(theirs, np.ndarray) else theirs["energy"]
+        np.testing.assert_allclose(ours, np.asarray(theirs), rtol=1e-12, atol=0)
 
 
 def test_transition_diagnostics_report_e_bfmi_and_saturation():
