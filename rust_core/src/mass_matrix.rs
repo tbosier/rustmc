@@ -702,6 +702,10 @@ fn dense_beats_diagonal(cov: &[f64], dim: usize, effective_draws: f64) -> bool {
     // isotropic runs (60 to 250 dimensions, 2 to 10 draws per dimension)
     // differed from diagonal, while equicorrelated (rho = 0.9) blocks of 30 to
     // 150 dimensions still went dense and took 5 to 12 times fewer steps.
+    // That calibration counted a mean's effective draws of the average
+    // autocorrelation; the least second-moment count used now gives a lower
+    // threshold for the same window, and the calibration was not rerun with
+    // it. The unit tests below and benchmarks/auto_metric_noise.py check it.
     const MARGIN: f64 = 8.0;
     const ITERATIONS: usize = 100;
     let ratio = dim as f64 / effective_draws;

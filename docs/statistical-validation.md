@@ -100,8 +100,10 @@ graph path in some warmup window. At gate seeds 2211 to 2213, `auto` spent 40.2,
 and 98.4 leapfrog steps (warmup included) per unit of the smallest bulk ESS,
 `diagonal` 840.6, 454.5 and 698.1, and `dense` 25.5, 25.2 and 26.7, with a smallest
 bulk ESS of 3851, 1584 and 1960 for `auto`. All nine fits but one diagonal fit (bulk
-ESS 381) pass the gate. Over the ten seeds of the cost record below, `auto`'s median is
-70.5 steps per unit of bulk ESS, from 38.1 to 133.8.
+ESS 381) pass the gate; the output is in
+`benchmarks/results/2026-10-15-exactness-metric-choice.log`. Over the ten seeds of the
+cost record below, `auto`'s median is 70.5 steps per unit of bulk ESS, from 38.1 to
+133.8.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
@@ -120,15 +122,35 @@ stationary nor AR(1), so this remains a heuristic; the least count errs toward
 diagonal.
 
 Applying the second-moment count to the average `rho` instead, tried for 0.14.0, went
-dense at 32.5 to 35.2 steps per unit of ESS here but trusted noise elsewhere. On
-simulated windows of a target with no correlation at all, 40 coordinates of which 20
-had lag-one autocorrelation 0.99 and 20 none, 200 draws each, a NumPy reimplementation
-of the rule chose dense in 30 of 30 windows with that count and in 6 with the old one,
-and in none with the least count. A unit test holds the Rust rule to diagonal on 30
-such windows; it fails with the averaged count. It also made one of five seeds of a curved two-dimensional target,
-`x ~ Normal(0, 25)` and `y | x ~ Normal(0.5 (x^2 - 25), 1)` written as one vector
-parameter (seed 12; 4 chains, 500 warmup, 1000 draws), fall from a smallest bulk ESS
-of 90 with 1 divergence to 16 with 66.
+dense at 32.5 to 35.2 steps per unit of ESS here but trusted noise elsewhere. It made
+one of five seeds of a curved two-dimensional target, `x ~ Normal(0, 25)` and
+`y | x ~ Normal(0.5 (x^2 - 25), 1)` written as one vector parameter (seed 12; 4
+chains, 500 warmup, 1000 draws), fall from a smallest bulk ESS of 90 with 1 divergence
+to 16 with 66; that run was measured on commit `d3e38f8` and its output not kept.
+
+`benchmarks/auto_metric_noise.py` applies a NumPy copy of the decision to simulated
+windows of stationary Gaussian AR(1) coordinates, 30 windows per case, and counts the
+dense choices under the three counts. The isotropic cases have no correlation, so a
+dense choice there trusts noise:
+
+| Case | Draws | Old count | Averaged second moment | Least count |
+|---|---|---|---|---|
+| Isotropic, all coordinates at 0.6 | 200 | 0 | 0 | 0 |
+| Isotropic, 20 at 0.99 and 20 at 0 | 200 | 6 | 30 | 0 |
+| Isotropic, those rotated in pairs | 200 | 30 | 30 | 27 |
+| Isotropic, 20 at 0.97 and 20 at 0, rotated | 400 | 0 | 25 | 1 |
+| Correlation 0.95, all at 0.5 | 200 | 25 | 30 | 30 |
+| Correlation 0.95, all at 0.8 | 200 | 0 | 1 | 0 |
+
+The least count is fooled no more often than the old one except once in 30 windows of
+the fourth case, and much less than the averaged count. It is not a safeguard: when
+slow and fast directions are rotated together, every coordinate shows a moderate
+lag-one autocorrelation that decays slowly, a geometric extrapolation from lag one
+overcounts, and both it and the old count go dense on noise. Taking the least count
+also means one slowly mixing coordinate can keep a block diagonal that other,
+correlated coordinates would have made dense. A unit test holds the Rust rule to
+diagonal on 30 windows like the second case's. The table is in
+`benchmarks/results/2026-10-15-auto-metric-noise.txt`.
 
 On that curved target, over seeds 100 to 139, the new count changes 6 of the 40 fits
 against 0.14.0. Three are better and three worse; the largest loss is seed 115, from a
@@ -136,7 +158,7 @@ smallest bulk ESS of 80.6 with no divergence to 42.2 with 22. Over all 40 the me
 smallest bulk ESS is 86.7 before and 85.7 after, the fourth-smallest 9.3 both times,
 and 12 against 13 fits have more than 10 divergences. Every metric samples this target
 poorly: 21 of the 40 fits have an R-hat above 1.05 under `auto` either way, 16 under
-`diagonal` and 28 under `dense`. The fits are in
+`diagonal` and 28 under `dense`. That three seeds improve does not offset seed 115. The fits are in
 `benchmarks/results/2026-10-15-curved-old.json` and `-curved-new.json`.
 
 ```text
@@ -170,10 +192,11 @@ ratio, and their single worst seed 28% more; with 1000 warmup iterations the old
 already cost about what `dense` does there (10.2, 12.5 and 9.5). Ten seeds describe
 these fits; they do not bound how often a change in the default costs more. The
 centered eight schools and the curved target fail under every metric (divergences in
-most fits, R-hat up to 1.08 and 1.48 under `auto`), so their costs per unit of ESS rank
+most fits, R-hat up to 1.34 and 1.58 under `auto` across both counts and warmup
+lengths), so their costs per unit of ESS rank
 nothing; one or two of their ten seeds change. The fits are in
-`benchmarks/results/2026-10-15-targets-*.json`, each with the revision of the build it
-ran on.
+`benchmarks/results/2026-10-15-targets-*.json`, each with the git revision and state
+of the checkout its build came from (the build is taken to be current with it).
 
 ```text
 PYTHONPATH=.pybuild python -m benchmarks.auto_metric_targets [--warmup 500] [--json PATH]
@@ -198,7 +221,7 @@ more; failing only the ESS floor or a divergence check does not count.
 cargo test --release -p rustmc_core --features fault-injection --test exactness_power
 ```
 
-Both faults were caught in all 18 fits. Over 200 more seeds per case (from 20,000), the
+Both faults were caught in all 18 fits (`benchmarks/results/2026-10-15-exactness-detection-ci.log`). Over 200 more seeds per case (from 20,000), the
 gate caught:
 
 | Case | Biased merge: caught | Per-coordinate checks alone | Overstep: caught | Per-coordinate checks alone |
