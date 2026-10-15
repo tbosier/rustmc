@@ -13,11 +13,13 @@ judges chose from seven experts' proposals for where rustmc goes next: test the
 sampler at the settings users run it with, and tell a user fitting many models which
 fits to distrust. It is grouped by piece of work, newest first.
 
-The tier-1 work does not change seeded draws. The draws of eight seeded fits (graph
-NUTS with a diagonal and a dense metric, graph HMC, a `ModelBuilder` spec through
-`rustmc.sample`, local level, local linear trend with and without `exog`, and the
-conjugate autoregression) hash identically before and after it. The cleanup changes
-seeded draws only where its entries say so.
+The tier-1 telemetry and warnings work does not change seeded draws. The draws of
+eight seeded fits (graph NUTS with a diagonal and a dense metric, graph HMC, a
+`ModelBuilder` spec through `rustmc.sample`, local level, local linear trend with and
+without `exog`, and the conjugate autoregression) hash identically before and after
+it. The change to how `metric="auto"` chooses a dense block, under the exactness
+gates below, changes the draws of `auto` fits whose warmup now chooses dense. The
+cleanup changes seeded draws only where its entries say so.
 
 ### Breaking changes
 
@@ -111,9 +113,17 @@ seeded draws only where its entries say so.
 - The Rust recovery suite runs at the shipped `target_accept` of 0.80 instead of
   0.999. `RUSTMC_RECOVERY_TARGET_ACCEPT` and `RUSTMC_RECOVERY_SEED_OFFSET` rerun it
   at other settings.
-- The statistical-validation page documents the exactness gate's false-alarm rate,
-  that the default `metric="auto"` does not choose a dense metric on an
-  ill-conditioned target, and static HMC's resonance at 15 leapfrog steps.
+- `metric="auto"` judges a warmup window's estimation noise by the effective draws of
+  a covariance, `n (1 - rho^2) / (1 + rho^2)`, instead of those of a mean,
+  `n (1 - rho) / (1 + rho)`, which undercounted most on strongly correlated targets.
+  On the exactness gate's 0.95-correlated 50-dimensional graph target it now chooses
+  a dense block and spends 32.5 to 35.2 leapfrog steps per unit of bulk ESS instead
+  of 317 to 683 (forced dense: 25 to 27), and that case's R-hat at its gate seed falls
+  from 1.012 to 1.003. On `benchmarks/metric_adaptation.py` the isotropic rows are
+  unchanged. **Seeded draws change** for an `auto` fit whose window now chooses dense:
+  in that benchmark, one of the three d=10 equicorrelated fits.
+- The statistical-validation page documents the exactness gate's false-alarm rate
+  and static HMC's resonance at 15 leapfrog steps.
 
 ### Cleanup review (2026-10-14)
 
