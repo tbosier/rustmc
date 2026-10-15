@@ -9,15 +9,15 @@ with compiled.sample_iter(
     chains=4, warmup=1000, draws=1000, threads=4, seed=42,
 ) as results:
     for item in results:
-        save(item.id, item.diagnostics, item.error)
+        save(item.id, item.error, item.diagnostics, item.warnings)
 ```
 
 `datasets` can be a generator. `save` is your own result sink. Each dataset, and the
 positions an `init` callable returns, are deep-copied when they are read, so a
 generator may refill and yield the same buffers; the copy keeps types and masks, so
-`sample_batch` validates what the source gave. A bound model is passed as given, as is
-a value that cannot be deep-copied, such as a `memoryview`: do not reuse its buffer
-before its chunk has been yielded. With `retention="full"` (the default),
+`sample_batch` validates what the source gave. Memoryviews are copied too. A bound model
+is passed as given, being immutable, and so is a value that cannot be copied at all,
+such as a generator. With `retention="full"` (the default),
 each successful item also has a `.fit` for prediction. Summary retention releases
 posterior draws after their chunk; `parameters=["beta[0]"]` selects diagnostic rows.
 Sampling options are those of `sample_batch` and are checked when the stream is
@@ -31,7 +31,8 @@ every check passed, not that the posterior is right. Inspect the diagnostics too
 
 Memory is bounded by the current input chunk, its fits, and worker scratch space: the
 previous chunk's data, initial positions and fits are released before the next chunk
-is read, unless you keep them. An input list you build also occupies memory. The stream
+is read, unless you keep them. An exception you keep after the stream stops holds
+none of them either. An input list you build also occupies memory. The stream
 tracks IDs in a SQLite file with a bounded page cache, so duplicate detection does not
 retain every ID in Python memory. The file uses space proportional to the job count in
 the temporary directory (`TMPDIR`); where that directory is in memory, as with tmpfs,
@@ -56,7 +57,8 @@ stream's references to both; it closes the input even if releasing the batch fai
 may be called from another thread than the one iterating, and then waits for a
 `next()` in progress to return. A failure to close the input is raised, also when the
 stream ends normally; when the stream stops on another error, that error is raised
-with a note about the failed close, and calling `.close()` again retries it. A stream that is garbage
+with a note about the failed close, also when leaving a `with` block, and calling
+`.close()` again retries it. A stream that is garbage
 collected unclosed closes itself, but when that
 happens is up to Python. No next chunk starts until the current chunk is consumed.
 Native worker count applies to each chunk; pool creation currently occurs once per

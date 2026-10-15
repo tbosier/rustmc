@@ -17,7 +17,10 @@ def main():
         errors="collect", chains=4, warmup=1000, draws=1000, threads=4,
     ) as results:
         for item in results:
-            print(item.id, item.error or item.diagnostics)
+            # Persist all four: the warnings hold the checks, such as
+            # divergences, that a parameter's diagnostics row does not.
+            codes = [warning["code"] for warning in item.warnings]
+            print(item.id, item.error or (item.diagnostics, codes))
 
 
 if __name__ == "__main__":
