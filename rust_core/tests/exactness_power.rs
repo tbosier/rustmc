@@ -2,8 +2,15 @@
 //! at the same shipped defaults, against NUTS kernels broken on purpose.
 //! Each fault has to make the gate fail on a moment check (the mean or the
 //! variance of some coordinate, or the squared norm of the whitened draws,
-//! beyond 4 MCSE), not merely on the ESS floor or a divergence, on every case
-//! and seed below.
+//! a finite error of 4 MCSE or more), not merely on the ESS floor or a
+//! divergence. The overstep must be caught on all 18 fits (six cases, three
+//! seeds each); over 200 more seeds per case its smallest squared-norm error
+//! was 8.9 MCSE. The biased merge must be caught on at least 15 of the 18:
+//! over 200 seeds per case it was caught in 94% to 100% of fits, so
+//! requiring all 18 would turn this test red on about 37% of changes that
+//! move the draws with nothing wrong, while at least 15 does so on about
+//! 0.06%. A correct sampler fails the gate on about 2% of fits, so it cannot
+//! reach 15.
 //!
 //! The faults come from `rustmc_core::fault_injection`, compiled in only with
 //! the `fault-injection` feature:
@@ -77,14 +84,24 @@ fn failed_a_moment_check(outcome: &Outcome) -> bool {
         || detected(&outcome.squared_norm_z)
 }
 
-fn assert_every_fit_fails_a_moment_check(fault: Fault) {
-    for outcome in outcomes(fault) {
-        assert!(
-            failed_a_moment_check(&outcome),
-            "the gate did not catch {fault:?} on its moments: {}",
-            outcome.summary()
-        );
-    }
+/// Require the gate to catch `fault` on its moments in at least
+/// `min_caught` of the fits [`outcomes`] runs.
+fn assert_caught(fault: Fault, min_caught: usize) {
+    let outcomes = outcomes(fault);
+    let missed: Vec<String> = outcomes
+        .iter()
+        .filter(|o| !failed_a_moment_check(o))
+        .map(Outcome::summary)
+        .collect();
+    let caught = outcomes.len() - missed.len();
+    println!("{fault:?}: caught on {caught} of {} fits", outcomes.len());
+    assert!(
+        caught >= min_caught,
+        "the gate caught {fault:?} on its moments in only {caught} of {} fits (at least \
+         {min_caught} required); missed:\n{}",
+        outcomes.len(),
+        missed.join("\n")
+    );
 }
 
 /// Without a fault the hooks are inert: the gate cases pass at their gate
@@ -101,12 +118,12 @@ fn the_gate_passes_with_the_hooks_compiled_in_and_no_fault_selected() {
 
 #[test]
 fn the_gate_fails_when_multinomial_merges_favour_the_new_subtree() {
-    assert_every_fit_fails_a_moment_check(Fault::FavourNewSubtree);
+    assert_caught(Fault::FavourNewSubtree, 15);
 }
 
 #[test]
 fn the_gate_fails_when_the_step_size_is_thirty_percent_too_large_and_unweighted() {
-    assert_every_fit_fails_a_moment_check(Fault::OverstepWithoutMetropolis);
+    assert_caught(Fault::OverstepWithoutMetropolis, 18);
 }
 
 /// How often each fault is caught, over many seeds, and by which check.
