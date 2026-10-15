@@ -176,17 +176,77 @@ def test_gibbs_fits_report_hamiltonian_checks_as_unavailable_never_as_passes():
     assert all(warning["status"] in {"fail", "unavailable"} for warning in warnings)
 
 
-def test_every_forecasting_fit_class_reports_the_unavailable_checks():
+def exog_options(n=80):
+    return dict(
+        exog=np.linspace(-1.0, 1.0, n)[:, None],
+        coefficient_prior=rustmc.GaussianCoefficientPrior([0.0], [[1.0]]),
+    )
+
+
+def test_gibbs_and_conjugate_fits_report_the_unavailable_checks():
+    # Local level, local linear trend, each with and without exog (the exog
+    # fits are BayesianRegressionFit), seasonal local level, a StructuralModel
+    # trend and the conjugate autoregression.
+    prior = rustmc.InverseGammaPrior(3.0, 0.4)
     ar = rustmc.BayesianAutoRegression(
         1, rustmc.NormalInverseGammaPrior([0.0, 0.0], np.eye(2), 3.0, 1.0)
     )
+    seasonal = rustmc.BayesianSeasonalLocalLevel(
+        period=4,
+        level_variance_prior=prior,
+        seasonal_variance_prior=prior,
+        observation_variance_prior=prior,
+    )
+    structural = rustmc.StructuralModel(
+        [rustmc.StructuralComponent.trend(
+            "trend",
+            rustmc.VarianceParameter.inverse_gamma(3.0, 0.4),
+            rustmc.VarianceParameter.inverse_gamma(3.0, 0.04),
+            initial_mean=[0.0, 0.0],
+            initial_covariance=[[4.0, 0.0], [0.0, 1.0]],
+        )],
+        observation_variance=rustmc.VarianceParameter.inverse_gamma(3.0, 0.4),
+    )
+    schedule = dict(chains=2, draws=50, warmup=50, seed=1)
     fits = [
-        local_level().fit(series(1), chains=2, draws=50, warmup=50, seed=1),
-        local_linear_trend().fit(series(1), chains=2, draws=50, warmup=50, seed=1),
+        local_level().fit(series(1), **schedule),
+        local_level().fit(series(1), **schedule, **exog_options()),
+        local_linear_trend().fit(series(1), **schedule),
+        local_linear_trend().fit(series(1), **schedule, **exog_options()),
+        seasonal.fit(series(1), **schedule),
+        structural.fit(series(1), **schedule),
         ar.fit(series(1), chains=2, draws=50, seed=1),
     ]
     for fit in fits:
         assert_hamiltonian_checks_unavailable_once(fit.warnings())
+        assert_messages_state_thresholds(fit.warnings())
+
+
+def test_local_linear_trend_with_exog_carries_the_limitation_and_local_level_does_not():
+    schedule = dict(chains=2, draws=100, warmup=100, seed=2)
+    trend = local_linear_trend().fit(series(2), **schedule, **exog_options())
+    level = local_level().fit(series(2), **schedule, **exog_options())
+    assert type(trend).__name__ == type(level).__name__ == "BayesianRegressionFit"
+    limitation = [w for w in trend.warnings() if w["code"] == "known_limitation"]
+    assert len(limitation) == 1 and limitation[0]["status"] == "fail"
+    assert "known_limitation" not in codes(level.warnings())
+
+    ids = ["level", "trend"]
+    batch = local_level().fit_batch(
+        [series(3), series(4)],
+        ids=ids,
+        models=[None, local_linear_trend()],
+        exog=[np.linspace(-1.0, 1.0, 80)[:, None]] * 2,
+        coefficient_priors=[rustmc.GaussianCoefficientPrior([0.0], [[1.0]])] * 2,
+        chains=4,
+        draws=1000,
+        warmup=500,
+        seed=7,
+    )
+    warnings = batch.warnings()
+    assert "known_limitation" in codes(warnings["trend"])
+    assert "known_limitation" not in codes(warnings["level"])
+    assert "trend" in batch.flagged()
 
 
 def test_local_linear_trend_carries_its_known_limitation_into_triage():

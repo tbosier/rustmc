@@ -322,6 +322,13 @@ with status `"fail"`, and `ForecastBatchFit.flagged()` lists every local-linear-
 cell. Check those two variances with longer chains, then leave the record out with
 `flagged(ignore=["known_limitation"])`.
 
+A trend fitted with `exog` returns a `BayesianRegressionFit` from the joint
+regression sampler, which draws the same two variances given sampled states and
+carries the same record. With one regressor on 200-point series in the balanced and
+near-zero level variance regimes, three seeds each, its worst R-hat was 1.43 and 1.52
+for the level variance and 1.13 and 1.16 for the slope variance (the benchmark's
+`--other-models` rows).
+
 The figures come from the mixing benchmark kept on the `fix/llt-variance-mixing`
 branch, run against a build of this release from the repository root:
 

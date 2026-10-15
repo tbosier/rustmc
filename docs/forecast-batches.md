@@ -49,8 +49,8 @@ Duplicate IDs, wrong batch lengths, or invalid execution options always raise.
 `batch.diagnostics()` maps successful IDs to parameter reports and failed IDs to
 `None`; `batch.warnings()` maps them to fit warnings the same way, and
 `batch.flagged()` lists the successful IDs with a failed check (see
-[fit warnings](reference.md#fit-warnings-and-batch-triage)). A local-linear-trend cell
-is always flagged, for its [known limitation](reference.md#known-limitation-slow-mixing-of-the-level-and-slope-variances). Forecast errors follow the same contract, including previous fit failures.
+[fit warnings](reference.md#fit-warnings-and-batch-triage)). A local-linear-trend cell,
+with or without `exog`, is always flagged, for its [known limitation](reference.md#known-limitation-slow-mixing-of-the-level-and-slope-variances). Forecast errors follow the same contract, including previous fit failures.
 
 One private Rayon pool serves the entire call, including nested chain work. `threads`
 and `chunk_size` must be positive; the default worker limit is one. Native execution

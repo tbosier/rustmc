@@ -103,6 +103,11 @@ impl ForecastFit for PyBayesianRegressionFit {
     fn report(&self) -> DiagnosticsReport {
         self.posterior.diagnostics()
     }
+    /// The core rule, plus the local-linear-trend limitation for a trend
+    /// fitted with `exog`.
+    fn warnings(&self) -> Vec<rustmc_core::diagnostics::FitWarning> {
+        self.posterior.warnings()
+    }
     fn shape(&self) -> (usize, usize) {
         chain_shape(&self.posterior.chains)
     }

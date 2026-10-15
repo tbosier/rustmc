@@ -11,6 +11,9 @@ use crate::forecast_common::{
 };
 use crate::state_space::{LinearGaussianStateSpace, StateSpaceError};
 
+/// How fit warnings name this model's sampler.
+const SAMPLER_NAME: &str = "joint conjugate Gibbs/FFBS";
+
 #[derive(Clone, Debug)]
 pub struct GaussianCoefficientPrior {
     pub mean: Vec<f64>,
@@ -126,6 +129,17 @@ impl RegressionConfig {
             seed: c.seed,
             seasonal: true,
         })
+    }
+
+    /// Whether the structural model is the local-linear-trend template that
+    /// `from_trend` builds: two states with transition `[[1, 1], [0, 1]]`
+    /// and a sampled innovation variance on each. Its level and slope
+    /// variances mix as slowly as in the local-linear-trend sampler.
+    pub fn is_local_linear_trend(&self) -> bool {
+        !self.seasonal
+            && self.structural_model.dimension() == 2
+            && self.structural_model.transition() == [1.0, 1.0, 0.0, 1.0]
+            && self.innovation_indices == [0, 1]
     }
 }
 
@@ -322,6 +336,23 @@ impl RegressionPosterior {
             })
             .collect::<Vec<_>>();
         crate::forecast_diagnostics::parameter_diagnostics(&samples, &names)
+    }
+
+    /// Every failed or unavailable check of this fit (see
+    /// [`crate::diagnostics::fit_warnings`]), followed by
+    /// [`crate::bayesian_trend::local_linear_trend_limitation`] when the
+    /// structural model is the local linear trend.
+    pub fn warnings(&self) -> Vec<crate::diagnostics::FitWarning> {
+        let mut warnings = crate::diagnostics::fit_warnings(
+            &self.diagnostics(),
+            crate::diagnostics::SamplerTelemetry::NonHamiltonian {
+                sampler: SAMPLER_NAME,
+            },
+        );
+        if self.config.is_local_linear_trend() {
+            warnings.push(crate::bayesian_trend::local_linear_trend_limitation());
+        }
+        warnings
     }
 
     pub fn forecast(
