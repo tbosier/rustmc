@@ -4,15 +4,38 @@
 bounded chunk at a time and yields a `BatchItem` for each dataset in input order.
 
 ```python
+import numpy as np
+import rustmc as rmc
+
+builder = rmc.ModelBuilder()
+gain = builder.normal_prior("gain", 1.0, 1.0)
+builder.normal_likelihood("obs", gain * "x", 0.2, "y")
+compiled = builder.compile()
+
+
+def datasets():
+    rng = np.random.default_rng(0)
+    for i in range(6):
+        x = np.linspace(-2, 2, 40)
+        yield f"instrument-{i}", {"x": x, "y": 1.1 * x + rng.normal(0, 0.2, x.size)}
+
+
+saved = {}
+
+
+def save(job_id, error, diagnostics, warnings):
+    saved[job_id] = (error, diagnostics, warnings)
+
+
 with compiled.sample_iter(
-    datasets, chunk_size=16, retention="summary", errors="collect",
-    chains=4, warmup=1000, draws=1000, threads=4, seed=42,
+    datasets(), chunk_size=2, retention="summary", errors="collect",
+    chains=4, warmup=500, draws=500, threads=4, seed=42, show_progress=False,
 ) as results:
     for item in results:
         save(item.id, item.error, item.diagnostics, item.warnings)
 ```
 
-`datasets` can be a generator. `save` is your own result sink. Each dataset and its
+`datasets` can be any iterable of pairs, such as a generator, and `save` stands for your own result sink. Each dataset and its
 initial positions are held as given, as `sample_batch` holds its inputs, until their
 chunk is sampled, which is before any of the chunk's items is yielded. A source must
 therefore not change or reuse a dataset's buffers, or those of positions an `init`
