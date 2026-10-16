@@ -77,7 +77,7 @@ these standardized errors are all below 4 MCSE:
 | 100 independent normals | graph | 2111 | 3.93 | 2.34 | -0.15 | 4095 | 1.0050 |
 | 50-d Gaussian, AR(1) correlation 0.8 | custom target | 2201 | 0.93 | 2.22 | 1.66 | 1742 | 1.0031 |
 | 50-d Gaussian, AR(1) correlation 0.95 | custom target | 2201 | 0.92 | 1.18 | -0.33 | 696 | 1.0056 |
-| 50-d Gaussian, AR(1) correlation 0.95 | graph | 2211 | 1.63 | 2.11 | -0.50 | 606 | 1.0120 |
+| 50-d Gaussian, AR(1) correlation 0.95 | graph | 2211 | 1.53 | 1.95 | 0.36 | 3851 | 1.0028 |
 | 10-coefficient regression, known noise | graph | 2301 | 1.00 | 1.21 | 0.60 | 4070 | 1.0024 |
 
 Errors are in MCSE; the mean and variance columns give the largest magnitude over
@@ -89,44 +89,117 @@ a dense block. The regression's posterior is computed in closed form and its gra
 written the way a user writes one (`vector_normal_logp` prior, `mat_vec_mul`, Normal
 likelihood with a constant scale). All six pass. The independent-normals graph case
 passes with little room: its worst mean error is 3.93 against the bound of 4. The gate
-does not check R-hat: the correlated graph fit's 1.012 is above the 1.01 the release
-checks use, and R-hat is a warning about a fit, not a measure of its exactness.
+does not check R-hat, which is a warning about a fit, not a measure of its exactness.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --nocapture
 ```
 
-On the 0.95 correlated target the graph path costs about what the diagonal custom path
-does, so the default `auto` metric does not deliver what a dense metric would there. At
-gate seeds 2211 to 2213 on the graph path, `auto` spent 317 to 683 leapfrog steps
-(warmup included) per unit of the smallest bulk ESS, `diagonal` 455 to 841, and `dense`
-25 to 27, with a smallest bulk ESS of 4253 to 4397 against 460 to 942 for `auto`. This
-is a finding about the default metric, not about exactness; all nine fits but one
-diagonal fit (bulk ESS 381) pass the gate.
+On the 0.95 correlated target the default `auto` metric chooses a dense block on the
+graph path in some warmup window. At gate seeds 2211 to 2213, `auto` spent 40.2, 122.5
+and 98.4 leapfrog steps (warmup included) per unit of the smallest bulk ESS,
+`diagonal` 840.6, 454.5 and 698.1, and `dense` 25.5, 25.2 and 26.7, with a smallest
+bulk ESS of 3851, 1584 and 1960 for `auto`. All nine fits but one diagonal fit (bulk
+ESS 381) pass the gate; the output is in
+`benchmarks/results/2026-10-15-exactness-metric-choice.log`. Over the ten seeds of the
+cost record below, `auto`'s median is 70.5 steps per unit of bulk ESS, from 38.1 to
+133.8.
 
 ```text
 cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
     metric_choice_on_the_ill_conditioned_graph_target
 ```
 
-The cause is how `auto` counts a window's effective draws: by the factor for a mean,
-`n (1 - rho) / (1 + rho)`, which on this target leaves fewer effective draws than
-dimensions, so the dense estimate is never trusted. Counting them as for a covariance,
-`n (1 - rho^2) / (1 + rho^2)`, was tried for 0.14.0 and not kept. It made `auto` go
-dense here (32.5 to 35.2 steps per unit of bulk ESS at the three gate seeds) and left
-the isotropic rows of `benchmarks/metric_adaptation.py` unchanged. But on a curved
-two-dimensional target, `x ~ Normal(0, 25)` and `y | x ~ Normal(0.5 (x^2 - 25), 1)`
-written as one vector parameter, one of five seeds (12; 4 chains, 500 warmup, 1000
-draws) went dense in a window and fell from a smallest bulk ESS of 90 with 1 divergence
-to 16 with 66; the other four were unchanged, and forced dense was the worst metric on
-that target. A dense metric fitted to a curved target can be worse than none, which a
-condition-number test cannot see, so changing the default needs a broader set of
-targets than these. `benchmarks/curved_metric_choice.py` prints these fits; run against
-a build of this release it gives the unchanged numbers, and against a build of commit
-`d3e38f8`, which holds the tried count, the changed ones.
+Up to 0.14.0, `auto` stayed diagonal here, at 316 to 683 steps per unit of bulk ESS at
+those seeds and a median of 519 over the ten. To judge how noisy a window's
+correlation estimate is, it counts the window's effective draws, and it counted them
+from the average lag-one autocorrelation `rho` across coordinates, as for a mean:
+`n (1 - rho) / (1 + rho)`. On this target that left fewer effective draws than
+dimensions, so the dense estimate was never trusted. It now takes, for each coordinate,
+`n (1 - rho_i^2) / (1 + rho_i^2)`, the asymptotic count for the sample variance of a
+stationary Gaussian AR(1) series, and uses the least of them. Warmup draws are neither
+stationary nor AR(1), so this remains a heuristic; the least count errs toward
+diagonal.
+
+Applying the second-moment count to the average `rho` instead, tried for 0.14.0, went
+dense at 32.5 to 35.2 steps per unit of ESS here but trusted noise elsewhere. It made
+one of five seeds of a curved two-dimensional target, `x ~ Normal(0, 25)` and
+`y | x ~ Normal(0.5 (x^2 - 25), 1)` written as one vector parameter (seed 12; 4
+chains, 500 warmup, 1000 draws), fall from a smallest bulk ESS of 90 with 1 divergence
+to 16 with 66; that run was measured on commit `d3e38f8` and its output not kept.
+
+`benchmarks/auto_metric_noise.py` applies a NumPy copy of the decision to simulated
+windows of stationary Gaussian AR(1) coordinates, 30 windows per case, and counts the
+dense choices under the three counts. The isotropic cases have no correlation, so a
+dense choice there trusts noise:
+
+| Case | Draws | Old count | Averaged second moment | Least count |
+|---|---|---|---|---|
+| Isotropic, all coordinates at 0.6 | 200 | 0 | 0 | 0 |
+| Isotropic, 20 at 0.99 and 20 at 0 | 200 | 6 | 30 | 0 |
+| Isotropic, those rotated in pairs | 200 | 30 | 30 | 27 |
+| Isotropic, 20 at 0.97 and 20 at 0, rotated | 400 | 0 | 25 | 1 |
+| Correlation 0.95, all at 0.5 | 200 | 25 | 30 | 30 |
+| Correlation 0.95, all at 0.8 | 200 | 0 | 1 | 0 |
+
+The least count is fooled no more often than the old one except once in 30 windows of
+the fourth case, and much less than the averaged count. It is not a safeguard: when
+slow and fast directions are rotated together, every coordinate shows a moderate
+lag-one autocorrelation that decays slowly, a geometric extrapolation from lag one
+overcounts, and both it and the old count go dense on noise. Taking the least count
+also means one slowly mixing coordinate can keep a block diagonal that other,
+correlated coordinates would have made dense. A unit test holds the Rust rule to
+diagonal on 30 windows like the second case's. The table is in
+`benchmarks/results/2026-10-15-auto-metric-noise.txt`.
+
+On that curved target, over seeds 100 to 139, the new count changes 6 of the 40 fits
+against 0.14.0. Three are better and three worse; the largest loss is seed 115, from a
+smallest bulk ESS of 80.6 with no divergence to 42.2 with 22. Over all 40 the median
+smallest bulk ESS is 86.7 before and 85.7 after, the fourth-smallest 9.3 both times,
+and 12 against 13 fits have more than 10 divergences. Every metric samples this target
+poorly: 21 of the 40 fits have an R-hat above 1.05 under `auto` either way, 16 under
+`diagonal` and 28 under `dense`. That three seeds improve does not offset seed 115. The fits are in
+`benchmarks/results/2026-10-15-curved-old.json` and `-curved-new.json`.
 
 ```text
-PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice
+PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice --first-seed 100 --seeds 40
+```
+
+`benchmarks/auto_metric_targets.py` runs nine targets with a vector parameter, ten seeds
+each, 4 chains and 1000 draws: isotropic regressions (50 and 100 dimensions),
+regressions with predictors at correlation 0.9 (10 and 20) and with scales from 0.01 to
+100 (6), a logistic regression with correlated predictors (8), the eight schools in
+noncentered and centered form, and the curved target above. The table gives the median
+leapfrog steps per unit of the smallest bulk ESS, warmup included, under `auto` with
+each count, after 1000 and 500 warmup iterations, and the median over seeds of each
+seed's ratio of new to old.
+
+| Target | 1000 warmup: old | new | ratio | 500 warmup: old | new | ratio |
+|---|---|---|---|---|---|---|
+| Isotropic, d = 50 | 10.7 | 10.7 | 1.000 | 9.6 | 9.6 | 1.000 |
+| Isotropic, d = 100 | 20.3 | 20.3 | 1.000 | 16.4 | 16.4 | 1.000 |
+| Correlated regression, d = 10 | 10.1 | 10.6 | 1.019 | 8.8 | 9.2 | 1.044 |
+| Correlated regression, d = 20 | 13.7 | 13.9 | 1.034 | 13.9 | 14.1 | 1.013 |
+| Scaled correlated regression, d = 6 | 115.0 | 115.0 | 1.000 | 125.1 | 125.1 | 1.000 |
+| Logistic regression, d = 8 | 10.4 | 10.5 | 1.010 | 9.2 | 9.1 | 1.003 |
+| Eight schools, noncentered | 34.6 | 34.6 | 1.000 | 28.2 | 28.2 | 1.000 |
+| Eight schools, centered | 920.0 | 920.0 | 1.000 | 2183.8 | 1227.1 | 1.000 |
+| Curved target | 1568.2 | 1668.6 | 1.000 | 1851.3 | 1807.3 | 1.000 |
+
+The isotropic regressions and the noncentered eight schools are identical seed for
+seed. The correlated and logistic regressions cost 0.3% to 4.4% more in the median
+ratio, and their single worst seed 28% more; with 1000 warmup iterations the old count
+already cost about what `dense` does there (10.2, 12.5 and 9.5). Ten seeds describe
+these fits; they do not bound how often a change in the default costs more. The
+centered eight schools and the curved target fail under every metric (divergences in
+most fits, R-hat up to 1.34 and 1.58 under `auto` across both counts and warmup
+lengths), so their costs per unit of ESS rank
+nothing; one or two of their ten seeds change. The fits are in
+`benchmarks/results/2026-10-15-targets-*.json`, each with the git revision and state
+of the checkout its build came from (the build is taken to be current with it).
+
+```text
+PYTHONPATH=.pybuild python -m benchmarks.auto_metric_targets [--warmup 500] [--json PATH]
 ```
 
 ### Power controls
@@ -148,7 +221,7 @@ more; failing only the ESS floor or a divergence check does not count.
 cargo test --release -p rustmc_core --features fault-injection --test exactness_power
 ```
 
-Both faults were caught in all 18 fits. Over 200 more seeds per case (from 20,000), the
+Both faults were caught in all 18 fits (`benchmarks/results/2026-10-15-exactness-detection-ci.log`). Over 200 more seeds per case (from 20,000), the
 gate caught:
 
 | Case | Biased merge: caught | Per-coordinate checks alone | Overstep: caught | Per-coordinate checks alone |
@@ -157,20 +230,20 @@ gate caught:
 | 100 independent normals, graph | 187/200 | 27/200 | 200/200 | 168/200 |
 | 50-d correlation 0.8, custom target | 200/200 | 20/200 | 200/200 | 0/200 |
 | 50-d correlation 0.95, custom target | 200/200 | 182/200 | 200/200 | 0/200 |
-| 50-d correlation 0.95, graph | 200/200 | 11/200 | 200/200 | 1/200 |
+| 50-d correlation 0.95, graph | 200/200 | 10/200 | 200/200 | 93/200 |
 | 10-coefficient regression, graph | 195/200 | 49/200 | 200/200 | 179/200 |
 
 The per-coordinate checks alone missed most biased merges, and almost every overstep
-on the correlated targets: there the too-large step distorts the stiff whitened
+on the correlated targets the custom path samples with a diagonal metric: there the too-large step distorts the stiff whitened
 directions, which barely move any one coordinate's variance. The squared-norm check was
 added for that reason. With it, the median size of the squared-norm error was 13.7 to
-21.5 MCSE under the overstep (smallest 8.9) and 5.8 to 11.6 MCSE under the biased
+21.5 MCSE under the overstep (smallest 6.5) and 5.8 to 11.6 MCSE under the biased
 merge. The biased merge is a mild fault on Gaussians, and the gate misses it in up to
 13 fits in 200. That is why the CI test asks for 15 of 18 rather than all 18: from
 these rates, all 18 would turn it red on about 37% of changes that move the draws with
 nothing wrong, and 15 of 18 on about 0.06%. A correct sampler fails the gate on about
 2% of fits, so it cannot reach 15. The run is recorded in
-`benchmarks/results/2026-10-14-exactness-detection.log` (97 s).
+`benchmarks/results/2026-10-15-exactness-detection.log` (106 s).
 
 ```text
 RUSTMC_EXACTNESS_SEEDS=200 cargo test --release -p rustmc_core --features fault-injection \
@@ -191,32 +264,36 @@ beyond 4 with probability 6.3e-5. Expected nominal counts per 2000 fits are 25.3
 | 100 independent normals, graph | 47 (2.35%) | 47 (2.35%) | 1.27% | 0 |
 | 50-d correlation 0.8, custom target | 35 (1.75%) | 35 (1.75%) | 0.64% | 0 |
 | 50-d correlation 0.95, custom target | 47 (2.35%) | 21 (1.05%) | 0.64% | 26 |
-| 50-d correlation 0.95, graph | 31 (1.55%) | 18 (0.90%) | 0.64% | 13 |
+| 50-d correlation 0.95, graph | 13 (0.65%) | 12 (0.60%) | 0.64% | 1 |
 | 10-coefficient regression, graph | 5 (0.25%) | 5 (0.25%) | 0.13% | 0 |
 
 No fit diverged. The moment checks fail a correct sampler more often than nominal: 2.1,
 1.9 and 2.7 times on the independent normals and the 0.8 correlated target, where the
-counts are large enough to tell. The excesses of 1.6 and 1.4 times on the 0.95
-correlated target and 1.9 times on the regression rest on 21, 18 and 5 failures and are
-not clearly outside chance. Most of the excess is in the variance checks. Pooled over
+counts are large enough to tell. The excess of 1.6 times on the 0.95 correlated
+target's custom path and 1.9 times on the regression rest on 21 and 5 failures and are
+not clearly outside chance; the 0.95 target's graph path, with 12, is at the nominal
+rate. Most of the excess is in the variance checks. Pooled over
 coordinates and seeds, the mean errors are close to what a correct MCSE predicts (4.5%
-to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation 0.998 to 1.014),
+to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation 0.998 to 1.006),
 though on the 0.8 correlated target 0.020% were beyond 4 against 0.0063%. The variance
 errors have nearly the right spread (standard deviation 1.006 to 1.037) but a heavier
-lower tail: 0.018% to 0.063% beyond 4 MCSE, three to ten times nominal, and all 137
-variance failures were below the exact value (the 39 mean failures split 22 below, 17
-above). The likely reason is that the squared deviations are right-skewed: a sample
+lower tail: 0.018% to 0.048% beyond 4 MCSE, three to eight times nominal. In 135 of the
+136 fits that failed a variance check, the worst variance error was below the exact
+value (in the 35 that failed a mean check, the worst mean error was below in 19 and
+above in 16); the records keep only each fit's worst error, so the split over all
+exceedances is not known. The likely reason is that the squared deviations are right-skewed: a sample
 whose squared deviations happen to be small also has a small estimated MCSE, so the
 self-normalised error reaches far below zero more often than above. The ESS floor also
-fails on its own on the 0.95 correlated target, whose smallest bulk ESS at the defaults
-ranged from 410 to 942 over the ten seeds of the cost record below.
+fails on its own on the 0.95 correlated target, in 26 fits of the custom path, which
+has a diagonal metric and whose smallest bulk ESS at the defaults ranged from 410 to 720 over the ten
+seeds of the cost record below.
 
 Taking the six cases together, a correct sampler fails at least one of them about 10%
 of the time. The gate seeds are fixed, so CI is deterministic, but a change that moves
 the draws has about that chance of turning the gate red with nothing wrong. Before
 treating a red gate as a bug, run the study on the change and compare it with this
-table. The 12,000 fits took 496 s on a 24-thread AMD Ryzen 9 5900X; the tallies are in
-`benchmarks/results/2026-10-14-exactness-false-alarm.json` and the output, with every
+table. The 12,000 fits took 561 s on a 24-thread AMD Ryzen 9 5900X; the tallies are in
+`benchmarks/results/2026-10-15-exactness-false-alarm.json` and the output, with every
 failing fit, in the `.log` beside it.
 
 ```text
@@ -227,15 +304,15 @@ RUSTMC_EXACTNESS_SEEDS=2000 RUSTMC_EXACTNESS_JSON=$PWD/false-alarm.json \
 
 ### Cost
 
-`benchmarks/results/2026-10-14-exactness.json` records, for each case over ten seeds,
+`benchmarks/results/2026-10-15-exactness.json` records, for each case over ten seeds,
 the leapfrog steps in warmup and draw transitions of all four chains divided by the
 smallest bulk ESS. The step-size searches warmup runs are not transitions and are not
 counted. Medians, warmup included: 17.6 and 17.3 for the independent normals (custom,
-graph), 106 for the 0.8 correlated target, 553 and 519 for the 0.95 one, and 13.4 for
+graph), 106 for the 0.8 correlated target, 553 and 70.5 for the 0.95 one, and 13.4 for
 the regression.
 
 ```text
-RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/2026-10-14-exactness.json \
+RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/2026-10-15-exactness.json \
     cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
     exactness_cost_report
 ```

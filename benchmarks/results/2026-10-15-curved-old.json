@@ -1,0 +1,296 @@
+{
+ "build": {
+  "version": "0.14.0",
+  "file": "/home/taylo/projects/rustmc/.pybuild/rustmc/__init__.py",
+  "revision": "d5f3e1f10ecbfc4302eb9fd6b75d793f4ec09ce7",
+  "dirty": false,
+  "python": "3.12.9",
+  "machine": "x86_64 Linux",
+  "command": "/home/taylo/projects/rustmc/.claude/worktrees/auto-metric/benchmarks/curved_metric_choice.py --first-seed 100 --seeds 40 --metrics auto --json /tmp/claude-1000/-home-taylo-projects-testRandomShiz/ac13feba-8b6b-4ad8-bd7a-49d093255fac/scratchpad/metric2/curved-old.json"
+ },
+ "chains": 4,
+ "warmup": 500,
+ "draws": 1000,
+ "fits": [
+  {
+   "metric": "auto",
+   "seed": 100,
+   "min_bulk_ess": 252.41040174007995,
+   "max_r_hat": 1.0252443060405065,
+   "divergences": 8
+  },
+  {
+   "metric": "auto",
+   "seed": 101,
+   "min_bulk_ess": 92.7716708977803,
+   "max_r_hat": 1.0586366657193085,
+   "divergences": 7
+  },
+  {
+   "metric": "auto",
+   "seed": 102,
+   "min_bulk_ess": 13.880411809802927,
+   "max_r_hat": 1.2183012521403054,
+   "divergences": 5
+  },
+  {
+   "metric": "auto",
+   "seed": 103,
+   "min_bulk_ess": 35.5038585461176,
+   "max_r_hat": 1.0852203327961625,
+   "divergences": 17
+  },
+  {
+   "metric": "auto",
+   "seed": 104,
+   "min_bulk_ess": 203.2553463660111,
+   "max_r_hat": 1.0229799279228613,
+   "divergences": 2
+  },
+  {
+   "metric": "auto",
+   "seed": 105,
+   "min_bulk_ess": 226.28916962364482,
+   "max_r_hat": 1.02696495712227,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 106,
+   "min_bulk_ess": 210.17384854629273,
+   "max_r_hat": 1.0392174787793187,
+   "divergences": 15
+  },
+  {
+   "metric": "auto",
+   "seed": 107,
+   "min_bulk_ess": 199.87960179004492,
+   "max_r_hat": 1.0382692518358374,
+   "divergences": 3
+  },
+  {
+   "metric": "auto",
+   "seed": 108,
+   "min_bulk_ess": 10.636691895072355,
+   "max_r_hat": 1.2928954970193045,
+   "divergences": 17
+  },
+  {
+   "metric": "auto",
+   "seed": 109,
+   "min_bulk_ess": 31.720595165085317,
+   "max_r_hat": 1.0882988557574573,
+   "divergences": 2
+  },
+  {
+   "metric": "auto",
+   "seed": 110,
+   "min_bulk_ess": 191.16211332622785,
+   "max_r_hat": 1.0216756243548277,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 111,
+   "min_bulk_ess": 257.67140739439157,
+   "max_r_hat": 1.0534702190536813,
+   "divergences": 3
+  },
+  {
+   "metric": "auto",
+   "seed": 112,
+   "min_bulk_ess": 227.12040303325935,
+   "max_r_hat": 1.0330753966258548,
+   "divergences": 2
+  },
+  {
+   "metric": "auto",
+   "seed": 113,
+   "min_bulk_ess": 119.9071484134669,
+   "max_r_hat": 1.0314026948547805,
+   "divergences": 3
+  },
+  {
+   "metric": "auto",
+   "seed": 114,
+   "min_bulk_ess": 14.118430232364274,
+   "max_r_hat": 1.199082312265663,
+   "divergences": 8
+  },
+  {
+   "metric": "auto",
+   "seed": 115,
+   "min_bulk_ess": 80.5858691184135,
+   "max_r_hat": 1.045091706168161,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 116,
+   "min_bulk_ess": 165.5636547624314,
+   "max_r_hat": 1.0350032005779182,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 117,
+   "min_bulk_ess": 300.52188848412993,
+   "max_r_hat": 1.0252690116408896,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 118,
+   "min_bulk_ess": 159.5238541879042,
+   "max_r_hat": 1.0347958029281816,
+   "divergences": 3
+  },
+  {
+   "metric": "auto",
+   "seed": 119,
+   "min_bulk_ess": 52.682963605254855,
+   "max_r_hat": 1.0671486152220169,
+   "divergences": 44
+  },
+  {
+   "metric": "auto",
+   "seed": 120,
+   "min_bulk_ess": 9.305966267336839,
+   "max_r_hat": 1.3647102187630393,
+   "divergences": 17
+  },
+  {
+   "metric": "auto",
+   "seed": 121,
+   "min_bulk_ess": 77.05545503866985,
+   "max_r_hat": 1.054262315312467,
+   "divergences": 8
+  },
+  {
+   "metric": "auto",
+   "seed": 122,
+   "min_bulk_ess": 214.29036780367653,
+   "max_r_hat": 1.014938099781333,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 123,
+   "min_bulk_ess": 19.847296741196086,
+   "max_r_hat": 1.1415300811135056,
+   "divergences": 20
+  },
+  {
+   "metric": "auto",
+   "seed": 124,
+   "min_bulk_ess": 140.91706527377644,
+   "max_r_hat": 1.0304044485658874,
+   "divergences": 18
+  },
+  {
+   "metric": "auto",
+   "seed": 125,
+   "min_bulk_ess": 6.658629935830601,
+   "max_r_hat": 1.6247343687362805,
+   "divergences": 15
+  },
+  {
+   "metric": "auto",
+   "seed": 126,
+   "min_bulk_ess": 47.913315519819164,
+   "max_r_hat": 1.0757332650085134,
+   "divergences": 10
+  },
+  {
+   "metric": "auto",
+   "seed": 127,
+   "min_bulk_ess": 37.910481623827344,
+   "max_r_hat": 1.083378548033576,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 128,
+   "min_bulk_ess": 191.21225292668248,
+   "max_r_hat": 1.02284381491514,
+   "divergences": 1
+  },
+  {
+   "metric": "auto",
+   "seed": 129,
+   "min_bulk_ess": 295.77779044996714,
+   "max_r_hat": 1.0244253603634639,
+   "divergences": 0
+  },
+  {
+   "metric": "auto",
+   "seed": 130,
+   "min_bulk_ess": 251.89814669810184,
+   "max_r_hat": 1.0276374945821398,
+   "divergences": 1
+  },
+  {
+   "metric": "auto",
+   "seed": 131,
+   "min_bulk_ess": 15.34853792630922,
+   "max_r_hat": 1.207325500807505,
+   "divergences": 47
+  },
+  {
+   "metric": "auto",
+   "seed": 132,
+   "min_bulk_ess": 6.4190560378902495,
+   "max_r_hat": 1.6778148030865974,
+   "divergences": 60
+  },
+  {
+   "metric": "auto",
+   "seed": 133,
+   "min_bulk_ess": 45.16462743843991,
+   "max_r_hat": 1.0724724208306158,
+   "divergences": 3
+  },
+  {
+   "metric": "auto",
+   "seed": 134,
+   "min_bulk_ess": 12.143455208199185,
+   "max_r_hat": 1.2491270795400227,
+   "divergences": 29
+  },
+  {
+   "metric": "auto",
+   "seed": 135,
+   "min_bulk_ess": 94.33602582076384,
+   "max_r_hat": 1.0332630167074635,
+   "divergences": 2
+  },
+  {
+   "metric": "auto",
+   "seed": 136,
+   "min_bulk_ess": 12.519275710929987,
+   "max_r_hat": 1.2581670741330782,
+   "divergences": 9
+  },
+  {
+   "metric": "auto",
+   "seed": 137,
+   "min_bulk_ess": 8.619828989910326,
+   "max_r_hat": 1.3952994567932158,
+   "divergences": 57
+  },
+  {
+   "metric": "auto",
+   "seed": 138,
+   "min_bulk_ess": 40.8973136390931,
+   "max_r_hat": 1.071422017462868,
+   "divergences": 7
+  },
+  {
+   "metric": "auto",
+   "seed": 139,
+   "min_bulk_ess": 123.36826273232295,
+   "max_r_hat": 1.0420637589714796,
+   "divergences": 8
+  }
+ ]
+}

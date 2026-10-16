@@ -6,6 +6,29 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Changed
+
+- `metric="auto"` judges a warmup window's estimation noise by the least, over
+  coordinates, of `n (1 - rho_i^2) / (1 + rho_i^2)`, the effective draws of each
+  coordinate's sample variance, instead of `n (1 - rho) / (1 + rho)` for the average
+  lag-one autocorrelation `rho`, which undercounted on strongly correlated targets.
+  On the exactness gate's 0.95-correlated 50-dimensional graph target it now chooses
+  a dense block, at 40.2 to 122.5 leapfrog steps per unit of bulk ESS at the gate
+  seeds instead of 316 to 683 (forced dense: 25 to 27), and a median of 70.5 instead
+  of 519 over the cost record's ten seeds. On simulated windows with no correlation,
+  in `benchmarks/auto_metric_noise.py`, the least count went dense on noise no more
+  often than the old count except in one window of 30, and much less often than one
+  for the average `rho`; when slow and fast directions are rotated together, it and
+  the old count both do. On the nine targets of the new `benchmarks/auto_metric_targets.py`, ten seeds
+  each, the isotropic regressions and the noncentered eight schools are unchanged
+  seed for seed, the correlated and logistic regressions cost up to 4.4% more in the
+  median paired ratio (28% on the worst seed), and the two targets every metric fails
+  on change in one or two seeds; on the curved target 6 of 40 seeds change, three for
+  better and three for worse, the worst from no divergence to 22. The fits are saved under
+  `benchmarks/results/2026-10-15-*`; see the statistical-validation page. **Seeded
+  draws change** for an `auto` fit whose warmup now chooses dense. The exactness cost,
+  detection and false-alarm records are rerun as `benchmarks/results/2026-10-15-exactness*`.
+
 ## [0.14.0] - 2026-10-14
 
 This release collects a repository-wide cleanup review and the first item three

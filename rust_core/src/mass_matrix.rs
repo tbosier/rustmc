@@ -592,10 +592,27 @@ impl AccumulatorBlock {
     }
 }
 
-/// Effective number of independent draws behind a window's covariance,
-/// from the average lag-one autocorrelation `rho` across coordinates:
-/// `n (1 - rho) / (1 + rho)`, the AR(1) approximation. Antithetic chains
-/// (`rho < 0`) are credited with no more than `n`.
+/// Effective number of independent draws behind a window's covariance: the
+/// least, over coordinates, of `n (1 - rho_i²) / (1 + rho_i²)`, where `rho_i`
+/// is coordinate `i`'s lag-one autocorrelation in the window.
+///
+/// For a stationary Gaussian AR(1) coordinate this is the asymptotic count
+/// for its sample variance, whose centred squares have lag-k
+/// autocorrelation `rho^2k`; a cross-product of two such coordinates has
+/// `(1 - rho_i rho_j) / (1 + rho_i rho_j)`, which lies between their two
+/// counts when both are positive. Warmup draws are neither stationary nor
+/// AR(1), so this is a heuristic, and taking the slowest coordinate errs
+/// toward diagonal, as the decision it feeds is meant to. It depends on
+/// `rho_i²`, so a negatively autocorrelated coordinate is not credited with
+/// more than `n`, and `rho_i²` is capped at 0.999.
+///
+/// Two counts used before were worse. The mean's factor
+/// `n (1 - rho) / (1 + rho)`, of the average `rho`, left fewer effective
+/// draws than dimensions on a 50-dimensional target with correlation 0.95,
+/// which then never went dense. The same second-moment factor of the
+/// average `rho` let windows of a target with no correlation at all go dense
+/// when half its coordinates mixed slowly and half did not: the average
+/// hides the slow half.
 fn effective_draws(
     count: usize,
     mean: &[f64],
@@ -605,23 +622,17 @@ fn effective_draws(
 ) -> f64 {
     let dim = mean.len();
     let n = count as f64;
-    let mut rho_sum = 0.0;
-    let mut terms = 0usize;
+    let mut factor = 1.0f64;
     for i in 0..dim {
         let variance = cov[i * dim + i];
         if variance > 0.0 && variance.is_finite() {
             let centre = mean[i] - shift[i];
             let lag_cov = lag_products[i] / (n - 1.0) - centre * centre;
-            rho_sum += (lag_cov / variance).clamp(-1.0, 1.0);
-            terms += 1;
+            let rho2 = (lag_cov / variance).clamp(-1.0, 1.0).powi(2).min(0.999);
+            factor = factor.min((1.0 - rho2) / (1.0 + rho2));
         }
     }
-    let rho = if terms > 0 {
-        (rho_sum / terms as f64).clamp(0.0, 0.95)
-    } else {
-        0.0
-    };
-    n * (1.0 - rho) / (1.0 + rho)
+    n * factor
 }
 
 /// Draws per dimension from which a dense estimate is used unshrunk.
@@ -691,6 +702,13 @@ fn dense_beats_diagonal(cov: &[f64], dim: usize, effective_draws: f64) -> bool {
     // isotropic runs (60 to 250 dimensions, 2 to 10 draws per dimension)
     // differed from diagonal, while equicorrelated (rho = 0.9) blocks of 30 to
     // 150 dimensions still went dense and took 5 to 12 times fewer steps.
+    // That calibration counted a mean's effective draws of the average
+    // autocorrelation. The least second-moment count used now can be larger
+    // than that count for the same window, when the coordinates mix at
+    // similar speeds, or much smaller, when one mixes far more slowly than
+    // the rest; the threshold moves the other way. The calibration was not
+    // rerun with it; the unit tests below and benchmarks/auto_metric_noise.py
+    // are what check it.
     const MARGIN: f64 = 8.0;
     const ITERATIONS: usize = 100;
     let ratio = dim as f64 / effective_draws;
@@ -1053,9 +1071,9 @@ mod tests {
 
     #[test]
     fn autocorrelated_isotropic_draws_stay_diagonal() {
-        // MCMC draws are not independent: an AR(1) chain with coefficient 0.6
-        // carries a quarter of the information of independent draws, so the
-        // sample covariance's noise is that of a quarter of the draws. Judged
+        // MCMC draws are not independent: the sample covariance of an AR(1)
+        // chain with coefficient 0.6 has the noise of about 47% as many
+        // independent draws, (1 - 0.36) / (1 + 0.36). Judged
         // by the independent-draw noise bound, many of these windows looked
         // correlated enough to go dense.
         let dim = 40;
@@ -1068,6 +1086,35 @@ mod tests {
                     for value in state.iter_mut() {
                         let z: f64 = StandardNormal.sample(&mut rng);
                         *value = 0.6 * *value + 0.8 * z;
+                    }
+                    state.clone()
+                })
+                .collect();
+            assert!(
+                !estimate(&graph, MetricKind::Auto, &draws).has_dense_block(),
+                "seed {seed}"
+            );
+        }
+    }
+
+    #[test]
+    fn isotropic_draws_with_some_slow_coordinates_stay_diagonal() {
+        // No correlation between coordinates, but half of them mix slowly
+        // (lag-one autocorrelation 0.99) and half not at all. Counting
+        // effective draws from the average autocorrelation went dense in
+        // every one of these windows; the slowest coordinate's count does not.
+        let dim = 40;
+        let graph = vector_graph(dim);
+        for seed in 0..30 {
+            let mut rng = ChaCha8Rng::seed_from_u64(100 + seed);
+            let mut state: Vec<f64> = (0..dim).map(|_| StandardNormal.sample(&mut rng)).collect();
+            let draws: Vec<Vec<f64>> = (0..200)
+                .map(|_| {
+                    for (index, value) in state.iter_mut().enumerate() {
+                        let z: f64 = StandardNormal.sample(&mut rng);
+                        let coefficient: f64 = if index < dim / 2 { 0.99 } else { 0.0 };
+                        *value =
+                            coefficient * *value + (1.0 - coefficient * coefficient).sqrt() * z;
                     }
                     state.clone()
                 })
