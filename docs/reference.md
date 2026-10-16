@@ -481,6 +481,7 @@ the observation row count belongs to each binding.
 | `bind(data, id="0", strict=True, check_finite=True)` | Validate data and return a `BoundModel` |
 | `sample(data_or_binding, **sampler_options)` | Sample one validated dataset and return `FitResult` |
 | `sample_batch(datasets, ids=None, shared=None, **sampler_options)` | Sample many datasets and return `BatchFit` in input order |
+| `sample_iter(datasets, chunk_size=16, retention="full", completed_ids=(), parameters=None, **sampler_options)` | Fit a lazy stream of `(id, data)` pairs one chunk at a time and yield a `BatchItem` per dataset not skipped as completed; see [streaming batches](streaming-batches.md) |
 
 `BoundModel` exposes `id` and `n_obs` and can be reused only with the `CompiledModel`
 that created it. In `sample_batch()`, keys supplied through `shared` are converted once

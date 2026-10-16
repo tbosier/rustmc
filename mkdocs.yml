@@ -47,6 +47,7 @@ nav:
     - Building models:
       - Custom graph models: custom-models.md
       - Use a model from Rust: native-models.md
+      - Stream many datasets: streaming-batches.md
     - Forecasting:
       - Evaluation and workflows: forecasting-workflows.md
       - Structural composition: structural-forecasting.md
