@@ -6,7 +6,60 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
-### Added
+## [0.14.0] - 2026-10-18
+
+This release collects a repository-wide cleanup review; the first item three judges
+chose from seven experts' proposals for where rustmc goes next: test the sampler at
+the settings users run it with, and tell a user fitting many models which fits to
+distrust; a forecasting toolbox of intervention designs, decisions, calibration
+diagnostics and reconciliation, with a new local-linear-trend sampler; and streaming
+batches. It is grouped by piece of work, newest first.
+
+The tier-1 work does not change seeded draws. The draws of eight seeded fits (graph
+NUTS with a diagonal and a dense metric, graph HMC, a `ModelBuilder` spec through
+`rustmc.sample`, local level, local linear trend with and without `exog`, and the
+conjugate autoregression) hash identically before and after it. The new
+local-linear-trend sampler changes the seeded draws of that model without `exog`,
+and the cleanup changes seeded draws only where its entries say so.
+
+### Breaking changes
+
+- Rust struct literals of these types need the new fields:
+  `hmc::TransitionStats::energy`, `sampler::SampleResult::max_tree_depth`,
+  `diagnostics::ChainTransitionDiagnostics::{e_bfmi, tree_depth_saturation}` and
+  `diagnostics::TransitionDiagnosticsReport::{max_tree_depth_limit,
+  total_tree_depth_saturation}`.
+- A saved fit is written as version 3 of the `rustmc.graph-fit` artifact, which
+  releases before 0.14.0 cannot load. Versions 1 and 2 still load, and a fit loaded
+  from one, which has no energies to store, is saved as version 2.
+- The Rust API removals listed under the cleanup review below.
+- Python: a `fit_batch` whose cells are all `BayesianAR` now raises `ValueError` for
+  any explicit `warmup` or `thin`, including `warmup=500` and `thin=1`, which 0.13.0
+  accepted and ignored. Omit them, or pass `None`.
+
+### Streaming batches
+
+#### Added
+
+- `CompiledModel.sample_iter(datasets, ...)` fits a lazy stream of `(stable_id, data)`
+  pairs one chunk at a time and yields a `BatchItem` for each dataset that is not
+  skipped as completed, in input order, with its ID, fit (or `None` under
+  `retention="summary"`), diagnostics, error and fit warnings. The previous chunk's
+  data, initial positions and fits are released before the next chunk is read, apart
+  from an `init` mapping, which is held whole. Datasets and initial positions are
+  held as given until their chunk is sampled, so a source must not change or reuse
+  their buffers before then. Duplicate IDs are detected through a SQLite ledger in
+  the temporary directory rather than a set in memory. `completed_ids` skips jobs
+  finished in an earlier run, and IDs with the base seed reproduce the draws of
+  `sample_batch` across chunk sizes and input order, given an `init` that depends
+  only on the ID and data. A restart reruns jobs from their seeds; it does not
+  resume partially sampled chains. Each chunk is sampled before any of its items is
+  yielded, so an exception mid-chunk means rerunning that chunk's unyielded jobs.
+  See `docs/streaming-batches.md` and `examples/stream_calibration.py`.
+
+### Forecasting toolbox
+
+#### Added
 
 - `TimeDesign` and `DesignTerm`, in Python and as `rustmc_core::time_design`, build
   named regression columns for a training window and the forecast horizon after it:
@@ -82,23 +135,8 @@ versioning while the public API is stabilized.
   `docs/reconciliation.md` and `examples/forecast_reconciliation.py`.
 - `ForecastDraws.from_result` labels the series of a `ReconciledForecast` with its
   node names.
-- `CompiledModel.sample_iter(datasets, ...)` fits a lazy stream of `(stable_id, data)`
-  pairs one chunk at a time and yields a `BatchItem` for each dataset that is not
-  skipped as completed, in input order, with its ID, fit (or `None` under
-  `retention="summary"`), diagnostics, error and fit warnings. The previous chunk's
-  data, initial positions and fits are released before the next chunk is read, apart
-  from an `init` mapping, which is held whole.
-  Datasets and initial positions are held as given until their chunk is sampled, so
-  a source must not change or reuse their buffers before then. Duplicate IDs are detected through a SQLite ledger in
-  the temporary directory rather than a set in memory. `completed_ids` skips jobs
-  finished in an earlier run, and IDs with the base seed reproduce the draws of
-  `sample_batch` across chunk sizes and input order, given an `init` that depends
-  only on the ID and data. A restart reruns jobs from their
-  seeds; it does not resume partially sampled chains. Each chunk is sampled before
-  any of its items is yielded, so an exception mid-chunk means rerunning that chunk's
-  unyielded jobs. See `docs/streaming-batches.md` and `examples/stream_calibration.py`.
 
-### Changed
+#### Changed
 
 - `backtest` keeps each fold's baseline draws in the new
   `BacktestFold.baseline_samples` and a read-only copy of the observations in the new
@@ -132,28 +170,21 @@ versioning while the public API is stabilized.
 - The trend fitted with `exog`, `StructuralModel` trends, the seasonal model and the
   local level still draw their variances given sampled states. The same benchmark
   shows them mixing slowly; see ROADMAP.md.
-- `BayesianLocalLinearTrend` fits without `exog` no longer carry the
-  `known_limitation` record that 0.14.0 put on every one, so `flagged()` lists their
-  cells only for a failed check. On `benchmarks/state_variance_mixing.py` the level
-  and slope variances' worst R-hat is now 1.001 to 1.008 in all ten settings, against
-  1.051 to 2.056 in 0.14.0. A trend fitted with `exog` still carries the record. Fit
-  warnings name the sampler as `sampler_stats["sampler"]` does.
-
-### Removed
-
-- Rust: `bayesian_trend::local_linear_trend_limitation`, which described the
-  sampler 0.14.0 replaced.
-
-### Fixed
-
-- The local-linear-trend sampler's Kalman filter carries each state covariance as
-  the level's variance, the slope's regression on the level and the slope's variance
-  given the level (an `L D L'` factorization) instead of as the covariance matrix.
-  With an initial covariance many orders of magnitude above the variances, forming
-  the covariances lost the slope variance to cancellation: with an initial covariance
-  of diag(1.6e16, 4e15) and five observations, the log likelihood the slice sampler
-  targets was off by 0.16 (the likelihood by 15%), and the slope variance after the
-  second observation came out as 1.0 instead of 0.606. In the new form an observation
+- `BayesianLocalLinearTrend` fits without `exog` carry no `known_limitation` record
+  (see fit warnings below), so `flagged()` lists their cells only for a failed check.
+  On `benchmarks/state_variance_mixing.py` the level and slope variances' worst R-hat
+  is 1.001 to 1.008 in all ten settings, against 1.051 to 2.056 with the states
+  sampled. A trend fitted with `exog` carries the record. Fit warnings name the
+  sampler as `sampler_stats["sampler"]` does.
+- The new sampler's Kalman filter carries each state covariance as the level's
+  variance, the slope's regression on the level and the slope's variance given the
+  level (an `L D L'` factorization) instead of as the covariance matrix. With an
+  initial covariance many orders of magnitude above the variances, forming the
+  covariances lost the slope variance to cancellation: in a first version that
+  formed them, with an initial covariance of diag(1.6e16, 4e15) and five
+  observations, the log likelihood the slice sampler targets was off by 0.16 (the
+  likelihood by 15%), and the slope variance after the second observation came out
+  as 1.0 instead of 0.606. In the new form an observation
   only rescales the level's variance, and the predicted level variance and slope
   variance given the level are sums of non-negative terms. The initial slope variance
   given the level is the determinant over the level variance, with the determinant
@@ -169,36 +200,7 @@ versioning while the public API is stabilized.
   covariance is positive definite uses the same determinant; the Python constructor
   and the trend fitted with `exog` keep their own checks. At ordinary scales the log
   likelihood agrees with the general state-space filter's to within 1e-10 of its
-  magnitude, as before, but seeded draws change. 0.14.0's sampler has the same
-  weakness.
-
-## [0.14.0] - 2026-10-14
-
-This release collects a repository-wide cleanup review and the first item three
-judges chose from seven experts' proposals for where rustmc goes next: test the
-sampler at the settings users run it with, and tell a user fitting many models which
-fits to distrust. It is grouped by piece of work, newest first.
-
-The tier-1 work does not change seeded draws. The draws of eight seeded fits (graph
-NUTS with a diagonal and a dense metric, graph HMC, a `ModelBuilder` spec through
-`rustmc.sample`, local level, local linear trend with and without `exog`, and the
-conjugate autoregression) hash identically before and after it. The cleanup changes
-seeded draws only where its entries say so.
-
-### Breaking changes
-
-- Rust struct literals of these types need the new fields:
-  `hmc::TransitionStats::energy`, `sampler::SampleResult::max_tree_depth`,
-  `diagnostics::ChainTransitionDiagnostics::{e_bfmi, tree_depth_saturation}` and
-  `diagnostics::TransitionDiagnosticsReport::{max_tree_depth_limit,
-  total_tree_depth_saturation}`.
-- A saved fit is written as version 3 of the `rustmc.graph-fit` artifact, which
-  releases before 0.14.0 cannot load. Versions 1 and 2 still load, and a fit loaded
-  from one, which has no energies to store, is saved as version 2.
-- The Rust API removals listed under the cleanup review below.
-- Python: a `fit_batch` whose cells are all `BayesianAR` now raises `ValueError` for
-  any explicit `warmup` or `thin`, including `warmup=500` and `thin=1`, which 0.13.0
-  accepted and ignored. Omit them, or pass `None`.
+  magnitude.
 
 ### Fit warnings and batch triage
 
@@ -227,8 +229,8 @@ seeded draws only where its entries say so.
   resolution, flag a forecasting fit as they flag an HMC or NUTS fit.
   `SamplerTelemetry::NonHamiltonian` takes the declared names as `constant`.
 - A `known_limitation` record with status `"fail"` on every fit of a sampler that
-  mixes its state variances slowly: `BayesianLocalLinearTrend` and
-  `BayesianSeasonalLocalLevel`, each with or without `exog`, and a `StructuralModel`
+  mixes its state variances slowly: `BayesianLocalLinearTrend` with `exog`,
+  `BayesianSeasonalLocalLevel` with or without it, and a `StructuralModel`
   trend component in the configuration measured: both state variances and the
   observation variance inferred, Gaussian observations, and damping from 0.9 to 1.
   `flagged()` lists those cells until `ignore=["known_limitation"]` leaves the record
@@ -249,8 +251,7 @@ seeded draws only where its entries say so.
   E_BFMI_THRESHOLD, compute_transition_diagnostics_with_max_tree_depth}`,
   `SampleResult::warnings`, `warnings()` on the local-linear-trend, seasonal
   local-level, regression, structural and dynamic GLM posteriors,
-  `RegressionConfig::is_local_linear_trend`, `structural::Component::is_trend` and
-  `bayesian_trend::local_linear_trend_limitation`.
+  `RegressionConfig::is_local_linear_trend` and `structural::Component::is_trend`.
 
 #### Changed
 
