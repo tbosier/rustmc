@@ -19,18 +19,22 @@ pub(crate) use errors::{
 
 // Forecasting surface: one module per model family.
 mod ar;
+mod decision;
 mod dynamic_glm;
 mod forecast_batch;
 mod forecast_diagnostics;
+mod forecast_evaluation;
 mod forecast_support;
 mod hierarchical;
 mod hurdle;
 mod local_level;
+mod reconciliation;
 mod regression;
 mod runoff;
 mod seasonal;
 mod state_space;
 mod structural;
+mod time_design;
 mod trend;
 
 use pyo3::prelude::*;
@@ -45,11 +49,15 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     forecast_batch::register(m)?;
     state_space::register(m)?;
     forecast_support::register(m)?;
+    forecast_evaluation::register(m)?;
     hierarchical::register(m)?;
     local_level::register(m)?;
     seasonal::register(m)?;
     trend::register(m)?;
     ar::register(m)?;
+    time_design::register(m)?;
+    decision::register(m)?;
+    reconciliation::register(m)?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_class::<builder::ModelBuilder>()?;
     m.add_class::<builder::ModelSpec>()?;

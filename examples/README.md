@@ -38,14 +38,18 @@ a fit.
 | Example | Use it for |
 |---|---|
 | `custom_forecast_workflow.py` | Structural forecasts and held-out scoring. |
+| `forecast_calibration.py` | Comparing a model with the seasonal naive baseline on accuracy, interval coverage, width and PIT values. |
 | `state_space_forecasting.py` | Fixed-parameter local-level, local-trend, and AR(1) forecasts. |
 | `custom_state_space_forecasting.py` | A custom latent state-space system built from explicit matrices. |
 | `bayesian_local_level_forecasting.py` | Predictive intervals against latent-state intervals. |
 | `bayesian_local_linear_trend_forecasting.py` | Level and slope intervals from one trend fit. |
 | `bayesian_seasonal_forecasting.py` | A seasonal local level on monthly data. |
 | `bayesian_ar_forecasting.py` | A Bayesian AR(3) posterior-predictive forecast. |
+| `interventions_forecast.py` | Known-date level shift, slope change and outage columns, with aligned future rows. |
 | `payment_triangle_runoff.py` | Censored payment-count development with uncertain ultimates. |
 | `rebate_accrual_forecast.py` | A deliberately cautious accrual baseline, with its own limitations stated. |
+| `reserve_decision.py` | Choosing a reserve when shortfalls cost more than surpluses, from forecast draws. |
+| `forecast_reconciliation.py` | Making store, region and total forecasts add up, and comparing reconciliation methods. |
 
 Each script above runs on the released package with NumPy alone, except
 `arviz_example.py`, which needs `pip install "rustmc[viz]"`.

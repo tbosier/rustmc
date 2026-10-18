@@ -16,6 +16,8 @@ Coverage is not complete. These public names are documented only in their guides
   `interval_score` and `weighted_interval_score`.
 - [Independent batches and diagnostics](forecast-batches.md): `forecast_cell_seed`.
 - [Sparse amounts](sparse-amounts.md): `hurdle_lognormal_logp`.
+- [Forecast reconciliation](reconciliation.md): `Hierarchy`, `reconcile` and
+  `ReconciledForecast`.
 
 Each section states what a model does not do as well as what it does. Those limits are
 deliberate and current; where a thing is not supported, it says so next to the thing.
@@ -310,13 +312,26 @@ process innovations are independent (diagonal process covariance). `NaN` retains
 scheduled missing time point. Variance components can be weakly identified near zero,
 so inspect multi-chain convergence.
 
-### Known limitation: slow mixing of the level and slope variances
+The sampler integrates the states out. Each sweep updates the level, slope and
+observation variances in turn, each by one slice-sampling step on its conditional
+given the other two, with the likelihood computed exactly by a Kalman filter. Each
+retained draw then samples the terminal level and slope from their filtered
+distribution.
 
-The local-linear-trend Gibbs sampler mixes `level_variance` and `slope_variance`
-slowly, so every `BayesianLocalLinearTrendFit.warnings()`, and every trend fitted with
-`exog`, includes a `known_limitation` record with status `"fail"`. The measurements and
-the other samplers that carry the record are in
-[slow state-variance mixing](#slow-state-variance-mixing).
+Up to 0.14.0 the sampler drew the whole state path and then each variance given
+those states, and mixed slowly. On simulated series in five regimes and two lengths,
+fitted with 4 chains, 300 warmup and 500 draws, the level variance's worst R-hat in
+each setting was 1.06 to 2.06, and its smallest bulk ESS 6 to 58 out of 2000 draws.
+On the same series no variance's R-hat now exceeds 1.008, and the smallest bulk ESS
+in each setting, over the three variances, is 388 to 1538. A fit takes about twice as long. The level variance
+mixes least well in the balanced regime at 1000 points and when the observation
+variance is near zero, where its smallest bulk ESS is 388 to 479.
+
+`fit(..., exog=X)` does not use this sampler. It uses the joint regression sampler,
+which still draws the variances given sampled states and mixes as slowly as the old
+one, so its fits carry a `known_limitation` record (see
+[slow state-variance mixing](#slow-state-variance-mixing)). `benchmarks/llt_variance_mixing.py` reproduces these
+numbers.
 
 ## Bayesian autoregression AR(p)
 
@@ -770,7 +785,7 @@ disintegrations in Hamiltonian Monte Carlo", arXiv:1604.00695.
 
 ### Slow state-variance mixing
 
-The Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
+Most Gibbs/FFBS forecasting samplers draw their state variances given sampled states,
 and several mix those variances slowly. `benchmarks/state_variance_mixing.py` fits each
 sampler to series simulated from its own model in five regimes at 200 and 1000 points,
 three data seeds each, with 4 chains, 300 warmup and 500 draws, and takes the worst
@@ -782,7 +797,7 @@ cells. Check those variances with longer chains, then leave the record out with
 
 | Fit | Worst R-hat over the ten settings | Record |
 |-----|-----------------------------------|--------|
-| `BayesianLocalLinearTrend` | level 1.062 to 2.056, slope 1.051 to 1.421 | yes |
+| `BayesianLocalLinearTrend` | level 1.001 to 1.008, slope 1.001 to 1.007, with the states integrated out (0.14.0, sampling the states: level 1.062 to 2.056, slope 1.051 to 1.421) | no |
 | `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
 | `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, in the configuration measured: both state variances and the observation variance inferred, Gaussian observations, and damping from 0.9 to 1 |
 | `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
@@ -832,6 +847,36 @@ coordinate is a standard normal `raw`, and the value reported under the declared
 `vector_normal_prior` takes constant hyperparameters; write a pooled vector block
 explicitly as `sigma * z[key]`.
 
+## Decisions from predictive draws
+
+See [Decisions from forecast draws](decisions.md) for a worked example.
+
+```python
+rmc.decide(draws, loss, *, steps=None, candidates=None, method="auto") -> Decision
+rmc.expected_loss(draws, decision, loss, *, steps=None) -> ExpectedLoss
+ForecastDraws.optimal_decision(loss, *, steps=None, candidates=None, method="auto") -> Decision
+ForecastDraws.expected_loss(decision, loss, *, steps=None) -> ExpectedLoss
+```
+
+`draws` is an array shaped `(draw,)`, `(chain, draw)` or `(chain, draw, horizon)`, a
+`ForecastDraws`, or a forecast result with `observation_samples`. With a horizon,
+`steps` (zero-based) chooses the steps to total within each path; it may be omitted
+only when the horizon is one step. `loss` is `AsymmetricLinearLoss(*, under, over)`,
+`SquaredLoss()`, `AbsoluteLoss()`, `PiecewiseLinearLoss(shortfall, loss)`, or a
+callable `loss(decision, outcomes)` returning one loss per draw of the `(chain, draw)`
+array `outcomes`, each depending only on the decision and its own draw. `candidates`
+must be finite and strictly increasing; by default they are up to 201 evenly spaced
+points from the smallest draw to the largest. `method="auto"`
+uses the closed form (quantile, mean or median) when the loss has one, and `"grid"`
+always takes the best candidate.
+
+`Decision` has `decision`, `method`, `quantile`, `expected_loss`,
+`expected_loss_mcse`, `expected_loss_ess`, `candidates`, `curve` (average loss at each
+candidate), `batch_decisions` (shaped `(chain, block)`), `decision_mcse` (`nan` for
+a grid search) and `on_grid_edge`. `ExpectedLoss` has `decision`, `value`, `mcse` and `ess`. Refused
+arguments raise `ValueError`; a loss or total that is not finite raises
+`InferenceError`; an exception raised by a loss function propagates unchanged.
+
 ## Exceptions
 
 All three rustmc exception classes subclass `ValueError`, so `except ValueError`
@@ -848,7 +893,9 @@ catches any of them.
 - `rustmc.ParameterError`: an invalid parameter or expression in `ModelBuilder`,
   including mixing references from two builders.
 - Plain `ValueError`: argument checks every model shares, such as array conversion,
-  interval levels, quantile probabilities, batch options and `fourier_design`.
+  interval levels, quantile probabilities, batch options, `fourier_design`,
+  `DesignTerm` and `TimeDesign` ([interventions and changepoints](interventions.md)),
+  and every refusal from forecast reconciliation (`Hierarchy`, `reconcile`).
 
 Forecasting models accept any real numeric array-like for observations, `exog` and
 priors: float or integer NumPy arrays in any memory layout, or lists. They follow the
@@ -879,4 +926,6 @@ yourself, which is how you score draws that rustmc did not produce.
 Not everything returns a wrapper. `fit.predict()`, `fit.deterministics()`,
 `fit.get_samples()`, `fit.get_samples_2d()`, `fit.log_likelihood()` and
 `fit.posterior_predictive()` return plain dicts of NumPy arrays, and the evaluation
-helpers return NumPy arrays or dicts of them.
+helpers return NumPy arrays or dicts of them, except `compare_backtests`, which
+returns a `BacktestComparison` whose `metrics` are such dicts and whose `str()` is a
+text table.

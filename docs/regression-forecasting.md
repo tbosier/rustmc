@@ -111,6 +111,10 @@ X_future = rmc.fourier_design(12, period, harmonics, start=len(y))
 forecast = fit.forecast(12, exog=X_future)
 ```
 
+To build Fourier columns together with intervention, changepoint and your own
+regressor columns, with future rows that line up with the training rows, use
+`TimeDesign`; see [interventions and changepoints](interventions.md).
+
 `start` is the integer calendar index of the first row. Continue the training origin
 into forecasting, including missing observations. Harmonics must be between one and
 `floor(period / 2)`. Column order is `sin(1), cos(1), sin(2), cos(2), ...`; at the

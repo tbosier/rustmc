@@ -10,7 +10,7 @@
 //! divergences, and the rule must flag it on every seed.
 use rustmc_core::bayesian_forecast::{fit_bayesian_local_level, BayesianLocalLevelConfig};
 use rustmc_core::bayesian_trend::{
-    fit_bayesian_local_linear_trend, local_linear_trend_limitation, BayesianLocalLinearTrendConfig,
+    fit_bayesian_local_linear_trend, BayesianLocalLinearTrendConfig,
 };
 use rustmc_core::diagnostics::{
     fit_warnings, FitWarning, SamplerTelemetry, WarningCode, WarningStatus,
@@ -340,7 +340,7 @@ fn too_few_draws_fail_and_a_fixed_parameter_is_only_unavailable() {
 }
 
 #[test]
-fn every_local_linear_trend_fit_carries_its_known_limitation() {
+fn a_local_linear_trend_fit_carries_no_known_limitation() {
     let config = BayesianLocalLinearTrendConfig {
         initial_mean: [0.0, 0.0],
         initial_covariance: [4.0, 0.0, 0.0, 1.0],
@@ -355,16 +355,14 @@ fn every_local_linear_trend_fit_carries_its_known_limitation() {
     };
     let posterior = fit_bayesian_local_linear_trend(&gibbs_series(), &config).unwrap();
     let warnings = posterior.warnings();
-    let limitation: Vec<_> = warnings
-        .iter()
-        .filter(|w| w.code == WarningCode::KnownLimitation)
-        .collect();
-    let expected = local_linear_trend_limitation();
-    assert_eq!(limitation.len(), 1, "{warnings:#?}");
-    assert_eq!(limitation[0].message, expected.message);
-    assert_eq!(limitation[0].threshold, 1.01);
-    assert_eq!(limitation[0].status, WarningStatus::Fail);
-    assert!(limitation[0].message.contains("docs/reference.md"));
+    // The sampler integrates the states out and mixes its variances well,
+    // so nothing marks every fit as suspect.
+    assert!(
+        warnings
+            .iter()
+            .all(|w| w.code != WarningCode::KnownLimitation),
+        "{warnings:#?}"
+    );
     assert_messages_state_thresholds(&warnings);
 }
 
