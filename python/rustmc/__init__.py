@@ -12,11 +12,12 @@ from .forecasting import (
     ForecastDraws, ForecastSession, NamedDesign, ScenarioForecast, forecast_scenarios,
 )
 from .reconciliation import reconcile
+from .batch import BatchItem, BatchStream, sample_iter
 
-# The public API, and nothing else.  Importing the two submodules below binds
-# them as package attributes, so without this list `from rustmc import *` also
-# hands out the `evaluation` and `forecasting` module objects -- layout, not
-# API.  (`dir(rustmc)` still shows them: it reports the module dict and is not
+# The public API, and nothing else.  Importing the submodules above binds them
+# as package attributes, so without this list `from rustmc import *` also hands
+# out the `evaluation`, `forecasting`, `reconciliation` and `batch` module
+# objects -- layout, not API.  (`dir(rustmc)` still shows them: it reports the module dict and is not
 # affected by `__all__`.  Tooling that honours `__all__` -- `import *`, Sphinx,
 # most IDE completion -- is.)  `__version__` is deliberately absent: it stays
 # importable by name, as dunders always do, but `import *` should not bind it.
@@ -30,7 +31,9 @@ __all__ = [
     "BacktestFold",
     "BacktestResult",
     "BatchFit",
+    "BatchItem",
     "BatchResult",
+    "BatchStream",
     "BayesianAR",
     "BayesianARFit",
     "BayesianARForecast",
@@ -116,6 +119,7 @@ __all__ = [
     "point_accuracy",
     "reconcile",
     "sample",
+    "sample_iter",
     "sample_prior_predictive",
     "score_forecast",
     "seasonal_naive",

@@ -74,6 +74,9 @@ def test_native_stub_keyword_parameters_and_defaults_match_runtime():
             defaults = [None] * (len(args) - len(node.args.defaults)) + node.args.defaults
             signature = dict(zip((a.arg for a in args), defaults))
             signature.update(zip((a.arg for a in node.args.kwonlyargs), node.args.kw_defaults))
+            for argument in (node.args.vararg, node.args.kwarg):
+                if argument is not None:
+                    signature[argument.arg] = None
             signature.pop("self", None)
             expected = {name: parameter for name, parameter in runtime.parameters.items() if name not in {"self", "cls"}}
             if set(signature) != set(expected):
@@ -82,6 +85,10 @@ def test_native_stub_keyword_parameters_and_defaults_match_runtime():
             keyword_only = {argument.arg for argument in node.args.kwonlyargs}
             for name, default in signature.items():
                 parameter = expected[name]
+                if node.args.kwarg is not None and name == node.args.kwarg.arg:
+                    assert parameter.kind == inspect.Parameter.VAR_KEYWORD, label
+                if node.args.vararg is not None and name == node.args.vararg.arg:
+                    assert parameter.kind == inspect.Parameter.VAR_POSITIONAL, label
                 if (name in keyword_only) != (parameter.kind == inspect.Parameter.KEYWORD_ONLY):
                     mismatches.append(f"{label}.{name}: keyword-only status differs")
                 if default is None:

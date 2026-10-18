@@ -1,9 +1,9 @@
 """``rustmc.__all__`` is the public API, and it must not rot.
 
 The package re-exports the compiled extension with ``from ._rustmc import *``
-and then pulls a handful of names out of two pure-Python submodules.  Importing
-those submodules binds ``rustmc.evaluation`` and ``rustmc.forecasting`` as
-package attributes, so without an explicit ``__all__`` they get dragged in by
+and then pulls a handful of names out of three pure-Python submodules.  Importing
+those submodules binds ``rustmc.evaluation``, ``rustmc.forecasting`` and
+``rustmc.batch`` as package attributes, so without an explicit ``__all__`` they get dragged in by
 ``from rustmc import *`` -- advertising module layout that is not part of the
 API.  (``dir(rustmc)`` reports the module dict and is unaffected by ``__all__``;
 what ``__all__`` governs is ``import *`` and the tooling that honours it.)
