@@ -1182,12 +1182,13 @@ mod tests {
 
     #[test]
     fn default_metric_matches_diagonal_on_an_isotropic_vector() {
-        // A dense block estimated from a 200-draw window in 100 dimensions
-        // is mostly noise; when every vector parameter got one, this target
-        // took ~140 leapfrog steps per draw against ~10 for diagonal. The
-        // window has two draws per dimension, so the auto rule does evaluate a
-        // dense estimate here and has to reject it.
-        let dim = 100;
+        // A dense block estimated from a 200-draw window in 90 dimensions
+        // is mostly noise; when every vector parameter got one, a 100-element
+        // version of this target took ~140 leapfrog steps per draw against
+        // ~10 for diagonal. Each half of the window holds more draws than the
+        // block has elements, so the auto rule does evaluate a dense estimate
+        // here and has to reject it.
+        let dim = 90;
         let mut x = vec![0.0; dim * dim];
         for i in 0..dim {
             x[i * dim + i] = 1.0;
