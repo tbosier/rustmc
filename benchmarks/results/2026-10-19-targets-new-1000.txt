@@ -1,4 +1,4 @@
-rustmc 0.14.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py)
+rustmc 0.15.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py)
 chains=4 warmup=1000 draws=1000 seeds=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 target                             metric steps/ESS     worst divergent fits worst R-hat
 isotropic d=50                     auto        10.7      11.7         0 / 10      1.0065

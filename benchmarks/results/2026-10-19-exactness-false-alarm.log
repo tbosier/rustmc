@@ -1,5 +1,5 @@
     Finished `release` profile [optimized] target(s) in 0.03s
-     Running tests/exactness.rs (.target/release/deps/exactness-b4d15f7d8343360e)
+     Running tests/exactness.rs (.target/release/deps/exactness-865d07e91f6a4555)
 
 running 1 test
 test false_alarm_rate_over_seeds has been running for over 60 seconds
@@ -221,12 +221,12 @@ correlated Gaussian, rho 0.95 (50 dimensions), graph path: 15/2000 fits failed t
     correlated Gaussian, rho 0.95 (50 dimensions), graph path, seed 11655: worst mean error 2.08 MCSE, worst variance error 4.14 MCSE, squared norm error -0.15 MCSE, min bulk ESS 4516, 0 divergences, max R-hat 1.0025; leapfrog steps per min bulk ESS 33.6 (draws only 8.9); FAIL (coordinate 45 variance 0.8946924466958193 is -4.14 MCSE (MCSE 0.0254659091003245) from the exact 1)
     correlated Gaussian, rho 0.95 (50 dimensions), graph path, seed 11946: worst mean error 1.97 MCSE, worst variance error 4.28 MCSE, squared norm error -0.90 MCSE, min bulk ESS 4259, 0 divergences, max R-hat 1.0036; leapfrog steps per min bulk ESS 36.8 (draws only 10.4); FAIL (coordinate 18 variance 0.893045489256692 is -4.28 MCSE (MCSE 0.025002326899774316) from the exact 1)
 conjugate regression (10 dimensions), graph path: 1/2000 fits failed the gate (0.05%); moment checks failed in 1 (0.05%), nominal 0.13%; by check {"BulkEss": 0, "Divergences": 0, "Mean": 0, "SquaredNorm": 0, "Variance": 1}
-    mean errors: 20000 values, beyond 2 MCSE 4.625%, beyond 3 0.2600%, beyond 4 0.0000%, sd 1.000
-    variance errors: 20000 values, beyond 2 MCSE 4.580%, beyond 3 0.3600%, beyond 4 0.0050%, sd 1.001
-    squared norm errors: 2000 values, beyond 2 MCSE 4.650%, beyond 3 0.3000%, beyond 4 0.0000%, sd 1.011
+    mean errors: 20000 values, beyond 2 MCSE 4.595%, beyond 3 0.2550%, beyond 4 0.0000%, sd 0.998
+    variance errors: 20000 values, beyond 2 MCSE 4.535%, beyond 3 0.3550%, beyond 4 0.0050%, sd 0.999
+    squared norm errors: 2000 values, beyond 2 MCSE 4.650%, beyond 3 0.3000%, beyond 4 0.0000%, sd 1.008
     conjugate regression (10 dimensions), graph path, seed 10105: worst mean error 1.52 MCSE, worst variance error 4.73 MCSE, squared norm error -0.04 MCSE, min bulk ESS 4271, 0 divergences, max R-hat 1.0017; leapfrog steps per min bulk ESS 13.7 (draws only 7.1); FAIL (coordinate 4 variance 0.01728022852286442 is -4.73 MCSE (MCSE 0.0005381586614111773) from the exact 0.01982665507124934)
-12000 fits in 540.1 s
+12000 fits in 600.3 s
 test false_alarm_rate_over_seeds ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 540.06s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 600.29s
 

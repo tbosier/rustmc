@@ -1,4 +1,4 @@
-rustmc 0.14.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py)
+rustmc 0.15.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py)
 chains=4 warmup=500 draws=1000 seeds=[100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119, 120, 121, 122, 123, 124, 125, 126, 127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139]
 metric seed  min ESS max R-hat divergences
 auto    100    183.8    1.0406          13

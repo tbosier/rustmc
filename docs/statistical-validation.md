@@ -169,7 +169,7 @@ ESS at 1000 warmup iterations, and the median over seeds of the paired ratio:
 | logistic regression, 8 coefficients | 10.4 | 10.2 | 0.962 |
 | eight schools, noncentered | 34.6 | 34.7 | 1.000 |
 | eight schools, centered | 920.0 | 2090.7 | 1.079 |
-| banana | 1568.2 | 1044.1 | 0.951 |
+| banana | 1568.2 | 1044.1 | 0.945 |
 
 At 500 warmup iterations the 20-coefficient regression is the one target that is
 clearly dearer, 15.8 against 13.9 (paired ratio 1.103). The centered eight schools
@@ -225,7 +225,7 @@ gate caught:
 | 50-d correlation 0.8, custom target | 200/200 | 20/200 | 200/200 | 0/200 |
 | 50-d correlation 0.95, custom target | 200/200 | 182/200 | 200/200 | 0/200 |
 | 50-d correlation 0.95, graph | 200/200 | 25/200 | 200/200 | 150/200 |
-| 10-coefficient regression, graph | 195/200 | 52/200 | 200/200 | 186/200 |
+| 10-coefficient regression, graph | 195/200 | 52/200 | 200/200 | 185/200 |
 
 The per-coordinate checks alone missed most biased merges, and almost every overstep
 on the correlated custom-target cases: there the too-large step distorts the stiff
@@ -239,7 +239,7 @@ merge. The biased merge is a mild fault on Gaussians, and the gate misses it in 
 these rates, all 18 would turn it red on about 34% of changes that move the draws with
 nothing wrong, and 15 of 18 on about 0.04%. A correct sampler fails the gate on about
 2% of fits, so it cannot reach 15. The run is recorded in
-`benchmarks/results/2026-10-19-exactness-detection.log` (99 s); 0.14.0's is the
+`benchmarks/results/2026-10-19-exactness-detection.log` (100 s, on a shared machine); 0.14.0's is the
 `2026-10-14` log beside it.
 
 ```text
@@ -272,7 +272,7 @@ the regression's single failure is below nominal. Most of the excess is in the v
 checks. Pooled over coordinates and seeds, the mean errors are close to what a correct
 MCSE predicts (4.5% to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation
 0.994 to 1.006), though on the 0.8 correlated target 0.020% were beyond 4 against
-0.0063%. The variance errors have nearly the right spread (standard deviation 1.001 to
+0.0063%. The variance errors have nearly the right spread (standard deviation 0.999 to
 1.037) but a heavier lower tail: 0.005% to 0.048% beyond 4 MCSE, up to eight times
 nominal and above it in every case but the regression. 131 fits failed a variance
 check; the log names one as the reason in 130 of them, and each of those 130 was below
@@ -288,7 +288,8 @@ Taking the six cases together, a correct sampler fails at least one of them abou
 of the time. The gate seeds are fixed, so CI is deterministic, but a change that moves
 the draws has about that chance of turning the gate red with nothing wrong. Before
 treating a red gate as a bug, run the study on the change and compare it with this
-table. The 12,000 fits took 540 s on a 24-thread AMD Ryzen 9 5900X; the tallies are in
+table. The 12,000 fits took 600 s on a 24-thread AMD Ryzen 9 5900X shared with other
+work (496 s for 0.14.0's run); the tallies are in
 `benchmarks/results/2026-10-19-exactness-false-alarm.json` and the output, with every
 failing fit, in the `.log` beside it. 0.14.0's run is the `2026-10-14` pair.
 

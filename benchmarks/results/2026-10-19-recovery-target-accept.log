@@ -26,7 +26,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[1]), min bulk ESS 10395 (beta[0]), min tail ESS 5997 (beta[1])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.29s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.37s
 
 === target_accept=0.8 seed_offset=1
 
@@ -65,7 +65,7 @@ failures:
 failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.29s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.34s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=2
@@ -109,7 +109,7 @@ failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
     noncentered_hierarchical_poisson_recovers_partial_pooling_counts
 
-test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.33s
+test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.36s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=3
@@ -149,7 +149,7 @@ failures:
 failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=4
@@ -180,7 +180,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[3]), min bulk ESS 9534 (beta[0]), min tail ESS 5733 (beta[5])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.31s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.34s
 
 === target_accept=0.8 seed_offset=5
 
@@ -219,7 +219,7 @@ failures:
 failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.60s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.62s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=6
@@ -250,7 +250,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[2]), min bulk ESS 9686 (beta[3]), min tail ESS 6070 (beta[1])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.34s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
 
 === target_accept=0.8 seed_offset=7
 
@@ -280,7 +280,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0014 (beta[0]), min bulk ESS 10289 (beta[3]), min tail ESS 5767 (beta[3])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.43s
 
 === target_accept=0.8 seed_offset=8
 
@@ -310,7 +310,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0011 (beta[3]), min bulk ESS 9401 (beta[1]), min tail ESS 6154 (beta[2])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
 
 === target_accept=0.8 seed_offset=9
 
@@ -340,7 +340,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[5]), min bulk ESS 9748 (beta[2]), min tail ESS 5755 (beta[3])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.18s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.29s
 
 === target_accept=0.8 seed_offset=10
 
@@ -370,7 +370,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[4]), min bulk ESS 9660 (beta[0]), min tail ESS 6089 (beta[0])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.51s
 
 === target_accept=0.8 seed_offset=11
 
@@ -400,7 +400,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0017 (beta[0]), min bulk ESS 9480 (beta[4]), min tail ESS 5952 (beta[5])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.27s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.32s
 
 === target_accept=0.8 seed_offset=12
 
@@ -430,7 +430,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0005 (beta[1]), min bulk ESS 10101 (beta[0]), min tail ESS 5629 (beta[5])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.97s
 
 === target_accept=0.8 seed_offset=13
 
@@ -469,7 +469,7 @@ failures:
 failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.36s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=14
@@ -500,7 +500,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0008 (beta[3]), min bulk ESS 9080 (beta[1]), min tail ESS 6087 (beta[1])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.27s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
 
 === target_accept=0.8 seed_offset=15
 
@@ -530,7 +530,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[2]), min bulk ESS 9648 (beta[2]), min tail ESS 5838 (beta[4])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.28s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.22s
 
 === target_accept=0.8 seed_offset=16
 
@@ -560,7 +560,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[5]), min bulk ESS 10236 (beta[5]), min tail ESS 5733 (beta[2])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.41s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.35s
 
 === target_accept=0.8 seed_offset=17
 
@@ -590,7 +590,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[0]), min bulk ESS 10581 (beta[2]), min tail ESS 5587 (beta[2])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.38s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.45s
 
 === target_accept=0.8 seed_offset=18
 
@@ -629,7 +629,7 @@ failures:
 failures:
     noncentered_hierarchical_poisson_recovers_partial_pooling_counts
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.50s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.52s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
 === target_accept=0.8 seed_offset=19
@@ -660,7 +660,7 @@ ok
 test ridge_regression_recovers_high_dimensional_coefficients ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[1]), min bulk ESS 9285 (beta[5]), min tail ESS 5785 (beta[3])
 ok
 
-test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.34s
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.36s
 
 === target_accept=0.8 seed_offset=20
 
@@ -699,6 +699,6 @@ failures:
 failures:
     eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
 
-test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.21s
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.18s
 
 error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`

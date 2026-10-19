@@ -782,7 +782,7 @@ const LAST_WINDOW_MARGIN: f64 = 2.0;
 /// 19% more leapfrog steps per unit of ESS than with this split (medians
 /// over ten seeds at 1000 warmup iterations). Paired over the same seeds,
 /// the split cost 4% and 10% more on the scaled correlated regression and
-/// the centered eight schools and 34% less on the banana; the other targets
+/// the centered eight schools and 35% less on the banana; the other targets
 /// were within 0.3%. The record is
 /// `benchmarks/results/2026-10-19-targets-margin2-1000.json`.
 const EARLY_WINDOW_MARGIN: f64 = 1.0;
