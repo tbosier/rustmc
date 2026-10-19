@@ -690,11 +690,17 @@ fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
 /// `Σ` while the other half's estimates the metric, so both metrics are
 /// scored on draws they were not estimated from: a dense estimate that only
 /// fits its own half's noise whitens the other half no better than the
-/// diagonal one, and usually worse. Both candidates are scored on the same
-/// held-out covariance, so its own sampling noise and autocorrelation affect
-/// them alike and need no estimate; the rule this replaced had to estimate
-/// the window's effective sample size, and could not do so reliably when
-/// coordinates mixed at different speeds. The dense metric must leave a
+/// diagonal one, and usually worse. The rule this replaced had to estimate
+/// the window's effective sample size for its noise bound, and could not do
+/// so reliably when coordinates mixed at different speeds; this one needs
+/// no such estimate. What it cannot see is a direction neither half has
+/// explored: when the chain mixes slowly along a direction off the axes,
+/// both halves understate its variance alike, and a dense estimate that
+/// shares the shortfall scores well. In simulated 200-draw windows of two
+/// coordinates with identity covariance, one mixing as an AR(1) at 0.99 and
+/// rotated 45 degrees, the last window's margin chose dense in 18 of 30
+/// (`benchmarks/auto_metric_noise.py`), where the old rule chose it in
+/// none. The dense metric must leave a
 /// geometric mean of the two folds' condition numbers smaller by `margin`
 /// ([`LAST_WINDOW_MARGIN`] or [`EARLY_WINDOW_MARGIN`]). A half too short for
 /// a nonsingular covariance chooses diagonal.
@@ -721,11 +727,13 @@ fn dense_beats_diagonal(first: &Moments, second: &Moments, margin: f64) -> bool 
 /// How much better conditioned, on held-out draws, a dense metric must leave
 /// a block than the diagonal one in the last warmup window, whose metric the
 /// draws are sampled with: a factor of 2 in the condition number. In
-/// simulated warmup windows (`benchmarks/auto_metric_noise.py`) this kept
-/// every uncorrelated window diagonal, including windows whose halves held
-/// barely more draws than dimensions and windows whose coordinates mixed at
-/// very different speeds, where a factor of 1 went dense in up to 91 of 100.
-/// A dense leapfrog step also does O(d²) more arithmetic than a diagonal one.
+/// simulated warmup windows (`benchmarks/auto_metric_noise.py`) it kept
+/// uncorrelated windows diagonal where a factor of 1 did not: windows whose
+/// halves held barely more draws than dimensions (1 went dense in 3 and 28
+/// of 30) and a two-dimensional window with one coordinate at 0.9 (12 of
+/// 30). It does not protect a direction the chain has hardly explored; see
+/// [`dense_beats_diagonal`]. A dense leapfrog step also does O(d²) more
+/// arithmetic than a diagonal one.
 const LAST_WINDOW_MARGIN: f64 = 2.0;
 
 /// The same margin for the earlier windows, whose metric only samples the
@@ -735,8 +743,11 @@ const LAST_WINDOW_MARGIN: f64 = 2.0;
 /// every later estimate. With 2 in every window the 10- and 20-dimensional
 /// correlated regressions of `benchmarks/auto_metric_targets.py` took 8% and
 /// 19% more leapfrog steps per unit of ESS than with this split (medians
-/// over ten seeds at 1000 warmup iterations), and the other targets there
-/// did not improve.
+/// over ten seeds at 1000 warmup iterations). Paired over the same seeds,
+/// the split cost 4% and 10% more on the scaled correlated regression and
+/// the centered eight schools and 34% less on the banana; the other targets
+/// were within 0.3%. The record is
+/// `benchmarks/results/2026-10-19-targets-margin2-1000.json`.
 const EARLY_WINDOW_MARGIN: f64 = 1.0;
 
 /// `test` whitened by the variances on `train`'s diagonal: the metric a

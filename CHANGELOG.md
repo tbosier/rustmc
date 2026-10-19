@@ -14,9 +14,12 @@ tree stopped, and adds a repeated-inference benchmark.
 
 ### Breaking changes
 
-- **Seeded draws of vector parameters can change** under the default `metric="auto"`,
-  wherever the new rule below chooses differently from 0.14.0's in some warmup window.
-  Scalar parameters, and fits with `metric="diag"` or `metric="dense"`, draw as before.
+- **Seeded draws of vector parameters can change** under the default `metric="auto"`:
+  wherever the new rule below chooses differently from 0.14.0's in some warmup window,
+  and, by rounding only, wherever a window's eligibility for a dense estimate changed,
+  since a block that may become dense computes its diagonal estimate by a different
+  sequence of operations. Scalar parameters, and fits with `metric="diag"` or
+  `metric="dense"`, draw as before.
 - `BayesianARFit.get_samples()` and `BayesianHierarchicalMeanFit.get_samples()`
   return draws with the chain and draw axes merged, chains concatenated, as every
   other fit's `get_samples()` does: `coefficient` is `(chain * draw, p + 1)` instead
@@ -95,9 +98,12 @@ tree stopped, and adds a repeated-inference benchmark.
   target over 40 seeds the median smallest bulk ESS rose from 86.7 to 123.8 and
   divergences fell from 451 to 348, but single fits moved both ways, one falling from
   226.3 to 24.5. In simulated warmup windows the rule at the last window's margin
-  chose dense in none of the uncorrelated cases, including one where 0.14.0's chose
-  dense in 30 of 30; at the early windows' margin, short uncorrelated windows went
-  dense in up to 28 of 30. The
+  stayed diagonal on uncorrelated noise, including a 40-dimensional case where
+  0.14.0's chose dense in 30 of 30. It does not protect a direction the chain has
+  hardly explored: in two dimensions with identity covariance and one rotated
+  coordinate mixing at 0.99, it chose dense in 18 of 30 windows where 0.14.0's chose
+  none. At the early windows' margin, short uncorrelated windows went dense in up to
+  28 of 30. The
   measurements, records and commands are in `docs/statistical-validation.md`.
 
 ### Deprecated

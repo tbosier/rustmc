@@ -12,8 +12,8 @@ metric, each is scored by the condition number it leaves the other half's sample
 covariance, and dense must leave a geometric mean over the two folds smaller by a
 margin: 1 in early warmup windows and 2 in the last, as shipped. The columns give the
 rule at margins of 1, 2 and 4. For each case it prints how many of 30 windows go dense. The isotropic cases
-have no correlation, so a dense choice there trusts noise; the correlated cases are
-where dense is meant to be chosen. It tests the rules, not NUTS: real warmup draws
+have no correlation, so a dense choice there trusts noise or a direction the window
+has not explored; the correlated cases are where dense is meant to be chosen. It tests the rules, not NUTS: real warmup draws
 are neither stationary nor AR(1).
 """
 from __future__ import annotations
@@ -109,6 +109,9 @@ CASES = [
     ("isotropic, 10 at 0.5, halves of 11", 23, np.full(10, 0.5), None),
     ("isotropic, 20 at 0.99 and 20 at 0, rotated", 89, np.r_[np.full(20, 0.99), np.zeros(20)],
      pairwise_rotation(20)),
+    ("isotropic, 2 at 0.9 and 0, rotated", 200, np.array([0.9, 0.0]), pairwise_rotation(1)),
+    ("isotropic, 2 at 0.99 and 0, rotated", 200, np.array([0.99, 0.0]), pairwise_rotation(1)),
+    ("isotropic, 2 at 0.999 and 0, rotated", 200, np.array([0.999, 0.0]), pairwise_rotation(1)),
     ("AR(1) correlation 0.95, all at 0.5", 200, np.full(50, 0.5), correlation_factor(50, 0.95)),
     ("AR(1) correlation 0.95, all at 0.8", 200, np.full(50, 0.8), correlation_factor(50, 0.95)),
     ("AR(1) correlation 0.95, one at 0.99, 49 at 0.3", 200, np.r_[0.99, np.full(49, 0.3)],

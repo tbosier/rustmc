@@ -43,7 +43,7 @@ from benchmarks.protocol import (
 from benchmarks.run import _child_environment
 
 RESULT_PREFIX = "RUSTMC_REPEATED_RESULT="
-ENGINES = ("rustmc", "rustmc_batch", "nutpie", "numpyro", "pymc")
+ENGINES = ("rustmc", "rustmc_batch", "nutpie", "numpyro", "numpyro_vectorized", "pymc")
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,10 @@ class Dataset:
     x_new: np.ndarray
     # Exact posterior mean of the expected response at `x_new`.
     expected_new: np.ndarray
+    # Exact posterior covariance of the coefficients, and the exact posterior
+    # standard deviation of the expected response at `x_new`.
+    posterior_covariance: np.ndarray
+    expected_new_sd: np.ndarray
 
 
 def make_datasets(config: RepeatedConfig) -> list[Dataset]:
@@ -115,10 +119,62 @@ def make_datasets(config: RepeatedConfig) -> list[Dataset]:
         x_new = np.random.default_rng(cell.data_seed + 10_000).normal(
             size=(config.predict_rows, config.base.parameters)
         )
+        covariance = exact_covariance(problem, cell)
         datasets.append(
-            Dataset(index, cell, problem, x_new, x_new @ problem.posterior_mean)
+            Dataset(
+                index, cell, problem, x_new, x_new @ problem.posterior_mean, covariance,
+                np.sqrt(np.einsum("ij,jk,ik->i", x_new, covariance, x_new)),
+            )
         )
     return datasets
+
+
+def exact_covariance(problem: LinearRegressionProblem, config: BenchmarkConfig) -> np.ndarray:
+    """The conjugate posterior covariance `make_linear_regression` computes but
+    does not keep."""
+    precision = (problem.x.T @ problem.x) / config.observation_sigma**2
+    precision.flat[:: config.parameters + 1] += 1.0 / config.prior_sigma**2
+    return np.linalg.inv(precision)
+
+
+def joint_checks(
+    draws: np.ndarray, predicted: np.ndarray, dataset: Dataset
+) -> tuple[dict[str, float], list[str]]:
+    """Checks the shared gate of `benchmarks/protocol.py` does not make: the
+    joint covariance of the draws and the predictions.
+
+    `covariance_whitened_error` is `|L^-1 S L^-T - I|_F / sqrt(d)`, for the
+    draws' sample covariance `S` and the Cholesky factor `L` of the exact
+    covariance; draws with the right marginals but the wrong correlations
+    fail it. `prediction_error_sd_units` is the largest error of the mean
+    predicted expected response, in units of its exact posterior standard
+    deviation. Each is held to the config's threshold for the matching
+    marginal check, and a value that is not finite fails.
+    """
+    config = dataset.config
+    flat = draws.reshape(-1, draws.shape[-1])
+    lower = np.linalg.cholesky(dataset.posterior_covariance)
+    whitened = np.linalg.solve(lower, np.linalg.solve(lower, np.cov(flat, rowvar=False)).T)
+    dim = flat.shape[1]
+    metrics = {
+        "covariance_whitened_error": float(
+            np.linalg.norm(whitened - np.eye(dim)) / np.sqrt(dim)
+        ),
+        "prediction_error_sd_units": float(
+            np.max(
+                np.abs(predicted.reshape(-1, predicted.shape[-1]).mean(axis=0) - dataset.expected_new)
+                / dataset.expected_new_sd
+            )
+        ),
+    }
+    limits = {
+        "covariance_whitened_error": config.quality_max_sd_relative_rmse,
+        "prediction_error_sd_units": config.quality_max_mean_error_sd_units,
+    }
+    failures = [
+        name for name, value in metrics.items() if not (np.isfinite(value) and value <= limits[name])
+    ]
+    return metrics, failures
 
 
 def current_rss_mb() -> float | None:
@@ -154,9 +210,11 @@ def record_fit(
 
     `fit` returns `(draws shaped (chain, draw, parameter), divergences, handle)`
     and `predict(handle)` the expected response at `dataset.x_new`, shaped
-    `(chain, draw, row)`. Any exception becomes the row's error. ArviZ, which
-    computes the diagnostics, is imported by `run_child` before any engine, so
-    no engine's setup time includes it.
+    `(chain, draw, row)`. Any exception becomes the row's error, and the time
+    until it is still the row's `fit_seconds` or `predict_seconds`. A row passes
+    when the shared gate and [`joint_checks`] both pass. ArviZ, which computes
+    the diagnostics, is imported by `run_child` before any engine, so no
+    engine's setup time includes it.
     """
     import arviz
 
@@ -165,22 +223,26 @@ def record_fit(
         "observations": dataset.config.observations,
         "data_sha256": dataset.problem.digest,
     }
+    phase, start = "fit_seconds", time.perf_counter()
     try:
-        start = time.perf_counter()
         draws, divergences, handle = fit()
         row["fit_seconds"] = time.perf_counter() - start
-        start = time.perf_counter()
+        phase, start = "predict_seconds", time.perf_counter()
         predicted = np.asarray(predict(handle), dtype=np.float64)
         row["predict_seconds"] = time.perf_counter() - start
+        phase = None
         quality = posterior_quality(draws, dataset.problem, dataset.config, divergences, arviz)
-        mean_prediction = predicted.reshape(-1, predicted.shape[-1]).mean(axis=0)
-        quality["prediction_max_abs_error"] = float(
-            np.max(np.abs(mean_prediction - dataset.expected_new))
-        )
+        joint, joint_failures = joint_checks(draws, predicted, dataset)
+        quality.update(joint)
+        gate = evaluate_quality_gate(quality, dataset.config)
+        gate["joint_failures"] = joint_failures
+        gate["passed"] = gate["passed"] and not joint_failures
         row["quality"] = quality
-        row["quality_gate"] = evaluate_quality_gate(quality, dataset.config)
-        row["status"] = "passed" if row["quality_gate"]["passed"] else "failed"
+        row["quality_gate"] = gate
+        row["status"] = "passed" if gate["passed"] else "failed"
     except Exception as error:  # noqa: BLE001 - every failure is a result row
+        if phase is not None:
+            row[phase] = time.perf_counter() - start
         row["status"] = "error"
         row["reason"] = f"{type(error).__name__}: {error}"
         row["traceback"] = traceback.format_exc()[-4_000:]
@@ -267,10 +329,10 @@ def _rustmc_batch(config: RepeatedConfig, datasets: list[Dataset], run: EngineRu
             return result.predict({"X": dataset.x_new, "y": empty}, expected=True)["obs"]
 
         record_fit(run, dataset, fit, predict)
-    # The cells ran together, so a per-fit time is the batch's wall time shared out.
+    # The cells ran together, so a per-fit time is the batch's wall time
+    # shared out, failed cells included.
     for row in run.fits:
-        if "fit_seconds" in row:
-            row["fit_seconds"] = batch_seconds / len(datasets)
+        row["fit_seconds"] = batch_seconds / len(datasets)
     run.notes.append(
         "one sample_batch call over every dataset with threads running cells in parallel; "
         "seeds come from cell IDs, so draws differ from the per-dataset rustmc run; "
@@ -317,7 +379,9 @@ def _nutpie(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) -> 
     run.notes.append("prediction is the NumPy product of the beta draws with the new inputs")
 
 
-def _numpyro(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) -> None:
+def _numpyro(
+    config: RepeatedConfig, datasets: list[Dataset], run: EngineRun, chain_method: str = "parallel"
+) -> None:
     base = config.base
 
     def imports() -> tuple[Any, ...]:
@@ -337,17 +401,33 @@ def _numpyro(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) ->
             beta = numpyro.sample("beta", dist.Normal(0.0, base.prior_sigma).expand([base.parameters]))
             numpyro.sample("obs", dist.Normal(x_data @ beta, base.observation_sigma), obs=y_data)
 
-        kernel = NUTS(model, target_accept_prob=base.target_accept, max_tree_depth=base.max_tree_depth)
-        return MCMC(
-            kernel, num_warmup=base.warmup, num_samples=base.draws, num_chains=base.chains,
-            chain_method="parallel", progress_bar=False, jit_model_args=True,
-        )
+        def new_mcmc() -> Any:
+            kernel = NUTS(model, target_accept_prob=base.target_accept, max_tree_depth=base.max_tree_depth)
+            return MCMC(
+                kernel, num_warmup=base.warmup, num_samples=base.draws, num_chains=base.chains,
+                chain_method=chain_method, progress_bar=False, jit_model_args=True,
+            )
 
-    mcmc = run.setup("build", build)
+        return new_mcmc
+
+    new_mcmc = run.setup("build", build)
+    # Rerunning vectorized chains on data of a new shape fails inside NumPyro
+    # 0.21 (a vmap over a scalar), so each shape gets its own MCMC object, built
+    # inside the first fit of that shape. Parallel chains recompile every run
+    # anyway, so they share one.
+    by_shape: dict[Any, Any] = {}
     for dataset in datasets:
         def fit(dataset: Dataset = dataset) -> tuple[np.ndarray, int, Any]:
+            shape = dataset.problem.x.shape if chain_method == "vectorized" else None
+            if shape not in by_shape:
+                by_shape[shape] = new_mcmc()
+            mcmc = by_shape[shape]
+            key = jax.random.key(dataset.config.sampler_seed)
+            if chain_method == "vectorized":
+                # A rerun of vectorized chains needs one key per chain.
+                key = jax.random.split(key, base.chains)
             mcmc.run(
-                jax.random.key(dataset.config.sampler_seed),
+                key,
                 jnp.asarray(dataset.problem.x), jnp.asarray(dataset.problem.y),
                 extra_fields=("diverging",),
             )
@@ -358,11 +438,24 @@ def _numpyro(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) ->
             return draws, divergences, draws
 
         record_fit(run, dataset, fit, lambda draws, d=dataset: draws @ d.x_new.T)
-    run.notes.append(
-        "one MCMC object reused with jit_model_args=True; JAX compiles again for each new "
-        "data shape, so a ragged workload recompiles and that time is in fit_seconds"
-    )
+    if chain_method == "parallel":
+        run.notes.append(
+            "one MCMC object with chain_method='parallel'; NumPyro documents that "
+            "jit_model_args does not take effect for several parallel chains, so every fit "
+            "compiles again and that time is in fit_seconds"
+        )
+    else:
+        run.notes.append(
+            "chain_method='vectorized' with jit_model_args=True and one MCMC object per data "
+            "shape, so a dataset of a shape already seen reuses the compiled model; a new "
+            "shape builds and compiles a new object inside its fit, and that time is in "
+            "fit_seconds"
+        )
     run.notes.append("prediction is the NumPy product of the beta draws with the new inputs")
+
+
+def _numpyro_vectorized(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) -> None:
+    _numpyro(config, datasets, run, chain_method="vectorized")
 
 
 def _pymc(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) -> None:
@@ -407,6 +500,7 @@ ADAPTERS = {
     "rustmc_batch": _rustmc_batch,
     "nutpie": _nutpie,
     "numpyro": _numpyro,
+    "numpyro_vectorized": _numpyro_vectorized,
     "pymc": _pymc,
 }
 
@@ -521,7 +615,7 @@ def _revision() -> dict[str, Any]:
 
 
 def print_summary(results: list[dict[str, Any]]) -> None:
-    header = f"{'engine':<13} {'status':<11} {'pass':>4} {'fail':>4} {'err':>3} {'setup s':>8} {'fit s':>8} {'1st fit':>8} {'ESS/s':>9} {'RSS MB':>7}"
+    header = f"{'engine':<19} {'status':<11} {'pass':>4} {'fail':>4} {'err':>3} {'setup s':>8} {'fit s':>8} {'1st fit':>8} {'ESS/s':>9} {'RSS MB':>7}"
     print(header)
     for result in results:
         s = result.get("summary", {})
@@ -531,7 +625,7 @@ def print_summary(results: list[dict[str, Any]]) -> None:
             return "-" if value is None else f"{value:.{digits}f}"
 
         print(
-            f"{result['engine']:<13} {result['status']:<11} {s.get('passed', 0):>4} {s.get('failed', 0):>4} "
+            f"{result['engine']:<19} {result['status']:<11} {s.get('passed', 0):>4} {s.get('failed', 0):>4} "
             f"{s.get('errors', 0):>3} {number('setup_seconds'):>8} {number('total_fit_seconds'):>8} "
             f"{number('first_fit_seconds'):>8} {number('useful_ess_per_second', 0):>9} {number('peak_rss_mb', 0):>7}"
         )

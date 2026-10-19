@@ -127,17 +127,27 @@ diagonal and a dense metric, and each estimate is scored by the condition number
 leaves the other half's sample covariance. The dense metric is used when the geometric
 mean of its two scores is lower than the diagonal's: by any amount in the early
 windows, whose metric only samples the next window, and by a factor of 2 in the last
-window, whose metric the draws are sampled with. Both candidates are scored on the same
-held-out covariance, so its noise and autocorrelation affect them alike and need no
-estimate. Each half must hold more draws than the vector has elements.
+window, whose metric the draws are sampled with. The rule needs no estimate of the
+window's effective sample size, which the old rule's noise bound did. Each half must
+hold more draws than the vector has elements.
 
-In simulated warmup windows of stationary AR(1) coordinates, 30 per case, the rule at a
-margin of 2 chose dense in none of the uncorrelated cases and in all 30 windows of every
-0.95 correlated case. The old rule went dense in 30 of 30 isotropic windows whose
-coordinates, mixing at 0.99 and 0, were rotated in pairs, and in none of the 0.95
-correlated windows whose coordinates mixed at 0.8. At a margin of 1, uncorrelated
-windows whose halves held barely more draws than dimensions went dense in 3 and 28 of
-30, which is why the last window asks for 2. The table is
+What the rule cannot see is a direction that neither half has explored. When the chain
+mixes slowly along a direction off the coordinate axes, both halves understate its
+variance alike, and a dense estimate that shares the shortfall scores well. In
+simulated warmup windows of stationary AR(1) coordinates, 30 per case, two coordinates
+with identity covariance, one mixing at 0.99 and both rotated 45 degrees, went dense in
+18 of 30 at a margin of 2 (30 of 30 at 0.999), where the old rule chose dense in none
+at 0.99 and 21 at 0.999. In 40 dimensions the same pattern, 20 slow coordinates rotated
+in pairs, went dense in none of 30 under the new rule and 30 of 30 under the old. The
+curved target below, which NUTS crosses slowly along its curve, is a real target where
+this can happen, and its fits moved both ways.
+
+In the other cases, the rule at a margin of 2 chose dense in none of the uncorrelated
+windows and in all 30 windows of every 0.95 correlated case, while the old rule chose
+dense in none of the 0.95 correlated windows whose coordinates mixed at 0.8. At a
+margin of 1, uncorrelated windows whose halves held barely more draws than dimensions
+went dense in 3 and 28 of 30, and the two-dimensional window with one coordinate at 0.9
+in 12, which is why the last window asks for 2. The table is
 `benchmarks/results/2026-10-19-auto-metric-noise.txt`. It tests the rule on stationary
 draws, which real warmup draws are not.
 
@@ -264,11 +274,11 @@ MCSE predicts (4.5% to 4.9% beyond 2 MCSE against a nominal 4.55%, standard devi
 0.994 to 1.006), though on the 0.8 correlated target 0.020% were beyond 4 against
 0.0063%. The variance errors have nearly the right spread (standard deviation 1.001 to
 1.037) but a heavier lower tail: 0.005% to 0.048% beyond 4 MCSE, up to eight times
-nominal and above it in every case but the regression, and every variance failure the
-log reports, 130 of them, was below the exact value (the 40 mean failures split 20
-below, 20 above). The likely reason is that the squared deviations are right-skewed: a
+nominal and above it in every case but the regression. 131 fits failed a variance
+check; the log names one as the reason in 130 of them, and each of those 130 was below
+the exact value (the 40 mean failures split 20 below, 20 above). The likely reason is that the squared deviations are right-skewed: a
 sample whose squared deviations happen to be small also has a small estimated MCSE, so
-the self-normalised error reaches far below zero more often than above. The ESS floor
+the self-normalized error reaches far below zero more often than above. The ESS floor
 also fails on its own on the 0.95 correlated custom target, whose smallest bulk ESS at
 the defaults ranged from 410 to 720 over the ten seeds of the cost record below; on the
 graph path, where `auto` now goes dense, it ranged from 3479 to 4937, and the floor

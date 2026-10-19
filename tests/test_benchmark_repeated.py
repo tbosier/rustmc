@@ -43,8 +43,8 @@ def test_config_rejects_invalid_values(bad):
 
 def exact_draws(dataset, chains=2, draws=400, seed=0):
     rng = np.random.default_rng(seed)
-    p = dataset.problem
-    return p.posterior_mean + p.posterior_sd * rng.normal(size=(chains, draws, p.posterior_mean.size))
+    return rng.multivariate_normal(
+        dataset.problem.posterior_mean, dataset.posterior_covariance, size=(chains, draws))
 
 
 def test_failures_and_errors_are_kept_and_cost_time_but_add_no_ess():
@@ -64,13 +64,14 @@ def test_failures_and_errors_are_kept_and_cost_time_but_add_no_ess():
     assert "mean_rmse_exact_posterior_sd_units" in run.fits[1]["quality_gate"]["failures"]
     assert "sampler fell over" in run.fits[2]["reason"]
 
-    for row in run.fits[:2]:
+    assert "fit_seconds" in run.fits[2]
+    for row in run.fits:
         row["fit_seconds"] = 2.0
     summary = repeated.summarize(run)
     assert (summary["passed"], summary["failed"], summary["errors"]) == (1, 1, 1)
-    assert summary["total_fit_seconds"] == 4.0
+    assert summary["total_fit_seconds"] == 6.0
     passing_ess = run.fits[0]["quality"]["ess_bulk_mean"]
-    assert summary["useful_ess_per_second"] == pytest.approx(passing_ess / 5.0)
+    assert summary["useful_ess_per_second"] == pytest.approx(passing_ess / 7.0)
 
 
 def test_the_batch_wall_time_is_not_counted_as_setup():
@@ -88,3 +89,40 @@ def test_stored_text_does_not_record_the_home_directory():
     home = str(Path.home())
     cleaned = repeated._without_home({"stderr": [f"{home}/x.py:1", 3], "n": 2})
     assert cleaned == {"stderr": ["~/x.py:1", 3], "n": 2}
+
+
+def test_draws_with_the_right_marginals_but_wrong_correlations_fail():
+    dataset = repeated.make_datasets(config(datasets=1))[0]
+    p = dataset.problem
+    shared = np.random.default_rng(1).normal(size=(2, 400, 1))
+    rank_one = p.posterior_mean + p.posterior_sd * shared
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (rank_one, 0, rank_one), lambda d: d @ dataset.x_new.T)
+    assert run.fits[0]["status"] == "failed"
+    assert run.fits[0]["quality_gate"]["joint_failures"] == ["covariance_whitened_error"]
+
+
+@pytest.mark.parametrize("bad", [np.nan, 1e12])
+def test_unusable_predictions_fail(bad):
+    dataset = repeated.make_datasets(config(datasets=1))[0]
+    good = np.random.default_rng(2).multivariate_normal(
+        dataset.problem.posterior_mean, dataset.posterior_covariance, size=(2, 400))
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (good, 0, good), lambda d: np.full((2, 400, 10), bad))
+    assert run.fits[0]["status"] == "failed"
+    assert run.fits[0]["quality_gate"]["joint_failures"] == ["prediction_error_sd_units"]
+
+
+def test_a_fit_that_raises_keeps_its_time():
+    dataset = repeated.make_datasets(config(datasets=1))[0]
+
+    def slow_failure():
+        import time
+        time.sleep(0.05)
+        raise RuntimeError("diverged badly")
+
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, slow_failure, lambda d: d)
+    assert run.fits[0]["status"] == "error"
+    assert run.fits[0]["fit_seconds"] >= 0.05
+    assert repeated.summarize(run)["total_fit_seconds"] >= 0.05

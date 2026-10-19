@@ -615,7 +615,10 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
 /// earlier versions store none. A transition ends in a divergence exactly
 /// when it is flagged divergent, and a tree that ran out of depth used every
 /// doubling the limit allows, each in full: depth equal to the limit and
-/// `2^depth - 1` leapfrog steps.
+/// `2^depth - 1` leapfrog steps. A U-turn is detected only once a subtree of
+/// at least two leaves is complete, so a tree that turned took an odd number
+/// of steps: the `2^(depth-1) - 1` of its full doublings plus an even number
+/// in its last, or the single step of a one-doubling tree.
 fn validate_terminations(
     posterior: &Posterior,
     version: u32,
@@ -642,7 +645,8 @@ fn validate_terminations(
             }
             _ => true,
         },
-        Some(_) => false,
+        Some(Termination::UTurn) => transition.num_leapfrog_steps % 2 == 0,
+        Some(Termination::Divergence) => false,
     });
     if impossible {
         return Err(invalid(

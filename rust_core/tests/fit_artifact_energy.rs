@@ -178,7 +178,7 @@ fn inconsistent_energy_telemetry_is_rejected() {
     let nuts = json(&fit(SamplerType::Nuts));
     let hmc = json(&fit(SamplerType::Hmc));
     type Corruption = fn(&mut Value);
-    let cases: [(&str, &Value, Corruption, &str); 17] = [
+    let cases: [(&str, &Value, Corruption, &str); 18] = [
         (
             "a depth-1 tree with more than one leapfrog step",
             &nuts,
@@ -357,6 +357,24 @@ fn inconsistent_energy_telemetry_is_rejected() {
                     .find(|t| t["tree_depth"].as_u64().unwrap() < 7 && t["divergent"] == false)
                     .unwrap();
                 transition["termination"] = "max_tree_depth".into();
+            },
+            "disagrees with its transition's tree",
+        ),
+        (
+            "a U-turn after an even number of leapfrog steps",
+            &nuts,
+            |a| {
+                let transition = a["posterior"]["transitions"][0]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|t| {
+                        t["termination"] == "u_turn" && t["tree_depth"].as_u64().unwrap() >= 2
+                    })
+                    .unwrap();
+                let depth = transition["tree_depth"].as_u64().unwrap();
+                // The fewest steps a tree of this depth can take, and even.
+                transition["num_leapfrog_steps"] = (1u64 << (depth - 1)).into();
             },
             "disagrees with its transition's tree",
         ),

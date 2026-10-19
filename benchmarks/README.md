@@ -166,7 +166,8 @@ PYTHONPATH=.pybuild python -m benchmarks.repeated --config benchmarks/configs/re
 
 `benchmarks/results/2026-10-19-repeated-fixed.json` and `-ragged.json` hold one run each
 on a 24-thread AMD Ryzen 9 5900X, with 30 datasets of 8 coefficients, 4 chains, 500
-warmup, 1000 draws and 4 threads: 500 rows each, or 50 to 2000 rows drawn per dataset.
+warmup, 1000 draws and 4 threads: 500 rows each, or a row count drawn per dataset
+between 50 and 2000.
 Every fit of every engine passed the gate.
 
 | Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
@@ -178,7 +179,7 @@ Every fit of every engine passed the gate.
 | PyMC | 0.43, 0.44 | 26.29 | 28.05 | 5674 | 5390 |
 
 nutpie fits each dataset faster than rustmc: 1.97 s against 3.16 s for the 30 fixed
-datasets, and 2.83 s against 6.64 s for the ragged ones, whose largest datasets have 2000
+datasets, and 2.83 s against 6.64 s for the ragged ones, which ran from 103 to 1949
 rows. Its useful ESS per second is lower over 30 datasets because of about 8 s of
 compilation and a lower ESS per fit: a mean bulk ESS of 5491 and 5636 per fit against
 rustmc's 6439 and 6530. At these per-fit times nutpie's total time would fall below

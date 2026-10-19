@@ -867,7 +867,13 @@ mod tests {
                 assert_eq!(depth, 4);
                 assert_eq!(stats.num_leapfrog_steps, (1 << depth) - 1);
             }
-            u_turns += usize::from(reason == TreeTermination::UTurn);
+            if reason == TreeTermination::UTurn {
+                // A U-turn is seen only after a complete subtree of two or
+                // more leaves, so the full doublings' 2^(d-1) - 1 steps plus
+                // an even count, or one step for a one-doubling tree.
+                assert_eq!(stats.num_leapfrog_steps % 2, 1);
+                u_turns += 1;
+            }
         }
         assert!(u_turns > 0);
     }
