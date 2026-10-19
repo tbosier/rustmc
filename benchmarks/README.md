@@ -171,23 +171,22 @@ Every fit of every engine passed the gate.
 
 | Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
 |---|---|---|---|---|---|
-| rustmc, one dataset at a time | 0.01 | 3.11 | 6.81 | 62056 | 28761 |
-| rustmc, `sample_batch` | 0.01 | 2.98 | 6.37 | 66335 | 30623 |
-| nutpie | 7.85, 7.86 | 1.92 | 2.90 | 16874 | 15715 |
-| NumPyro | 0.28 | 24.87 | 25.47 | 7728 | 7623 |
-| PyMC | 0.46, 0.44 | 26.16 | 27.98 | 5697 | 5402 |
+| rustmc, one dataset at a time | 0.01 | 3.16 | 6.64 | 60968 | 29462 |
+| rustmc, `sample_batch` | 0.01 | 2.99 | 6.44 | 66159 | 30288 |
+| nutpie | 7.81, 8.05 | 1.97 | 2.83 | 16842 | 15540 |
+| NumPyro | 0.28 | 24.98 | 25.47 | 7696 | 7625 |
+| PyMC | 0.43, 0.44 | 26.29 | 28.05 | 5674 | 5390 |
 
-nutpie fits each dataset faster than rustmc: 1.92 s against 3.11 s for the 30 fixed
-datasets, and 2.90 s against 6.81 s for the ragged ones, whose largest datasets have 2000
-rows. Its useful ESS per second is lower over 30 datasets because of its 7.9 s of
+nutpie fits each dataset faster than rustmc: 1.97 s against 3.16 s for the 30 fixed
+datasets, and 2.83 s against 6.64 s for the ragged ones, whose largest datasets have 2000
+rows. Its useful ESS per second is lower over 30 datasets because of about 8 s of
 compilation and a lower ESS per fit: a mean bulk ESS of 5491 and 5636 per fit against
 rustmc's 6439 and 6530. At these per-fit times nutpie's total time would fall below
-rustmc's after about 200 fixed or 60 ragged datasets of this size. PyMC's
-first fit took 6.7 s, most of it compilation, and later fits a median of 0.65 s (fixed
-workload). NumPyro's
-time is mostly sampling: about 0.8 s per fit in both workloads, although the ragged one
-compiles again for each new data shape, and in a separate check four runs of one
-`MCMC` object on same-shaped data took 0.95 s and then 0.79 to 0.81 s. Peak resident memory was 344 to 369 MB for the
-two rustmc runs, 546 to 553 MB for nutpie, 1232 to 1241 MB for NumPyro and 423 MB for
-PyMC. One run on one machine is not a stable ranking; rerun it before quoting a ratio.
+rustmc's after about 200 fixed or 60 ragged datasets of this size. PyMC's first fit took
+6.7 s and its fits a median of 0.66 s (fixed) and 0.73 s (ragged). NumPyro's fits took
+a median of 0.79 and 0.81 s after a first of 0.90 and 0.95 s, so its time is mostly
+sampling, although the ragged workload compiles again for each new data shape. Peak resident
+memory was 343 to 370 MB for the two rustmc runs, 550 to 551 MB for nutpie, 1236 to
+1239 MB for NumPyro and 423 MB for PyMC. One run on one machine is not a stable ranking;
+rerun it before quoting a ratio.
 

@@ -32,7 +32,7 @@ process. It is not presented as a general replacement for Stan or PyMC.
 
 ```toml
 [dependencies]
-rustmc_core = "0.13"
+rustmc_core = "0.15"
 ```
 
 ```rust

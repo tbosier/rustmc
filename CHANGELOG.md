@@ -6,8 +6,17 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-19
+
+This release changes how the default `metric="auto"` chooses a dense metric, gives
+every fit and forecast the same names and shapes for its draws, records why each NUTS
+tree stopped, and adds a repeated-inference benchmark.
+
 ### Breaking changes
 
+- **Seeded draws of vector parameters can change** under the default `metric="auto"`,
+  wherever the new rule below chooses differently from 0.14.0's in some warmup window.
+  Scalar parameters, and fits with `metric="diag"` or `metric="dense"`, draw as before.
 - `BayesianARFit.get_samples()` and `BayesianHierarchicalMeanFit.get_samples()`
   return draws with the chain and draw axes merged, chains concatenated, as every
   other fit's `get_samples()` does: `coefficient` is `(chain * draw, p + 1)` instead
@@ -52,6 +61,44 @@ versioning while the public API is stabilized.
 - `StructuralForecast.state_samples`, `component_samples` and
   `cumulative_observation_samples`, so the structural forecast uses the
   `*_samples` names of the other forecasts.
+- `benchmarks/repeated.py`, a repeated-inference benchmark: Gaussian linear
+  regressions, fixed-size or ragged, fitted through one compiled model in rustmc (one
+  fit per dataset, and one `sample_batch`), nutpie, NumPyro and PyMC. It times setup,
+  each fit and each prediction, records memory, gates every fit against its exact
+  posterior, keeps failed and erroring fits, and counts only passing fits' ESS. In the
+  recorded run of 30 datasets every fit passed. nutpie fitted each dataset faster than
+  rustmc (1.97 s against 3.16 s for 30 datasets of 500 rows), and its compilation of
+  about 8 s left rustmc ahead over 30 datasets. See benchmarks/README.md.
+- `benchmarks/auto_metric_targets.py`, `auto_metric_noise.py`,
+  `compare_metric_records.py` and options for `curved_metric_choice.py`, which measure
+  the `auto` metric's choices, with saved records that name the build they ran on.
+
+### Changed
+
+- **`metric="auto"` decides by cross-validation.** Each half of a warmup window
+  estimates a diagonal and a dense metric, each estimate is scored by the condition
+  number it leaves the other half's sample covariance, and the dense metric is used when
+  the geometric mean of its two scores is lower: by any amount in the early windows and
+  by a factor of 2 in the last window, whose metric the draws are sampled with. Each
+  half must hold more draws than the vector has elements, so at the default
+  `warmup=500` vectors of 100 or more elements stay diagonal (0.14.0's rule allowed up to
+  100). 0.14.0's rule needed the window's effective sample size, and its estimate from
+  the average autocorrelation left the 50-dimensional 0.95 correlated exactness target
+  diagonal. There `auto` now spends 36.4 to 38.5 leapfrog steps per unit of the
+  smallest bulk ESS at the gate seeds, against 317 to 683, and forced `dense` 25.2 to
+  26.7. Its gate fits' smallest bulk ESS rose from 606 to 4148 at seed 2211, and in a
+  2000-seed study the gate's false alarms on it fell from 31 to 15, none of them now
+  from the ESS floor. On nine targets in `benchmarks/auto_metric_targets.py` (ten
+  seeds, 1000 warmup) the median paired cost ratio against 0.14.0 was 0.82 to 1.02
+  on the regressions and isotropic targets; the 20-coefficient correlated regression
+  at 500 warmup was the clearly worse case, 10% dearer. On a curved two-dimensional
+  target over 40 seeds the median smallest bulk ESS rose from 86.7 to 123.8 and
+  divergences fell from 451 to 348, but single fits moved both ways, one falling from
+  226.3 to 24.5. In simulated warmup windows the rule at the last window's margin
+  chose dense in none of the uncorrelated cases, including one where 0.14.0's chose
+  dense in 30 of 30; at the early windows' margin, short uncorrelated windows went
+  dense in up to 28 of 30. The
+  measurements, records and commands are in `docs/statistical-validation.md`.
 
 ### Deprecated
 

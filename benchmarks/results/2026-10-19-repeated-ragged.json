@@ -1,6 +1,6 @@
 {
   "revision": {
-    "commit": "e4a4ce8ab61009dcd6caa4ed18ddafc00e6b3624",
+    "commit": "2cde5609a7969874a0dc2e7ccc8ebff3d1fcf471",
     "dirty": false
   },
   "engine_order": [
@@ -65,18 +65,18 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.005693832994438708,
-        "build": 3.419496351853013e-05,
-        "compile": 8.148397319018841e-05,
-        "batch_wall_seconds": 6.365784297988284
+        "import": 0.006396579963620752,
+        "build": 3.476499114185572e-05,
+        "compile": 8.18439875729382e-05,
+        "batch_wall_seconds": 6.435562570986804
       },
       "fits": [
         {
           "index": 0,
           "observations": 1201,
           "data_sha256": "aa292d2427cc19072c6fe0149e2b6f1e35e743375a47fa0681fbfd5996d548f0",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0015949049848131835,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.002076634031254798,
           "quality": {
             "ess_bulk_mean": 6465.960669329372,
             "ess_bulk_min": 5782.61064941338,
@@ -123,14 +123,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.046875
         },
         {
           "index": 1,
           "observations": 880,
           "data_sha256": "9cb2af126fe543d245977feb45d1d9479ad268dc4040e6be85813a636aae1324",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012955889687873423,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0014368360280059278,
           "quality": {
             "ess_bulk_mean": 6549.219149757468,
             "ess_bulk_min": 5901.452211447782,
@@ -177,14 +177,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.4296875
         },
         {
           "index": 2,
           "observations": 553,
           "data_sha256": "a4d8575082a1dd7b738490b0127622968a49a4dff763a7f0ceb65330259b572d",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012446329928934574,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012756610522046685,
           "quality": {
             "ess_bulk_mean": 6470.780473646518,
             "ess_bulk_min": 5954.3019210777275,
@@ -231,14 +231,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.4453125
         },
         {
           "index": 3,
           "observations": 503,
           "data_sha256": "c26abf4732fcd32e240e4dcab44cc34ce88db3fd7ec438ebd4c87214d13c13bb",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012506539933383465,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012628770200535655,
           "quality": {
             "ess_bulk_mean": 6525.215954077878,
             "ess_bulk_min": 5724.174600147384,
@@ -285,14 +285,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.45703125
         },
         {
           "index": 4,
           "observations": 794,
           "data_sha256": "1773ec0743a9fff429257d4d4ae86439e14e03a3b6e4dd392fa40793815538d5",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001249091001227498,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.001230746041983366,
           "quality": {
             "ess_bulk_mean": 6398.057923530649,
             "ess_bulk_min": 5626.1417077941205,
@@ -339,14 +339,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.46484375
         },
         {
           "index": 5,
           "observations": 1744,
           "data_sha256": "3ac0bf310d9fe0ba2fe2ba110aa40336a9948325c438cd844cf8430f5b8aba59",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001258429023437202,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012594200088642538,
           "quality": {
             "ess_bulk_mean": 6370.578502810578,
             "ess_bulk_min": 5643.690621843896,
@@ -393,14 +393,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.47265625
         },
         {
           "index": 6,
           "observations": 103,
           "data_sha256": "5d344402f0f6249945b299eac19ebb40fd5bd0903875b3ebcb53eff93e4997af",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012495620176196098,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012346639996394515,
           "quality": {
             "ess_bulk_mean": 6475.027781303624,
             "ess_bulk_min": 5765.0800039201995,
@@ -447,14 +447,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.48046875
         },
         {
           "index": 7,
           "observations": 1738,
           "data_sha256": "1f4b92573cdf4e41498597e8638aacf59ba25df5aeda3eace48f01ea3a229139",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012460940051823854,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012555230059660971,
           "quality": {
             "ess_bulk_mean": 6347.990409593372,
             "ess_bulk_min": 5887.333489812141,
@@ -501,14 +501,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6171875
+          "rss_mb_after": 371.484375
         },
         {
           "index": 8,
           "observations": 1006,
           "data_sha256": "0ad22a7adcbe252583e52b204e242229bb7142745d7112a3b5e0713be930be5f",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012417869875207543,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.00125942996237427,
           "quality": {
             "ess_bulk_mean": 6866.319814285467,
             "ess_bulk_min": 6335.238096550605,
@@ -555,14 +555,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.62109375
+          "rss_mb_after": 371.49609375
         },
         {
           "index": 9,
           "observations": 1492,
           "data_sha256": "94ed3aae2c375da477ab0e728fca023dd4e63a04fa679c8ea91905aef7ca39be",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012607320095412433,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012466059997677803,
           "quality": {
             "ess_bulk_mean": 6490.959863384702,
             "ess_bulk_min": 6057.701462625445,
@@ -609,14 +609,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.62890625
+          "rss_mb_after": 371.5
         },
         {
           "index": 10,
           "observations": 974,
           "data_sha256": "9cd0c93e63eb7a5cb76e8dba906e21a6754fb72ccf9fe303905bcea00e65349a",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001251736015547067,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012422879808582366,
           "quality": {
             "ess_bulk_mean": 6668.950728547822,
             "ess_bulk_min": 5231.5577819239725,
@@ -663,14 +663,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6328125
+          "rss_mb_after": 371.50390625
         },
         {
           "index": 11,
           "observations": 1886,
           "data_sha256": "c65478467b269817ff6d4d7d02535aeecf3d0bb14b012f5a9169a4b6063625e7",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012466160114854574,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012665940448641777,
           "quality": {
             "ess_bulk_mean": 5942.160832433379,
             "ess_bulk_min": 5480.738087586345,
@@ -717,14 +717,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.63671875
+          "rss_mb_after": 371.5078125
         },
         {
           "index": 12,
           "observations": 706,
           "data_sha256": "827336aa085067bcebd6ce2e243753be71f208139292afffc69555552519118b",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012650510179810226,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.001278796000406146,
           "quality": {
             "ess_bulk_mean": 6483.902897612872,
             "ess_bulk_min": 6035.089919998127,
@@ -771,14 +771,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.640625
+          "rss_mb_after": 371.515625
         },
         {
           "index": 13,
           "observations": 1399,
           "data_sha256": "5ebd2697b7636a4b18f426c2185521feb0007c82fc6e9ba9f7ee844f67e3c97d",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012440819991752505,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012996959849260747,
           "quality": {
             "ess_bulk_mean": 5923.592425955525,
             "ess_bulk_min": 5153.966370512615,
@@ -825,14 +825,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.65234375
+          "rss_mb_after": 371.53515625
         },
         {
           "index": 14,
           "observations": 596,
           "data_sha256": "3a51fd365d0f82819ab53e16b50620017ade05c823b8038aa09b00c81d47381f",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012472269590944052,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012716029887087643,
           "quality": {
             "ess_bulk_mean": 6674.016620595723,
             "ess_bulk_min": 6002.819214554561,
@@ -879,14 +879,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.65625
+          "rss_mb_after": 371.5390625
         },
         {
           "index": 15,
           "observations": 214,
           "data_sha256": "939064a91a700a212015b71392c2ae46efdb94b7e344cd1909a51db6362f6f00",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001243631006218493,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012479879660531878,
           "quality": {
             "ess_bulk_mean": 6177.73708981874,
             "ess_bulk_min": 5374.710184262418,
@@ -933,14 +933,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.66015625
+          "rss_mb_after": 371.54296875
         },
         {
           "index": 16,
           "observations": 1949,
           "data_sha256": "d2c883786f098b29c68c0c1f2aed8bbc7146933358accb4186753cb8859392a6",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012724549742415547,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.001236687006894499,
           "quality": {
             "ess_bulk_mean": 6625.332493939857,
             "ess_bulk_min": 5539.364445485341,
@@ -987,14 +987,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6640625
+          "rss_mb_after": 371.55078125
         },
         {
           "index": 17,
           "observations": 1772,
           "data_sha256": "e0ea356c04a417e99569a50338f2f89f2f4dc802a0cbbcef62ff2244fa167d3f",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001256896008271724,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012467860360629857,
           "quality": {
             "ess_bulk_mean": 6425.130003685237,
             "ess_bulk_min": 6080.1731519318955,
@@ -1041,14 +1041,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.66796875
+          "rss_mb_after": 371.5546875
         },
         {
           "index": 18,
           "observations": 766,
           "data_sha256": "3bc16ced58ca86a584e303bffeb1800c06cd8439e424196a45ee637f4b31daf4",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012382000568322837,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012378389947116375,
           "quality": {
             "ess_bulk_mean": 6665.274994816204,
             "ess_bulk_min": 6020.653658338415,
@@ -1095,14 +1095,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.671875
+          "rss_mb_after": 371.55859375
         },
         {
           "index": 19,
           "observations": 1301,
           "data_sha256": "5a0cef7b9c714ebd298167b2b2bd96cc43dd1cefe1c63bdc13676e75125cc9e9",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012454540119506419,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012410759809426963,
           "quality": {
             "ess_bulk_mean": 6582.231215477685,
             "ess_bulk_min": 6068.110655729233,
@@ -1149,14 +1149,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6796875
+          "rss_mb_after": 371.5625
         },
         {
           "index": 20,
           "observations": 1630,
           "data_sha256": "cfc71d3f445b19e30c428aab1bec4d6944d59f1e5a0230953c8f1f0ec32ecdf1",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012607229873538017,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.001251105044502765,
           "quality": {
             "ess_bulk_mean": 7103.169229600948,
             "ess_bulk_min": 6503.13841344643,
@@ -1203,14 +1203,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.68359375
+          "rss_mb_after": 371.57421875
         },
         {
           "index": 21,
           "observations": 646,
           "data_sha256": "fa76a4d58ba72d119bca1ceadf56bf42e8712601c914ef2ca893672d17aceca6",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001245233986992389,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012385310255922377,
           "quality": {
             "ess_bulk_mean": 6364.602988830295,
             "ess_bulk_min": 5541.047033871986,
@@ -1257,14 +1257,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6875
+          "rss_mb_after": 371.578125
         },
         {
           "index": 22,
           "observations": 1551,
           "data_sha256": "98b1d2f487bdd4059b7395f49e3e51af48fcbd3daf7c1b864075414199cf9163",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012923019821755588,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.001246405008714646,
           "quality": {
             "ess_bulk_mean": 6518.0040223849555,
             "ess_bulk_min": 5820.182413308839,
@@ -1311,14 +1311,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.6953125
+          "rss_mb_after": 371.58984375
         },
         {
           "index": 23,
           "observations": 834,
           "data_sha256": "5da59c7267e73b7dd2422e68b248a347c15c902341ad81ba316ca46d9fded3fe",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012510840315371752,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012455039541237056,
           "quality": {
             "ess_bulk_mean": 6526.029173465169,
             "ess_bulk_min": 6107.359913284247,
@@ -1365,14 +1365,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.703125
+          "rss_mb_after": 371.59375
         },
         {
           "index": 24,
           "observations": 1729,
           "data_sha256": "eb97ff9600fe3397521e139c3368beccfd64dd96a153b530303f68f6d6ee2ff7",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012494319817051291,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012309860321693122,
           "quality": {
             "ess_bulk_mean": 5853.496424314804,
             "ess_bulk_min": 5603.534519355908,
@@ -1419,14 +1419,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.70703125
+          "rss_mb_after": 371.6015625
         },
         {
           "index": 25,
           "observations": 1077,
           "data_sha256": "39029e4654f7a527690a8a7abb977d914f4844435f9632d5a0ad47f7a11e306c",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012620649649761617,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012373380013741553,
           "quality": {
             "ess_bulk_mean": 6661.074176206464,
             "ess_bulk_min": 6317.194407926091,
@@ -1473,14 +1473,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.71484375
+          "rss_mb_after": 371.60546875
         },
         {
           "index": 26,
           "observations": 1032,
           "data_sha256": "9741d659c1fd5bc4027679f6fa6da521547b21f30dfee99d3934a7079ef609c5",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001246917003300041,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012386300368234515,
           "quality": {
             "ess_bulk_mean": 6988.887950881024,
             "ess_bulk_min": 5958.558432133172,
@@ -1527,14 +1527,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.71875
+          "rss_mb_after": 371.609375
         },
         {
           "index": 27,
           "observations": 1508,
           "data_sha256": "034506efe11004a7762236953805a5bfcb63a0404bfe2cd6ef24dd86af7e8e5c",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012445129686966538,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012389220064505935,
           "quality": {
             "ess_bulk_mean": 6650.926335432045,
             "ess_bulk_min": 6022.920626438006,
@@ -1581,14 +1581,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.7265625
+          "rss_mb_after": 371.6171875
         },
         {
           "index": 28,
           "observations": 1029,
           "data_sha256": "bb36ad975a6b417161f444ec43454fcb5ab9447f4d97596adaa91f9bab4b7e33",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.0012703309766948223,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012287020217627287,
           "quality": {
             "ess_bulk_mean": 6178.500038606663,
             "ess_bulk_min": 5584.800919213815,
@@ -1635,14 +1635,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.73046875
+          "rss_mb_after": 371.62109375
         },
         {
           "index": 29,
           "observations": 1439,
           "data_sha256": "3853d2538c3add705e9942ed828283dcd660fc1c7d54e43da5ea67b4bc68a781",
-          "fit_seconds": 0.21219280993294282,
-          "predict_seconds": 0.001241907011717558,
+          "fit_seconds": 0.21451875236622678,
+          "predict_seconds": 0.0012524269986897707,
           "quality": {
             "ess_bulk_mean": 7144.252387877174,
             "ess_bulk_min": 6322.792208148203,
@@ -1689,7 +1689,7 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 370.734375
+          "rss_mb_after": 371.6328125
         }
       ],
       "notes": [
@@ -1700,14 +1700,14 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.005809511931147426,
-        "first_fit_seconds": 0.21219280993294282,
-        "median_fit_seconds": 0.21219280993294282,
-        "total_fit_seconds": 6.365784297988284,
-        "total_predict_seconds": 0.03796733194030821,
-        "useful_ess_per_second": 30623.01025348467,
-        "peak_rss_mb": 368.66015625,
-        "rss_growth_after_first_fit_mb": 0.1171875
+        "setup_seconds": 0.006513188942335546,
+        "first_fit_seconds": 0.21451875236622678,
+        "median_fit_seconds": 0.21451875236622678,
+        "total_fit_seconds": 6.435562570986804,
+        "total_predict_seconds": 0.03851630026474595,
+        "useful_ess_per_second": 30287.967705357823,
+        "peak_rss_mb": 369.734375,
+        "rss_growth_after_first_fit_mb": 0.5859375
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -1765,17 +1765,17 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.005649997969157994,
-        "build": 3.415497485548258e-05,
-        "compile": 8.153397357091308e-05
+        "import": 0.005674062995240092,
+        "build": 3.2881973311305046e-05,
+        "compile": 8.108298061415553e-05
       },
       "fits": [
         {
           "index": 0,
           "observations": 1201,
           "data_sha256": "aa292d2427cc19072c6fe0149e2b6f1e35e743375a47fa0681fbfd5996d548f0",
-          "fit_seconds": 0.23361907800426707,
-          "predict_seconds": 0.0018422819557599723,
+          "fit_seconds": 0.2282897669938393,
+          "predict_seconds": 0.002156785980332643,
           "quality": {
             "ess_bulk_mean": 5963.311682263846,
             "ess_bulk_min": 5525.218759619651,
@@ -1822,14 +1822,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.0546875
+          "rss_mb_after": 346.5234375
         },
         {
           "index": 1,
           "observations": 880,
           "data_sha256": "9cb2af126fe543d245977feb45d1d9479ad268dc4040e6be85813a636aae1324",
-          "fit_seconds": 0.179283777019009,
-          "predict_seconds": 0.0018127969815395772,
+          "fit_seconds": 0.17729251901619136,
+          "predict_seconds": 0.0012781849945895374,
           "quality": {
             "ess_bulk_mean": 6832.367941501811,
             "ess_bulk_min": 5985.15878326735,
@@ -1876,14 +1876,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.42578125
+          "rss_mb_after": 346.53125
         },
         {
           "index": 2,
           "observations": 553,
           "data_sha256": "a4d8575082a1dd7b738490b0127622968a49a4dff763a7f0ceb65330259b572d",
-          "fit_seconds": 0.11130973900435492,
-          "predict_seconds": 0.0012827049940824509,
+          "fit_seconds": 0.11048626498086378,
+          "predict_seconds": 0.0016061150236055255,
           "quality": {
             "ess_bulk_mean": 6203.633391443098,
             "ess_bulk_min": 5828.731887093583,
@@ -1930,14 +1930,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.42578125
+          "rss_mb_after": 346.53125
         },
         {
           "index": 3,
           "observations": 503,
           "data_sha256": "c26abf4732fcd32e240e4dcab44cc34ce88db3fd7ec438ebd4c87214d13c13bb",
-          "fit_seconds": 0.10726558399619535,
-          "predict_seconds": 0.0016225770232267678,
+          "fit_seconds": 0.10658939904533327,
+          "predict_seconds": 0.001742232998367399,
           "quality": {
             "ess_bulk_mean": 6493.260926681338,
             "ess_bulk_min": 6163.124862231762,
@@ -1984,14 +1984,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.42578125
+          "rss_mb_after": 346.53125
         },
         {
           "index": 4,
           "observations": 794,
           "data_sha256": "1773ec0743a9fff429257d4d4ae86439e14e03a3b6e4dd392fa40793815538d5",
-          "fit_seconds": 0.15439956297632307,
-          "predict_seconds": 0.0012850789935328066,
+          "fit_seconds": 0.15188999200472608,
+          "predict_seconds": 0.0013533480232581496,
           "quality": {
             "ess_bulk_mean": 6481.921549795239,
             "ess_bulk_min": 5726.97784246497,
@@ -2038,14 +2038,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.42578125
+          "rss_mb_after": 346.53125
         },
         {
           "index": 5,
           "observations": 1744,
           "data_sha256": "3ac0bf310d9fe0ba2fe2ba110aa40336a9948325c438cd844cf8430f5b8aba59",
-          "fit_seconds": 0.3288885279907845,
-          "predict_seconds": 0.0016374249826185405,
+          "fit_seconds": 0.33304291596869007,
+          "predict_seconds": 0.0017667789943516254,
           "quality": {
             "ess_bulk_mean": 7081.348246016107,
             "ess_bulk_min": 6262.131860362433,
@@ -2092,14 +2092,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.48046875
+          "rss_mb_after": 346.9453125
         },
         {
           "index": 6,
           "observations": 103,
           "data_sha256": "5d344402f0f6249945b299eac19ebb40fd5bd0903875b3ebcb53eff93e4997af",
-          "fit_seconds": 0.02564676501788199,
-          "predict_seconds": 0.0015618319739587605,
+          "fit_seconds": 0.02560785599052906,
+          "predict_seconds": 0.0012701110099442303,
           "quality": {
             "ess_bulk_mean": 6701.464694678465,
             "ess_bulk_min": 5553.153220436275,
@@ -2146,14 +2146,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.484375
+          "rss_mb_after": 346.95703125
         },
         {
           "index": 7,
           "observations": 1738,
           "data_sha256": "1f4b92573cdf4e41498597e8638aacf59ba25df5aeda3eace48f01ea3a229139",
-          "fit_seconds": 0.42730909399688244,
-          "predict_seconds": 0.001295077963732183,
+          "fit_seconds": 0.34115723002469167,
+          "predict_seconds": 0.0013095749891363084,
           "quality": {
             "ess_bulk_mean": 6335.9176805923125,
             "ess_bulk_min": 5541.4328030731995,
@@ -2200,14 +2200,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.48828125
+          "rss_mb_after": 346.9609375
         },
         {
           "index": 8,
           "observations": 1006,
           "data_sha256": "0ad22a7adcbe252583e52b204e242229bb7142745d7112a3b5e0713be930be5f",
-          "fit_seconds": 0.19411992898676544,
-          "predict_seconds": 0.0012928840005770326,
+          "fit_seconds": 0.19914455502294004,
+          "predict_seconds": 0.0012979329912923276,
           "quality": {
             "ess_bulk_mean": 7313.508140004585,
             "ess_bulk_min": 6979.31432757045,
@@ -2254,14 +2254,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.4921875
+          "rss_mb_after": 346.96875
         },
         {
           "index": 9,
           "observations": 1492,
           "data_sha256": "94ed3aae2c375da477ab0e728fca023dd4e63a04fa679c8ea91905aef7ca39be",
-          "fit_seconds": 0.29115994594758376,
-          "predict_seconds": 0.0016525639803148806,
+          "fit_seconds": 0.2866377850295976,
+          "predict_seconds": 0.001304193981923163,
           "quality": {
             "ess_bulk_mean": 6720.651609740887,
             "ess_bulk_min": 5972.184110731188,
@@ -2308,14 +2308,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.50390625
+          "rss_mb_after": 346.97265625
         },
         {
           "index": 10,
           "observations": 974,
           "data_sha256": "9cd0c93e63eb7a5cb76e8dba906e21a6754fb72ccf9fe303905bcea00e65349a",
-          "fit_seconds": 0.18893955496605486,
-          "predict_seconds": 0.0015951549867168069,
+          "fit_seconds": 0.19074849801836535,
+          "predict_seconds": 0.0014435279881581664,
           "quality": {
             "ess_bulk_mean": 5768.906687410648,
             "ess_bulk_min": 5256.381877830168,
@@ -2362,14 +2362,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.546875
+          "rss_mb_after": 346.9765625
         },
         {
           "index": 11,
           "observations": 1886,
           "data_sha256": "c65478467b269817ff6d4d7d02535aeecf3d0bb14b012f5a9169a4b6063625e7",
-          "fit_seconds": 0.4313974200049415,
-          "predict_seconds": 0.0016278569819405675,
+          "fit_seconds": 0.3536776809487492,
+          "predict_seconds": 0.0013505129609256983,
           "quality": {
             "ess_bulk_mean": 7080.060575218025,
             "ess_bulk_min": 6645.690341021248,
@@ -2416,14 +2416,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.5546875
+          "rss_mb_after": 346.98828125
         },
         {
           "index": 12,
           "observations": 706,
           "data_sha256": "827336aa085067bcebd6ce2e243753be71f208139292afffc69555552519118b",
-          "fit_seconds": 0.14298528799554333,
-          "predict_seconds": 0.0013544799876399338,
+          "fit_seconds": 0.14137673302320763,
+          "predict_seconds": 0.0016493070288561285,
           "quality": {
             "ess_bulk_mean": 6852.690851334801,
             "ess_bulk_min": 6308.094675832665,
@@ -2470,14 +2470,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.55859375
+          "rss_mb_after": 347.0
         },
         {
           "index": 13,
           "observations": 1399,
           "data_sha256": "5ebd2697b7636a4b18f426c2185521feb0007c82fc6e9ba9f7ee844f67e3c97d",
-          "fit_seconds": 0.2765672339592129,
-          "predict_seconds": 0.0012936749844811857,
+          "fit_seconds": 0.2746932930313051,
+          "predict_seconds": 0.0016330359503626823,
           "quality": {
             "ess_bulk_mean": 6425.4890700057385,
             "ess_bulk_min": 5775.075332833268,
@@ -2524,14 +2524,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.57421875
+          "rss_mb_after": 347.00390625
         },
         {
           "index": 14,
           "observations": 596,
           "data_sha256": "3a51fd365d0f82819ab53e16b50620017ade05c823b8038aa09b00c81d47381f",
-          "fit_seconds": 0.11867915600305423,
-          "predict_seconds": 0.0015637960168533027,
+          "fit_seconds": 0.11724113998934627,
+          "predict_seconds": 0.0017712470144033432,
           "quality": {
             "ess_bulk_mean": 5915.56673432937,
             "ess_bulk_min": 5225.995902034029,
@@ -2578,14 +2578,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.53515625
+          "rss_mb_after": 347.0078125
         },
         {
           "index": 15,
           "observations": 214,
           "data_sha256": "939064a91a700a212015b71392c2ae46efdb94b7e344cd1909a51db6362f6f00",
-          "fit_seconds": 0.044805035984609276,
-          "predict_seconds": 0.0015689159627072513,
+          "fit_seconds": 0.045625464990735054,
+          "predict_seconds": 0.0012804599828086793,
           "quality": {
             "ess_bulk_mean": 5781.427371470786,
             "ess_bulk_min": 5396.77116079422,
@@ -2632,14 +2632,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.5390625
+          "rss_mb_after": 347.01171875
         },
         {
           "index": 16,
           "observations": 1949,
           "data_sha256": "d2c883786f098b29c68c0c1f2aed8bbc7146933358accb4186753cb8859392a6",
-          "fit_seconds": 0.37530330603476614,
-          "predict_seconds": 0.0013081930228509009,
+          "fit_seconds": 0.3756932580145076,
+          "predict_seconds": 0.001317879999987781,
           "quality": {
             "ess_bulk_mean": 6811.415591962341,
             "ess_bulk_min": 5975.881409717008,
@@ -2686,14 +2686,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.546875
+          "rss_mb_after": 347.015625
         },
         {
           "index": 17,
           "observations": 1772,
           "data_sha256": "e0ea356c04a417e99569a50338f2f89f2f4dc802a0cbbcef62ff2244fa167d3f",
-          "fit_seconds": 0.33431304001715034,
-          "predict_seconds": 0.001313582994043827,
+          "fit_seconds": 0.33770411397563294,
+          "predict_seconds": 0.0016409819945693016,
           "quality": {
             "ess_bulk_mean": 6652.651670909782,
             "ess_bulk_min": 5786.127165470788,
@@ -2740,14 +2740,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.55078125
+          "rss_mb_after": 347.03515625
         },
         {
           "index": 18,
           "observations": 766,
           "data_sha256": "3bc16ced58ca86a584e303bffeb1800c06cd8439e424196a45ee637f4b31daf4",
-          "fit_seconds": 0.14924297702964395,
-          "predict_seconds": 0.0026635029935278,
+          "fit_seconds": 0.14596642600372434,
+          "predict_seconds": 0.001598711998667568,
           "quality": {
             "ess_bulk_mean": 6430.263525030972,
             "ess_bulk_min": 6070.877470469012,
@@ -2794,14 +2794,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.5546875
+          "rss_mb_after": 347.0390625
         },
         {
           "index": 19,
           "observations": 1301,
           "data_sha256": "5a0cef7b9c714ebd298167b2b2bd96cc43dd1cefe1c63bdc13676e75125cc9e9",
-          "fit_seconds": 0.25960832001874223,
-          "predict_seconds": 0.0012807899620383978,
+          "fit_seconds": 0.27263839001534507,
+          "predict_seconds": 0.0015870089991949499,
           "quality": {
             "ess_bulk_mean": 7010.992719647542,
             "ess_bulk_min": 6162.2454959062425,
@@ -2848,14 +2848,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.55859375
+          "rss_mb_after": 347.04296875
         },
         {
           "index": 20,
           "observations": 1630,
           "data_sha256": "cfc71d3f445b19e30c428aab1bec4d6944d59f1e5a0230953c8f1f0ec32ecdf1",
-          "fit_seconds": 0.32349476299714297,
-          "predict_seconds": 0.0013055079616606236,
+          "fit_seconds": 0.3213935989770107,
+          "predict_seconds": 0.0012940950109623373,
           "quality": {
             "ess_bulk_mean": 6971.92165327897,
             "ess_bulk_min": 5886.085981429737,
@@ -2902,14 +2902,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.56640625
+          "rss_mb_after": 347.046875
         },
         {
           "index": 21,
           "observations": 646,
           "data_sha256": "fa76a4d58ba72d119bca1ceadf56bf42e8712601c914ef2ca893672d17aceca6",
-          "fit_seconds": 0.13153553701704368,
-          "predict_seconds": 0.0014794470043852925,
+          "fit_seconds": 0.130808399990201,
+          "predict_seconds": 0.001275401038583368,
           "quality": {
             "ess_bulk_mean": 6534.420710635643,
             "ess_bulk_min": 5774.858346484945,
@@ -2956,14 +2956,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.5703125
+          "rss_mb_after": 347.05078125
         },
         {
           "index": 22,
           "observations": 1551,
           "data_sha256": "98b1d2f487bdd4059b7395f49e3e51af48fcbd3daf7c1b864075414199cf9163",
-          "fit_seconds": 0.2965775660122745,
-          "predict_seconds": 0.0012877039844170213,
+          "fit_seconds": 0.30107142397901043,
+          "predict_seconds": 0.001305907964706421,
           "quality": {
             "ess_bulk_mean": 6237.945962397471,
             "ess_bulk_min": 5119.8802817920405,
@@ -3010,14 +3010,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.578125
+          "rss_mb_after": 347.05859375
         },
         {
           "index": 23,
           "observations": 834,
           "data_sha256": "5da59c7267e73b7dd2422e68b248a347c15c902341ad81ba316ca46d9fded3fe",
-          "fit_seconds": 0.1690636079874821,
-          "predict_seconds": 0.0015553800039924681,
+          "fit_seconds": 0.15866866300348192,
+          "predict_seconds": 0.0013142440002411604,
           "quality": {
             "ess_bulk_mean": 6257.032146169109,
             "ess_bulk_min": 5852.598486794759,
@@ -3064,14 +3064,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.625
+          "rss_mb_after": 347.06640625
         },
         {
           "index": 24,
           "observations": 1729,
           "data_sha256": "eb97ff9600fe3397521e139c3368beccfd64dd96a153b530303f68f6d6ee2ff7",
-          "fit_seconds": 0.33786800800589845,
-          "predict_seconds": 0.0016512820147909224,
+          "fit_seconds": 0.34591293800622225,
+          "predict_seconds": 0.0012801190023310483,
           "quality": {
             "ess_bulk_mean": 6429.462691846982,
             "ess_bulk_min": 5710.541521017428,
@@ -3118,14 +3118,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.640625
+          "rss_mb_after": 347.078125
         },
         {
           "index": 25,
           "observations": 1077,
           "data_sha256": "39029e4654f7a527690a8a7abb977d914f4844435f9632d5a0ad47f7a11e306c",
-          "fit_seconds": 0.20499201701022685,
-          "predict_seconds": 0.0016225069994106889,
+          "fit_seconds": 0.20663039200007915,
+          "predict_seconds": 0.0012849789927713573,
           "quality": {
             "ess_bulk_mean": 6203.02771968093,
             "ess_bulk_min": 5565.049589347292,
@@ -3172,14 +3172,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.60546875
+          "rss_mb_after": 347.0859375
         },
         {
           "index": 26,
           "observations": 1032,
           "data_sha256": "9741d659c1fd5bc4027679f6fa6da521547b21f30dfee99d3934a7079ef609c5",
-          "fit_seconds": 0.19868803303688765,
-          "predict_seconds": 0.001668744022026658,
+          "fit_seconds": 0.20381775801070035,
+          "predict_seconds": 0.0012704809778369963,
           "quality": {
             "ess_bulk_mean": 6627.877584778551,
             "ess_bulk_min": 5456.286974109784,
@@ -3226,14 +3226,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.609375
+          "rss_mb_after": 347.08984375
         },
         {
           "index": 27,
           "observations": 1508,
           "data_sha256": "034506efe11004a7762236953805a5bfcb63a0404bfe2cd6ef24dd86af7e8e5c",
-          "fit_seconds": 0.2912198069971055,
-          "predict_seconds": 0.0014616420376114547,
+          "fit_seconds": 0.284184770018328,
+          "predict_seconds": 0.0012709720176644623,
           "quality": {
             "ess_bulk_mean": 6865.346990395172,
             "ess_bulk_min": 6344.032869293455,
@@ -3280,14 +3280,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.61328125
+          "rss_mb_after": 347.09765625
         },
         {
           "index": 28,
           "observations": 1029,
           "data_sha256": "bb36ad975a6b417161f444ec43454fcb5ab9447f4d97596adaa91f9bab4b7e33",
-          "fit_seconds": 0.19610502000432462,
-          "predict_seconds": 0.0015988710219971836,
+          "fit_seconds": 0.2005008799606003,
+          "predict_seconds": 0.001539680000860244,
           "quality": {
             "ess_bulk_mean": 6292.485957585628,
             "ess_bulk_min": 5924.772077756801,
@@ -3334,14 +3334,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.6171875
+          "rss_mb_after": 347.1015625
         },
         {
           "index": 29,
           "observations": 1439,
           "data_sha256": "3853d2538c3add705e9942ed828283dcd660fc1c7d54e43da5ea67b4bc68a781",
-          "fit_seconds": 0.2814948059967719,
-          "predict_seconds": 0.0013285510358400643,
+          "fit_seconds": 0.27525835897540674,
+          "predict_seconds": 0.0015797159867361188,
           "quality": {
             "ess_bulk_mean": 6630.240187062453,
             "ess_bulk_min": 5903.496337012639,
@@ -3388,7 +3388,7 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 346.625
+          "rss_mb_after": 347.10546875
         }
       ],
       "notes": [
@@ -3400,14 +3400,14 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.0057656869175843894,
-        "first_fit_seconds": 0.23361907800426707,
-        "median_fit_seconds": 0.20184002502355725,
-        "total_fit_seconds": 6.8058825000189245,
-        "total_predict_seconds": 0.04581480682827532,
-        "useful_ess_per_second": 28760.530034358133,
-        "peak_rss_mb": 345.4453125,
-        "rss_growth_after_first_fit_mb": 0.5703125
+        "setup_seconds": 0.005788027949165553,
+        "first_fit_seconds": 0.2282897669938393,
+        "median_fit_seconds": 0.20522407500538975,
+        "total_fit_seconds": 6.6437504650093615,
+        "total_predict_seconds": 0.04377352789742872,
+        "useful_ess_per_second": 29461.685569806425,
+        "peak_rss_mb": 345.171875,
+        "rss_growth_after_first_fit_mb": 0.58203125
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -3465,16 +3465,16 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.27138113003456965,
-        "build": 0.012663633970078081
+        "import": 0.2683887369930744,
+        "build": 0.012290897953789681
       },
       "fits": [
         {
           "index": 0,
           "observations": 1201,
           "data_sha256": "aa292d2427cc19072c6fe0149e2b6f1e35e743375a47fa0681fbfd5996d548f0",
-          "fit_seconds": 0.9281800030148588,
-          "predict_seconds": 0.00010016001760959625,
+          "fit_seconds": 0.9511379590258002,
+          "predict_seconds": 0.00011181196896359324,
           "quality": {
             "ess_bulk_mean": 6803.234219613488,
             "ess_bulk_min": 5682.194330969072,
@@ -3521,14 +3521,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 622.1015625
+          "rss_mb_after": 622.12109375
         },
         {
           "index": 1,
           "observations": 880,
           "data_sha256": "9cb2af126fe543d245977feb45d1d9479ad268dc4040e6be85813a636aae1324",
-          "fit_seconds": 0.8601981890387833,
-          "predict_seconds": 8.108298061415553e-05,
+          "fit_seconds": 0.900268383033108,
+          "predict_seconds": 0.00031921296613290906,
           "quality": {
             "ess_bulk_mean": 6607.0014550822,
             "ess_bulk_min": 5737.914509829936,
@@ -3575,14 +3575,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 657.69140625
+          "rss_mb_after": 654.125
         },
         {
           "index": 2,
           "observations": 553,
           "data_sha256": "a4d8575082a1dd7b738490b0127622968a49a4dff763a7f0ceb65330259b572d",
-          "fit_seconds": 0.7781658970052376,
-          "predict_seconds": 0.00010175298666581511,
+          "fit_seconds": 0.7892480889568105,
+          "predict_seconds": 9.79460310190916e-05,
           "quality": {
             "ess_bulk_mean": 5986.802716771922,
             "ess_bulk_min": 5624.003888002498,
@@ -3629,14 +3629,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 686.73828125
+          "rss_mb_after": 685.1796875
         },
         {
           "index": 3,
           "observations": 503,
           "data_sha256": "c26abf4732fcd32e240e4dcab44cc34ce88db3fd7ec438ebd4c87214d13c13bb",
-          "fit_seconds": 0.8340564660029486,
-          "predict_seconds": 0.00026679399888962507,
+          "fit_seconds": 0.7961749199894257,
+          "predict_seconds": 0.00013165903510525823,
           "quality": {
             "ess_bulk_mean": 6649.672630970473,
             "ess_bulk_min": 5694.268644356296,
@@ -3683,14 +3683,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 713.8984375
+          "rss_mb_after": 710.515625
         },
         {
           "index": 4,
           "observations": 794,
           "data_sha256": "1773ec0743a9fff429257d4d4ae86439e14e03a3b6e4dd392fa40793815538d5",
-          "fit_seconds": 0.9018484609550796,
-          "predict_seconds": 0.000304265005979687,
+          "fit_seconds": 0.9220530419843271,
+          "predict_seconds": 0.0002850079908967018,
           "quality": {
             "ess_bulk_mean": 6254.613997609717,
             "ess_bulk_min": 5940.530686215538,
@@ -3737,14 +3737,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 735.21484375
+          "rss_mb_after": 730.375
         },
         {
           "index": 5,
           "observations": 1744,
           "data_sha256": "3ac0bf310d9fe0ba2fe2ba110aa40336a9948325c438cd844cf8430f5b8aba59",
-          "fit_seconds": 0.8235922970343381,
-          "predict_seconds": 9.152304846793413e-05,
+          "fit_seconds": 0.8141679239924997,
+          "predict_seconds": 0.00029485695995390415,
           "quality": {
             "ess_bulk_mean": 6839.63611009428,
             "ess_bulk_min": 6521.7746616014665,
@@ -3791,14 +3791,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 762.0546875
+          "rss_mb_after": 756.13671875
         },
         {
           "index": 6,
           "observations": 103,
           "data_sha256": "5d344402f0f6249945b299eac19ebb40fd5bd0903875b3ebcb53eff93e4997af",
-          "fit_seconds": 0.773796649009455,
-          "predict_seconds": 0.0002760019851848483,
+          "fit_seconds": 0.7878874270245433,
+          "predict_seconds": 0.00028132100123912096,
           "quality": {
             "ess_bulk_mean": 6310.375175897186,
             "ess_bulk_min": 5588.238239111133,
@@ -3845,14 +3845,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 782.6875
+          "rss_mb_after": 779.3359375
         },
         {
           "index": 7,
           "observations": 1738,
           "data_sha256": "1f4b92573cdf4e41498597e8638aacf59ba25df5aeda3eace48f01ea3a229139",
-          "fit_seconds": 0.8033919460140169,
-          "predict_seconds": 0.0002324800007045269,
+          "fit_seconds": 0.8153991710278206,
+          "predict_seconds": 9.115203283727169e-05,
           "quality": {
             "ess_bulk_mean": 6214.037857152365,
             "ess_bulk_min": 5192.930473260358,
@@ -3899,14 +3899,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 805.4453125
+          "rss_mb_after": 801.28125
         },
         {
           "index": 8,
           "observations": 1006,
           "data_sha256": "0ad22a7adcbe252583e52b204e242229bb7142745d7112a3b5e0713be930be5f",
-          "fit_seconds": 0.7848631530068815,
-          "predict_seconds": 8.721498306840658e-05,
+          "fit_seconds": 0.9702583029866219,
+          "predict_seconds": 8.490995969623327e-05,
           "quality": {
             "ess_bulk_mean": 6813.972371583568,
             "ess_bulk_min": 6068.43314794634,
@@ -3953,14 +3953,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 824.625
+          "rss_mb_after": 821.7578125
         },
         {
           "index": 9,
           "observations": 1492,
           "data_sha256": "94ed3aae2c375da477ab0e728fca023dd4e63a04fa679c8ea91905aef7ca39be",
-          "fit_seconds": 0.9571892090025358,
-          "predict_seconds": 0.00010189198656007648,
+          "fit_seconds": 0.7947806740412489,
+          "predict_seconds": 0.0002601519809104502,
           "quality": {
             "ess_bulk_mean": 6749.755534753315,
             "ess_bulk_min": 5914.232788436045,
@@ -4007,14 +4007,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 847.5625
+          "rss_mb_after": 846.69921875
         },
         {
           "index": 10,
           "observations": 974,
           "data_sha256": "9cd0c93e63eb7a5cb76e8dba906e21a6754fb72ccf9fe303905bcea00e65349a",
-          "fit_seconds": 0.8104113829904236,
-          "predict_seconds": 9.707396384328604e-05,
+          "fit_seconds": 0.7972809300408699,
+          "predict_seconds": 9.612197754904628e-05,
           "quality": {
             "ess_bulk_mean": 6748.848639170209,
             "ess_bulk_min": 5894.05597460352,
@@ -4061,14 +4061,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 865.5
+          "rss_mb_after": 866.21484375
         },
         {
           "index": 11,
           "observations": 1886,
           "data_sha256": "c65478467b269817ff6d4d7d02535aeecf3d0bb14b012f5a9169a4b6063625e7",
-          "fit_seconds": 0.8146906010224484,
-          "predict_seconds": 0.0002689089742489159,
+          "fit_seconds": 0.8212977089569904,
+          "predict_seconds": 0.00010996800847351551,
           "quality": {
             "ess_bulk_mean": 6093.425027466095,
             "ess_bulk_min": 5544.563326637474,
@@ -4115,14 +4115,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 888.43359375
+          "rss_mb_after": 885.15234375
         },
         {
           "index": 12,
           "observations": 706,
           "data_sha256": "827336aa085067bcebd6ce2e243753be71f208139292afffc69555552519118b",
-          "fit_seconds": 0.8004766429658048,
-          "predict_seconds": 0.00023490400053560734,
+          "fit_seconds": 0.7804729859926738,
+          "predict_seconds": 0.00029470701701939106,
           "quality": {
             "ess_bulk_mean": 6293.291365414837,
             "ess_bulk_min": 5814.1782844335485,
@@ -4169,14 +4169,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 906.73046875
+          "rss_mb_after": 905.09375
         },
         {
           "index": 13,
           "observations": 1399,
           "data_sha256": "5ebd2697b7636a4b18f426c2185521feb0007c82fc6e9ba9f7ee844f67e3c97d",
-          "fit_seconds": 0.8151030489825644,
-          "predict_seconds": 0.00010368594666942954,
+          "fit_seconds": 0.8038217109860852,
+          "predict_seconds": 0.0002960499841719866,
           "quality": {
             "ess_bulk_mean": 6782.751225006899,
             "ess_bulk_min": 6172.13146577881,
@@ -4223,14 +4223,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 924.64453125
+          "rss_mb_after": 925.8828125
         },
         {
           "index": 14,
           "observations": 596,
           "data_sha256": "3a51fd365d0f82819ab53e16b50620017ade05c823b8038aa09b00c81d47381f",
-          "fit_seconds": 1.0225934060290456,
-          "predict_seconds": 7.888901745900512e-05,
+          "fit_seconds": 1.0046604659873992,
+          "predict_seconds": 0.00011432601604610682,
           "quality": {
             "ess_bulk_mean": 5968.395208348245,
             "ess_bulk_min": 5319.540192627349,
@@ -4277,14 +4277,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 944.19921875
+          "rss_mb_after": 946.3125
         },
         {
           "index": 15,
           "observations": 214,
           "data_sha256": "939064a91a700a212015b71392c2ae46efdb94b7e344cd1909a51db6362f6f00",
-          "fit_seconds": 0.7925931429490447,
-          "predict_seconds": 9.334698552265763e-05,
+          "fit_seconds": 0.7901529389782809,
+          "predict_seconds": 0.00010984804248437285,
           "quality": {
             "ess_bulk_mean": 6273.416887757151,
             "ess_bulk_min": 5668.495312836838,
@@ -4331,14 +4331,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 962.75390625
+          "rss_mb_after": 964.56640625
         },
         {
           "index": 16,
           "observations": 1949,
           "data_sha256": "d2c883786f098b29c68c0c1f2aed8bbc7146933358accb4186753cb8859392a6",
-          "fit_seconds": 0.803106052975636,
-          "predict_seconds": 8.242594776675105e-05,
+          "fit_seconds": 0.8667414690135047,
+          "predict_seconds": 0.00011028803419321775,
           "quality": {
             "ess_bulk_mean": 6193.60172731238,
             "ess_bulk_min": 5731.114338023585,
@@ -4385,14 +4385,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 984.43359375
+          "rss_mb_after": 986.14453125
         },
         {
           "index": 17,
           "observations": 1772,
           "data_sha256": "e0ea356c04a417e99569a50338f2f89f2f4dc802a0cbbcef62ff2244fa167d3f",
-          "fit_seconds": 0.8659558539511636,
-          "predict_seconds": 0.00023471395252272487,
+          "fit_seconds": 0.8282596439821646,
+          "predict_seconds": 0.00010271399514749646,
           "quality": {
             "ess_bulk_mean": 7048.4344808987325,
             "ess_bulk_min": 6042.721884503347,
@@ -4439,14 +4439,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1003.4921875
+          "rss_mb_after": 1003.9609375
         },
         {
           "index": 18,
           "observations": 766,
           "data_sha256": "3bc16ced58ca86a584e303bffeb1800c06cd8439e424196a45ee637f4b31daf4",
-          "fit_seconds": 0.7909523799899034,
-          "predict_seconds": 9.221397340297699e-05,
+          "fit_seconds": 0.7827780100051314,
+          "predict_seconds": 0.00010488799307495356,
           "quality": {
             "ess_bulk_mean": 6531.21324461368,
             "ess_bulk_min": 6111.926218859281,
@@ -4493,14 +4493,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1021.03125
+          "rss_mb_after": 1023.8125
         },
         {
           "index": 19,
           "observations": 1301,
           "data_sha256": "5a0cef7b9c714ebd298167b2b2bd96cc43dd1cefe1c63bdc13676e75125cc9e9",
-          "fit_seconds": 0.8137728319852613,
-          "predict_seconds": 0.0002848189906217158,
+          "fit_seconds": 1.0382799329818226,
+          "predict_seconds": 0.00023850100114941597,
           "quality": {
             "ess_bulk_mean": 7027.397504760397,
             "ess_bulk_min": 5985.498836614843,
@@ -4547,14 +4547,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1043.24609375
+          "rss_mb_after": 1046.83984375
         },
         {
           "index": 20,
           "observations": 1630,
           "data_sha256": "cfc71d3f445b19e30c428aab1bec4d6944d59f1e5a0230953c8f1f0ec32ecdf1",
-          "fit_seconds": 1.0951031440054066,
-          "predict_seconds": 0.0001424399670213461,
+          "fit_seconds": 0.7998597630066797,
+          "predict_seconds": 0.00010761298472061753,
           "quality": {
             "ess_bulk_mean": 6705.491551559509,
             "ess_bulk_min": 5255.4087749940445,
@@ -4601,14 +4601,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1062.578125
+          "rss_mb_after": 1063.140625
         },
         {
           "index": 21,
           "observations": 646,
           "data_sha256": "fa76a4d58ba72d119bca1ceadf56bf42e8712601c914ef2ca893672d17aceca6",
-          "fit_seconds": 0.7926506689982489,
-          "predict_seconds": 0.00029926601564511657,
+          "fit_seconds": 0.7926293769851327,
+          "predict_seconds": 0.00010130100417882204,
           "quality": {
             "ess_bulk_mean": 6429.125244529966,
             "ess_bulk_min": 5900.262756263484,
@@ -4655,14 +4655,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1085.0234375
+          "rss_mb_after": 1086.34765625
         },
         {
           "index": 22,
           "observations": 1551,
           "data_sha256": "98b1d2f487bdd4059b7395f49e3e51af48fcbd3daf7c1b864075414199cf9163",
-          "fit_seconds": 0.7959565069759265,
-          "predict_seconds": 0.0002739580231718719,
+          "fit_seconds": 0.8000861500040628,
+          "predict_seconds": 0.00010656099766492844,
           "quality": {
             "ess_bulk_mean": 6626.462279454231,
             "ess_bulk_min": 6121.353765646489,
@@ -4709,14 +4709,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1105.44140625
+          "rss_mb_after": 1102.03125
         },
         {
           "index": 23,
           "observations": 834,
           "data_sha256": "5da59c7267e73b7dd2422e68b248a347c15c902341ad81ba316ca46d9fded3fe",
-          "fit_seconds": 0.7846597250318155,
-          "predict_seconds": 8.355802856385708e-05,
+          "fit_seconds": 0.7996891999500804,
+          "predict_seconds": 0.0003038740251213312,
           "quality": {
             "ess_bulk_mean": 7038.847354153443,
             "ess_bulk_min": 6031.155294122875,
@@ -4763,14 +4763,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1124.2421875
+          "rss_mb_after": 1125.015625
         },
         {
           "index": 24,
           "observations": 1729,
           "data_sha256": "eb97ff9600fe3397521e139c3368beccfd64dd96a153b530303f68f6d6ee2ff7",
-          "fit_seconds": 0.8259249679977074,
-          "predict_seconds": 0.0002738369512371719,
+          "fit_seconds": 0.8359467909904197,
+          "predict_seconds": 0.00011369504500180483,
           "quality": {
             "ess_bulk_mean": 6476.426763474119,
             "ess_bulk_min": 6185.109609557229,
@@ -4817,14 +4817,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1143.95703125
+          "rss_mb_after": 1142.87109375
         },
         {
           "index": 25,
           "observations": 1077,
           "data_sha256": "39029e4654f7a527690a8a7abb977d914f4844435f9632d5a0ad47f7a11e306c",
-          "fit_seconds": 0.8221821549814194,
-          "predict_seconds": 9.688298450782895e-05,
+          "fit_seconds": 0.8314821140374988,
+          "predict_seconds": 0.00029321498004719615,
           "quality": {
             "ess_bulk_mean": 6814.027484695341,
             "ess_bulk_min": 6290.96085677673,
@@ -4871,14 +4871,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1164.5234375
+          "rss_mb_after": 1163.2109375
         },
         {
           "index": 26,
           "observations": 1032,
           "data_sha256": "9741d659c1fd5bc4027679f6fa6da521547b21f30dfee99d3934a7079ef609c5",
-          "fit_seconds": 0.7950180409825407,
-          "predict_seconds": 9.404798038303852e-05,
+          "fit_seconds": 1.1343811400001869,
+          "predict_seconds": 0.00011115003144368529,
           "quality": {
             "ess_bulk_mean": 6523.517433648346,
             "ess_bulk_min": 5933.2424394899235,
@@ -4925,14 +4925,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1184.25
+          "rss_mb_after": 1183.39453125
         },
         {
           "index": 27,
           "observations": 1508,
           "data_sha256": "034506efe11004a7762236953805a5bfcb63a0404bfe2cd6ef24dd86af7e8e5c",
-          "fit_seconds": 0.8328197189839557,
-          "predict_seconds": 0.00022159900981932878,
+          "fit_seconds": 0.8142362509970553,
+          "predict_seconds": 9.692303137853742e-05,
           "quality": {
             "ess_bulk_mean": 6479.462125830816,
             "ess_bulk_min": 5871.3289124018775,
@@ -4979,14 +4979,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1203.953125
+          "rss_mb_after": 1201.51171875
         },
         {
           "index": 28,
           "observations": 1029,
           "data_sha256": "bb36ad975a6b417161f444ec43454fcb5ab9447f4d97596adaa91f9bab4b7e33",
-          "fit_seconds": 1.0923453769646585,
-          "predict_seconds": 0.00032774999272078276,
+          "fit_seconds": 0.7940127209876664,
+          "predict_seconds": 0.00025357899721711874,
           "quality": {
             "ess_bulk_mean": 6701.15392671739,
             "ess_bulk_min": 5915.531057134145,
@@ -5033,14 +5033,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1223.17578125
+          "rss_mb_after": 1220.28515625
         },
         {
           "index": 29,
           "observations": 1439,
           "data_sha256": "3853d2538c3add705e9942ed828283dcd660fc1c7d54e43da5ea67b4bc68a781",
-          "fit_seconds": 0.8603835859685205,
-          "predict_seconds": 9.54400165937841e-05,
+          "fit_seconds": 0.8112797149806283,
+          "predict_seconds": 0.00011251302203163505,
           "quality": {
             "ess_bulk_mean": 6357.789399207089,
             "ess_bulk_min": 5625.946575187689,
@@ -5087,7 +5087,7 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 1245.01953125
+          "rss_mb_after": 1240.1796875
         }
       ],
       "notes": [
@@ -5099,16 +5099,16 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.28404476400464773,
-        "first_fit_seconds": 0.9281800030148588,
-        "median_fit_seconds": 0.8148968250025064,
-        "total_fit_seconds": 25.47198150481563,
-        "total_predict_seconds": 0.005122927716001868,
-        "useful_ess_per_second": 7623.155019888889,
-        "peak_rss_mb": 1241.203125,
-        "rss_growth_after_first_fit_mb": 622.91796875
+        "setup_seconds": 0.2806796349468641,
+        "first_fit_seconds": 0.9511379590258002,
+        "median_fit_seconds": 0.812723819486564,
+        "total_fit_seconds": 25.46872491092654,
+        "total_predict_seconds": 0.005135866114869714,
+        "useful_ess_per_second": 7625.11539223198,
+        "peak_rss_mb": 1239.33984375,
+        "rss_growth_after_first_fit_mb": 618.05859375
       },
-      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 12:06:53,473:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
+      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 12:21:27,375:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
     },
     {
       "schema_version": 1,
@@ -5164,17 +5164,17 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.44029106199741364,
-        "build": 0.009903008001856506,
-        "compile": 7.40544978500111
+        "import": 0.4369548929971643,
+        "build": 0.009547261986881495,
+        "compile": 7.604727725032717
       },
       "fits": [
         {
           "index": 0,
           "observations": 1201,
           "data_sha256": "aa292d2427cc19072c6fe0149e2b6f1e35e743375a47fa0681fbfd5996d548f0",
-          "fit_seconds": 0.10591001895954832,
-          "predict_seconds": 0.00026973895728588104,
+          "fit_seconds": 0.10707891400670633,
+          "predict_seconds": 0.0002754500019364059,
           "quality": {
             "ess_bulk_mean": 5765.5282930761705,
             "ess_bulk_min": 5368.018254487818,
@@ -5221,14 +5221,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 540.81640625
+          "rss_mb_after": 539.2890625
         },
         {
           "index": 1,
           "observations": 880,
           "data_sha256": "9cb2af126fe543d245977feb45d1d9479ad268dc4040e6be85813a636aae1324",
-          "fit_seconds": 0.08534519001841545,
-          "predict_seconds": 0.00020500703249126673,
+          "fit_seconds": 0.08441391098313034,
+          "predict_seconds": 0.0002445119898766279,
           "quality": {
             "ess_bulk_mean": 5643.838201084982,
             "ess_bulk_min": 5373.42935970413,
@@ -5275,14 +5275,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 543.9765625
+          "rss_mb_after": 542.56640625
         },
         {
           "index": 2,
           "observations": 553,
           "data_sha256": "a4d8575082a1dd7b738490b0127622968a49a4dff763a7f0ceb65330259b572d",
-          "fit_seconds": 0.07124128297436982,
-          "predict_seconds": 7.621402619406581e-05,
+          "fit_seconds": 0.06315061601344496,
+          "predict_seconds": 8.579203858971596e-05,
           "quality": {
             "ess_bulk_mean": 5471.113542547926,
             "ess_bulk_min": 5014.42569892332,
@@ -5329,14 +5329,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 546.68359375
+          "rss_mb_after": 545.19921875
         },
         {
           "index": 3,
           "observations": 503,
           "data_sha256": "c26abf4732fcd32e240e4dcab44cc34ce88db3fd7ec438ebd4c87214d13c13bb",
-          "fit_seconds": 0.0657435409957543,
-          "predict_seconds": 7.455097511410713e-05,
+          "fit_seconds": 0.06548177200602368,
+          "predict_seconds": 7.924000965431333e-05,
           "quality": {
             "ess_bulk_mean": 5417.959153720064,
             "ess_bulk_min": 4777.939068911075,
@@ -5383,14 +5383,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 546.96484375
+          "rss_mb_after": 546.22265625
         },
         {
           "index": 4,
           "observations": 794,
           "data_sha256": "1773ec0743a9fff429257d4d4ae86439e14e03a3b6e4dd392fa40793815538d5",
-          "fit_seconds": 0.08337209100136533,
-          "predict_seconds": 6.548297824338078e-05,
+          "fit_seconds": 0.07150047598406672,
+          "predict_seconds": 9.245402179658413e-05,
           "quality": {
             "ess_bulk_mean": 5981.975360942048,
             "ess_bulk_min": 5616.284170429096,
@@ -5437,14 +5437,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 546.9765625
+          "rss_mb_after": 543.98046875
         },
         {
           "index": 5,
           "observations": 1744,
           "data_sha256": "3ac0bf310d9fe0ba2fe2ba110aa40336a9948325c438cd844cf8430f5b8aba59",
-          "fit_seconds": 0.12491029198281467,
-          "predict_seconds": 8.452998008579016e-05,
+          "fit_seconds": 0.12357842602068558,
+          "predict_seconds": 0.00012534699635580182,
           "quality": {
             "ess_bulk_mean": 5845.901211442277,
             "ess_bulk_min": 5582.385933674745,
@@ -5491,14 +5491,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 549.58203125
+          "rss_mb_after": 547.36328125
         },
         {
           "index": 6,
           "observations": 103,
           "data_sha256": "5d344402f0f6249945b299eac19ebb40fd5bd0903875b3ebcb53eff93e4997af",
-          "fit_seconds": 0.03370822197757661,
-          "predict_seconds": 0.00018521997844800353,
+          "fit_seconds": 0.034212296013720334,
+          "predict_seconds": 7.421098416671157e-05,
           "quality": {
             "ess_bulk_mean": 4915.75921047292,
             "ess_bulk_min": 4330.84945434988,
@@ -5545,14 +5545,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 547.375
+          "rss_mb_after": 547.3671875
         },
         {
           "index": 7,
           "observations": 1738,
           "data_sha256": "1f4b92573cdf4e41498597e8638aacf59ba25df5aeda3eace48f01ea3a229139",
-          "fit_seconds": 0.12947077199351043,
-          "predict_seconds": 8.27970216050744e-05,
+          "fit_seconds": 0.1286879620165564,
+          "predict_seconds": 9.567098459228873e-05,
           "quality": {
             "ess_bulk_mean": 5511.934781159256,
             "ess_bulk_min": 4858.948901747986,
@@ -5599,14 +5599,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.44140625
+          "rss_mb_after": 544.5625
         },
         {
           "index": 8,
           "observations": 1006,
           "data_sha256": "0ad22a7adcbe252583e52b204e242229bb7142745d7112a3b5e0713be930be5f",
-          "fit_seconds": 0.09607183403568342,
-          "predict_seconds": 0.00011903501581400633,
+          "fit_seconds": 0.1024083869997412,
+          "predict_seconds": 9.419803973287344e-05,
           "quality": {
             "ess_bulk_mean": 5882.367782578925,
             "ess_bulk_min": 5081.979212786151,
@@ -5653,14 +5653,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 550.58203125
+          "rss_mb_after": 547.66015625
         },
         {
           "index": 9,
           "observations": 1492,
           "data_sha256": "94ed3aae2c375da477ab0e728fca023dd4e63a04fa679c8ea91905aef7ca39be",
-          "fit_seconds": 0.11823420302243903,
-          "predict_seconds": 6.916100392118096e-05,
+          "fit_seconds": 0.11153097701026127,
+          "predict_seconds": 8.91280360519886e-05,
           "quality": {
             "ess_bulk_mean": 5670.62503474605,
             "ess_bulk_min": 5249.866431983412,
@@ -5707,14 +5707,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 547.5859375
+          "rss_mb_after": 547.76171875
         },
         {
           "index": 10,
           "observations": 974,
           "data_sha256": "9cd0c93e63eb7a5cb76e8dba906e21a6754fb72ccf9fe303905bcea00e65349a",
-          "fit_seconds": 0.08923964004497975,
-          "predict_seconds": 8.853699546307325e-05,
+          "fit_seconds": 0.08540741796605289,
+          "predict_seconds": 8.305697701871395e-05,
           "quality": {
             "ess_bulk_mean": 5750.028995589351,
             "ess_bulk_min": 5243.680546759364,
@@ -5761,14 +5761,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.51171875
+          "rss_mb_after": 544.671875
         },
         {
           "index": 11,
           "observations": 1886,
           "data_sha256": "c65478467b269817ff6d4d7d02535aeecf3d0bb14b012f5a9169a4b6063625e7",
-          "fit_seconds": 0.14545425097458065,
-          "predict_seconds": 9.467900963500142e-05,
+          "fit_seconds": 0.1334447609842755,
+          "predict_seconds": 9.134202264249325e-05,
           "quality": {
             "ess_bulk_mean": 5862.791341498258,
             "ess_bulk_min": 5491.539665075374,
@@ -5815,14 +5815,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.70703125
+          "rss_mb_after": 547.83984375
         },
         {
           "index": 12,
           "observations": 706,
           "data_sha256": "827336aa085067bcebd6ce2e243753be71f208139292afffc69555552519118b",
-          "fit_seconds": 0.07182869303505868,
-          "predict_seconds": 6.825901800766587e-05,
+          "fit_seconds": 0.07040268101263791,
+          "predict_seconds": 8.242600597441196e-05,
           "quality": {
             "ess_bulk_mean": 5903.11606547665,
             "ess_bulk_min": 5465.265969051853,
@@ -5869,14 +5869,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 550.80859375
+          "rss_mb_after": 547.8515625
         },
         {
           "index": 13,
           "observations": 1399,
           "data_sha256": "5ebd2697b7636a4b18f426c2185521feb0007c82fc6e9ba9f7ee844f67e3c97d",
-          "fit_seconds": 0.10817326599499211,
-          "predict_seconds": 8.63039749674499e-05,
+          "fit_seconds": 0.11115412600338459,
+          "predict_seconds": 8.725502993911505e-05,
           "quality": {
             "ess_bulk_mean": 5630.14625664388,
             "ess_bulk_min": 5184.48346088014,
@@ -5923,14 +5923,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.4375
+          "rss_mb_after": 546.921875
         },
         {
           "index": 14,
           "observations": 596,
           "data_sha256": "3a51fd365d0f82819ab53e16b50620017ade05c823b8038aa09b00c81d47381f",
-          "fit_seconds": 0.06854386400664225,
-          "predict_seconds": 8.909899042919278e-05,
+          "fit_seconds": 0.06644508201861754,
+          "predict_seconds": 8.221599273383617e-05,
           "quality": {
             "ess_bulk_mean": 5533.06971102307,
             "ess_bulk_min": 5087.756012146016,
@@ -5977,14 +5977,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.5390625
+          "rss_mb_after": 550.02734375
         },
         {
           "index": 15,
           "observations": 214,
           "data_sha256": "939064a91a700a212015b71392c2ae46efdb94b7e344cd1909a51db6362f6f00",
-          "fit_seconds": 0.03772278898395598,
-          "predict_seconds": 6.849999772384763e-05,
+          "fit_seconds": 0.036567729024682194,
+          "predict_seconds": 6.471201777458191e-05,
           "quality": {
             "ess_bulk_mean": 5428.3935103246,
             "ess_bulk_min": 5106.590897741638,
@@ -6031,14 +6031,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.5546875
+          "rss_mb_after": 547.8203125
         },
         {
           "index": 16,
           "observations": 1949,
           "data_sha256": "d2c883786f098b29c68c0c1f2aed8bbc7146933358accb4186753cb8859392a6",
-          "fit_seconds": 0.14037847705185413,
-          "predict_seconds": 8.797604823485017e-05,
+          "fit_seconds": 0.13793385599274188,
+          "predict_seconds": 0.00010212295455858111,
           "quality": {
             "ess_bulk_mean": 5515.250188201061,
             "ess_bulk_min": 4853.41513640315,
@@ -6085,14 +6085,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.5625
+          "rss_mb_after": 547.95703125
         },
         {
           "index": 17,
           "observations": 1772,
           "data_sha256": "e0ea356c04a417e99569a50338f2f89f2f4dc802a0cbbcef62ff2244fa167d3f",
-          "fit_seconds": 0.1214366850326769,
-          "predict_seconds": 9.828602196648717e-05,
+          "fit_seconds": 0.12112916598562151,
+          "predict_seconds": 9.296496864408255e-05,
           "quality": {
             "ess_bulk_mean": 6021.052063727,
             "ess_bulk_min": 5355.249300483883,
@@ -6139,14 +6139,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.65234375
+          "rss_mb_after": 547.9921875
         },
         {
           "index": 18,
           "observations": 766,
           "data_sha256": "3bc16ced58ca86a584e303bffeb1800c06cd8439e424196a45ee637f4b31daf4",
-          "fit_seconds": 0.08211719896644354,
-          "predict_seconds": 0.00010499899508431554,
+          "fit_seconds": 0.07484015700174496,
+          "predict_seconds": 8.19650012999773e-05,
           "quality": {
             "ess_bulk_mean": 5992.691723253085,
             "ess_bulk_min": 5515.6794717711855,
@@ -6193,14 +6193,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.66015625
+          "rss_mb_after": 547.99609375
         },
         {
           "index": 19,
           "observations": 1301,
           "data_sha256": "5a0cef7b9c714ebd298167b2b2bd96cc43dd1cefe1c63bdc13676e75125cc9e9",
-          "fit_seconds": 0.10118866502307355,
-          "predict_seconds": 9.52300033532083e-05,
+          "fit_seconds": 0.10386368801118806,
+          "predict_seconds": 0.0001002000062726438,
           "quality": {
             "ess_bulk_mean": 5764.19452386597,
             "ess_bulk_min": 5198.310315996352,
@@ -6247,14 +6247,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.73046875
+          "rss_mb_after": 551.05859375
         },
         {
           "index": 20,
           "observations": 1630,
           "data_sha256": "cfc71d3f445b19e30c428aab1bec4d6944d59f1e5a0230953c8f1f0ec32ecdf1",
-          "fit_seconds": 0.11955269501777366,
-          "predict_seconds": 8.851801976561546e-05,
+          "fit_seconds": 0.1170311929890886,
+          "predict_seconds": 9.924801997840405e-05,
           "quality": {
             "ess_bulk_mean": 5537.631659262426,
             "ess_bulk_min": 5129.980908760253,
@@ -6301,14 +6301,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.82421875
+          "rss_mb_after": 553.21875
         },
         {
           "index": 21,
           "observations": 646,
           "data_sha256": "fa76a4d58ba72d119bca1ceadf56bf42e8712601c914ef2ca893672d17aceca6",
-          "fit_seconds": 0.07375910098198801,
-          "predict_seconds": 7.05330166965723e-05,
+          "fit_seconds": 0.0683095149579458,
+          "predict_seconds": 8.027104195207357e-05,
           "quality": {
             "ess_bulk_mean": 5442.372961095463,
             "ess_bulk_min": 5160.212700497459,
@@ -6355,14 +6355,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.82421875
+          "rss_mb_after": 550.1015625
         },
         {
           "index": 22,
           "observations": 1551,
           "data_sha256": "98b1d2f487bdd4059b7395f49e3e51af48fcbd3daf7c1b864075414199cf9163",
-          "fit_seconds": 0.11241457401774824,
-          "predict_seconds": 0.00012213102309033275,
+          "fit_seconds": 0.11066019197460264,
+          "predict_seconds": 8.88379872776568e-05,
           "quality": {
             "ess_bulk_mean": 5601.018342549335,
             "ess_bulk_min": 4925.773261492126,
@@ -6409,14 +6409,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.73046875
+          "rss_mb_after": 550.99609375
         },
         {
           "index": 23,
           "observations": 834,
           "data_sha256": "5da59c7267e73b7dd2422e68b248a347c15c902341ad81ba316ca46d9fded3fe",
-          "fit_seconds": 0.07720417197560892,
-          "predict_seconds": 0.00016044400399550796,
+          "fit_seconds": 0.07332147704437375,
+          "predict_seconds": 8.175399852916598e-05,
           "quality": {
             "ess_bulk_mean": 5721.245077301707,
             "ess_bulk_min": 5431.526077617291,
@@ -6463,14 +6463,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.83984375
+          "rss_mb_after": 551.00390625
         },
         {
           "index": 24,
           "observations": 1729,
           "data_sha256": "eb97ff9600fe3397521e139c3368beccfd64dd96a153b530303f68f6d6ee2ff7",
-          "fit_seconds": 0.12666667200392112,
-          "predict_seconds": 7.773604011163116e-05,
+          "fit_seconds": 0.1233198270201683,
+          "predict_seconds": 8.580199209973216e-05,
           "quality": {
             "ess_bulk_mean": 5520.931941367133,
             "ess_bulk_min": 5027.511792207396,
@@ -6517,14 +6517,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.890625
+          "rss_mb_after": 551.06640625
         },
         {
           "index": 25,
           "observations": 1077,
           "data_sha256": "39029e4654f7a527690a8a7abb977d914f4844435f9632d5a0ad47f7a11e306c",
-          "fit_seconds": 0.09431058599147946,
-          "predict_seconds": 7.043301593512297e-05,
+          "fit_seconds": 0.08904904895462096,
+          "predict_seconds": 8.090300252661109e-05,
           "quality": {
             "ess_bulk_mean": 5224.912150391235,
             "ess_bulk_min": 4813.1498663893635,
@@ -6571,14 +6571,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 548.7890625
+          "rss_mb_after": 548.07421875
         },
         {
           "index": 26,
           "observations": 1032,
           "data_sha256": "9741d659c1fd5bc4027679f6fa6da521547b21f30dfee99d3934a7079ef609c5",
-          "fit_seconds": 0.08661944803316146,
-          "predict_seconds": 7.525196997448802e-05,
+          "fit_seconds": 0.09332513995468616,
+          "predict_seconds": 0.00010417698649689555,
           "quality": {
             "ess_bulk_mean": 5489.418122712686,
             "ess_bulk_min": 5076.5799928599145,
@@ -6625,14 +6625,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.89453125
+          "rss_mb_after": 550.4296875
         },
         {
           "index": 27,
           "observations": 1508,
           "data_sha256": "034506efe11004a7762236953805a5bfcb63a0404bfe2cd6ef24dd86af7e8e5c",
-          "fit_seconds": 0.12372400803724304,
-          "predict_seconds": 0.00016859901370480657,
+          "fit_seconds": 0.11802364798495546,
+          "predict_seconds": 0.00029133999487385154,
           "quality": {
             "ess_bulk_mean": 5683.126289435571,
             "ess_bulk_min": 5099.228410694754,
@@ -6679,14 +6679,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.921875
+          "rss_mb_after": 550.53515625
         },
         {
           "index": 28,
           "observations": 1029,
           "data_sha256": "bb36ad975a6b417161f444ec43454fcb5ab9447f4d97596adaa91f9bab4b7e33",
-          "fit_seconds": 0.0852728330064565,
-          "predict_seconds": 9.24849882721901e-05,
+          "fit_seconds": 0.08868869999423623,
+          "predict_seconds": 9.576097363606095e-05,
           "quality": {
             "ess_bulk_mean": 5877.29539928025,
             "ess_bulk_min": 5221.030427458641,
@@ -6733,14 +6733,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 551.8515625
+          "rss_mb_after": 550.5390625
         },
         {
           "index": 29,
           "observations": 1439,
           "data_sha256": "3853d2538c3add705e9942ed828283dcd660fc1c7d54e43da5ea67b4bc68a781",
-          "fit_seconds": 0.12396736902883276,
-          "predict_seconds": 8.515099762007594e-05,
+          "fit_seconds": 0.11439512099605054,
+          "predict_seconds": 9.021000005304813e-05,
           "quality": {
             "ess_bulk_mean": 5478.861822266107,
             "ess_bulk_min": 5044.496707624301,
@@ -6787,7 +6787,7 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 554.8984375
+          "rss_mb_after": 550.546875
         }
       ],
       "notes": [
@@ -6799,14 +6799,14 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 7.85564385500038,
-        "first_fit_seconds": 0.10591001895954832,
-        "median_fit_seconds": 0.09519121001358144,
-        "total_fit_seconds": 2.903582434169948,
-        "total_predict_seconds": 0.003124888113234192,
-        "useful_ess_per_second": 15715.307604156173,
-        "peak_rss_mb": 552.828125,
-        "rss_growth_after_first_fit_mb": 14.08203125
+        "setup_seconds": 8.051229880016763,
+        "first_fit_seconds": 0.10707891400670633,
+        "median_fit_seconds": 0.09786676347721368,
+        "total_fit_seconds": 2.8293562629260123,
+        "total_predict_seconds": 0.0032225680770352483,
+        "useful_ess_per_second": 15540.02224656848,
+        "peak_rss_mb": 551.25390625,
+        "rss_growth_after_first_fit_mb": 11.2578125
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -6864,16 +6864,16 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.4338224020320922,
-        "build": 0.009635671973228455
+        "import": 0.43200588901527226,
+        "build": 0.009636520990170538
       },
       "fits": [
         {
           "index": 0,
           "observations": 1201,
           "data_sha256": "aa292d2427cc19072c6fe0149e2b6f1e35e743375a47fa0681fbfd5996d548f0",
-          "fit_seconds": 6.837720533949323,
-          "predict_seconds": 0.00045366701669991016,
+          "fit_seconds": 6.773842790978961,
+          "predict_seconds": 0.00047676096437498927,
           "quality": {
             "ess_bulk_mean": 5112.9105780640875,
             "ess_bulk_min": 4556.346485281202,
@@ -6920,14 +6920,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 409.015625
+          "rss_mb_after": 409.71484375
         },
         {
           "index": 1,
           "observations": 880,
           "data_sha256": "9cb2af126fe543d245977feb45d1d9479ad268dc4040e6be85813a636aae1324",
-          "fit_seconds": 0.7972586039686576,
-          "predict_seconds": 8.642300963401794e-05,
+          "fit_seconds": 0.8001518030068837,
+          "predict_seconds": 8.525099838152528e-05,
           "quality": {
             "ess_bulk_mean": 4872.745704294741,
             "ess_bulk_min": 4458.44862015502,
@@ -6974,14 +6974,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 409.69140625
+          "rss_mb_after": 410.4140625
         },
         {
           "index": 2,
           "observations": 553,
           "data_sha256": "a4d8575082a1dd7b738490b0127622968a49a4dff763a7f0ceb65330259b572d",
-          "fit_seconds": 0.6726145459688269,
-          "predict_seconds": 8.453003829345107e-05,
+          "fit_seconds": 0.6735678560216911,
+          "predict_seconds": 0.00027736497577279806,
           "quality": {
             "ess_bulk_mean": 5140.274355928228,
             "ess_bulk_min": 4353.188919036469,
@@ -7028,14 +7028,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 410.07421875
+          "rss_mb_after": 411.34765625
         },
         {
           "index": 3,
           "observations": 503,
           "data_sha256": "c26abf4732fcd32e240e4dcab44cc34ce88db3fd7ec438ebd4c87214d13c13bb",
-          "fit_seconds": 0.6638323660008609,
-          "predict_seconds": 0.00028102099895477295,
+          "fit_seconds": 0.6418257089680992,
+          "predict_seconds": 0.00028622098034247756,
           "quality": {
             "ess_bulk_mean": 5129.008749225148,
             "ess_bulk_min": 4307.903626715162,
@@ -7082,14 +7082,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 412.46875
+          "rss_mb_after": 412.1640625
         },
         {
           "index": 4,
           "observations": 794,
           "data_sha256": "1773ec0743a9fff429257d4d4ae86439e14e03a3b6e4dd392fa40793815538d5",
-          "fit_seconds": 0.763448248966597,
-          "predict_seconds": 0.0003059079754166305,
+          "fit_seconds": 0.6526263800333254,
+          "predict_seconds": 7.749698124825954e-05,
           "quality": {
             "ess_bulk_mean": 5119.144332684591,
             "ess_bulk_min": 3906.1653125504304,
@@ -7136,14 +7136,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 413.71875
+          "rss_mb_after": 413.13671875
         },
         {
           "index": 5,
           "observations": 1744,
           "data_sha256": "3ac0bf310d9fe0ba2fe2ba110aa40336a9948325c438cd844cf8430f5b8aba59",
-          "fit_seconds": 0.7551646419451572,
-          "predict_seconds": 0.0002790369908325374,
+          "fit_seconds": 0.7526144339935854,
+          "predict_seconds": 0.0002801690134219825,
           "quality": {
             "ess_bulk_mean": 5330.536823857217,
             "ess_bulk_min": 4985.867661201981,
@@ -7190,14 +7190,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 416.00390625
+          "rss_mb_after": 415.66796875
         },
         {
           "index": 6,
           "observations": 103,
           "data_sha256": "5d344402f0f6249945b299eac19ebb40fd5bd0903875b3ebcb53eff93e4997af",
-          "fit_seconds": 0.6553589510149322,
-          "predict_seconds": 0.0002525679883547127,
+          "fit_seconds": 0.629046707006637,
+          "predict_seconds": 0.0002591699594631791,
           "quality": {
             "ess_bulk_mean": 4622.060021842879,
             "ess_bulk_min": 3960.8908994254707,
@@ -7244,14 +7244,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 417.984375
+          "rss_mb_after": 417.64453125
         },
         {
           "index": 7,
           "observations": 1738,
           "data_sha256": "1f4b92573cdf4e41498597e8638aacf59ba25df5aeda3eace48f01ea3a229139",
-          "fit_seconds": 0.7553849480464123,
-          "predict_seconds": 0.0002763819647952914,
+          "fit_seconds": 0.7292400290025398,
+          "predict_seconds": 0.0002636989811435342,
           "quality": {
             "ess_bulk_mean": 5258.80182953657,
             "ess_bulk_min": 4307.3975388845165,
@@ -7298,14 +7298,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 419.4140625
+          "rss_mb_after": 419.08203125
         },
         {
           "index": 8,
           "observations": 1006,
           "data_sha256": "0ad22a7adcbe252583e52b204e242229bb7142745d7112a3b5e0713be930be5f",
-          "fit_seconds": 0.6869052369729616,
-          "predict_seconds": 0.0002809010329656303,
+          "fit_seconds": 0.6932030040188693,
+          "predict_seconds": 0.0002746589598245919,
           "quality": {
             "ess_bulk_mean": 5070.673534664884,
             "ess_bulk_min": 4616.184317369173,
@@ -7352,14 +7352,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 421.453125
+          "rss_mb_after": 421.10546875
         },
         {
           "index": 9,
           "observations": 1492,
           "data_sha256": "94ed3aae2c375da477ab0e728fca023dd4e63a04fa679c8ea91905aef7ca39be",
-          "fit_seconds": 0.7583563130465336,
-          "predict_seconds": 0.00029155099764466286,
+          "fit_seconds": 0.7260181399760768,
+          "predict_seconds": 0.00028270401526242495,
           "quality": {
             "ess_bulk_mean": 5297.759886703869,
             "ess_bulk_min": 4153.193666840627,
@@ -7406,14 +7406,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 423.6015625
+          "rss_mb_after": 423.265625
         },
         {
           "index": 10,
           "observations": 974,
           "data_sha256": "9cd0c93e63eb7a5cb76e8dba906e21a6754fb72ccf9fe303905bcea00e65349a",
-          "fit_seconds": 0.6966909599723294,
-          "predict_seconds": 0.00030620902543887496,
+          "fit_seconds": 0.6711535519571044,
+          "predict_seconds": 0.00023451301967725158,
           "quality": {
             "ess_bulk_mean": 5046.258892478001,
             "ess_bulk_min": 4013.305897499265,
@@ -7460,14 +7460,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 424.91015625
+          "rss_mb_after": 424.5703125
         },
         {
           "index": 11,
           "observations": 1886,
           "data_sha256": "c65478467b269817ff6d4d7d02535aeecf3d0bb14b012f5a9169a4b6063625e7",
-          "fit_seconds": 0.9216267159790732,
-          "predict_seconds": 0.0002145349862985313,
+          "fit_seconds": 1.030467664997559,
+          "predict_seconds": 0.00026677496498450637,
           "quality": {
             "ess_bulk_mean": 5376.714810431067,
             "ess_bulk_min": 4958.482007473457,
@@ -7514,14 +7514,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 424.9375
+          "rss_mb_after": 424.61328125
         },
         {
           "index": 12,
           "observations": 706,
           "data_sha256": "827336aa085067bcebd6ce2e243753be71f208139292afffc69555552519118b",
-          "fit_seconds": 0.6374248430365697,
-          "predict_seconds": 0.00021360302343964577,
+          "fit_seconds": 0.7983539840206504,
+          "predict_seconds": 0.0002592299715615809,
           "quality": {
             "ess_bulk_mean": 5131.052517739989,
             "ess_bulk_min": 4515.724588563701,
@@ -7568,14 +7568,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 424.9375
+          "rss_mb_after": 424.61328125
         },
         {
           "index": 13,
           "observations": 1399,
           "data_sha256": "5ebd2697b7636a4b18f426c2185521feb0007c82fc6e9ba9f7ee844f67e3c97d",
-          "fit_seconds": 0.7460084719932638,
-          "predict_seconds": 0.0002204769989475608,
+          "fit_seconds": 0.8218117240467109,
+          "predict_seconds": 0.00023173796944320202,
           "quality": {
             "ess_bulk_mean": 5365.823663774259,
             "ess_bulk_min": 4914.565193931145,
@@ -7622,14 +7622,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 424.9375
+          "rss_mb_after": 424.61328125
         },
         {
           "index": 14,
           "observations": 596,
           "data_sha256": "3a51fd365d0f82819ab53e16b50620017ade05c823b8038aa09b00c81d47381f",
-          "fit_seconds": 0.7163655859767459,
-          "predict_seconds": 0.00023098598467186093,
+          "fit_seconds": 0.7080926430062391,
+          "predict_seconds": 0.00021798198577016592,
           "quality": {
             "ess_bulk_mean": 4874.643976557427,
             "ess_bulk_min": 4369.017648242783,
@@ -7676,14 +7676,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.03515625
+          "rss_mb_after": 424.6171875
         },
         {
           "index": 15,
           "observations": 214,
           "data_sha256": "939064a91a700a212015b71392c2ae46efdb94b7e344cd1909a51db6362f6f00",
-          "fit_seconds": 0.6917314060265198,
-          "predict_seconds": 0.00026040303055197,
+          "fit_seconds": 0.6370732460054569,
+          "predict_seconds": 0.0002405450213700533,
           "quality": {
             "ess_bulk_mean": 4835.518649959406,
             "ess_bulk_min": 4307.220441768075,
@@ -7730,14 +7730,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.0390625
+          "rss_mb_after": 424.6171875
         },
         {
           "index": 16,
           "observations": 1949,
           "data_sha256": "d2c883786f098b29c68c0c1f2aed8bbc7146933358accb4186753cb8859392a6",
-          "fit_seconds": 0.7688586399890482,
-          "predict_seconds": 0.00022474501747637987,
+          "fit_seconds": 0.7646394880139269,
+          "predict_seconds": 0.00022270000772550702,
           "quality": {
             "ess_bulk_mean": 5594.351172931526,
             "ess_bulk_min": 4615.044183374654,
@@ -7784,14 +7784,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.05859375
+          "rss_mb_after": 424.6328125
         },
         {
           "index": 17,
           "observations": 1772,
           "data_sha256": "e0ea356c04a417e99569a50338f2f89f2f4dc802a0cbbcef62ff2244fa167d3f",
-          "fit_seconds": 0.7662232390139252,
-          "predict_seconds": 0.0002198750153183937,
+          "fit_seconds": 0.7790249949903227,
+          "predict_seconds": 0.00022004498168826103,
           "quality": {
             "ess_bulk_mean": 5161.567717047977,
             "ess_bulk_min": 4628.050507525017,
@@ -7838,14 +7838,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.05859375
+          "rss_mb_after": 424.63671875
         },
         {
           "index": 18,
           "observations": 766,
           "data_sha256": "3bc16ced58ca86a584e303bffeb1800c06cd8439e424196a45ee637f4b31daf4",
-          "fit_seconds": 0.6819702239590697,
-          "predict_seconds": 0.000208273995667696,
+          "fit_seconds": 0.6918323829886504,
+          "predict_seconds": 0.00022013596026226878,
           "quality": {
             "ess_bulk_mean": 5174.545674165563,
             "ess_bulk_min": 4377.3291041430975,
@@ -7892,14 +7892,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.0625
+          "rss_mb_after": 424.640625
         },
         {
           "index": 19,
           "observations": 1301,
           "data_sha256": "5a0cef7b9c714ebd298167b2b2bd96cc43dd1cefe1c63bdc13676e75125cc9e9",
-          "fit_seconds": 0.7068542969645932,
-          "predict_seconds": 0.00019640097161754966,
+          "fit_seconds": 0.7560493430355564,
+          "predict_seconds": 0.00019509904086589813,
           "quality": {
             "ess_bulk_mean": 5301.565149538174,
             "ess_bulk_min": 4999.156247682477,
@@ -7946,14 +7946,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.08203125
         },
         {
           "index": 20,
           "observations": 1630,
           "data_sha256": "cfc71d3f445b19e30c428aab1bec4d6944d59f1e5a0230953c8f1f0ec32ecdf1",
-          "fit_seconds": 0.9135857640067115,
-          "predict_seconds": 0.00021367397857829928,
+          "fit_seconds": 0.9163857770035975,
+          "predict_seconds": 0.0002188640064559877,
           "quality": {
             "ess_bulk_mean": 4915.142568978195,
             "ess_bulk_min": 4544.060903522784,
@@ -8000,14 +8000,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 21,
           "observations": 646,
           "data_sha256": "fa76a4d58ba72d119bca1ceadf56bf42e8712601c914ef2ca893672d17aceca6",
-          "fit_seconds": 0.6451607519993559,
-          "predict_seconds": 0.00021386402659118176,
+          "fit_seconds": 0.6647327480022795,
+          "predict_seconds": 0.00022299098782241344,
           "quality": {
             "ess_bulk_mean": 5276.91240017329,
             "ess_bulk_min": 5005.7064741106315,
@@ -8054,14 +8054,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 22,
           "observations": 1551,
           "data_sha256": "98b1d2f487bdd4059b7395f49e3e51af48fcbd3daf7c1b864075414199cf9163",
-          "fit_seconds": 0.7470273569924757,
-          "predict_seconds": 0.00021579803433269262,
+          "fit_seconds": 0.7281206129700877,
+          "predict_seconds": 0.00022494600852951407,
           "quality": {
             "ess_bulk_mean": 5105.701274299878,
             "ess_bulk_min": 4543.628581027893,
@@ -8108,14 +8108,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 23,
           "observations": 834,
           "data_sha256": "5da59c7267e73b7dd2422e68b248a347c15c902341ad81ba316ca46d9fded3fe",
-          "fit_seconds": 0.7237269970355555,
-          "predict_seconds": 0.0002748289844021201,
+          "fit_seconds": 0.7196370190358721,
+          "predict_seconds": 0.00021376402582973242,
           "quality": {
             "ess_bulk_mean": 5021.099046436511,
             "ess_bulk_min": 4746.8015855686535,
@@ -8162,14 +8162,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 24,
           "observations": 1729,
           "data_sha256": "eb97ff9600fe3397521e139c3368beccfd64dd96a153b530303f68f6d6ee2ff7",
-          "fit_seconds": 0.734996777959168,
-          "predict_seconds": 0.0002315780147910118,
+          "fit_seconds": 0.7538798229652457,
+          "predict_seconds": 0.00021638901671394706,
           "quality": {
             "ess_bulk_mean": 5074.8864687477235,
             "ess_bulk_min": 4425.351389344875,
@@ -8216,14 +8216,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 25,
           "observations": 1077,
           "data_sha256": "39029e4654f7a527690a8a7abb977d914f4844435f9632d5a0ad47f7a11e306c",
-          "fit_seconds": 0.6867490659933537,
-          "predict_seconds": 0.00022086797980591655,
+          "fit_seconds": 0.6933994540013373,
+          "predict_seconds": 0.00021710997680202127,
           "quality": {
             "ess_bulk_mean": 4853.620674693716,
             "ess_bulk_min": 4271.05464720899,
@@ -8270,14 +8270,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 26,
           "observations": 1032,
           "data_sha256": "9741d659c1fd5bc4027679f6fa6da521547b21f30dfee99d3934a7079ef609c5",
-          "fit_seconds": 0.7001704419963062,
-          "predict_seconds": 0.0002318779588676989,
+          "fit_seconds": 0.683259382029064,
+          "predict_seconds": 0.00021808204473927617,
           "quality": {
             "ess_bulk_mean": 4990.879667203369,
             "ess_bulk_min": 3943.196622072264,
@@ -8324,14 +8324,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 27,
           "observations": 1508,
           "data_sha256": "034506efe11004a7762236953805a5bfcb63a0404bfe2cd6ef24dd86af7e8e5c",
-          "fit_seconds": 0.7440095110214315,
-          "predict_seconds": 0.00021686998661607504,
+          "fit_seconds": 0.733446076977998,
+          "predict_seconds": 0.00022107799304649234,
           "quality": {
             "ess_bulk_mean": 5086.650682670765,
             "ess_bulk_min": 4345.252223931942,
@@ -8378,14 +8378,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 28,
           "observations": 1029,
           "data_sha256": "bb36ad975a6b417161f444ec43454fcb5ab9447f4d97596adaa91f9bab4b7e33",
-          "fit_seconds": 0.6881360769621097,
-          "predict_seconds": 0.00021077797282487154,
+          "fit_seconds": 0.7011409849510528,
+          "predict_seconds": 0.00023482402320951223,
           "quality": {
             "ess_bulk_mean": 5212.387875746703,
             "ess_bulk_min": 4219.206294526117,
@@ -8432,14 +8432,14 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.18359375
         },
         {
           "index": 29,
           "observations": 1439,
           "data_sha256": "3853d2538c3add705e9942ed828283dcd660fc1c7d54e43da5ea67b4bc68a781",
-          "fit_seconds": 0.7207448990084231,
-          "predict_seconds": 0.00021046696929261088,
+          "fit_seconds": 0.7249205550178885,
+          "predict_seconds": 0.0002102279686369002,
           "quality": {
             "ess_bulk_mean": 5206.219067327441,
             "ess_bulk_min": 4543.248610346155,
@@ -8486,11 +8486,11 @@
             "interpretation": "necessary but not sufficient for publishing a performance comparison"
           },
           "status": "passed",
-          "rss_mb_after": 425.07421875
+          "rss_mb_after": 425.19140625
         }
       ],
       "notes": [
-        "one pm.Model with pm.Data, updated by pm.set_data; pm.sample compiles its functions on every call, and that time is in fit_seconds",
+        "one pm.Model with pm.Data, updated by pm.set_data; whatever pm.sample compiles, on its first call or later, is in fit_seconds",
         "prediction is the NumPy product of the beta draws with the new inputs"
       ],
       "summary": {
@@ -8498,16 +8498,16 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.44345807400532067,
-        "first_fit_seconds": 6.837720533949323,
-        "median_fit_seconds": 0.7222359480219893,
-        "total_fit_seconds": 27.98410641576629,
-        "total_predict_seconds": 0.007128099969122559,
-        "useful_ess_per_second": 5401.780297533216,
-        "peak_rss_mb": 422.53125,
-        "rss_growth_after_first_fit_mb": 16.05859375
+        "setup_seconds": 0.4416424100054428,
+        "first_fit_seconds": 6.773842790978961,
+        "median_fit_seconds": 0.7254693474969827,
+        "total_fit_seconds": 28.04955830902327,
+        "total_predict_seconds": 0.007070534804370254,
+        "useful_ess_per_second": 5389.715206531954,
+        "peak_rss_mb": 423.0859375,
+        "rss_growth_after_first_fit_mb": 15.4765625
       },
-      "stderr_tail": "g...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\n"
+      "stderr_tail": "g...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\n"
     }
   ]
 }
