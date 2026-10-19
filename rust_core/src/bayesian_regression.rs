@@ -133,8 +133,10 @@ impl RegressionConfig {
 
     /// Whether the structural model is the local-linear-trend template that
     /// `from_trend` builds: two states with transition `[[1, 1], [0, 1]]`
-    /// and a sampled innovation variance on each. Its level and slope
-    /// variances mix as slowly as in the local-linear-trend sampler.
+    /// and a sampled innovation variance on each. This sampler draws the
+    /// states by FFBS and then each variance given them, so its level and
+    /// slope variances mix slowly; the local-linear-trend sampler without
+    /// `exog` integrates the states out instead.
     pub fn is_local_linear_trend(&self) -> bool {
         !self.seasonal
             && self.structural_model.dimension() == 2

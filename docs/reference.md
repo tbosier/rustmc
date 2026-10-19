@@ -318,7 +318,7 @@ given the other two, with the likelihood computed exactly by a Kalman filter. Ea
 retained draw then samples the terminal level and slope from their filtered
 distribution.
 
-Up to 0.14.0 the sampler drew the whole state path and then each variance given
+Up to 0.13.0 the sampler drew the whole state path and then each variance given
 those states, and mixed slowly. On simulated series in five regimes and two lengths,
 fitted with 4 chains, 300 warmup and 500 draws, the level variance's worst R-hat in
 each setting was 1.06 to 2.06, and its smallest bulk ESS 6 to 58 out of 2000 draws.
@@ -798,7 +798,7 @@ cells. Check those variances with longer chains, then leave the record out with
 
 | Fit | Worst R-hat over the ten settings | Record |
 |-----|-----------------------------------|--------|
-| `BayesianLocalLinearTrend` | level 1.001 to 1.008, slope 1.001 to 1.007, with the states integrated out (0.14.0, sampling the states: level 1.062 to 2.056, slope 1.051 to 1.421) | no |
+| `BayesianLocalLinearTrend` | level 1.001 to 1.008, slope 1.001 to 1.007, with the states integrated out (the earlier sampler, which sampled the states: level 1.062 to 2.056, slope 1.051 to 1.421) | no |
 | `BayesianLocalLinearTrend` with `exog` (a `BayesianRegressionFit`) | level 1.109 to 2.621, slope 1.057 to 1.757 | yes |
 | `StructuralModel` trend component | damping 1: level 1.063 to 2.587, slope 1.063 to 1.415; damping 0.9: level 1.080 to 2.387, slope 1.082 to 1.882 | yes, in the configuration measured: both state variances and the observation variance inferred, Gaussian observations, and damping from 0.9 to 1 |
 | `BayesianSeasonalLocalLevel` | level 1.011 to 1.282, seasonal 1.031 to 1.595 | yes |
