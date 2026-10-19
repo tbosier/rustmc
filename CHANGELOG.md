@@ -22,6 +22,23 @@ versioning while the public API is stabilized.
   `BayesianRegressionFit`, which had only `get_samples_2d()`, and `get_samples_2d()`
   on `BayesianARFit` and `BayesianHierarchicalMeanFit`. Every fit class that had one
   of the two now has both.
+- `mean_samples` on every Bayesian forecast: the draws of the expected observation
+  given each parameter and state draw, `(chain, draw, step)` or, for the
+  hierarchical mean, `(chain, draw, program, step)`. It is new on the local level
+  (the state), the local linear trend (the level), the seasonal local level (level
+  plus seasonal effect), the hierarchical mean (the program mean) and the AR
+  forecast (the conditional mean). `ForecastDraws.from_result` reads it from every
+  forecast instead of mapping each class.
+- `StructuralForecast.state_samples`, `component_samples` and
+  `cumulative_observation_samples`, so the structural forecast uses the
+  `*_samples` names of the other forecasts.
+
+### Deprecated
+
+- `BayesianARForecast.conditional_mean_samples`, now `mean_samples`, and
+  `StructuralForecast.state_paths`, `component_paths`, `mean_paths`,
+  `observation_paths` and `cumulative_observation_paths`, now the matching
+  `*_samples`. Each returns the same array as before with a `DeprecationWarning`.
 
 ## [0.14.0] - 2026-10-18
 

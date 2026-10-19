@@ -362,9 +362,21 @@ impl PyBayesianArForecast {
         self.inner.horizon()
     }
 
+    /// The conditional mean of each step given the path before it,
+    /// `(chain, draw, step)`.
     #[getter]
-    fn conditional_mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.conditional_mean_paths)
+    }
+
+    /// Deprecated name of `mean_samples`.
+    #[getter]
+    fn conditional_mean_samples<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        warn_renamed(py, "conditional_mean_samples", "mean_samples")?;
+        Ok(self.mean_samples(py))
     }
 
     #[getter]

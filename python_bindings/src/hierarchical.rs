@@ -515,6 +515,13 @@ impl PyBayesianHierarchicalForecast {
         .into_pyarray(py)
     }
 
+    /// The expected observation of each program: the same draws as
+    /// `state_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
+        self.state_samples(py)
+    }
+
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
         row_major_path_array(

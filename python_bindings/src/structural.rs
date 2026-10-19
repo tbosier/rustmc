@@ -450,11 +450,11 @@ impl PyStructuralForecast {
     }
     #[getter]
     fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        self.mean_paths(py)
+        path_array(py, &self.inner.means)
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        self.observation_paths(py)
+        path_array(py, &self.inner.observations)
     }
     #[getter]
     fn uncertainty_kind(&self) -> &'static str {
@@ -465,24 +465,53 @@ impl PyStructuralForecast {
         self.names.clone()
     }
     #[getter]
-    fn state_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
+    fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
         array4(py, &self.inner.states)
     }
     #[getter]
-    fn component_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
+    fn component_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
         array4(py, &self.inner.components)
     }
     #[getter]
-    fn mean_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        path_array(py, &self.inner.means)
-    }
-    #[getter]
-    fn observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
-        path_array(py, &self.inner.observations)
-    }
-    #[getter]
-    fn cumulative_observation_paths<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+    fn cumulative_observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.cumulative)
+    }
+    /// Deprecated name of `state_samples`.
+    #[getter]
+    fn state_paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray4<f64>>> {
+        warn_renamed(py, "state_paths", "state_samples")?;
+        Ok(self.state_samples(py))
+    }
+    /// Deprecated name of `component_samples`.
+    #[getter]
+    fn component_paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray4<f64>>> {
+        warn_renamed(py, "component_paths", "component_samples")?;
+        Ok(self.component_samples(py))
+    }
+    /// Deprecated name of `mean_samples`.
+    #[getter]
+    fn mean_paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        warn_renamed(py, "mean_paths", "mean_samples")?;
+        Ok(self.mean_samples(py))
+    }
+    /// Deprecated name of `observation_samples`.
+    #[getter]
+    fn observation_paths<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        warn_renamed(py, "observation_paths", "observation_samples")?;
+        Ok(self.observation_samples(py))
+    }
+    /// Deprecated name of `cumulative_observation_samples`.
+    #[getter]
+    fn cumulative_observation_paths<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, PyArray3<f64>>> {
+        warn_renamed(
+            py,
+            "cumulative_observation_paths",
+            "cumulative_observation_samples",
+        )?;
+        Ok(self.cumulative_observation_samples(py))
     }
 }
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {

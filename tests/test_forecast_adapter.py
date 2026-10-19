@@ -23,7 +23,7 @@ def native_forecast(family):
     elif family == "ar":
         prior = r.NormalInverseGammaPrior(np.zeros(2), np.eye(2), 3., 1.)
         result = r.BayesianAR(1, prior).fit(y, chains=2, draws=12, seed=70).forecast(3)
-        expected = result.conditional_mean_samples
+        expected = result.mean_samples
     elif family == "hierarchical":
         model = r.BayesianHierarchicalMean(ig(3., .1), ig(3., .1), ig(3., .2),
                                          population_mean_prior=0., population_variance_prior=4.)
@@ -40,6 +40,7 @@ def native_forecast(family):
 @pytest.mark.parametrize("family", ["local", "trend", "seasonal", "ar", "hierarchical", "structural"])
 def test_native_forecast_conditional_means_survive_conversion(family, tmp_path):
     result, expected = native_forecast(family)
+    np.testing.assert_array_equal(result.mean_samples, expected)
     wrapped = r.ForecastDraws.from_result(result, dates=["Jan", "Feb", "Mar"])
     np.testing.assert_array_equal(wrapped.observation_samples, result.observation_samples)
     np.testing.assert_array_equal(wrapped.mean_samples, expected)

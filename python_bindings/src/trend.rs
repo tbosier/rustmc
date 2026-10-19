@@ -413,6 +413,13 @@ impl PyBayesianTrendForecast {
         path_array(py, &self.inner.level_paths)
     }
 
+    /// The expected observation of each path: the level, so the same draws
+    /// as `level_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        self.level_samples(py)
+    }
+
     #[getter]
     fn slope_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.slope_paths)

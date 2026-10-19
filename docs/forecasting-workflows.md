@@ -55,8 +55,8 @@ forecast.save("forecast.npz")
 restored = r.ForecastDraws.load("forecast.npz")
 ```
 
-`observation_samples` includes realization noise. `mean_samples`, when exposed,
-contains conditional expected responses given each parameter/state draw. These are
+`observation_samples` includes realization noise. `mean_samples`, which every
+Bayesian forecast has, contains conditional expected responses given each parameter/state draw. These are
 different uncertainty questions. Heavy-tailed priors can make unconditional moments
 nonexistent even when every conditional mean is finite. Empirical summaries cannot
 establish moment existence. Dates are explicit labels; the library does not infer frequency,

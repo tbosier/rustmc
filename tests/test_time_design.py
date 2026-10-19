@@ -360,10 +360,10 @@ def test_structural_regression_components_take_term_slices():
     forecast = fit.forecast(horizon, exog=future, seed=2)
     # State order: level, then one coefficient per regression component, in
     # design column order; each component path is its column times its state.
-    states = forecast.state_paths
+    states = forecast.state_samples
     for index, name in enumerate(("shift", "promo"), start=1):
         column = future[:, design.term_slice(name)][:, 0]
-        np.testing.assert_allclose(forecast.component_paths[..., index], states[..., index] * column)
+        np.testing.assert_allclose(forecast.component_samples[..., index], states[..., index] * column)
     lower, upper = np.quantile(fit.terminal_states[..., 1:].reshape(-1, 2), [0.025, 0.975], axis=0)
     assert lower[0] < 2.0 < upper[0] and lower[0] > 0, (lower, upper)
     assert lower[1] < 1.5 < upper[1], (lower, upper)

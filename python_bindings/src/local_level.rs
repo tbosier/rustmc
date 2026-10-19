@@ -350,6 +350,13 @@ impl PyBayesianForecastResult {
         path_array(py, &self.inner.state_paths)
     }
 
+    /// The expected observation of each path: the level, so the same draws
+    /// as `state_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        self.state_samples(py)
+    }
+
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.observation_paths)

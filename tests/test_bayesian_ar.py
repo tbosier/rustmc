@@ -108,17 +108,19 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     assert forecast.chains == 2
     assert forecast.draws == 120
     assert forecast.steps == 5
-    assert forecast.conditional_mean_samples.shape == (2, 120, 5)
+    assert forecast.mean_samples.shape == (2, 120, 5)
+    with pytest.warns(DeprecationWarning, match="`conditional_mean_samples` is deprecated.*`mean_samples`"):
+        np.testing.assert_array_equal(forecast.conditional_mean_samples, forecast.mean_samples)
     assert forecast.observation_samples.shape == (2, 120, 5)
     np.testing.assert_array_equal(
-        forecast.conditional_mean_samples, repeated.conditional_mean_samples
+        forecast.mean_samples, repeated.mean_samples
     )
     np.testing.assert_array_equal(
         forecast.observation_samples, repeated.observation_samples
     )
     np.testing.assert_allclose(
         forecast.conditional_mean,
-        forecast.conditional_mean_samples.mean(axis=(0, 1)),
+        forecast.mean_samples.mean(axis=(0, 1)),
     )
     np.testing.assert_allclose(
         forecast.observation_mean,
@@ -133,7 +135,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
         + coefficients[:, :, 3] * observations[-3]
     )
     np.testing.assert_allclose(
-        forecast.conditional_mean_samples[:, :, 0], expected_first
+        forecast.mean_samples[:, :, 0], expected_first
     )
     # Recursion uses each path's simulated observation, not its conditional mean.
     expected_second = (
@@ -143,7 +145,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
         + coefficients[:, :, 3] * observations[-2]
     )
     np.testing.assert_allclose(
-        forecast.conditional_mean_samples[:, :, 1], expected_second
+        forecast.mean_samples[:, :, 1], expected_second
     )
 
     lower, upper = forecast.interval(0.95)
@@ -158,11 +160,11 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     )
     np.testing.assert_allclose(
         mean_lower,
-        np.quantile(forecast.conditional_mean_samples, 0.025, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.025, axis=(0, 1)),
     )
     np.testing.assert_allclose(
         mean_upper,
-        np.quantile(forecast.conditional_mean_samples, 0.975, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.975, axis=(0, 1)),
     )
     np.testing.assert_allclose(
         forecast.observation_quantile(0.5),
@@ -170,7 +172,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     )
     np.testing.assert_allclose(
         forecast.conditional_mean_quantile(0.5),
-        np.quantile(forecast.conditional_mean_samples, 0.5, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.5, axis=(0, 1)),
     )
     assert forecast.uncertainty_kind == "parameter_integrated_posterior_predictive"
     assert forecast.interval_kind == "pointwise_equal_tailed"

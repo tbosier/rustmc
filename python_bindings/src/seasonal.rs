@@ -366,6 +366,26 @@ impl PyBayesianSeasonalForecast {
     fn seasonal_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.seasonal_paths)
     }
+    /// The expected observation of each path: level plus seasonal effect.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        let means: Vec<Vec<Vec<f64>>> = self
+            .inner
+            .level_paths
+            .iter()
+            .zip(&self.inner.seasonal_paths)
+            .map(|(levels, seasonals)| {
+                levels
+                    .iter()
+                    .zip(seasonals)
+                    .map(|(level, seasonal)| {
+                        level.iter().zip(seasonal).map(|(a, b)| a + b).collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        path_array(py, &means)
+    }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.observation_paths)
