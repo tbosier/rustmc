@@ -72,10 +72,12 @@ def cv_rule(window, margin):
         dense += log_condition(np.linalg.solve(lower, half.T))
     if not (np.isfinite(dense) and dense / 2 < diagonal / 2 - np.log(margin)):
         return False
-    # The whole-window estimates that would be installed, scored on each half.
+    # The whole-window metrics that would be installed, with the regularization
+    # `installed_variances` and `installed_dense_factor` apply, scored on each half.
     full = np.cov(window, rowvar=False)
-    inv_sd = 1 / np.sqrt(np.diag(full))
-    lower = np.linalg.cholesky(shrunk_covariance(window))
+    shrink, jitter = n / (n + 5.0), 1e-3 * 5.0 / (n + 5.0)
+    inv_sd = 1 / np.sqrt(shrink * np.diag(full) + jitter)
+    lower = np.linalg.cholesky(shrink * shrunk_covariance(window) + jitter * np.eye(d))
     installed_diagonal = installed_dense = 0.0
     for half in (first, second):
         half_covariance = np.cov(half, rowvar=False)

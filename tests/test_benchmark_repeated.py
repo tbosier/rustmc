@@ -166,3 +166,24 @@ def test_a_fit_that_raises_keeps_its_time():
     assert run.fits[0]["status"] == "error"
     assert run.fits[0]["fit_seconds"] >= 0.05
     assert repeated.summarize(run)["total_fit_seconds"] >= 0.05
+
+
+def test_too_little_ess_for_the_dimension_cannot_pass_the_covariance_check():
+    # 200 dimensions and 4 short chains of strongly autocorrelated draws: the
+    # Marchenko-Pastur allowance alone would exceed 1, so a lost direction
+    # could pass; the cap fails the fit instead.
+    base = BenchmarkConfig(observations=500, parameters=200, chains=4, warmup=50, draws=1000)
+    dataset = repeated.make_datasets(repeated.RepeatedConfig(base=base, datasets=1))[0]
+    lower = np.linalg.cholesky(dataset.posterior_covariance)
+    rng = np.random.default_rng(1)
+    z = np.empty((4, 1000, 200))
+    z[:, 0] = rng.normal(size=(4, 200))
+    for t in range(1, 1000):
+        z[:, t] = 0.55 * z[:, t - 1] + np.sqrt(1 - 0.55**2) * rng.normal(size=(4, 200))
+    z[..., 0] = 0.0
+    draws = dataset.problem.posterior_mean + z @ lower.T
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (draws, 0, draws), lambda d: d @ dataset.x_new.T)
+    quality = run.fits[0]["quality"]
+    assert quality["covariance_eigenvalue_limit"] == repeated.COVARIANCE_LIMIT_CAP
+    assert "covariance_eigenvalue_error" in run.fits[0]["quality_gate"]["joint_failures"]

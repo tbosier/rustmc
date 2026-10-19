@@ -140,6 +140,11 @@ def exact_covariance(problem: LinearRegressionProblem, config: BenchmarkConfig) 
     return np.linalg.inv(precision)
 
 
+# The largest eigenvalue error the covariance check allows: a direction with
+# no variance (error 1) or twice its variance (error 1) must fail.
+COVARIANCE_LIMIT_CAP = 0.5
+
+
 def joint_checks(
     draws: np.ndarray, predicted: np.ndarray, dataset: Dataset, ess_min: float
 ) -> tuple[dict[str, float], list[str]]:
@@ -153,7 +158,10 @@ def joint_checks(
     covariance from `n` independent draws spreads those eigenvalues to about
     `1 +- 2 sqrt(d / n)` (the Marchenko-Pastur edges), so the limit is the
     config's `quality_max_sd_relative_rmse` plus `2 sqrt(d / ESS)`, with the
-    smallest bulk ESS standing in for `n`.
+    smallest bulk ESS standing in for `n`, but never more than
+    `COVARIANCE_LIMIT_CAP`: above it a lost or doubled direction could pass,
+    so a fit with too little ESS for its dimension fails as unverified rather
+    than passing.
 
     Predictions must have the shape `(chain, draw, row)`. Their mean must be
     within `quality_max_mean_error_sd_units` of the exact expected response,
@@ -184,7 +192,9 @@ def joint_checks(
     }
     noise = 2.0 * np.sqrt(dim / ess_min) if np.isfinite(ess_min) and ess_min > 0 else np.inf
     limits = {
-        "covariance_eigenvalue_error": config.quality_max_sd_relative_rmse + noise,
+        "covariance_eigenvalue_error": min(
+            config.quality_max_sd_relative_rmse + noise, COVARIANCE_LIMIT_CAP
+        ),
         "prediction_error_sd_units": config.quality_max_mean_error_sd_units,
         "prediction_sd_relative_error": config.quality_max_sd_relative_rmse,
     }

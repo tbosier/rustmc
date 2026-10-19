@@ -158,12 +158,15 @@ NumPy.
 Each engine runs in its own subprocess with the environment `benchmarks.run` uses.
 Setup (imports, model building, compilation) is timed apart from each fit; importing
 ArviZ, which computes every engine's diagnostics, is not timed. Every fit goes through
-the quality gate above against its exact posterior, and through two checks that gate
-does not make: the draws' covariance whitened by the exact one must be within the
-config's `quality_max_sd_relative_rmse` of the identity in Frobenius norm over the root
-of the dimension, so draws with the right marginals but the wrong correlations fail, and
-the mean predicted response must be within `quality_max_mean_error_sd_units` of the exact
-one in units of its exact posterior standard deviation, finite. A fit that fails or
+the quality gate above against its exact posterior, and through checks that gate does
+not make. The eigenvalues of the draws' covariance whitened by the exact one must lie
+within `quality_max_sd_relative_rmse` plus `2 sqrt(d / ESS)` of 1, with the smallest
+bulk ESS, the Marchenko-Pastur allowance for sampling noise, but never more than 0.5
+away, so draws with the right marginals but the wrong correlations fail, and so does a
+fit with too little ESS for its dimension to verify. Predictions must have the shape
+`(chain, draw, row)`, their mean must be within `quality_max_mean_error_sd_units` of the
+exact expected response in units of its exact posterior standard deviation, and their
+standard deviation within `quality_max_sd_relative_rmse` of that one, relative. A fit that fails or
 raises is kept with its reason, its time up to the failure counts, and its ESS does not:
 `useful_ess_per_second` is the bulk ESS of passing fits divided by setup plus every
 fit's time. The JSON keeps every fit's phases, quality, gate result and resident memory

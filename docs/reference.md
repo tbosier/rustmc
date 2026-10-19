@@ -589,8 +589,9 @@ Notes:
   dense estimate from each half of a warmup window leaves the other half's draws
   better conditioned than a diagonal estimate does, on average over the two halves:
   by any amount in the early windows and at least twice as well in the last one,
-  whose metric the draws are sampled with. That suits
-  strongly correlated regression coefficients. Each half must hold more draws than
+  whose metric the draws are sampled with, and the whole-window dense metric that
+  would be installed also conditions each half better than the whole-window diagonal
+  one. That suits strongly correlated regression coefficients. Each half must hold more draws than
   the vector has elements, so at the default `warmup=500`, whose last window has
   200 draws, vectors of 100 or more elements stay diagonal; use a longer warmup or
   `"dense"` for a large, strongly correlated vector. Scalar parameters are always

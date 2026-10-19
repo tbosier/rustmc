@@ -127,7 +127,14 @@ diagonal and a dense metric, and each estimate is scored by the condition number
 leaves the other half's sample covariance. The dense metric is used when the geometric
 mean of its two scores is lower than the diagonal's: by any amount in the early
 windows, whose metric only samples the next window, and by a factor of 2 in the last
-window, whose metric the draws are sampled with. The rule needs no estimate of the
+window, whose metric the draws are sampled with. The metric installed, though, comes
+from the whole window, whose covariance also holds any shift between the halves'
+means, so a second check scores the whole-window diagonal and dense metrics, with the
+regularization they are installed with, on each half, and the block stays diagonal
+unless the dense one still conditions the halves better on average. Two halves
+correlated at 0.95 and centered 20 apart pass the first check, while the whole-window
+dense metric would leave them a condition number near 4000 against 39 for the
+diagonal one; the second check keeps them diagonal. The rule needs no estimate of the
 window's effective sample size, which the old rule's noise bound did. Each half must
 hold more draws than the vector has elements.
 

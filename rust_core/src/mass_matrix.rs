@@ -25,8 +25,9 @@ pub enum MetricKind {
     /// dense block from a window whose halves each hold more draws than it has
     /// elements, when a dense estimate from each half leaves the other half
     /// better conditioned than a diagonal one, on average over the two: by
-    /// any amount in early windows and by a factor of 2 in the last one (see
-    /// `dense_beats_diagonal`). Weakly correlated blocks are meant to stay
+    /// any amount in early windows and by a factor of 2 in the last one, and
+    /// when the whole-window dense metric would also condition each half
+    /// better than the whole-window diagonal one (see `dense_beats_diagonal`). Weakly correlated blocks are meant to stay
     /// diagonal, as under Stan's default metric; this is a statistical
     /// decision, not a guarantee. Dense blocks never span more than one
     /// vector parameter, and scalar parameters are always diagonal.
@@ -597,7 +598,7 @@ impl AccumulatorBlock {
                 ..
             } => {
                 let dim = *dim;
-                let Some(mut cov) = all.covariance() else {
+                let Some(cov) = all.covariance() else {
                     return MassBlock::identity(*start, dim);
                 };
                 let count = all.count;
@@ -609,40 +610,52 @@ impl AccumulatorBlock {
                         count,
                         halves.margin,
                     ) {
-                        let variances = (0..dim)
-                            .map(|i| regularize_variance(cov[i * dim + i], count))
-                            .collect();
                         return MassBlock {
                             start: *start,
                             len: dim,
-                            kind: BlockKind::Diagonal { variances },
+                            kind: BlockKind::Diagonal {
+                                variances: installed_variances(&cov, dim, count),
+                            },
                         };
                     }
-                }
-
-                shrink_correlations(&mut cov, dim, count);
-                // Stan's dense_e regularization: shrink toward a small
-                // multiple of the identity, weighted by the draw count.
-                let n = count as f64;
-                let shrink = n / (n + REGULARIZATION_WEIGHT);
-                let jitter = BASE_JITTER * (REGULARIZATION_WEIGHT / (n + REGULARIZATION_WEIGHT));
-                for i in 0..dim {
-                    for j in 0..dim {
-                        cov[i * dim + j] *= shrink;
-                    }
-                    cov[i * dim + i] += jitter;
                 }
 
                 MassBlock {
                     start: *start,
                     len: dim,
                     kind: BlockKind::Dense {
-                        chol: cholesky_with_jitter(cov, dim),
+                        chol: installed_dense_factor(cov, dim, count),
                     },
                 }
             }
         }
     }
+}
+
+/// The variances a diagonal block installs from a window's covariance `cov`
+/// of `count` draws.
+fn installed_variances(cov: &[f64], dim: usize, count: usize) -> Vec<f64> {
+    (0..dim)
+        .map(|i| regularize_variance(cov[i * dim + i], count))
+        .collect()
+}
+
+/// The Cholesky factor a dense block installs from a window's covariance
+/// `cov` of `count` draws: correlations shrunk for a short window (see
+/// [`shrink_correlations`]), then Stan's `dense_e` regularization, which
+/// shrinks toward a small multiple of the identity, weighted by the count.
+fn installed_dense_factor(mut cov: Vec<f64>, dim: usize, count: usize) -> Vec<f64> {
+    shrink_correlations(&mut cov, dim, count);
+    let n = count as f64;
+    let shrink = n / (n + REGULARIZATION_WEIGHT);
+    let jitter = BASE_JITTER * (REGULARIZATION_WEIGHT / (n + REGULARIZATION_WEIGHT));
+    for i in 0..dim {
+        for j in 0..dim {
+            cov[i * dim + j] *= shrink;
+        }
+        cov[i * dim + i] += jitter;
+    }
+    cholesky_with_jitter(cov, dim)
 }
 
 /// Draws per dimension from which a dense estimate is used unshrunk.
@@ -747,16 +760,17 @@ fn dense_beats_diagonal(
     if !(dense.is_finite() && dense / 2.0 < diagonal / 2.0 - margin.ln()) {
         return false;
     }
-    // The estimates that would be installed, scored on each half.
+    // The metrics that would be installed, exactly, scored on each half.
+    let variances = installed_variances(all, dim, count);
+    let factor = installed_dense_factor(all.to_vec(), dim, count);
     let mut installed_diagonal = 0.0;
     let mut installed_dense = 0.0;
     for half in [&a, &b] {
-        let Some(whitened) = whiten_by_variances(all, half, dim) else {
+        let Some(whitened) = whiten_by_diagonal(&variances, half, dim) else {
             return false;
         };
         installed_diagonal += log_condition(&whitened, dim);
-        installed_dense += whiten_by_covariance(all, count, half, dim)
-            .map_or(f64::INFINITY, |whitened| log_condition(&whitened, dim));
+        installed_dense += log_condition(&whiten_by_lower(&factor, half, dim), dim);
     }
     installed_dense.is_finite() && installed_dense < installed_diagonal
 }
@@ -790,9 +804,13 @@ const EARLY_WINDOW_MARGIN: f64 = 1.0;
 /// `test` whitened by the variances on `train`'s diagonal: the metric a
 /// diagonal estimate from `train` leaves for draws distributed as `test`.
 fn whiten_by_variances(train: &[f64], test: &[f64], dim: usize) -> Option<Vec<f64>> {
-    let inv_sd: Vec<f64> = (0..dim)
-        .map(|i| train[i * dim + i].sqrt().recip())
-        .collect();
+    let variances: Vec<f64> = (0..dim).map(|i| train[i * dim + i]).collect();
+    whiten_by_diagonal(&variances, test, dim)
+}
+
+/// `test` whitened by a diagonal metric with these `variances`.
+fn whiten_by_diagonal(variances: &[f64], test: &[f64], dim: usize) -> Option<Vec<f64>> {
+    let inv_sd: Vec<f64> = variances.iter().map(|v| v.sqrt().recip()).collect();
     if inv_sd.iter().any(|value| !value.is_finite()) {
         return None;
     }
@@ -820,11 +838,16 @@ fn whiten_by_covariance(
     if !cholesky_lower_in_place(&mut lower, dim) {
         return None;
     }
+    Some(whiten_by_lower(&lower, test, dim))
+}
+
+/// `L^-1 test L^-T` for a lower-triangular factor `L`.
+fn whiten_by_lower(lower: &[f64], test: &[f64], dim: usize) -> Vec<f64> {
     // `half` holds L^-1 test by rows: row j is L^-1 applied to column j of
     // `test`, which is row j because `test` is symmetric.
     let mut half = test.to_vec();
     for row in half.chunks_exact_mut(dim) {
-        solve_lower_in_place(&lower, row);
+        solve_lower_in_place(lower, row);
     }
     // Column k of L^-1 (L^-1 test)^T is L^-1 applied to row k of L^-1 test,
     // which is column k of `half`.
@@ -834,7 +857,7 @@ fn whiten_by_covariance(
         for j in 0..dim {
             column[j] = half[j * dim + k];
         }
-        solve_lower_in_place(&lower, &mut column);
+        solve_lower_in_place(lower, &mut column);
         for i in 0..dim {
             whitened[i * dim + k] = column[i];
         }
@@ -846,7 +869,7 @@ fn whiten_by_covariance(
             whitened[j * dim + i] = mean;
         }
     }
-    Some(whitened)
+    whitened
 }
 
 /// The natural log of a symmetric matrix's condition number, from its
@@ -1212,6 +1235,37 @@ mod tests {
         assert!(!estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
         let centered = equicorrelated_draws(2, 0.95, 200, 11);
         assert!(estimate(&graph, MetricKind::Auto, &centered).has_dense_block());
+    }
+
+    #[test]
+    fn dense_must_still_win_after_the_regularization_installed() {
+        // Scales of 1, 1e-4 and 0.1 with correlations 0.5 to 0.9, and halves
+        // shifted apart: both cross-validation and an unregularized whole-window
+        // score favor dense, but the jitter installed with the dense factor
+        // swamps the 1e-8 variance, and the installed dense metric conditions
+        // the halves worse than the installed diagonal one.
+        let graph = vector_graph(3);
+        let sd = [1.0, 1e-4, 0.1];
+        let corr = [[1.0, 0.5, 0.8], [0.5, 1.0, 0.9], [0.8, 0.9, 1.0]];
+        let mut cov = vec![0.0; 9];
+        for i in 0..3 {
+            for j in 0..3 {
+                cov[i * 3 + j] = sd[i] * corr[i][j] * sd[j];
+            }
+        }
+        assert!(cholesky_lower_in_place(&mut cov, 3));
+        let mut rng = ChaCha8Rng::seed_from_u64(4);
+        let draws: Vec<Vec<f64>> = (0..100)
+            .map(|index| {
+                let z: Vec<f64> = (0..3).map(|_| StandardNormal.sample(&mut rng)).collect();
+                let sign = if index < 50 { 1.0 } else { -1.0 };
+                let shift = [sign, 0.0, 0.2 * sign];
+                (0..3)
+                    .map(|i| shift[i] + (0..=i).map(|k| cov[i * 3 + k] * z[k]).sum::<f64>())
+                    .collect()
+            })
+            .collect();
+        assert!(!estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
     }
 
     #[test]

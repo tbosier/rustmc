@@ -89,7 +89,11 @@ tree stopped, and adds a repeated-inference benchmark.
   estimates a diagonal and a dense metric, each estimate is scored by the condition
   number it leaves the other half's sample covariance, and the dense metric is used when
   the geometric mean of its two scores is lower: by any amount in the early windows and
-  by a factor of 2 in the last window, whose metric the draws are sampled with. Each
+  by a factor of 2 in the last window, whose metric the draws are sampled with. The
+  whole-window diagonal and dense metrics that would be installed, regularization
+  included, are then scored on each half, and the block stays diagonal unless the
+  dense one still conditions them better on average; that catches a window whose
+  halves drifted apart, where the whole window's covariance fits neither. Each
   half must hold more draws than the vector has elements, so at the default
   `warmup=500` vectors of 100 or more elements stay diagonal (0.14.0's rule allowed up to
   100). 0.14.0's rule needed the window's effective sample size, and its estimate from
