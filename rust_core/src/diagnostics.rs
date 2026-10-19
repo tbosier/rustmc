@@ -4,7 +4,7 @@
 //!   Vehtari et al. (2021) "Rank-normalization, folding, and localization:
 //!   An improved R-hat for assessing convergence of MCMC"
 
-use crate::hmc::TransitionStats;
+use crate::hmc::{TransitionStats, TreeTermination};
 use rayon::prelude::*;
 use std::collections::HashSet;
 
@@ -96,6 +96,12 @@ pub struct ChainTransitionDiagnostics {
     /// chain ran with. `None` when that maximum is unknown, which includes
     /// every HMC chain (it builds no tree).
     pub tree_depth_saturation: Option<usize>,
+    /// Draw transitions whose tree stopped because it reached the maximum
+    /// tree depth, not because of a U-turn or a divergence in its last
+    /// doubling. At most `tree_depth_saturation`. `None` unless every draw
+    /// transition recorded why its tree stopped: HMC chains, and fits loaded
+    /// from an artifact older than version 4.
+    pub max_tree_depth_hits: Option<usize>,
 }
 
 /// Aggregated telemetry across all chains for one sampling run.
@@ -119,6 +125,8 @@ pub struct TransitionDiagnosticsReport {
     /// Sum of the chains' `tree_depth_saturation`; `None` when it is
     /// unavailable.
     pub total_tree_depth_saturation: Option<usize>,
+    /// Sum of the chains' `max_tree_depth_hits`; `None` when any chain's is.
+    pub total_max_tree_depth_hits: Option<usize>,
 }
 
 /// Number of `char`s in `text`, the unit this table measures columns in.
@@ -569,6 +577,7 @@ pub fn compute_transition_diagnostics_with_max_tree_depth(
     let mut n_energy_error = 0usize;
     let mut max_abs_energy_error = 0.0f64;
     let mut total_tree_depth_saturation = max_tree_depth_limit.map(|_| 0usize);
+    let mut total_max_tree_depth_hits = (!transitions.is_empty()).then_some(0usize);
 
     for (chain_index, chain) in transitions.iter().enumerate() {
         let num_transitions = chain.len();
@@ -614,6 +623,19 @@ pub fn compute_transition_diagnostics_with_max_tree_depth(
             (Some(total), Some(count)) => Some(total + count),
             _ => None,
         };
+        // Every transition of a NUTS chain records it, warmup included, so an
+        // empty or HMC chain reports `None`.
+        let max_tree_depth_hits =
+            (!chain.is_empty() && chain.iter().all(|t| t.termination.is_some())).then(|| {
+                draws
+                    .iter()
+                    .filter(|t| t.termination == Some(TreeTermination::MaxTreeDepth))
+                    .count()
+            });
+        total_max_tree_depth_hits = match (total_max_tree_depth_hits, max_tree_depth_hits) {
+            (Some(total), Some(count)) => Some(total + count),
+            _ => None,
+        };
 
         total_transitions += num_transitions;
         total_warmup_transitions += num_warmup_transitions;
@@ -640,6 +662,7 @@ pub fn compute_transition_diagnostics_with_max_tree_depth(
             total_leapfrog_steps: chain_leapfrog_steps,
             e_bfmi,
             tree_depth_saturation,
+            max_tree_depth_hits,
         });
     }
 
@@ -666,6 +689,7 @@ pub fn compute_transition_diagnostics_with_max_tree_depth(
         max_abs_energy_error,
         max_tree_depth_limit,
         total_tree_depth_saturation,
+        total_max_tree_depth_hits,
     }
 }
 
@@ -1833,6 +1857,7 @@ mod tests {
                     step_size: 1.0,
                     num_leapfrog_steps: 5,
                     tree_depth: Some(2),
+                    termination: None,
                 },
                 TransitionStats {
                     is_warmup: false,
@@ -1844,6 +1869,7 @@ mod tests {
                     step_size: 1.0,
                     num_leapfrog_steps: 7,
                     tree_depth: Some(3),
+                    termination: None,
                 },
             ],
             vec![TransitionStats {
@@ -1856,6 +1882,7 @@ mod tests {
                 step_size: 0.5,
                 num_leapfrog_steps: 6,
                 tree_depth: None,
+                termination: None,
             }],
         ];
 
@@ -1892,6 +1919,7 @@ mod tests {
             step_size: 0.5,
             num_leapfrog_steps: 9,
             tree_depth: Some(4),
+            termination: None,
         }]];
 
         let report = compute_transition_diagnostics(&transitions);
@@ -1919,6 +1947,7 @@ mod tests {
             step_size,
             num_leapfrog_steps: 3,
             tree_depth: Some(2),
+            termination: None,
         };
         // An early-warmup blow-up at a step size dual averaging abandoned.
         let transitions = vec![vec![
@@ -2163,6 +2192,7 @@ mod tests {
                 step_size: 1.0,
                 num_leapfrog_steps: 5,
                 tree_depth: Some(2),
+                termination: None,
             }],
             vec![TransitionStats {
                 is_warmup: false,
@@ -2176,6 +2206,7 @@ mod tests {
                 // ... and 12 chars in a 10-wide one.
                 num_leapfrog_steps: 123_456_789_012,
                 tree_depth: None,
+                termination: None,
             }],
         ];
         let table = compute_transition_diagnostics(&transitions).to_table();
@@ -2205,6 +2236,7 @@ mod tests {
             step_size: 1.0,
             num_leapfrog_steps: 5,
             tree_depth: Some(2),
+            termination: None,
         }]];
         let table = compute_transition_diagnostics(&transitions).to_table();
         assert_eq!(assert_columns_aligned(&table), 96);
@@ -2221,6 +2253,7 @@ mod tests {
             step_size: 0.5,
             num_leapfrog_steps: 3,
             tree_depth,
+            termination: None,
         }
     }
 

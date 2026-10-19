@@ -48,6 +48,35 @@ pub struct TransitionStats {
     /// Number of attempted NUTS doubling expansions, including the expansion
     /// that terminates with a U-turn or divergence.
     pub tree_depth: Option<usize>,
+    /// NUTS: why the trajectory stopped growing. `None` for HMC, which takes
+    /// a fixed number of steps, and for a fit loaded from an artifact older
+    /// than version 4.
+    pub termination: Option<TreeTermination>,
+}
+
+/// Why a NUTS transition stopped extending its trajectory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeTermination {
+    /// The whole trajectory, or a subtree being added to it, turned back on
+    /// itself.
+    UTurn,
+    /// A leapfrog step's energy error exceeded the divergence threshold or
+    /// was not finite.
+    Divergence,
+    /// The tree used every doubling `max_tree_depth` allows without either.
+    MaxTreeDepth,
+}
+
+impl TreeTermination {
+    /// The name `to_arviz` and the artifact use: `"u_turn"`, `"divergence"`
+    /// or `"max_tree_depth"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UTurn => "u_turn",
+            Self::Divergence => "divergence",
+            Self::MaxTreeDepth => "max_tree_depth",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -386,6 +415,7 @@ pub(crate) fn run_chain_with_evaluator(
                 step_size: step_size_used,
                 num_leapfrog_steps: steps_taken,
                 tree_depth: None,
+                termination: None,
             },
             accept,
         );

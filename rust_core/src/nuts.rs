@@ -20,7 +20,8 @@ use crate::adaptation::WarmupAdapter;
 use crate::data::DataBinding;
 use crate::graph::Graph;
 use crate::hmc::{
-    acceptance_probability, ChainRecorder, ChainResult, TransitionStats, MAX_DELTA_H,
+    acceptance_probability, ChainRecorder, ChainResult, TransitionStats, TreeTermination,
+    MAX_DELTA_H,
 };
 use crate::mass_matrix::{MassMatrix, MetricKind};
 use crate::progress::ProgressState;
@@ -280,6 +281,7 @@ pub(crate) fn run_chain_with_evaluator(
                 step_size: step_size_used,
                 num_leapfrog_steps: tree_stats.n_leapfrog,
                 tree_depth: Some(tree_stats.tree_depth),
+                termination: Some(tree_stats.termination),
             },
             accept_stat,
         );
@@ -296,6 +298,7 @@ struct TreeStats {
     energy: f64,
     tree_depth: usize,
     n_leapfrog: usize,
+    termination: TreeTermination,
 }
 
 fn update_current(current: &mut PhasePoint, proposal: &PhasePoint) {
@@ -385,6 +388,9 @@ fn build_tree_iterative(
     let mut sum_accept_stat = 0.0f64;
     let mut n_accept_stat = 0usize;
     let mut diverging = false;
+    // Reaching the depth limit is what is left once neither a divergence nor
+    // a U-turn ended the tree.
+    let mut termination = TreeTermination::MaxTreeDepth;
 
     while depth < max_depth {
         // Choose direction: extend forward or backward
@@ -408,11 +414,13 @@ fn build_tree_iterative(
 
         if subtree.diverging {
             diverging = true;
+            termination = TreeTermination::Divergence;
             pool.give_tree(subtree);
             break;
         }
 
         if subtree.turning {
+            termination = TreeTermination::UTurn;
             pool.give_tree(subtree);
             break;
         }
@@ -451,6 +459,7 @@ fn build_tree_iterative(
 
         // Check U-turn across the full tree
         if check_uturn(&left, &right, mass) {
+            termination = TreeTermination::UTurn;
             break;
         }
     }
@@ -474,6 +483,7 @@ fn build_tree_iterative(
             energy,
             tree_depth: depth,
             n_leapfrog: n_leapfrog_total,
+            termination,
         },
     )
 }
@@ -807,7 +817,59 @@ mod tests {
             assert_eq!(stats.num_leapfrog_steps, 1);
             assert_eq!(stats.tree_depth, Some(1));
             assert_eq!(stats.divergent, step_size == 100.0);
+            let expected = if step_size == 100.0 {
+                TreeTermination::Divergence
+            } else {
+                TreeTermination::UTurn
+            };
+            assert_eq!(stats.termination, Some(expected));
         }
+    }
+
+    #[test]
+    fn termination_reasons_match_the_trees_they_ended() {
+        let mut graph = Graph::new();
+        crate::distributions::Normal::prior(&mut graph, "x", 0.0, 1.0);
+        // A step this small cannot turn within two doublings, so every tree
+        // runs out of depth with all three leapfrog steps.
+        let config = NutsConfig {
+            step_size: 1e-3,
+            max_tree_depth: 2,
+            num_draws: 20,
+            num_warmup: 0,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.0]), None)
+            .expect("continuous test model must run");
+        for stats in &chain.transitions {
+            assert_eq!(stats.termination, Some(TreeTermination::MaxTreeDepth));
+            assert_eq!((stats.tree_depth, stats.num_leapfrog_steps), (Some(2), 3));
+        }
+        // With adaptation and a deep limit every reason must agree with its
+        // tree: divergence exactly when flagged, and an exhausted depth only
+        // at the limit with every doubling run in full.
+        let config = NutsConfig {
+            max_tree_depth: 4,
+            num_draws: 300,
+            num_warmup: 100,
+            ..NutsConfig::default()
+        };
+        let mut rng = ChaCha8Rng::seed_from_u64(8);
+        let chain = run_chain(&graph, &config, &mut rng, Some(vec![0.5]), None)
+            .expect("continuous test model must run");
+        let mut u_turns = 0;
+        for stats in &chain.transitions {
+            let reason = stats.termination.expect("NUTS records a reason");
+            assert_eq!(reason == TreeTermination::Divergence, stats.divergent);
+            if reason == TreeTermination::MaxTreeDepth {
+                let depth = stats.tree_depth.unwrap();
+                assert_eq!(depth, 4);
+                assert_eq!(stats.num_leapfrog_steps, (1 << depth) - 1);
+            }
+            u_turns += usize::from(reason == TreeTermination::UTurn);
+        }
+        assert!(u_turns > 0);
     }
 
     #[test]

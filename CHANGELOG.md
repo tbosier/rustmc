@@ -14,8 +14,28 @@ versioning while the public API is stabilized.
   of `(chain, draw, p + 1)`. The `(chain, draw, ...)` arrays are now
   `get_samples_2d()`. Code that averaged with `mean(axis=(0, 1))` gets a scalar
   instead of an error, so check those calls.
+- Rust struct literals of these types need the new fields:
+  `hmc::TransitionStats::termination`,
+  `diagnostics::ChainTransitionDiagnostics::max_tree_depth_hits` and
+  `diagnostics::TransitionDiagnosticsReport::total_max_tree_depth_hits`.
+- A saved fit is written as version 4 of the `rustmc.graph-fit` artifact, which
+  0.14.0 and earlier cannot load. Versions 1 to 3 still load, and a NUTS fit loaded
+  from version 3 is saved as version 3.
 
 ### Added
+
+- Each NUTS transition records why its tree stopped
+  (`TransitionStats::termination`, a `TreeTermination` of `UTurn`, `Divergence` or
+  `MaxTreeDepth`). Recording it reads the tree builder's existing branches and draws
+  nothing, so seeded draws do not change. `transition_diagnostics()` reports
+  `max_tree_depth_hits` per chain and `total_max_tree_depth_hits`, the draw
+  transitions whose tree stopped at the depth limit rather than turning or
+  diverging in its last doubling, and `to_arviz()` exports the per-draw flag as
+  `reached_max_treedepth`. The count can be far below `tree_depth_saturation`: on
+  the informative eight-schools test data with seed 1 and `max_tree_depth=3`, 3648
+  of 4000 draw transitions were saturated and none hit the limit. The
+  `tree_depth_saturation` warning is unchanged. Version 4 artifacts store the
+  reasons and refuse ones that disagree with their trees.
 
 - `get_samples()` on `BayesianLocalLevelFit`, `BayesianLocalLinearTrendFit`,
   `BayesianSeasonalLocalLevelFit`, `BayesianHurdleLogNormalFit` and

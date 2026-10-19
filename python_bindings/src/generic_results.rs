@@ -119,6 +119,10 @@ pub(crate) fn transition_diagnostics<'py>(
         "total_tree_depth_saturation",
         report.total_tree_depth_saturation,
     )?;
+    result.set_item(
+        "total_max_tree_depth_hits",
+        report.total_max_tree_depth_hits,
+    )?;
 
     let chains = PyList::empty(py);
     for chain in report.chains {
@@ -138,6 +142,7 @@ pub(crate) fn transition_diagnostics<'py>(
         // Undefined (fewer than two draws, or no recorded energies) is None.
         item.set_item("e_bfmi", (!chain.e_bfmi.is_nan()).then_some(chain.e_bfmi))?;
         item.set_item("tree_depth_saturation", chain.tree_depth_saturation)?;
+        item.set_item("max_tree_depth_hits", chain.max_tree_depth_hits)?;
         chains.append(item)?;
     }
     result.set_item("chains", chains)?;

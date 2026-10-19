@@ -640,7 +640,7 @@ than absolute batch throughput.
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
 | `diagnostics()` | `list[dict]` | Per-parameter diagnostics; a value that cannot be computed is `None` |
-| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry, with each chain's `e_bfmi` and `tree_depth_saturation` |
+| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry, with each chain's `e_bfmi`, `tree_depth_saturation` and `max_tree_depth_hits` |
 | `warnings()` | `list[dict]` | Every failed or unavailable check; see [fit warnings](#fit-warnings-and-batch-triage) |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
@@ -649,7 +649,7 @@ than absolute batch throughput.
 | `predict(data=None, seed=42, expected=False, sizes=None)` | `dict[str, np.ndarray]` | Predictive draws on `(chain, draw, obs)` axes |
 | `deterministics(data=None, sizes=None)` | `dict[str, np.ndarray]` | Draws of each declared `deterministic()`, on `(chain, draw)` or `(chain, draw, obs)` axes |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood. `sample_stats` holds `diverging`, `step_size`, `energy` and, for NUTS, `tree_depth`, so `az.bfmi()` works on it |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood. `sample_stats` holds `diverging`, `step_size`, `energy` and, for NUTS, `tree_depth` and `reached_max_treedepth`, so `az.bfmi()` works on it |
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 
@@ -759,6 +759,18 @@ accurate when the log density carries a large constant. `to_arviz()` exports the
 `transition_diagnostics()`. A NUTS transition's tree depth counts the doubling that
 ended its tree, so a transition counts as saturated when its tree used the last
 doubling `max_tree_depth` allows, however that doubling ended.
+
+Each NUTS transition also records why its tree stopped: a U-turn, a divergence or
+the depth limit. `transition_diagnostics()` reports, per chain and in total,
+`max_tree_depth_hits`: the draw transitions whose tree stopped at the limit rather
+than turning or diverging in its last doubling. It is at most the saturation count
+and can be far below it. On the informative eight-schools data of
+`tests/test_fit_warnings.py`, with seed 1 and `max_tree_depth=3`, 3648 of 4000 draw
+transitions were saturated and none hit the limit: every one of them turned in its
+third doubling. The `tree_depth_saturation` warning still counts saturation, as Stan's
+check does. `to_arviz()` exports the per-draw flag as `reached_max_treedepth`, PyMC's
+name. HMC fits, and fits restored from an artifact older than version 4, report
+`max_tree_depth_hits` as `None` and export no flag.
 
 `BatchFit.flagged(ignore=None)` and `ForecastBatchFit.flagged(ignore=None)` return the
 IDs of the successful cells with at least one `"fail"` record, in batch order. Failed
