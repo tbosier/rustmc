@@ -9,8 +9,9 @@ matrix's condition number against a noise bound from the effective draws of the
 average lag-one autocorrelation. ``cv`` is the rule in ``rust_core/src/mass_matrix.rs``
 (``dense_beats_diagonal``): each half of the window estimates a diagonal and a dense
 metric, each is scored by the condition number it leaves the other half's sample
-covariance, and dense must win by a factor of 2 on the geometric mean of the two
-folds. For each case it prints how many of 30 windows go dense. The isotropic cases
+covariance, and dense must leave a geometric mean over the two folds smaller by a
+margin: 1 in early warmup windows and 2 in the last, as shipped. The columns give the
+rule at margins of 1, 2 and 4. For each case it prints how many of 30 windows go dense. The isotropic cases
 have no correlation, so a dense choice there trusts noise; the correlated cases are
 where dense is meant to be chosen. It tests the rules, not NUTS: real warmup draws
 are neither stationary nor AR(1).
@@ -20,7 +21,7 @@ from __future__ import annotations
 import numpy as np
 
 OLD_MARGIN = 8.0
-CV_MARGIN = 2.0
+CV_MARGINS = (1.0, 2.0, 4.0)
 WINDOWS = 30
 
 
@@ -54,7 +55,7 @@ def log_condition(matrix):
     return np.log(eigenvalues[-1] / eigenvalues[0]) if eigenvalues[0] > 0 else np.inf
 
 
-def cv_rule(window):
+def cv_rule(window, margin):
     n, d = window.shape
     if n // 2 <= d:
         return False
@@ -67,7 +68,7 @@ def cv_rule(window):
         lower = np.linalg.cholesky(shrunk_covariance(train))
         half = np.linalg.solve(lower, test_covariance)
         dense += log_condition(np.linalg.solve(lower, half.T))
-    return bool(np.isfinite(dense) and dense / 2 < diagonal / 2 - np.log(CV_MARGIN))
+    return bool(np.isfinite(dense) and dense / 2 < diagonal / 2 - np.log(margin))
 
 
 def ar1_window(draws, coefficients, rng, mixing=None):
@@ -105,6 +106,9 @@ CASES = [
     ("isotropic, 20 at 0.97 and 20 at 0, rotated", 400, np.r_[np.full(20, 0.97), np.zeros(20)],
      pairwise_rotation(20)),
     ("isotropic, 100 at 0.5", 400, np.full(100, 0.5), None),
+    ("isotropic, 10 at 0.5, halves of 11", 23, np.full(10, 0.5), None),
+    ("isotropic, 20 at 0.99 and 20 at 0, rotated", 89, np.r_[np.full(20, 0.99), np.zeros(20)],
+     pairwise_rotation(20)),
     ("AR(1) correlation 0.95, all at 0.5", 200, np.full(50, 0.5), correlation_factor(50, 0.95)),
     ("AR(1) correlation 0.95, all at 0.8", 200, np.full(50, 0.8), correlation_factor(50, 0.95)),
     ("AR(1) correlation 0.95, one at 0.99, 49 at 0.3", 200, np.r_[0.99, np.full(49, 0.3)],
@@ -116,14 +120,17 @@ CASES = [
 
 def main():
     print(f"{WINDOWS} windows per case, NumPy seeds 0 to {WINDOWS - 1}; dense choices out of {WINDOWS}")
-    print(f"{'case':50s} {'draws':>5s} {'old':>4s} {'cv':>4s}")
+    names = ["cv m1", "cv m2", "cv m4"]
+    print(f"{'case':50s} {'draws':>5s} {'old':>4s} " + " ".join(f"{name:>5s}" for name in names))
     for label, draws, coefficients, mixing in CASES:
-        counts = {"old": 0, "cv": 0}
+        old = 0
+        cv = [0] * len(CV_MARGINS)
         for seed in range(WINDOWS):
             window = ar1_window(draws, coefficients, np.random.default_rng(seed), mixing)
-            counts["old"] += old_rule(window)
-            counts["cv"] += cv_rule(window)
-        print(f"{label:50s} {draws:5d} {counts['old']:4d} {counts['cv']:4d}")
+            old += old_rule(window)
+            for index, margin in enumerate(CV_MARGINS):
+                cv[index] += cv_rule(window, margin)
+        print(f"{label:50s} {draws:5d} {old:4d} " + " ".join(f"{count:5d}" for count in cv))
 
 
 if __name__ == "__main__":

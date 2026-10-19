@@ -23,8 +23,9 @@ const BASE_JITTER: f64 = 1e-3;
 pub enum MetricKind {
     /// Diagonal, except that a vector parameter of at most 512 elements gets a
     /// dense block from a window whose halves each hold more draws than it has
-    /// elements, when a dense estimate from either half whitens the other
-    /// half at least twice as well as a diagonal one (see
+    /// elements, when a dense estimate from each half leaves the other half
+    /// better conditioned than a diagonal one, on average over the two: by
+    /// any amount in early windows and by a factor of 2 in the last one (see
     /// `dense_beats_diagonal`). Weakly correlated blocks are meant to stay
     /// diagonal, as under Stan's default metric; this is a statistical
     /// decision, not a guarantee. Dense blocks never span more than one
@@ -122,12 +123,22 @@ enum AccumulatorBlock {
         all: Moments,
         /// Deviations from the previous mean, reused across updates.
         delta: Vec<f64>,
-        /// Under [`MetricKind::Auto`], the draw count at which the window's
-        /// second half begins, and each half's moments: whether the metric is
-        /// dense is decided from how well each half's estimate whitens the
-        /// other (see [`dense_beats_diagonal`]).
-        halves: Option<(usize, Moments, Moments)>,
+        /// Under [`MetricKind::Auto`], each half's moments: whether the
+        /// metric is dense is decided from how well each half's estimate
+        /// whitens the other (see [`dense_beats_diagonal`]).
+        halves: Option<Halves>,
     },
+}
+
+/// What [`MetricKind::Auto`] keeps of a dense-eligible window: its two
+/// halves apart, and the margin a dense estimate must win by.
+#[derive(Debug, Clone)]
+struct Halves {
+    /// The draw count at which the second half begins.
+    split: usize,
+    first: Moments,
+    second: Moments,
+    margin: f64,
 }
 
 /// Running mean and centred cross-product sum of a block's draws, by
@@ -262,13 +273,32 @@ impl MassMatrix {
 }
 
 impl MassMatrixAccumulator {
+    /// An accumulator for the last adaptation window, of `window_len` draws,
+    /// whose metric the chain samples with; see [`Self::for_warmup_window`].
+    pub fn for_window(graph: &Graph, kind: MetricKind, window_len: usize) -> Self {
+        Self::for_warmup_window(graph, kind, window_len, true)
+    }
+
     /// An accumulator for one adaptation window of `window_len` draws.
     ///
     /// The window length is known when the window opens, so under
-    /// [`MetricKind::Auto`] the choice between a dense and a diagonal
-    /// estimate is made here, and a block that will be diagonal never pays for
-    /// the O(d²) cross products.
-    pub fn for_window(graph: &Graph, kind: MetricKind, window_len: usize) -> Self {
+    /// [`MetricKind::Auto`] which blocks may become dense is settled here, and
+    /// a block that will be diagonal never pays for the O(d²) cross products.
+    /// Under `Auto` a dense estimate must beat the diagonal one by
+    /// [`LAST_WINDOW_MARGIN`] in the `last` window, whose metric the draws are
+    /// sampled with, and by [`EARLY_WINDOW_MARGIN`] in the others, whose
+    /// metric only samples the next window.
+    pub fn for_warmup_window(
+        graph: &Graph,
+        kind: MetricKind,
+        window_len: usize,
+        last: bool,
+    ) -> Self {
+        let margin = if last {
+            LAST_WINDOW_MARGIN
+        } else {
+            EARLY_WINDOW_MARGIN
+        };
         let mut blocks = Vec::with_capacity(graph.param_spans.len());
         for span in &graph.param_spans {
             let dense = span.len > 1
@@ -282,7 +312,7 @@ impl MassMatrixAccumulator {
                 span.start,
                 span.len,
                 dense,
-                (kind == MetricKind::Auto).then_some(window_len / 2),
+                (kind == MetricKind::Auto).then_some((window_len / 2, margin)),
             ));
         }
         Self { blocks }
@@ -425,9 +455,9 @@ impl MassBlock {
 }
 
 impl AccumulatorBlock {
-    /// A block that, when `split` is given, also keeps the moments of the
-    /// draws before and after that count apart.
-    fn new(start: usize, len: usize, dense: bool, split: Option<usize>) -> Self {
+    /// A block that, when `halves` gives a split count and a margin, also
+    /// keeps the moments of the draws before and after that count apart.
+    fn new(start: usize, len: usize, dense: bool, halves: Option<(usize, f64)>) -> Self {
         if len == 1 {
             Self::Scalar {
                 start,
@@ -441,7 +471,12 @@ impl AccumulatorBlock {
                 dim: len,
                 all: Moments::new(len),
                 delta: vec![0.0; len],
-                halves: split.map(|split| (split, Moments::new(len), Moments::new(len))),
+                halves: halves.map(|(split, margin)| Halves {
+                    split,
+                    first: Moments::new(len),
+                    second: Moments::new(len),
+                    margin,
+                }),
             }
         } else {
             Self::Diagonal {
@@ -500,8 +535,12 @@ impl AccumulatorBlock {
                 halves,
             } => {
                 let x = &q[*start..*start + *dim];
-                if let Some((split, first, second)) = halves {
-                    let half = if all.count < *split { first } else { second };
+                if let Some(halves) = halves {
+                    let half = if all.count < halves.split {
+                        &mut halves.first
+                    } else {
+                        &mut halves.second
+                    };
                     half.update(x, delta);
                 }
                 all.update(x, delta);
@@ -562,8 +601,8 @@ impl AccumulatorBlock {
                     return MassBlock::identity(*start, dim);
                 };
                 let count = all.count;
-                if let Some((_, first, second)) = halves {
-                    if !dense_beats_diagonal(first, second) {
+                if let Some(halves) = halves {
+                    if !dense_beats_diagonal(&halves.first, &halves.second, halves.margin) {
                         let variances = (0..dim)
                             .map(|i| regularize_variance(cov[i * dim + i], count))
                             .collect();
@@ -655,13 +694,13 @@ fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
 /// held-out covariance, so its own sampling noise and autocorrelation affect
 /// them alike and need no estimate; the rule this replaced had to estimate
 /// the window's effective sample size, and could not do so reliably when
-/// coordinates mixed at different speeds. The dense metric must win by
-/// [`DENSE_MARGIN`], on the geometric mean of the two folds' condition
-/// numbers, because a dense step costs O(d²) where a diagonal one costs
-/// O(d). A half too short for a nonsingular covariance chooses diagonal.
+/// coordinates mixed at different speeds. The dense metric must leave a
+/// geometric mean of the two folds' condition numbers smaller by `margin`
+/// ([`LAST_WINDOW_MARGIN`] or [`EARLY_WINDOW_MARGIN`]). A half too short for
+/// a nonsingular covariance chooses diagonal.
 /// The condition numbers come from a fixed number of power and inverse-power
 /// iterations, which can only underestimate them.
-fn dense_beats_diagonal(first: &Moments, second: &Moments) -> bool {
+fn dense_beats_diagonal(first: &Moments, second: &Moments, margin: f64) -> bool {
     let (Some(a), Some(b)) = (first.covariance(), second.covariance()) else {
         return false;
     };
@@ -676,16 +715,29 @@ fn dense_beats_diagonal(first: &Moments, second: &Moments) -> bool {
         dense += whiten_by_covariance(train, train_count, test, dim)
             .map_or(f64::INFINITY, |whitened| log_condition(&whitened, dim));
     }
-    dense.is_finite() && dense / 2.0 < diagonal / 2.0 - DENSE_MARGIN.ln()
+    dense.is_finite() && dense / 2.0 < diagonal / 2.0 - margin.ln()
 }
 
 /// How much better conditioned, on held-out draws, a dense metric must leave
-/// a block than the diagonal one before it is used: a factor of 2 in the
-/// condition number. In simulated warmup windows this margin kept every
-/// uncorrelated window diagonal, including ones whose coordinates mixed at
-/// very different speeds, and chose dense for every block with a 0.95
-/// AR(1) correlation (`benchmarks/auto_metric_noise.py`).
-const DENSE_MARGIN: f64 = 2.0;
+/// a block than the diagonal one in the last warmup window, whose metric the
+/// draws are sampled with: a factor of 2 in the condition number. In
+/// simulated warmup windows (`benchmarks/auto_metric_noise.py`) this kept
+/// every uncorrelated window diagonal, including windows whose halves held
+/// barely more draws than dimensions and windows whose coordinates mixed at
+/// very different speeds, where a factor of 1 went dense in up to 91 of 100.
+/// A dense leapfrog step also does O(d²) more arithmetic than a diagonal one.
+const LAST_WINDOW_MARGIN: f64 = 2.0;
+
+/// The same margin for the earlier windows, whose metric only samples the
+/// next window: 1, no margin. A wrong dense choice there costs one window's
+/// sampling and the next window decides again, while a missed one leaves the
+/// next window's draws to mix slowly along the correlation and so degrades
+/// every later estimate. With 2 in every window the 10- and 20-dimensional
+/// correlated regressions of `benchmarks/auto_metric_targets.py` took 8% and
+/// 19% more leapfrog steps per unit of ESS than with this split (medians
+/// over ten seeds at 1000 warmup iterations), and the other targets there
+/// did not improve.
+const EARLY_WINDOW_MARGIN: f64 = 1.0;
 
 /// `test` whitened by the variances on `train`'s diagonal: the metric a
 /// diagonal estimate from `train` leaves for draws distributed as `test`.

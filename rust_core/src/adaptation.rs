@@ -235,7 +235,12 @@ impl WarmupAdapter {
             next_window: 0,
             metric,
             dual: DualAveraging::new(step_size, target_accept),
-            accumulator: MassMatrixAccumulator::for_window(graph, metric, first_len),
+            accumulator: MassMatrixAccumulator::for_warmup_window(
+                graph,
+                metric,
+                first_len,
+                windows.len() == 1,
+            ),
             workspace,
             windows,
         }
@@ -271,8 +276,12 @@ impl WarmupAdapter {
                 let estimate = usable.then(|| self.accumulator.finalize());
                 self.next_window += 1;
                 if let Some(&(start, end)) = self.windows.get(self.next_window) {
-                    self.accumulator =
-                        MassMatrixAccumulator::for_window(graph, self.metric, end - start);
+                    self.accumulator = MassMatrixAccumulator::for_warmup_window(
+                        graph,
+                        self.metric,
+                        end - start,
+                        self.next_window + 1 == self.windows.len(),
+                    );
                 }
                 let Some(estimate) = estimate else {
                     return self.finish(iter, step_size);

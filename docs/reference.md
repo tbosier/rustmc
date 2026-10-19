@@ -586,8 +586,10 @@ Notes:
   default diagonal metric. `"dense"` estimates a full covariance for each vector
   parameter of at most 512 elements, shrinking its correlations when a window has
   fewer than two draws per element. `"auto"` (the default) stays diagonal unless a
-  dense estimate from either half of a warmup window leaves the other half's draws
-  at least twice as well conditioned as a diagonal estimate does, which suits
+  dense estimate from each half of a warmup window leaves the other half's draws
+  better conditioned than a diagonal estimate does, on average over the two halves:
+  by any amount in the early windows and at least twice as well in the last one,
+  whose metric the draws are sampled with. That suits
   strongly correlated regression coefficients. Each half must hold more draws than
   the vector has elements, so at the default `warmup=500`, whose last window has
   200 draws, vectors of 100 or more elements stay diagonal; use a longer warmup or
