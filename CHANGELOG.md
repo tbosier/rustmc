@@ -65,13 +65,15 @@ tree stopped, and adds a repeated-inference benchmark.
   `cumulative_observation_samples`, so the structural forecast uses the
   `*_samples` names of the other forecasts.
 - `benchmarks/repeated.py`, a repeated-inference benchmark: Gaussian linear
-  regressions, fixed-size or ragged, fitted through one compiled model in rustmc (one
-  fit per dataset, and one `sample_batch`), nutpie, NumPyro and PyMC. It times setup,
-  each fit and each prediction, records memory, gates every fit against its exact
-  posterior, keeps failed and erroring fits, and counts only passing fits' ESS. In the
-  recorded run of 30 datasets every fit passed. nutpie fitted each dataset faster than
-  rustmc (1.97 s against 3.16 s for 30 datasets of 500 rows), and its compilation of
-  about 8 s left rustmc ahead over 30 datasets. See benchmarks/README.md.
+  regressions, fixed-size or ragged, fitted through one model per engine in rustmc
+  (one fit per dataset, and one `sample_batch`), nutpie, NumPyro (parallel and
+  vectorized chains) and PyMC. It times setup, each fit and each prediction, records
+  memory, gates every fit against its exact posterior, including the draws' joint
+  covariance and the predictions, keeps failed and erroring fits with the time they
+  took, and counts only passing fits' ESS. In the recorded run of 30 datasets every
+  fit passed. nutpie fitted each dataset faster than rustmc (1.89 s against 3.16 s for
+  30 datasets of 500 rows), and its compilation of about 8 s left rustmc ahead over 30
+  datasets. See benchmarks/README.md.
 - `benchmarks/auto_metric_targets.py`, `auto_metric_noise.py`,
   `compare_metric_records.py` and options for `curved_metric_choice.py`, which measure
   the `auto` metric's choices, with saved records that name the build they ran on.
