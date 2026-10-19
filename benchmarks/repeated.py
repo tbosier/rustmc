@@ -513,7 +513,9 @@ def _revision() -> dict[str, Any]:
             ["git", *args], cwd=root, text=True, capture_output=True, check=False
         ).stdout.strip()
 
-    return {"commit": git("rev-parse", "HEAD"), "dirty": bool(git("status", "--porcelain"))}
+    # Untracked files, such as the redirected output of this run, do not count.
+    dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
+    return {"commit": git("rev-parse", "HEAD"), "dirty": dirty}
 
 
 def print_summary(results: list[dict[str, Any]]) -> None:
