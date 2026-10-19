@@ -73,7 +73,7 @@ tree stopped, and adds a repeated-inference benchmark.
   memory, gates every fit against its exact posterior, including the draws' joint
   covariance and the predictions, keeps failed and erroring fits with the time they
   took, and counts only passing fits' ESS. In the recorded run of 30 datasets every
-  fit passed. nutpie fitted each dataset faster than rustmc (1.89 s against 3.16 s for
+  fit passed. nutpie fitted each dataset faster than rustmc (1.99 s against 3.09 s for
   30 datasets of 500 rows), and its compilation of about 8 s left rustmc ahead over 30
   datasets. See benchmarks/README.md.
 - Rust: `MassMatrixAccumulator::for_warmup_window`, which takes whether the window is

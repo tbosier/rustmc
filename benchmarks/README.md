@@ -167,7 +167,8 @@ one in units of its exact posterior standard deviation, finite. A fit that fails
 raises is kept with its reason, its time up to the failure counts, and its ESS does not:
 `useful_ess_per_second` is the bulk ESS of passing fits divided by setup plus every
 fit's time. The JSON keeps every fit's phases, quality, gate result and resident memory
-after the fit, plus the git revision, with the home directory written as `~`.
+after the fit, the largest child process that exited, plus the git revision, with the
+home directory written as `~`.
 
 ```bash
 PYTHONPATH=.pybuild python -m benchmarks.repeated --config benchmarks/configs/repeated-fixed.json \
@@ -181,25 +182,29 @@ between 50 and 2000 (103 to 1949 in this run). Every fit of every engine passed.
 
 | Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
 |---|---|---|---|---|---|
-| rustmc, one dataset at a time | 0.01 | 3.16 | 6.97 | 61047 | 28071 |
-| rustmc, `sample_batch` | 0.01 | 3.02 | 6.44 | 65492 | 30289 |
-| nutpie | 7.83, 8.10 | 1.89 | 2.99 | 16945 | 15251 |
-| NumPyro, parallel chains | 0.27 | 24.76 | 25.76 | 7764 | 7544 |
-| NumPyro, vectorized chains | 0.28, 0.29 | 31.21 | 55.87 | 6171 | 3477 |
-| PyMC | 0.44 | 26.06 | 27.49 | 5721 | 5498 |
+| rustmc, one dataset at a time | 0.01 | 3.09 | 6.78 | 62351 | 28852 |
+| rustmc, `sample_batch` | 0.01 | 2.99 | 6.52 | 66022 | 29886 |
+| nutpie | 7.74 | 1.99 | 2.84 | 16921 | 15976 |
+| NumPyro, parallel chains | 0.26 | 24.84 | 25.49 | 7741 | 7624 |
+| NumPyro, vectorized chains | 0.26, 0.27 | 30.72 | 53.78 | 6273 | 3613 |
+| PyMC | 0.45, 0.44 | 25.72 | 27.33 | 5796 | 5530 |
 
-nutpie fits each dataset faster than rustmc: 1.89 s against 3.16 s for the 30 fixed
-datasets, and 2.99 s against 6.97 s for the ragged ones. Its useful ESS per second is
+nutpie fits each dataset faster than rustmc: 1.99 s against 3.09 s for the 30 fixed
+datasets, and 2.84 s against 6.78 s for the ragged ones. Its useful ESS per second is
 lower over 30 datasets because of about 8 s of compilation and a lower ESS per fit: a
 mean bulk ESS of 5491 and 5636 per fit against rustmc's 6439 and 6530. At these per-fit
-times nutpie's total time would fall below rustmc's after about 185 fixed or 60 ragged
-datasets of this size. PyMC's first fit took 6.8 s and its fits a median of 0.65 s
-(fixed) and 0.71 s (ragged). NumPyro with parallel chains took a median of 0.79 and
-0.82 s per fit, compiling each time. With vectorized chains its first fit took 3.1 s and
-the later fixed-size ones a median of 0.97 s: reusing the compiled model did not make up
-for sampling the four chains on one device, and in the ragged workload, where every
-dataset has a new shape, the median was 1.8 s. Peak resident memory was 344 to 369 MB
-for the two rustmc runs, 546 to 550 MB for nutpie, 1238 to 1456 MB for NumPyro and 424
-to 425 MB for PyMC. One run on one machine is not a stable ranking; rerun it before
-quoting a ratio.
+times nutpie's total time would fall below rustmc's after about 210 fixed or 60 ragged
+datasets of this size. PyMC's first fit took 6.6 to 6.7 s and its fits a median of
+0.65 s (fixed) and 0.72 s (ragged). NumPyro with parallel chains took a median of 0.79
+and 0.82 s per fit, compiling each time. With vectorized chains its first fit took 2.9
+to 3.0 s and the later fixed-size ones a median of 0.96 s: reusing the compiled model
+did not make up for sampling the four chains on one device, and in the ragged workload,
+where every dataset has a new shape, the median was 1.8 s. Peak resident memory of the
+engine's own process was 346 to 371 MB for the two rustmc runs, 549 to 551 MB for
+nutpie, 1232 to 1459 MB for NumPyro and 424 MB for PyMC. Child processes, which hold
+PyMC's chains and anything else an engine or its imports start, are recorded apart
+(`peak_children_rss_mb`, the largest that exited): 394 to 402 MB for PyMC and nutpie
+and 63 to 64 MB for the others. The runs do not record which child reached each peak.
+The runs were made on a machine shared with other work, at a load average below 5. One
+run on one machine is not a stable ranking; rerun it before quoting a ratio.
 
