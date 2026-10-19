@@ -641,8 +641,8 @@ def _revision() -> dict[str, Any]:
 
     # Untracked files, and the saved records, which an earlier run's committed
     # output or this run's redirected one may have changed, do not count.
-    dirty = bool(git("status", "--porcelain", "--untracked-files=no", "--", ".",
-                     ":(exclude)benchmarks/results"))
+    dirty = bool(git("status", "--porcelain", "--untracked-files=no", "--", ":/",
+                     ":(top,exclude)benchmarks/results"))
     return {"commit": git("rev-parse", "HEAD"), "dirty": dirty}
 
 

@@ -318,8 +318,8 @@ fn false_alarm_rate_over_seeds() {
                     "--porcelain",
                     "--untracked-files=no",
                     "--",
-                    ".",
-                    ":(exclude)benchmarks/results",
+                    ":/",
+                    ":(top,exclude)benchmarks/results",
                 ],
             )
             .map(|s| !s.is_empty()),
@@ -430,8 +430,8 @@ fn exactness_cost_report() {
                     "--porcelain",
                     "--untracked-files=no",
                     "--",
-                    ".",
-                    ":(exclude)benchmarks/results",
+                    ":/",
+                    ":(top,exclude)benchmarks/results",
                 ],
             )
             .map(|s| !s.is_empty()),

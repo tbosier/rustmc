@@ -19,8 +19,8 @@ def build_provenance(module) -> dict:
         return result.stdout.strip() if result.returncode == 0 else None
 
     # Saved records, which a run may be overwriting, do not count as changes.
-    status = git("status", "--porcelain", "--untracked-files=no", "--", ".",
-                 ":(exclude)benchmarks/results")
+    status = git("status", "--porcelain", "--untracked-files=no", "--", ":/",
+                 ":(top,exclude)benchmarks/results")
     home = str(Path.home())
     return {
         "version": module.__version__,
