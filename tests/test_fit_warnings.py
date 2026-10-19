@@ -84,7 +84,10 @@ def test_e_bfmi_equals_arviz_bfmi_on_the_exported_energies():
         # ArviZ 0.x returns an array, 1.x a DataTree with an `energy` variable.
         theirs = az.bfmi(idata)
         theirs = theirs if isinstance(theirs, np.ndarray) else theirs["energy"]
-        np.testing.assert_allclose(ours, np.asarray(theirs), rtol=1e-12, atol=0)
+        # Ours subtracts each chain's first energy before squaring and ArviZ's
+        # does not, so the two round differently: 1.4e-12 apart, relative, on
+        # one chain of one seed.
+        np.testing.assert_allclose(ours, np.asarray(theirs), rtol=1e-10, atol=0)
 
 
 def test_transition_diagnostics_report_e_bfmi_and_saturation():
