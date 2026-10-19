@@ -1,0 +1,25 @@
+{
+  "base": {
+    "name": "repeated-regression-quick",
+    "observations": 200,
+    "parameters": 3,
+    "chains": 2,
+    "warmup": 200,
+    "draws": 200,
+    "threads": 2,
+    "data_seed": 20261019,
+    "sampler_seed": 271828,
+    "observation_sigma": 1.0,
+    "prior_sigma": 1.0,
+    "target_accept": 0.8,
+    "max_tree_depth": 10,
+    "quality_max_rhat": 1.05,
+    "quality_max_divergences": 0,
+    "quality_min_ess_bulk": 50.0,
+    "quality_max_mean_error_sd_units": 0.3,
+    "quality_max_sd_relative_rmse": 0.3
+  },
+  "datasets": 5,
+  "ragged": [50, 400],
+  "predict_rows": 10
+}

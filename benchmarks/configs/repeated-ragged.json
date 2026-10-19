@@ -1,0 +1,28 @@
+{
+  "base": {
+    "name": "repeated-regression-ragged",
+    "observations": 500,
+    "parameters": 8,
+    "chains": 4,
+    "warmup": 500,
+    "draws": 1000,
+    "threads": 4,
+    "data_seed": 20260802,
+    "sampler_seed": 314159,
+    "observation_sigma": 1.0,
+    "prior_sigma": 1.0,
+    "target_accept": 0.8,
+    "max_tree_depth": 10,
+    "quality_max_rhat": 1.01,
+    "quality_max_divergences": 0,
+    "quality_min_ess_bulk": 400.0,
+    "quality_max_mean_error_sd_units": 0.2,
+    "quality_max_sd_relative_rmse": 0.15
+  },
+  "datasets": 30,
+  "ragged": [
+    50,
+    2000
+  ],
+  "predict_rows": 20
+}
