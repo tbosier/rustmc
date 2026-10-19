@@ -99,7 +99,7 @@ def test_draws_with_the_right_marginals_but_wrong_correlations_fail():
     run = repeated.EngineRun()
     repeated.record_fit(run, dataset, lambda: (rank_one, 0, rank_one), lambda d: d @ dataset.x_new.T)
     assert run.fits[0]["status"] == "failed"
-    assert run.fits[0]["quality_gate"]["joint_failures"] == ["covariance_whitened_error"]
+    assert "covariance_eigenvalue_error" in run.fits[0]["quality_gate"]["joint_failures"]
 
 
 @pytest.mark.parametrize("bad", [np.nan, 1e12])
@@ -110,7 +110,47 @@ def test_unusable_predictions_fail(bad):
     run = repeated.EngineRun()
     repeated.record_fit(run, dataset, lambda: (good, 0, good), lambda d: np.full((2, 400, 10), bad))
     assert run.fits[0]["status"] == "failed"
-    assert run.fits[0]["quality_gate"]["joint_failures"] == ["prediction_error_sd_units"]
+    assert "prediction_error_sd_units" in run.fits[0]["quality_gate"]["joint_failures"]
+
+
+def test_predictions_without_their_spread_or_shape_fail():
+    dataset = repeated.make_datasets(config(datasets=1))[0]
+    good = exact_draws(dataset)
+    exact_mean = np.broadcast_to(dataset.expected_new, (2, 400, 10))
+    for predict, failure in [
+        (lambda d: exact_mean, "prediction_sd_relative_error"),
+        (lambda d: dataset.expected_new, "prediction_shape"),
+    ]:
+        run = repeated.EngineRun()
+        repeated.record_fit(run, dataset, lambda: (good, 0, good), predict)
+        assert run.fits[0]["status"] == "failed"
+        assert failure in run.fits[0]["quality_gate"]["joint_failures"]
+
+
+def test_a_lost_direction_fails_in_fifty_dimensions():
+    base = BenchmarkConfig(observations=400, parameters=50, chains=2, warmup=50, draws=2000)
+    dataset = repeated.make_datasets(repeated.RepeatedConfig(base=base, datasets=1))[0]
+    rng = np.random.default_rng(3)
+    lower = np.linalg.cholesky(dataset.posterior_covariance)
+    z = rng.normal(size=(2, 2000, 50))
+    z[..., 0] = 0.0  # one whitened direction never explored
+    draws = dataset.problem.posterior_mean + z @ lower.T
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (draws, 0, draws), lambda d: d @ dataset.x_new.T)
+    assert "covariance_eigenvalue_error" in run.fits[0]["quality_gate"]["joint_failures"]
+    whole = dataset.problem.posterior_mean + rng.normal(size=(2, 2000, 50)) @ lower.T
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (whole, 0, whole), lambda d: d @ dataset.x_new.T)
+    assert run.fits[0]["quality_gate"]["joint_failures"] == []
+
+
+def test_one_coefficient_is_checked_not_an_error():
+    base = BenchmarkConfig(observations=40, parameters=1, chains=2, warmup=50, draws=400)
+    dataset = repeated.make_datasets(repeated.RepeatedConfig(base=base, datasets=1))[0]
+    draws = exact_draws(dataset)
+    run = repeated.EngineRun()
+    repeated.record_fit(run, dataset, lambda: (draws, 0, draws), lambda d: d @ dataset.x_new.T)
+    assert run.fits[0]["status"] == "passed"
 
 
 def test_a_fit_that_raises_keeps_its_time():

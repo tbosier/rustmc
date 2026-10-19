@@ -602,7 +602,13 @@ impl AccumulatorBlock {
                 };
                 let count = all.count;
                 if let Some(halves) = halves {
-                    if !dense_beats_diagonal(&halves.first, &halves.second, halves.margin) {
+                    if !dense_beats_diagonal(
+                        &halves.first,
+                        &halves.second,
+                        &cov,
+                        count,
+                        halves.margin,
+                    ) {
                         let variances = (0..dim)
                             .map(|i| regularize_variance(cov[i * dim + i], count))
                             .collect();
@@ -698,15 +704,32 @@ fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
 /// both halves understate its variance alike, and a dense estimate that
 /// shares the shortfall scores well. In simulated 200-draw windows of two
 /// coordinates with identity covariance, one mixing as an AR(1) at 0.99 and
-/// rotated 45 degrees, the last window's margin chose dense in 18 of 30
+/// rotated 45 degrees, the last window's margin chose dense in 17 of 30
 /// (`benchmarks/auto_metric_noise.py`), where the old rule chose it in
 /// none. The dense metric must leave a
 /// geometric mean of the two folds' condition numbers smaller by `margin`
 /// ([`LAST_WINDOW_MARGIN`] or [`EARLY_WINDOW_MARGIN`]). A half too short for
 /// a nonsingular covariance chooses diagonal.
+///
+/// The halves' estimates are what is scored, but the metric installed is
+/// estimated from the whole window, `all` (from `count` draws), whose
+/// covariance also holds any difference between the halves' means. When the
+/// chain drifted between them, that estimate can be far worse than either
+/// half's: two halves with correlation 0.95 centred 20 apart pass the
+/// cross-validation and give a whole-window dense estimate with condition
+/// number near 4000 against the target, where the diagonal one leaves 39. So
+/// a block is dense only if, in addition, the whole-window dense estimate
+/// leaves each half's covariance better conditioned, on average, than the
+/// whole-window diagonal estimate does.
 /// The condition numbers come from a fixed number of power and inverse-power
 /// iterations, which can only underestimate them.
-fn dense_beats_diagonal(first: &Moments, second: &Moments, margin: f64) -> bool {
+fn dense_beats_diagonal(
+    first: &Moments,
+    second: &Moments,
+    all: &[f64],
+    count: usize,
+    margin: f64,
+) -> bool {
     let (Some(a), Some(b)) = (first.covariance(), second.covariance()) else {
         return false;
     };
@@ -721,7 +744,21 @@ fn dense_beats_diagonal(first: &Moments, second: &Moments, margin: f64) -> bool 
         dense += whiten_by_covariance(train, train_count, test, dim)
             .map_or(f64::INFINITY, |whitened| log_condition(&whitened, dim));
     }
-    dense.is_finite() && dense / 2.0 < diagonal / 2.0 - margin.ln()
+    if !(dense.is_finite() && dense / 2.0 < diagonal / 2.0 - margin.ln()) {
+        return false;
+    }
+    // The estimates that would be installed, scored on each half.
+    let mut installed_diagonal = 0.0;
+    let mut installed_dense = 0.0;
+    for half in [&a, &b] {
+        let Some(whitened) = whiten_by_variances(all, half, dim) else {
+            return false;
+        };
+        installed_diagonal += log_condition(&whitened, dim);
+        installed_dense += whiten_by_covariance(all, count, half, dim)
+            .map_or(f64::INFINITY, |whitened| log_condition(&whitened, dim));
+    }
+    installed_dense.is_finite() && installed_dense < installed_diagonal
 }
 
 /// How much better conditioned, on held-out draws, a dense metric must leave
@@ -1157,6 +1194,24 @@ mod tests {
         let short = &draws[..15];
         assert!(!estimate(&graph, MetricKind::Auto, short).has_dense_block());
         assert!(estimate(&graph, MetricKind::Dense, short).has_dense_block());
+    }
+
+    #[test]
+    fn a_window_that_drifted_between_its_halves_stays_diagonal() {
+        // Each half is correlated at 0.95, so both cross-validation folds
+        // favour dense; but the halves sit on opposite sides of the origin, so
+        // the whole-window covariance that would be installed is dominated by
+        // the shift between them and whitens neither half.
+        let graph = vector_graph(2);
+        let mut draws = equicorrelated_draws(2, 0.95, 200, 11);
+        for (index, draw) in draws.iter_mut().enumerate() {
+            let shift = if index < 100 { 10.0 } else { -10.0 };
+            draw[0] += shift;
+            draw[1] -= shift;
+        }
+        assert!(!estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
+        let centred = equicorrelated_draws(2, 0.95, 200, 11);
+        assert!(estimate(&graph, MetricKind::Auto, &centred).has_dense_block());
     }
 
     #[test]

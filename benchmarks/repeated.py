@@ -1,6 +1,9 @@
-"""Repeated linear-regression inference: many datasets through one compiled model.
+"""Repeated linear-regression inference: many datasets through one model per engine.
 
-Each engine builds and compiles its model once, then fits every dataset in turn,
+Each engine builds its model once, and compiles it once where the engine allows
+(nutpie, NumPyro with vectorized chains; NumPyro with parallel chains and PyMC's
+`pm.sample` compile again for each fit, and vectorized NumPyro once per data shape), then fits
+every dataset in turn,
 fixed-size or ragged, and predicts at new inputs after each fit. Every fit is
 checked against its exact conjugate posterior with the gate of
 ``benchmarks/protocol.py``. A fit that fails the gate, or raises, is kept in the
@@ -138,43 +141,68 @@ def exact_covariance(problem: LinearRegressionProblem, config: BenchmarkConfig) 
 
 
 def joint_checks(
-    draws: np.ndarray, predicted: np.ndarray, dataset: Dataset
+    draws: np.ndarray, predicted: np.ndarray, dataset: Dataset, ess_min: float
 ) -> tuple[dict[str, float], list[str]]:
     """Checks the shared gate of `benchmarks/protocol.py` does not make: the
     joint covariance of the draws and the predictions.
 
-    `covariance_whitened_error` is `|L^-1 S L^-T - I|_F / sqrt(d)`, for the
-    draws' sample covariance `S` and the Cholesky factor `L` of the exact
-    covariance; draws with the right marginals but the wrong correlations
-    fail it. `prediction_error_sd_units` is the largest error of the mean
-    predicted expected response, in units of its exact posterior standard
-    deviation. Each is held to the config's threshold for the matching
-    marginal check, and a value that is not finite fails.
+    `covariance_eigenvalue_error` is the largest `|lambda - 1|` over the
+    eigenvalues of `L^-1 S L^-T`, for the draws' sample covariance `S` and the
+    Cholesky factor `L` of the exact covariance, so a direction with no
+    variance or twice its variance fails whatever the dimension. A sample
+    covariance from `n` independent draws spreads those eigenvalues to about
+    `1 +- 2 sqrt(d / n)` (the Marchenko-Pastur edges), so the limit is the
+    config's `quality_max_sd_relative_rmse` plus `2 sqrt(d / ESS)`, with the
+    smallest bulk ESS standing in for `n`.
+
+    Predictions must have the shape `(chain, draw, row)`. Their mean must be
+    within `quality_max_mean_error_sd_units` of the exact expected response,
+    in units of its exact posterior standard deviation
+    (`prediction_error_sd_units`), and their standard deviation within
+    `quality_max_sd_relative_rmse` of that one, relative
+    (`prediction_sd_relative_error`). A value that is not finite fails.
     """
     config = dataset.config
-    flat = draws.reshape(-1, draws.shape[-1])
+    rows = dataset.x_new.shape[0]
+    if predicted.shape != (config.chains, config.draws, rows):
+        return {}, ["prediction_shape"]
+    dim = draws.shape[-1]
+    flat = draws.reshape(-1, dim)
     lower = np.linalg.cholesky(dataset.posterior_covariance)
-    whitened = np.linalg.solve(lower, np.linalg.solve(lower, np.cov(flat, rowvar=False)).T)
-    dim = flat.shape[1]
+    covariance = np.atleast_2d(np.cov(flat, rowvar=False))
+    whitened = np.linalg.solve(lower, np.linalg.solve(lower, covariance).T)
+    eigenvalues = np.linalg.eigvalsh(0.5 * (whitened + whitened.T))
+    per_row = predicted.reshape(-1, rows)
     metrics = {
-        "covariance_whitened_error": float(
-            np.linalg.norm(whitened - np.eye(dim)) / np.sqrt(dim)
-        ),
+        "covariance_eigenvalue_error": float(np.max(np.abs(eigenvalues - 1.0))),
         "prediction_error_sd_units": float(
-            np.max(
-                np.abs(predicted.reshape(-1, predicted.shape[-1]).mean(axis=0) - dataset.expected_new)
-                / dataset.expected_new_sd
-            )
+            np.max(np.abs(per_row.mean(axis=0) - dataset.expected_new) / dataset.expected_new_sd)
+        ),
+        "prediction_sd_relative_error": float(
+            np.max(np.abs(per_row.std(axis=0, ddof=1) / dataset.expected_new_sd - 1.0))
         ),
     }
+    noise = 2.0 * np.sqrt(dim / ess_min) if np.isfinite(ess_min) and ess_min > 0 else np.inf
     limits = {
-        "covariance_whitened_error": config.quality_max_sd_relative_rmse,
+        "covariance_eigenvalue_error": config.quality_max_sd_relative_rmse + noise,
         "prediction_error_sd_units": config.quality_max_mean_error_sd_units,
+        "prediction_sd_relative_error": config.quality_max_sd_relative_rmse,
     }
+    metrics["covariance_eigenvalue_limit"] = float(limits["covariance_eigenvalue_error"])
     failures = [
-        name for name, value in metrics.items() if not (np.isfinite(value) and value <= limits[name])
+        name for name, limit in limits.items()
+        if not (np.isfinite(metrics[name]) and np.isfinite(limit) and metrics[name] <= limit)
     ]
     return metrics, failures
+
+
+def peak_children_rss_mb() -> float | None:
+    try:
+        import resource
+    except ImportError:
+        return None
+    value = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    return value / (1024 * 1024) if sys.platform == "darwin" else value / 1024
 
 
 def current_rss_mb() -> float | None:
@@ -232,7 +260,7 @@ def record_fit(
         row["predict_seconds"] = time.perf_counter() - start
         phase = None
         quality = posterior_quality(draws, dataset.problem, dataset.config, divergences, arviz)
-        joint, joint_failures = joint_checks(draws, predicted, dataset)
+        joint, joint_failures = joint_checks(draws, predicted, dataset, quality["ess_bulk_min"])
         quality.update(joint)
         gate = evaluate_quality_gate(quality, dataset.config)
         gate["joint_failures"] = joint_failures
@@ -329,10 +357,11 @@ def _rustmc_batch(config: RepeatedConfig, datasets: list[Dataset], run: EngineRu
             return result.predict({"X": dataset.x_new, "y": empty}, expected=True)["obs"]
 
         record_fit(run, dataset, fit, predict)
-    # The cells ran together, so a per-fit time is the batch's wall time
-    # shared out, failed cells included.
+    # The cells ran together, so a fit's time is its share of the batch's wall
+    # time, failed cells included, plus the time its own fit() took to read
+    # the result out, as the one-at-a-time run's timer includes.
     for row in run.fits:
-        row["fit_seconds"] = batch_seconds / len(datasets)
+        row["fit_seconds"] = row.get("fit_seconds", 0.0) + batch_seconds / len(datasets)
     run.notes.append(
         "one sample_batch call over every dataset with threads running cells in parallel; "
         "seeds come from cell IDs, so draws differ from the per-dataset rustmc run; "
@@ -526,6 +555,9 @@ def summarize(run: EngineRun) -> dict[str, Any]:
         "total_predict_seconds": float(sum(predict_times)),
         "useful_ess_per_second": useful_ess / (setup + total_fit) if setup + total_fit > 0 else None,
         "peak_rss_mb": peak_rss_mb(),
+        # Worker processes, such as PyMC's chains, are not in the process's own
+        # figure: the largest of them that has exited.
+        "peak_children_rss_mb": peak_children_rss_mb(),
         "rss_growth_after_first_fit_mb": (rss[-1] - rss[0]) if len(rss) > 1 else None,
     }
 

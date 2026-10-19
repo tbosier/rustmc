@@ -10,11 +10,13 @@ average lag-one autocorrelation. ``cv`` is the rule in ``rust_core/src/mass_matr
 (``dense_beats_diagonal``): each half of the window estimates a diagonal and a dense
 metric, each is scored by the condition number it leaves the other half's sample
 covariance, and dense must leave a geometric mean over the two folds smaller by a
-margin: 1 in early warmup windows and 2 in the last, as shipped. The columns give the
-rule at margins of 1, 2 and 4. For each case it prints how many of 30 windows go dense. The isotropic cases
-have no correlation, so a dense choice there trusts noise or a direction the window
-has not explored; the correlated cases are where dense is meant to be chosen. It tests the rules, not NUTS: real warmup draws
-are neither stationary nor AR(1).
+margin: 1 in early warmup windows and 2 in the last, as shipped. The whole-window dense
+estimate, which is what would be installed, must then also whiten each half better
+than the whole-window diagonal one. The columns give the rule at margins of 1, 2 and 4.
+For each case it prints how many of 30 windows go dense. The isotropic cases have no
+correlation, so a dense choice there trusts noise or a direction the window has not
+explored; the correlated cases are where dense is meant to be chosen. It tests the
+rules, not NUTS: real warmup draws are neither stationary nor AR(1).
 """
 from __future__ import annotations
 
@@ -68,7 +70,19 @@ def cv_rule(window, margin):
         lower = np.linalg.cholesky(shrunk_covariance(train))
         half = np.linalg.solve(lower, test_covariance)
         dense += log_condition(np.linalg.solve(lower, half.T))
-    return bool(np.isfinite(dense) and dense / 2 < diagonal / 2 - np.log(margin))
+    if not (np.isfinite(dense) and dense / 2 < diagonal / 2 - np.log(margin)):
+        return False
+    # The whole-window estimates that would be installed, scored on each half.
+    full = np.cov(window, rowvar=False)
+    inv_sd = 1 / np.sqrt(np.diag(full))
+    lower = np.linalg.cholesky(shrunk_covariance(window))
+    installed_diagonal = installed_dense = 0.0
+    for half in (first, second):
+        half_covariance = np.cov(half, rowvar=False)
+        installed_diagonal += log_condition(half_covariance * np.outer(inv_sd, inv_sd))
+        installed_dense += log_condition(
+            np.linalg.solve(lower, np.linalg.solve(lower, half_covariance).T))
+    return bool(np.isfinite(installed_dense) and installed_dense < installed_diagonal)
 
 
 def ar1_window(draws, coefficients, rng, mixing=None):

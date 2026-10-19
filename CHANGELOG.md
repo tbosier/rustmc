@@ -18,8 +18,9 @@ tree stopped, and adds a repeated-inference benchmark.
   wherever the new rule below chooses differently from 0.14.0's in some warmup window,
   and, by rounding only, wherever a window's eligibility for a dense estimate changed,
   since a block that may become dense computes its diagonal estimate by a different
-  sequence of operations. Scalar parameters, and fits with `metric="diag"` or
-  `metric="dense"`, draw as before.
+  sequence of operations. A model with both scalar and vector parameters changes all
+  its draws, since its trajectories are joint. Models without a vector parameter, and
+  fits with `metric="diag"` or `metric="dense"`, draw as before.
 - `BayesianARFit.get_samples()` and `BayesianHierarchicalMeanFit.get_samples()`
   return draws with the chain and draw axes merged, chains concatenated, as every
   other fit's `get_samples()` does: `coefficient` is `(chain * draw, p + 1)` instead
@@ -55,8 +56,9 @@ tree stopped, and adds a repeated-inference benchmark.
   on `BayesianARFit` and `BayesianHierarchicalMeanFit`. Every fit class that had one
   of the two now has both.
 - `mean_samples` on every Bayesian forecast: the draws of the expected observation
-  given each parameter and state draw, `(chain, draw, step)` or, for the
-  hierarchical mean, `(chain, draw, program, step)`. It is new on the local level
+  given each parameter and state draw, `(chain, draw, step)`, or with a series axis
+  before `step` for the hierarchical mean (`(chain, draw, program, step)`) and the
+  dynamic GLM (`(chain, draw, group, step)`, as before). It is new on the local level
   (the state), the local linear trend (the level), the seasonal local level (level
   plus seasonal effect), the hierarchical mean (the program mean) and the AR
   forecast (the conditional mean). `ForecastDraws.from_result` reads it from every
@@ -103,7 +105,7 @@ tree stopped, and adds a repeated-inference benchmark.
   stayed diagonal on uncorrelated noise, including a 40-dimensional case where
   0.14.0's chose dense in 30 of 30. It does not protect a direction the chain has
   hardly explored: in two dimensions with identity covariance and one rotated
-  coordinate mixing at 0.99, it chose dense in 18 of 30 windows where 0.14.0's chose
+  coordinate mixing at 0.99, it chose dense in 17 of 30 windows where 0.14.0's chose
   none. At the early windows' margin, short uncorrelated windows went dense in up to
   28 of 30. The
   measurements, records and commands are in `docs/statistical-validation.md`.

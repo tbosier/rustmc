@@ -136,7 +136,7 @@ mixes slowly along a direction off the coordinate axes, both halves understate i
 variance alike, and a dense estimate that shares the shortfall scores well. In
 simulated warmup windows of stationary AR(1) coordinates, 30 per case, two coordinates
 with identity covariance, one mixing at 0.99 and both rotated 45 degrees, went dense in
-18 of 30 at a margin of 2 (30 of 30 at 0.999), where the old rule chose dense in none
+17 of 30 at a margin of 2 (30 of 30 at 0.999), where the old rule chose dense in none
 at 0.99 and 21 at 0.999. In 40 dimensions the same pattern, 20 slow coordinates rotated
 in pairs, went dense in none of 30 under the new rule and 30 of 30 under the old. The
 curved target below, which NUTS crosses slowly along its curve, is a real target where
@@ -172,9 +172,9 @@ ESS at 1000 warmup iterations, and the median over seeds of the paired ratio:
 | banana | 1568.2 | 1044.1 | 0.951 |
 
 At 500 warmup iterations the 20-coefficient regression is the one target that is
-clearly dearer, 15.8 against 13.9 (paired ratio 1.103). The centered eight schools and
-the banana diverge in nearly every fit under every metric, so their medians move with
-the seeds in both directions: at 500 warmup the centered eight schools fell from 2183.8
+clearly dearer, 15.8 against 13.9 (paired ratio 1.103). The centered eight schools
+diverged in every fit in all four records and the banana in 5 to 9 of 10, so their
+medians move with the seeds in both directions: at 500 warmup the centered eight schools fell from 2183.8
 to 917.5 and the banana from 1851.3 to 838.0, while the banana's worst seed rose from
 4367.2 to 12368.1. The records are `benchmarks/results/2026-10-15-targets-old-*.json`,
 run on 0.14.0's `main` (`d5f3e1f`), and `2026-10-19-targets-new-*.json`; each holds every
