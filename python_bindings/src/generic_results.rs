@@ -36,6 +36,28 @@ pub(crate) fn samples_flat<'py>(
     Ok(dict)
 }
 
+/// `by_chain`'s `(chain, draw, ...)` arrays with the chain and draw axes
+/// merged, chains concatenated as in [`samples_flat`]. The specialised fits
+/// build `get_samples()` from their `get_samples_2d()` with this, so every
+/// fit's `get_samples()` has one leading draw axis.
+pub(crate) fn merge_chain_draw_axes<'py>(
+    by_chain: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(by_chain.py());
+    for (name, values) in by_chain.iter() {
+        let shape: Vec<usize> = values.getattr("shape")?.extract()?;
+        if shape.len() < 2 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "{name} draws have shape {shape:?}, without chain and draw axes"
+            )));
+        }
+        let mut merged = vec![shape[0] * shape[1]];
+        merged.extend_from_slice(&shape[2..]);
+        dict.set_item(name, values.call_method1("reshape", (merged,))?)?;
+    }
+    Ok(dict)
+}
+
 /// Every parameter's draws as a `(chain, draw)` array.
 pub(crate) fn samples_by_chain<'py>(
     sample: &SampleResult,

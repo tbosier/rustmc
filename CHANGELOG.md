@@ -6,6 +6,23 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Breaking changes
+
+- `BayesianARFit.get_samples()` and `BayesianHierarchicalMeanFit.get_samples()`
+  return draws with the chain and draw axes merged, chains concatenated, as every
+  other fit's `get_samples()` does: `coefficient` is `(chain * draw, p + 1)` instead
+  of `(chain, draw, p + 1)`. The `(chain, draw, ...)` arrays are now
+  `get_samples_2d()`. Code that averaged with `mean(axis=(0, 1))` gets a scalar
+  instead of an error, so check those calls.
+
+### Added
+
+- `get_samples()` on `BayesianLocalLevelFit`, `BayesianLocalLinearTrendFit`,
+  `BayesianSeasonalLocalLevelFit`, `BayesianHurdleLogNormalFit` and
+  `BayesianRegressionFit`, which had only `get_samples_2d()`, and `get_samples_2d()`
+  on `BayesianARFit` and `BayesianHierarchicalMeanFit`. Every fit class that had one
+  of the two now has both.
+
 ## [0.14.0] - 2026-10-18
 
 This release collects a repository-wide cleanup review; the first item three judges

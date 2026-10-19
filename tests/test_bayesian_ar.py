@@ -64,8 +64,8 @@ def test_seeded_ar3_fit_shapes_reproducibility_and_recovery(rustmc_module):
     assert first.regression_count == observations.size - 3
     assert first.seed == 17
 
-    first_samples = first.get_samples()
-    second_samples = second.get_samples()
+    first_samples = first.get_samples_2d()
+    second_samples = second.get_samples_2d()
     assert set(first_samples) == {
         "coefficient",
         "innovation_variance",
@@ -76,6 +76,13 @@ def test_seeded_ar3_fit_shapes_reproducibility_and_recovery(rustmc_module):
     assert first_samples["innovation_sd"].shape == (2, 500)
     for name in first_samples:
         np.testing.assert_array_equal(first_samples[name], second_samples[name])
+    flat = first.get_samples()
+    assert set(flat) == set(first_samples)
+    assert flat["coefficient"].shape == (1000, 4)
+    for name in first_samples:
+        np.testing.assert_array_equal(
+            flat[name], first_samples[name].reshape((1000,) + first_samples[name].shape[2:])
+        )
     np.testing.assert_allclose(
         first_samples["innovation_sd"] ** 2,
         first_samples["innovation_variance"],
@@ -118,7 +125,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
         forecast.observation_samples.mean(axis=(0, 1)),
     )
 
-    coefficients = fit.get_samples()["coefficient"]
+    coefficients = fit.get_samples_2d()["coefficient"]
     expected_first = (
         coefficients[:, :, 0]
         + coefficients[:, :, 1] * observations[-1]
@@ -250,6 +257,6 @@ def test_bayesian_ar_arviz_export_preserves_chain_draw_and_coefficients(
     assert posterior["innovation_variance"].shape == (2, 10)
     assert posterior["innovation_sd"].shape == (2, 10)
     np.testing.assert_array_equal(
-        posterior["coefficient"].values, fit.get_samples()["coefficient"]
+        posterior["coefficient"].values, fit.get_samples_2d()["coefficient"]
     )
     np.testing.assert_array_equal(observed["y"].values, observations)

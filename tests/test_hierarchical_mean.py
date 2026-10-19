@@ -51,8 +51,8 @@ def test_joint_ragged_fit_shapes_metadata_and_seed(rustmc_module):
     assert first.group_names == ["division-a", "division-b"]
     assert first.inference_method == "conjugate_gibbs"
 
-    samples = first.get_samples()
-    repeated = second.get_samples()
+    samples = first.get_samples_2d()
+    repeated = second.get_samples_2d()
     assert set(samples) == {
         "population_mean",
         "group_variance",
@@ -80,6 +80,10 @@ def test_joint_ragged_fit_shapes_metadata_and_seed(rustmc_module):
     assert samples["program_mean"].shape == (2, 80, 5)
     np.testing.assert_array_equal(samples["group_mean"], repeated["group_mean"])
     np.testing.assert_array_equal(samples["program_mean"], repeated["program_mean"])
+    flat = first.get_samples()
+    assert set(flat) == set(samples)
+    for name, values in samples.items():
+        np.testing.assert_array_equal(flat[name], values.reshape((160,) + values.shape[2:]))
     np.testing.assert_allclose(samples["group_sd"] ** 2, samples["group_variance"])
     np.testing.assert_allclose(samples["program_sd"] ** 2, samples["program_variance"])
     np.testing.assert_allclose(
@@ -149,7 +153,7 @@ def test_sparse_program_adaptively_shrinks_more(rustmc_module):
         warmup=200,
         seed=91,
     )
-    posterior_means = fit.get_samples()["program_mean"].mean(axis=(0, 1))
+    posterior_means = fit.get_samples()["program_mean"].mean(axis=0)
     sparse_shift = 20.0 - posterior_means[0]
     dense_shift = 20.0 - posterior_means[1]
     assert 10.0 < posterior_means[0] < 20.0
@@ -174,7 +178,7 @@ def test_forecast_alignment_intervals_and_rollups(rustmc_module):
     assert observations.shape == (2, 100, 5, 4)
     assert observations[:, :, 0, :].shape == (2, 100, 4)
     np.testing.assert_array_equal(observations, repeated.observation_samples)
-    np.testing.assert_array_equal(state[..., 0], fit.get_samples()["program_mean"])
+    np.testing.assert_array_equal(state[..., 0], fit.get_samples_2d()["program_mean"])
     for step in range(1, 4):
         np.testing.assert_array_equal(state[..., step], state[..., 0])
     np.testing.assert_allclose(forecast.state_mean, state.mean(axis=(0, 1)))

@@ -140,9 +140,10 @@ program. How strongly either program leans on its group depends on the learned r
 program to observation variance; the shrinkage strength is inferred rather than manually
 assigned.
 
-`fit.get_samples()` returns scalar population/variance/standard-deviation arrays shaped
-`(chain, draw)`, group means shaped `(chain, draw, group)`, and program means shaped
-`(chain, draw, program)`. `time_counts`, `observed_counts`, `group_index`,
+`fit.get_samples_2d()` returns scalar population/variance/standard-deviation arrays
+shaped `(chain, draw)`, group means shaped `(chain, draw, group)`, and program means
+shaped `(chain, draw, program)`. `fit.get_samples()` returns the same arrays with the
+chain and draw axes merged, chains concatenated, as for every fit. `time_counts`, `observed_counts`, `group_index`,
 `program_names`, and `group_names` preserve the ragged hierarchy metadata.
 Hierarchical validation and numerical failures raise `InferenceError`, which subclasses
 `ValueError`.
@@ -370,8 +371,9 @@ lower, upper = forecast.interval(0.95)
 This is a directly observed AR(p), distinct from the latent
 `LinearGaussianStateSpace.stationary_ar1()` model with separate process and measurement
 noise. The conjugate posterior draws are independent, so there is no warmup or thinning.
-`fit.get_samples()` returns `coefficient` with shape `(chain, draw, p + 1)` and innovation
-variance/standard deviation with shape `(chain, draw)`. Forecast observation and recursive
+`fit.get_samples_2d()` returns `coefficient` with shape `(chain, draw, p + 1)` and
+innovation variance/standard deviation with shape `(chain, draw)`; `fit.get_samples()`
+merges the chain and draw axes, so `coefficient` is `(chain * draw, p + 1)`. Forecast observation and recursive
 conditional-mean paths have shape `(chain, draw, step)`.
 
 The likelihood conditions on the first `p` observations. Input must be complete, finite,

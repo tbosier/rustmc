@@ -19,8 +19,9 @@ draws are exact and independent there is no warmup and no convergence period, so
 
 They return their own fit classes rather than the `FitResult` from
 [Get started](getting-started.md). `summary()`, `diagnostics()`, `warnings()` and
-`sampler_stats` are common to all of them. Beyond that they diverge: most expose `get_samples_2d()` and
-`forecast(steps)`, but `RunoffFit` does neither — it exposes `allocation_samples()`,
+`sampler_stats` are common to all of them. Beyond that they diverge: most expose
+`get_samples_2d()`, with `(chain, draw, ...)` arrays, `get_samples()`, with the chain
+and draw axes merged, and `forecast(steps)`, but `RunoffFit` has none of them. It exposes `allocation_samples()`,
 `ultimate_samples()`, `calendar_samples(steps)` and the other arrays described in
 [payment runoff](runoff.md). Check the page for the model you are using.
 
