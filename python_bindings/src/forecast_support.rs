@@ -451,7 +451,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-/// Warn that the getter `old` is deprecated in favour of `new`, which
+/// Warn that the getter `old` is deprecated in favor of `new`, which
 /// returns the same array.
 pub(crate) fn warn_renamed(py: Python<'_>, old: &str, new: &str) -> PyResult<()> {
     let message = std::ffi::CString::new(format!(

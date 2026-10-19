@@ -37,7 +37,7 @@ pub(crate) fn samples_flat<'py>(
 }
 
 /// `by_chain`'s `(chain, draw, ...)` arrays with the chain and draw axes
-/// merged, chains concatenated as in [`samples_flat`]. The specialised fits
+/// merged, chains concatenated as in [`samples_flat`]. The specialized fits
 /// build `get_samples()` from their `get_samples_2d()` with this, so every
 /// fit's `get_samples()` has one leading draw axis.
 pub(crate) fn merge_chain_draw_axes<'py>(

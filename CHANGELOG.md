@@ -76,6 +76,9 @@ tree stopped, and adds a repeated-inference benchmark.
   fit passed. nutpie fitted each dataset faster than rustmc (1.89 s against 3.16 s for
   30 datasets of 500 rows), and its compilation of about 8 s left rustmc ahead over 30
   datasets. See benchmarks/README.md.
+- Rust: `MassMatrixAccumulator::for_warmup_window`, which takes whether the window is
+  the last one, since `auto` asks a dense estimate to win by more there.
+  `for_window` treats its window as the last.
 - `benchmarks/auto_metric_targets.py`, `auto_metric_noise.py`,
   `compare_metric_records.py` and options for `curved_metric_choice.py`, which measure
   the `auto` metric's choices, with saved records that name the build they ran on.

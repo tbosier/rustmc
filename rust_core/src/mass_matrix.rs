@@ -141,7 +141,7 @@ struct Halves {
     margin: f64,
 }
 
-/// Running mean and centred cross-product sum of a block's draws, by
+/// Running mean and centered cross-product sum of a block's draws, by
 /// Welford's update; the sum is the lower triangle of a full `dim * dim`
 /// array.
 #[derive(Debug, Clone)]
@@ -715,7 +715,7 @@ fn shrink_correlations(cov: &mut [f64], dim: usize, draws: usize) -> f64 {
 /// estimated from the whole window, `all` (from `count` draws), whose
 /// covariance also holds any difference between the halves' means. When the
 /// chain drifted between them, that estimate can be far worse than either
-/// half's: two halves with correlation 0.95 centred 20 apart pass the
+/// half's: two halves with correlation 0.95 centered 20 apart pass the
 /// cross-validation and give a whole-window dense estimate with condition
 /// number near 4000 against the target, where the diagonal one leaves 39. So
 /// a block is dense only if, in addition, the whole-window dense estimate
@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn a_window_that_drifted_between_its_halves_stays_diagonal() {
         // Each half is correlated at 0.95, so both cross-validation folds
-        // favour dense; but the halves sit on opposite sides of the origin, so
+        // favor dense; but the halves sit on opposite sides of the origin, so
         // the whole-window covariance that would be installed is dominated by
         // the shift between them and whitens neither half.
         let graph = vector_graph(2);
@@ -1210,8 +1210,8 @@ mod tests {
             draw[1] -= shift;
         }
         assert!(!estimate(&graph, MetricKind::Auto, &draws).has_dense_block());
-        let centred = equicorrelated_draws(2, 0.95, 200, 11);
-        assert!(estimate(&graph, MetricKind::Auto, &centred).has_dense_block());
+        let centered = equicorrelated_draws(2, 0.95, 200, 11);
+        assert!(estimate(&graph, MetricKind::Auto, &centered).has_dense_block());
     }
 
     #[test]

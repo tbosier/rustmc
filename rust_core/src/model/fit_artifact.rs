@@ -284,7 +284,7 @@ impl ModelFit {
         Ok(TrainingData { vectors, matrices })
     }
 
-    /// Serialise the fit as a version-4 `rustmc.graph-fit` artifact: the
+    /// Serialize the fit as a version-4 `rustmc.graph-fit` artifact: the
     /// model, the training data, the raw posterior draws and exact positions,
     /// and the sampler telemetry, energies and NUTS termination reasons
     /// included. A NUTS fit without termination reasons, which is only a fit
