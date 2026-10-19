@@ -1,0 +1,18 @@
+   Compiling rustmc_core v0.14.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/rust_core)
+    Finished `release` profile [optimized] target(s) in 8.69s
+     Running tests/exactness.rs (.target/release/deps/exactness-b4d15f7d8343360e)
+
+running 1 test
+Auto, seed 2211: worst mean error 1.74 MCSE, worst variance error 1.97 MCSE, squared norm error 1.57 MCSE, min bulk ESS 4148, 0 divergences, max R-hat 1.0030; leapfrog steps per min bulk ESS 38.4 (draws only 11.0); PASS
+Auto, seed 2212: worst mean error 2.23 MCSE, worst variance error 2.58 MCSE, squared norm error -1.80 MCSE, min bulk ESS 4452, 0 divergences, max R-hat 1.0021; leapfrog steps per min bulk ESS 36.4 (draws only 10.6); PASS
+Auto, seed 2213: worst mean error 1.78 MCSE, worst variance error 1.85 MCSE, squared norm error 0.45 MCSE, min bulk ESS 4049, 0 divergences, max R-hat 1.0036; leapfrog steps per min bulk ESS 38.5 (draws only 10.3); PASS
+Diagonal, seed 2211: worst mean error 2.49 MCSE, worst variance error 3.03 MCSE, squared norm error -0.18 MCSE, min bulk ESS 381, 0 divergences, max R-hat 1.0176; leapfrog steps per min bulk ESS 840.6 (draws only 517.4); FAIL (coordinate 34 has bulk ESS 381.4, below 400)
+Diagonal, seed 2212: worst mean error 1.97 MCSE, worst variance error 3.10 MCSE, squared norm error -2.70 MCSE, min bulk ESS 793, 0 divergences, max R-hat 1.0082; leapfrog steps per min bulk ESS 454.5 (draws only 296.9); PASS
+Diagonal, seed 2213: worst mean error 2.05 MCSE, worst variance error 1.70 MCSE, squared norm error 1.52 MCSE, min bulk ESS 467, 0 divergences, max R-hat 1.0100; leapfrog steps per min bulk ESS 698.1 (draws only 433.4); PASS
+Dense, seed 2211: worst mean error 1.86 MCSE, worst variance error 1.80 MCSE, squared norm error 0.75 MCSE, min bulk ESS 4397, 0 divergences, max R-hat 1.0029; leapfrog steps per min bulk ESS 25.5 (draws only 10.7); PASS
+Dense, seed 2212: worst mean error 1.26 MCSE, worst variance error 1.44 MCSE, squared norm error 0.73 MCSE, min bulk ESS 4368, 0 divergences, max R-hat 1.0017; leapfrog steps per min bulk ESS 25.2 (draws only 10.7); PASS
+Dense, seed 2213: worst mean error 1.51 MCSE, worst variance error 2.66 MCSE, squared norm error 0.55 MCSE, min bulk ESS 4253, 0 divergences, max R-hat 1.0021; leapfrog steps per min bulk ESS 26.7 (draws only 11.7); PASS
+test metric_choice_on_the_ill_conditioned_graph_target ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 4.14s
+

@@ -129,7 +129,65 @@ fits (local level, local linear trend and seasonal local level, the last two als
 simulated from each model's own process. The R-hat ranges in the `known_limitation` fit
 warnings and in the reference's slow state-variance mixing section come from it.
 
-`benchmarks/curved_metric_choice.py` fits a curved two-dimensional target, written as one
-vector parameter, under each `metric` for five seeds, and prints the smallest bulk ESS,
-the largest R-hat and the divergences. The statistical-validation page uses it to compare
-ways for `metric="auto"` to choose a dense block.
+Four scripts measure how `metric="auto"` chooses a dense block; the
+statistical-validation page quotes their records. `curved_metric_choice.py` fits a curved
+two-dimensional target, written as one vector parameter, under each `metric` (five seeds
+unless `--first-seed` and `--seeds` say otherwise) and prints the smallest bulk ESS, the
+largest R-hat and the divergences. `auto_metric_targets.py` fits nine targets and prints
+leapfrog steps per unit of the smallest bulk ESS. With `--json`, both save every fit and
+the build it ran on (`build_provenance.py`), and `compare_metric_records.py` compares two
+such records fit by fit. `auto_metric_noise.py` applies NumPy copies of 0.14.0's rule and
+the current one to simulated warmup windows, with no sampler.
+
+## Repeated inference
+
+`benchmarks/repeated.py` fits many Gaussian linear regressions with known noise through
+one compiled model per engine: rustmc one dataset at a time (`rustmc`) and in one
+`sample_batch` call (`rustmc_batch`), nutpie with `CompiledModel.with_data`, NumPyro with
+one `MCMC` object, and PyMC with `pm.Data` and `pm.set_data`. Each dataset is generated
+from its own seed, with a fixed row count or, for a ragged workload, one drawn per
+dataset, and every engine gets the same data. After each fit the engine predicts the
+expected response at new inputs: rustmc with `predict(expected=True)`, the others by
+multiplying the draws with the inputs in NumPy.
+
+Each engine runs in its own subprocess with the environment `benchmarks.run` uses.
+Setup (imports, model building, compilation) is timed apart from each fit; importing
+ArviZ, which computes every engine's diagnostics, is not timed. Every fit goes through
+the quality gate above against its exact posterior. A fit that fails the gate or raises
+is kept with its reason, its time counts, and its ESS does not: `useful_ess_per_second`
+is the bulk ESS of passing fits divided by setup plus every fit's time. The JSON keeps
+every fit's phases, quality, gate result and resident memory after the fit, plus the git
+revision, with the home directory written as `~`.
+
+```bash
+PYTHONPATH=.pybuild python -m benchmarks.repeated --config benchmarks/configs/repeated-fixed.json \
+  --output repeated-fixed.json
+```
+
+`benchmarks/results/2026-10-19-repeated-fixed.json` and `-ragged.json` hold one run each
+on a 24-thread AMD Ryzen 9 5900X, with 30 datasets of 8 coefficients, 4 chains, 500
+warmup, 1000 draws and 4 threads: 500 rows each, or 50 to 2000 rows drawn per dataset.
+Every fit of every engine passed the gate.
+
+| Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
+|---|---|---|---|---|---|
+| rustmc, one dataset at a time | 0.01 | 3.11 | 6.81 | 62056 | 28761 |
+| rustmc, `sample_batch` | 0.01 | 2.98 | 6.37 | 66335 | 30623 |
+| nutpie | 7.85, 7.86 | 1.92 | 2.90 | 16874 | 15715 |
+| NumPyro | 0.28 | 24.87 | 25.47 | 7728 | 7623 |
+| PyMC | 0.46, 0.44 | 26.16 | 27.98 | 5697 | 5402 |
+
+nutpie fits each dataset faster than rustmc: 1.92 s against 3.11 s for the 30 fixed
+datasets, and 2.90 s against 6.81 s for the ragged ones, whose largest datasets have 2000
+rows. Its useful ESS per second is lower over 30 datasets because of its 7.9 s of
+compilation and a lower ESS per fit: a mean bulk ESS of 5491 and 5636 per fit against
+rustmc's 6439 and 6530. At these per-fit times nutpie's total time would fall below
+rustmc's after about 200 fixed or 60 ragged datasets of this size. PyMC's
+first fit took 6.7 s, most of it compilation, and later fits a median of 0.65 s (fixed
+workload). NumPyro's
+time is mostly sampling: about 0.8 s per fit in both workloads, although the ragged one
+compiles again for each new data shape, and in a separate check four runs of one
+`MCMC` object on same-shaped data took 0.95 s and then 0.79 to 0.81 s. Peak resident memory was 344 to 369 MB for the
+two rustmc runs, 546 to 553 MB for nutpie, 1232 to 1241 MB for NumPyro and 423 MB for
+PyMC. One run on one machine is not a stable ranking; rerun it before quoting a ratio.
+

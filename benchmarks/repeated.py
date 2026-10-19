@@ -396,8 +396,8 @@ def _pymc(config: RepeatedConfig, datasets: list[Dataset], run: EngineRun) -> No
 
         record_fit(run, dataset, fit, lambda draws, d=dataset: draws @ d.x_new.T)
     run.notes.append(
-        "one pm.Model with pm.Data, updated by pm.set_data; pm.sample compiles its "
-        "functions on every call, and that time is in fit_seconds"
+        "one pm.Model with pm.Data, updated by pm.set_data; whatever pm.sample "
+        "compiles, on its first call or later, is in fit_seconds"
     )
     run.notes.append("prediction is the NumPy product of the beta draws with the new inputs")
 

@@ -1,0 +1,241 @@
+{
+  "cases": [
+    {
+      "case": "independent normals (100 dimensions), custom target path",
+      "dimension": 100,
+      "first_seed": 10000,
+      "fits_failed": 53,
+      "fits_failed_by_check": {
+        "BulkEss": 0,
+        "Divergences": 0,
+        "Mean": 11,
+        "SquaredNorm": 1,
+        "Variance": 41
+      },
+      "fits_failed_on_moments": 53,
+      "mean_errors": {
+        "count": 200000,
+        "fraction_beyond_2": 0.04523,
+        "fraction_beyond_3": 0.0026,
+        "fraction_beyond_4": 0.000055,
+        "standard_deviation": 0.9978888429670588
+      },
+      "nominal_moment_false_alarm_rate": 0.01265153037975375,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.0445,
+        "fraction_beyond_3": 0.0015,
+        "fraction_beyond_4": 0.0005,
+        "standard_deviation": 0.9984813765023666
+      },
+      "variance_errors": {
+        "count": 200000,
+        "fraction_beyond_2": 0.04728,
+        "fraction_beyond_3": 0.00362,
+        "fraction_beyond_4": 0.000205,
+        "standard_deviation": 1.0055761495481594
+      },
+      "wall_seconds": 109.286312937
+    },
+    {
+      "case": "independent normals (100 dimensions), graph path",
+      "dimension": 100,
+      "first_seed": 10000,
+      "fits_failed": 47,
+      "fits_failed_by_check": {
+        "BulkEss": 0,
+        "Divergences": 0,
+        "Mean": 11,
+        "SquaredNorm": 0,
+        "Variance": 36
+      },
+      "fits_failed_on_moments": 47,
+      "mean_errors": {
+        "count": 200000,
+        "fraction_beyond_2": 0.04479,
+        "fraction_beyond_3": 0.00259,
+        "fraction_beyond_4": 0.000055,
+        "standard_deviation": 1.0003771854702062
+      },
+      "nominal_moment_false_alarm_rate": 0.01265153037975375,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.042,
+        "fraction_beyond_3": 0.0015,
+        "fraction_beyond_4": 0.0,
+        "standard_deviation": 1.0013829984144416
+      },
+      "variance_errors": {
+        "count": 200000,
+        "fraction_beyond_2": 0.0476,
+        "fraction_beyond_3": 0.003775,
+        "fraction_beyond_4": 0.00018,
+        "standard_deviation": 1.006481790487478
+      },
+      "wall_seconds": 109.420834979
+    },
+    {
+      "case": "correlated Gaussian, rho 0.8 (50 dimensions), custom target path",
+      "dimension": 50,
+      "first_seed": 10000,
+      "fits_failed": 35,
+      "fits_failed_by_check": {
+        "BulkEss": 0,
+        "Divergences": 0,
+        "Mean": 10,
+        "SquaredNorm": 0,
+        "Variance": 26
+      },
+      "fits_failed_on_moments": 35,
+      "mean_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.04668,
+        "fraction_beyond_3": 0.00327,
+        "fraction_beyond_4": 0.0002,
+        "standard_deviation": 1.0062290734758008
+      },
+      "nominal_moment_false_alarm_rate": 0.006377371173574509,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.044,
+        "fraction_beyond_3": 0.0035,
+        "fraction_beyond_4": 0.0,
+        "standard_deviation": 0.9839413716209859
+      },
+      "variance_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.04965,
+        "fraction_beyond_3": 0.00425,
+        "fraction_beyond_4": 0.00034,
+        "standard_deviation": 1.0167247458904816
+      },
+      "wall_seconds": 73.146956071
+    },
+    {
+      "case": "correlated Gaussian, rho 0.95 (50 dimensions), custom target path",
+      "dimension": 50,
+      "first_seed": 10000,
+      "fits_failed": 47,
+      "fits_failed_by_check": {
+        "BulkEss": 26,
+        "Divergences": 0,
+        "Mean": 3,
+        "SquaredNorm": 1,
+        "Variance": 17
+      },
+      "fits_failed_on_moments": 21,
+      "mean_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.04908,
+        "fraction_beyond_3": 0.00254,
+        "fraction_beyond_4": 0.00008,
+        "standard_deviation": 1.0035624423621208
+      },
+      "nominal_moment_false_alarm_rate": 0.006377371173574509,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.045,
+        "fraction_beyond_3": 0.004,
+        "fraction_beyond_4": 0.0005,
+        "standard_deviation": 0.9946602297313645
+      },
+      "variance_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.05288,
+        "fraction_beyond_3": 0.00605,
+        "fraction_beyond_4": 0.00048,
+        "standard_deviation": 1.0371729408021282
+      },
+      "wall_seconds": 124.570880112
+    },
+    {
+      "case": "correlated Gaussian, rho 0.95 (50 dimensions), graph path",
+      "dimension": 50,
+      "first_seed": 10000,
+      "fits_failed": 15,
+      "fits_failed_by_check": {
+        "BulkEss": 0,
+        "Divergences": 0,
+        "Mean": 5,
+        "SquaredNorm": 0,
+        "Variance": 10
+      },
+      "fits_failed_on_moments": 15,
+      "mean_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.04629,
+        "fraction_beyond_3": 0.00324,
+        "fraction_beyond_4": 0.00014,
+        "standard_deviation": 0.9942032331451527
+      },
+      "nominal_moment_false_alarm_rate": 0.006377371173574509,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.043,
+        "fraction_beyond_3": 0.004,
+        "fraction_beyond_4": 0.0,
+        "standard_deviation": 0.998135442250947
+      },
+      "variance_errors": {
+        "count": 100000,
+        "fraction_beyond_2": 0.04658,
+        "fraction_beyond_3": 0.00353,
+        "fraction_beyond_4": 0.00019,
+        "standard_deviation": 1.0030603818031556
+      },
+      "wall_seconds": 92.04365648
+    },
+    {
+      "case": "conjugate regression (10 dimensions), graph path",
+      "dimension": 10,
+      "first_seed": 10000,
+      "fits_failed": 1,
+      "fits_failed_by_check": {
+        "BulkEss": 0,
+        "Divergences": 0,
+        "Mean": 0,
+        "SquaredNorm": 0,
+        "Variance": 1
+      },
+      "fits_failed_on_moments": 1,
+      "mean_errors": {
+        "count": 20000,
+        "fraction_beyond_2": 0.04625,
+        "fraction_beyond_3": 0.0026,
+        "fraction_beyond_4": 0.0,
+        "standard_deviation": 0.9995615931537527
+      },
+      "nominal_moment_false_alarm_rate": 0.001329349918161471,
+      "seeds": 2000,
+      "squared_norm_errors": {
+        "count": 2000,
+        "fraction_beyond_2": 0.0465,
+        "fraction_beyond_3": 0.003,
+        "fraction_beyond_4": 0.0,
+        "standard_deviation": 1.0106864056103584
+      },
+      "variance_errors": {
+        "count": 20000,
+        "fraction_beyond_2": 0.0458,
+        "fraction_beyond_3": 0.0036,
+        "fraction_beyond_4": 0.00005,
+        "standard_deviation": 1.0011734788671636
+      },
+      "wall_seconds": 31.57399709
+    }
+  ],
+  "command": "RUSTMC_EXACTNESS_SEEDS=2000 RUSTMC_EXACTNESS_JSON=<path> cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture false_alarm_rate_over_seeds",
+  "cpu_model": "AMD Ryzen 9 5900X 12-Core Processor",
+  "dirty": false,
+  "format": "rustmc.exactness-false-alarm",
+  "logical_cpus": 24,
+  "nominal_exceedance_per_check": 0.00006334248366623996,
+  "revision": "e4a4ce8ab61009dcd6caa4ed18ddafc00e6b3624",
+  "version": 1,
+  "wall_seconds": 540.056636417
+}
