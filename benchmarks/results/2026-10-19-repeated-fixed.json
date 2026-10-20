@@ -1,6 +1,6 @@
 {
   "revision": {
-    "commit": "794f3fdb846e6f7bd1be55a368b233678f79ce0e",
+    "commit": "1db6c67490731a697314132b677b22707ca6fa4a",
     "dirty": false
   },
   "engine_order": [
@@ -63,16 +63,16 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.43673371797194704,
-        "build": 0.009631740977056324
+        "import": 0.43445671297376975,
+        "build": 0.009598720003850758
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 6.598172338970471,
-          "predict_seconds": 0.00027141300961375237,
+          "fit_seconds": 6.77041035098955,
+          "predict_seconds": 0.0002778950147330761,
           "quality": {
             "ess_bulk_mean": 5359.458581781907,
             "ess_bulk_min": 4469.9656617976625,
@@ -123,14 +123,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 409.61328125
+          "rss_mb_after": 409.3125
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.7410326499957591,
-          "predict_seconds": 9.807501919567585e-05,
+          "fit_seconds": 0.7703507480327971,
+          "predict_seconds": 0.0001122120302170515,
           "quality": {
             "ess_bulk_mean": 5017.273614353646,
             "ess_bulk_min": 4536.197527158818,
@@ -181,14 +181,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 410.640625
+          "rss_mb_after": 410.28515625
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.6470892129582353,
-          "predict_seconds": 8.905900176614523e-05,
+          "fit_seconds": 0.6908310300204903,
+          "predict_seconds": 8.807703852653503e-05,
           "quality": {
             "ess_bulk_mean": 5200.137094985998,
             "ess_bulk_min": 4519.743504227194,
@@ -239,14 +239,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 411.0859375
+          "rss_mb_after": 410.50390625
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.6438545959535986,
-          "predict_seconds": 9.260501246899366e-05,
+          "fit_seconds": 0.6421577729634009,
+          "predict_seconds": 0.0002757110050879419,
           "quality": {
             "ess_bulk_mean": 5161.102319634758,
             "ess_bulk_min": 4434.843484849084,
@@ -297,14 +297,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 411.76953125
+          "rss_mb_after": 411.63671875
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.6694590069819242,
-          "predict_seconds": 0.00024225801462307572,
+          "fit_seconds": 0.6424264800152741,
+          "predict_seconds": 8.571200305595994e-05,
           "quality": {
             "ess_bulk_mean": 4773.515286114733,
             "ess_bulk_min": 4113.808839504759,
@@ -355,14 +355,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 413.6484375
+          "rss_mb_after": 412.32421875
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.6353951920173131,
-          "predict_seconds": 0.00021702999947592616,
+          "fit_seconds": 0.6529955029836856,
+          "predict_seconds": 0.00021841202396899462,
           "quality": {
             "ess_bulk_mean": 4954.428305332214,
             "ess_bulk_min": 4195.760267706976,
@@ -413,14 +413,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 415.76953125
+          "rss_mb_after": 413.9921875
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.6479273969889618,
-          "predict_seconds": 0.00021674000890925527,
+          "fit_seconds": 0.6418829270405695,
+          "predict_seconds": 0.00021440500859171152,
           "quality": {
             "ess_bulk_mean": 5007.851935642698,
             "ess_bulk_min": 4478.5742264149685,
@@ -471,14 +471,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 417.8515625
+          "rss_mb_after": 416.1640625
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.61975930002518,
-          "predict_seconds": 0.00021576799917966127,
+          "fit_seconds": 0.6214164400007576,
+          "predict_seconds": 0.00021013699006289244,
           "quality": {
             "ess_bulk_mean": 5061.284161482463,
             "ess_bulk_min": 4373.085991409543,
@@ -529,14 +529,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 419.15625
+          "rss_mb_after": 417.2265625
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.6453700109850615,
-          "predict_seconds": 0.00021842302521690726,
+          "fit_seconds": 0.6520602370146662,
+          "predict_seconds": 0.00020919600501656532,
           "quality": {
             "ess_bulk_mean": 5023.3850116086,
             "ess_bulk_min": 4662.637117254339,
@@ -587,14 +587,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 421.30078125
+          "rss_mb_after": 418.66015625
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.6199850850389339,
-          "predict_seconds": 0.00020783301442861557,
+          "fit_seconds": 0.6428790069767274,
+          "predict_seconds": 0.00020951597252860665,
           "quality": {
             "ess_bulk_mean": 5024.84513156215,
             "ess_bulk_min": 4265.381052983188,
@@ -645,14 +645,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 423.3671875
+          "rss_mb_after": 420.8046875
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 0.808382665971294,
-          "predict_seconds": 0.00021751096937805414,
+          "fit_seconds": 0.6429814010043629,
+          "predict_seconds": 0.00021148001542314887,
           "quality": {
             "ess_bulk_mean": 4845.834624944601,
             "ess_bulk_min": 4321.4648921108555,
@@ -703,14 +703,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.015625
+          "rss_mb_after": 421.89453125
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.6674446259858087,
-          "predict_seconds": 0.00023273000260815024,
+          "fit_seconds": 0.6798035859828815,
+          "predict_seconds": 9.730400051921606e-05,
           "quality": {
             "ess_bulk_mean": 5399.9644795363165,
             "ess_bulk_min": 4981.10042020529,
@@ -761,14 +761,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.015625
+          "rss_mb_after": 423.2890625
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.6567700540181249,
-          "predict_seconds": 0.00021695997565984726,
+          "fit_seconds": 0.8020696479943581,
+          "predict_seconds": 0.00022871204419061542,
           "quality": {
             "ess_bulk_mean": 5344.005661043559,
             "ess_bulk_min": 4452.0846168875405,
@@ -819,14 +819,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.01953125
+          "rss_mb_after": 423.41015625
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.648955830023624,
-          "predict_seconds": 0.00022250099573284388,
+          "fit_seconds": 0.6519482369767502,
+          "predict_seconds": 0.00021856301464140415,
           "quality": {
             "ess_bulk_mean": 5099.374090868932,
             "ess_bulk_min": 4430.415321525779,
@@ -877,14 +877,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.02734375
+          "rss_mb_after": 423.421875
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.6454178589629009,
-          "predict_seconds": 0.00022463395725935698,
+          "fit_seconds": 0.6694045159965754,
+          "predict_seconds": 0.00021744100376963615,
           "quality": {
             "ess_bulk_mean": 4997.037718946927,
             "ess_bulk_min": 4150.281870873633,
@@ -935,14 +935,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.0390625
+          "rss_mb_after": 423.4453125
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.6402003760449588,
-          "predict_seconds": 0.00021983601618558168,
+          "fit_seconds": 0.6402019739616662,
+          "predict_seconds": 0.00021752098109573126,
           "quality": {
             "ess_bulk_mean": 5014.690764397919,
             "ess_bulk_min": 4500.163737683201,
@@ -993,14 +993,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.04296875
+          "rss_mb_after": 423.44921875
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.6499328960198909,
-          "predict_seconds": 0.00021801202092319727,
+          "fit_seconds": 0.6339482009643689,
+          "predict_seconds": 0.00021137000294402242,
           "quality": {
             "ess_bulk_mean": 4904.79197398814,
             "ess_bulk_min": 4484.680380524412,
@@ -1051,14 +1051,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.0546875
+          "rss_mb_after": 423.453125
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.6306745340116322,
-          "predict_seconds": 0.00021909404313191772,
+          "fit_seconds": 0.6504004850285128,
+          "predict_seconds": 0.00021484598983079195,
           "quality": {
             "ess_bulk_mean": 4809.2744936408035,
             "ess_bulk_min": 4233.912863224178,
@@ -1109,14 +1109,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.0703125
+          "rss_mb_after": 423.453125
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.6194864810095169,
-          "predict_seconds": 0.000235365005210042,
+          "fit_seconds": 0.622941865993198,
+          "predict_seconds": 0.00022348202764987946,
           "quality": {
             "ess_bulk_mean": 5270.452661843497,
             "ess_bulk_min": 4577.652133830654,
@@ -1167,14 +1167,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.07421875
+          "rss_mb_after": 423.453125
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.6698875830043107,
-          "predict_seconds": 0.00020942598348483443,
+          "fit_seconds": 0.6783803399885073,
+          "predict_seconds": 0.0002098869881592691,
           "quality": {
             "ess_bulk_mean": 4939.156658049773,
             "ess_bulk_min": 4244.787097770093,
@@ -1225,14 +1225,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.09765625
+          "rss_mb_after": 423.4765625
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 0.6408996870159172,
-          "predict_seconds": 0.00020470703020691872,
+          "fit_seconds": 0.647657724970486,
+          "predict_seconds": 0.0002090649795718491,
           "quality": {
             "ess_bulk_mean": 4955.916394773346,
             "ess_bulk_min": 4492.341486468828,
@@ -1283,14 +1283,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 424.70703125
+          "rss_mb_after": 423.4765625
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.8129861460183747,
-          "predict_seconds": 0.0002155679976567626,
+          "fit_seconds": 0.6290058490121737,
+          "predict_seconds": 9.369698818773031e-05,
           "quality": {
             "ess_bulk_mean": 5134.143639167838,
             "ess_bulk_min": 4366.142746079102,
@@ -1341,14 +1341,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.1328125
+          "rss_mb_after": 423.4765625
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.6495520939934067,
-          "predict_seconds": 0.00021961500169709325,
+          "fit_seconds": 0.8124553749803454,
+          "predict_seconds": 0.00021858303807675838,
           "quality": {
             "ess_bulk_mean": 4870.012207920535,
             "ess_bulk_min": 4540.248699144336,
@@ -1399,14 +1399,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.1328125
+          "rss_mb_after": 423.58984375
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.639545796031598,
-          "predict_seconds": 0.00023742899065837264,
+          "fit_seconds": 0.6546484699938446,
+          "predict_seconds": 0.00022353202803060412,
           "quality": {
             "ess_bulk_mean": 5123.938409300996,
             "ess_bulk_min": 4182.1339550019575,
@@ -1457,14 +1457,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.140625
+          "rss_mb_after": 423.96875
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.6414859429933131,
-          "predict_seconds": 0.00022058701142668724,
+          "fit_seconds": 0.6457376389880665,
+          "predict_seconds": 0.0002134829992428422,
           "quality": {
             "ess_bulk_mean": 4893.508757384987,
             "ess_bulk_min": 4347.495066358899,
@@ -1515,14 +1515,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.15234375
+          "rss_mb_after": 424.16015625
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.6342389909550548,
-          "predict_seconds": 0.00021844299044460058,
+          "fit_seconds": 0.6448038669768721,
+          "predict_seconds": 0.00020770198898389935,
           "quality": {
             "ess_bulk_mean": 5117.515828816826,
             "ess_bulk_min": 4754.970429868028,
@@ -1573,14 +1573,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.15625
+          "rss_mb_after": 424.38671875
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.6653024799888954,
-          "predict_seconds": 0.00022004602942615747,
+          "fit_seconds": 0.681483483989723,
+          "predict_seconds": 0.00021519698202610016,
           "quality": {
             "ess_bulk_mean": 5158.362638641342,
             "ess_bulk_min": 4336.6008604432445,
@@ -1631,14 +1631,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.15625
+          "rss_mb_after": 424.8046875
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.6548549390281551,
-          "predict_seconds": 0.0002178919967263937,
+          "fit_seconds": 0.6466067819856107,
+          "predict_seconds": 0.00021633796859532595,
           "quality": {
             "ess_bulk_mean": 5236.468813190526,
             "ess_bulk_min": 3811.294997157328,
@@ -1689,14 +1689,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.15625
+          "rss_mb_after": 425.35546875
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 0.6358075580210425,
-          "predict_seconds": 0.00023771997075527906,
+          "fit_seconds": 0.6404588620061986,
+          "predict_seconds": 0.00021197000751271844,
           "quality": {
             "ess_bulk_mean": 4806.923005601337,
             "ess_bulk_min": 4211.75659107681,
@@ -1747,14 +1747,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.16015625
+          "rss_mb_after": 425.61328125
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.6378247910179198,
-          "predict_seconds": 0.00024937099078670144,
+          "fit_seconds": 0.639321041002404,
+          "predict_seconds": 8.310703560709953e-05,
           "quality": {
             "ess_bulk_mean": 5137.043065516462,
             "ess_bulk_min": 4833.992128515464,
@@ -1805,7 +1805,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 425.1796875
+          "rss_mb_after": 425.61328125
         }
       ],
       "notes": [
@@ -1817,17 +1817,17 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.44636545894900337,
-        "first_fit_seconds": 6.598172338970471,
-        "median_fit_seconds": 0.6462535359605681,
-        "total_fit_seconds": 25.717696120031178,
-        "total_predict_seconds": 0.006326651084236801,
-        "useful_ess_per_second": 5795.801117205003,
-        "peak_rss_mb": 423.67578125,
-        "peak_children_rss_mb": 401.3046875,
-        "rss_growth_after_first_fit_mb": 15.56640625
+        "setup_seconds": 0.4440554329776205,
+        "first_fit_seconds": 6.77041035098955,
+        "median_fit_seconds": 0.6471322534780484,
+        "total_fit_seconds": 26.041669843834825,
+        "total_predict_seconds": 0.005844553175847977,
+        "useful_ess_per_second": 5725.412302106453,
+        "peak_rss_mb": 423.0234375,
+        "peak_children_rss_mb": 400.6171875,
+        "rss_growth_after_first_fit_mb": 16.30078125
       },
-      "stderr_tail": "g...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\n"
+      "stderr_tail": "g...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 1 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\nInitializing NUTS using jitter+adapt_diag...\nMultiprocess sampling (4 chains in 4 jobs)\nNUTS: [beta]\nSampling 4 chains for 500 tune and 1_000 draw iterations (2_000 + 4_000 draws total) took 0 seconds.\n"
     },
     {
       "schema_version": 1,
@@ -1880,18 +1880,18 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.005636667017824948,
-        "build": 4.14079986512661e-05,
-        "compile": 8.051202166825533e-05,
-        "batch_wall_seconds": 2.9882271449896507
+        "import": 0.005720784014556557,
+        "build": 3.385398304089904e-05,
+        "compile": 8.515099762007594e-05,
+        "batch_wall_seconds": 2.9887179860379547
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 0.10001795751159079,
-          "predict_seconds": 0.0017118070391006768,
+          "fit_seconds": 0.10004262389071907,
+          "predict_seconds": 0.0018196760211139917,
           "quality": {
             "ess_bulk_mean": 7180.703342549412,
             "ess_bulk_min": 6596.086214823194,
@@ -1942,14 +1942,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.26171875
+          "rss_mb_after": 369.3125
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.0997218475153204,
-          "predict_seconds": 0.0012821939890272915,
+          "fit_seconds": 0.09973748786530147,
+          "predict_seconds": 0.0012953669647686183,
           "quality": {
             "ess_bulk_mean": 6554.272970833363,
             "ess_bulk_min": 5773.540305813207,
@@ -2000,14 +2000,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3125
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.09970736050163395,
-          "predict_seconds": 0.0012492319801822305,
+          "fit_seconds": 0.09971885186775277,
+          "predict_seconds": 0.0012813900248147547,
           "quality": {
             "ess_bulk_mean": 6801.57644110297,
             "ess_bulk_min": 6077.98745659125,
@@ -2058,14 +2058,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3125
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.0997075805265922,
-          "predict_seconds": 0.0012446329928934574,
+          "fit_seconds": 0.0997203448942552,
+          "predict_seconds": 0.0012784949503839016,
           "quality": {
             "ess_bulk_mean": 6702.0467358152,
             "ess_bulk_min": 6095.507776398771,
@@ -2116,14 +2116,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3125
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.09970322246081195,
-          "predict_seconds": 0.001247849955689162,
+          "fit_seconds": 0.09972106585434327,
+          "predict_seconds": 0.0012576349545270205,
           "quality": {
             "ess_bulk_mean": 6573.62798381587,
             "ess_bulk_min": 5241.936891787286,
@@ -2174,14 +2174,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3125
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.09971358249313197,
-          "predict_seconds": 0.0012468380155041814,
+          "fit_seconds": 0.09971876286823923,
+          "predict_seconds": 0.0012604499934241176,
           "quality": {
             "ess_bulk_mean": 6470.425482927959,
             "ess_bulk_min": 5905.636134413439,
@@ -2232,14 +2232,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3125
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.09970369347720406,
-          "predict_seconds": 0.0012564549688249826,
+          "fit_seconds": 0.09972169781491781,
+          "predict_seconds": 0.0012619940098375082,
           "quality": {
             "ess_bulk_mean": 6302.261237887701,
             "ess_bulk_min": 5618.996880741892,
@@ -2290,14 +2290,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.09970538650522939,
-          "predict_seconds": 0.0012515560374595225,
+          "fit_seconds": 0.09972095584186415,
+          "predict_seconds": 0.0012741670361720026,
           "quality": {
             "ess_bulk_mean": 6341.24692192675,
             "ess_bulk_min": 5604.121792487134,
@@ -2348,14 +2348,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.0997036424872931,
-          "predict_seconds": 0.0012456050026230514,
+          "fit_seconds": 0.09972319986360768,
+          "predict_seconds": 0.001273336005397141,
           "quality": {
             "ess_bulk_mean": 7000.567494585212,
             "ess_bulk_min": 6101.808688493105,
@@ -2406,14 +2406,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.09970391350216232,
-          "predict_seconds": 0.0012491319794207811,
+          "fit_seconds": 0.09971944383966426,
+          "predict_seconds": 0.0012561329640448093,
           "quality": {
             "ess_bulk_mean": 6433.657681254854,
             "ess_bulk_min": 5597.509868505562,
@@ -2464,14 +2464,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.265625
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 0.09971161751891486,
-          "predict_seconds": 0.001246927015017718,
+          "fit_seconds": 0.09971982387748236,
+          "predict_seconds": 0.001260110002476722,
           "quality": {
             "ess_bulk_mean": 6838.534188266152,
             "ess_bulk_min": 6238.214388055051,
@@ -2522,14 +2522,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.26953125
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.09970915347221307,
-          "predict_seconds": 0.0012555739958770573,
+          "fit_seconds": 0.099721115854724,
+          "predict_seconds": 0.0012528160004876554,
           "quality": {
             "ess_bulk_mean": 6714.604609581991,
             "ess_bulk_min": 5993.660499074319,
@@ -2580,14 +2580,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.26953125
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.09970594751066528,
-          "predict_seconds": 0.0012489709770306945,
+          "fit_seconds": 0.09972124688016872,
+          "predict_seconds": 0.0012708209687843919,
           "quality": {
             "ess_bulk_mean": 6647.025228159649,
             "ess_bulk_min": 6013.855319835565,
@@ -2638,14 +2638,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.2734375
+          "rss_mb_after": 369.3203125
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.0997072295343969,
-          "predict_seconds": 0.0012444130261428654,
+          "fit_seconds": 0.09972207884226615,
+          "predict_seconds": 0.0012649389682337642,
           "quality": {
             "ess_bulk_mean": 6940.335090035764,
             "ess_bulk_min": 6462.201867762198,
@@ -2696,14 +2696,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.27734375
+          "rss_mb_after": 369.32421875
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.0997099345026072,
-          "predict_seconds": 0.0012434310046955943,
+          "fit_seconds": 0.09972181783911462,
+          "predict_seconds": 0.0012526159989647567,
           "quality": {
             "ess_bulk_mean": 6998.449334772542,
             "ess_bulk_min": 6219.3534315143925,
@@ -2754,14 +2754,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.28125
+          "rss_mb_after": 369.328125
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.0997139724844601,
-          "predict_seconds": 0.001252407964784652,
+          "fit_seconds": 0.09972372186991076,
+          "predict_seconds": 0.0012688770075328648,
           "quality": {
             "ess_bulk_mean": 6758.479664338758,
             "ess_bulk_min": 5727.729474457674,
@@ -2812,14 +2812,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.28515625
+          "rss_mb_after": 369.33203125
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.09970508551341481,
-          "predict_seconds": 0.0012528789811767638,
+          "fit_seconds": 0.09971938283803562,
+          "predict_seconds": 0.0012586770462803543,
           "quality": {
             "ess_bulk_mean": 6249.860313713319,
             "ess_bulk_min": 5785.757690497331,
@@ -2870,14 +2870,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.296875
+          "rss_mb_after": 369.33984375
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.0997195124567952,
-          "predict_seconds": 0.0012492320383898914,
+          "fit_seconds": 0.0997230698276932,
+          "predict_seconds": 0.0012681049993261695,
           "quality": {
             "ess_bulk_mean": 6626.640843289726,
             "ess_bulk_min": 5577.29480555131,
@@ -2928,14 +2928,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.30078125
+          "rss_mb_after": 369.34765625
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.09970493551227264,
-          "predict_seconds": 0.0012471479712985456,
+          "fit_seconds": 0.09971924290681879,
+          "predict_seconds": 0.0012665719841606915,
           "quality": {
             "ess_bulk_mean": 6468.519700378647,
             "ess_bulk_min": 5635.490864480472,
@@ -2986,14 +2986,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.30859375
+          "rss_mb_after": 369.35546875
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.0997045054740738,
-          "predict_seconds": 0.0012508349609561265,
+          "fit_seconds": 0.09972119687978799,
+          "predict_seconds": 0.0012543899938464165,
           "quality": {
             "ess_bulk_mean": 7151.778696495478,
             "ess_bulk_min": 6485.784855010058,
@@ -3044,14 +3044,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.3125
+          "rss_mb_after": 369.359375
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 0.09970543650561012,
-          "predict_seconds": 0.0012428300105966628,
+          "fit_seconds": 0.09971942288490633,
+          "predict_seconds": 0.0012531070387922227,
           "quality": {
             "ess_bulk_mean": 6401.95090887738,
             "ess_bulk_min": 5430.090181840703,
@@ -3102,14 +3102,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.31640625
+          "rss_mb_after": 369.36328125
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.09970253048813901,
-          "predict_seconds": 0.0012549220118671656,
+          "fit_seconds": 0.09972059588568906,
+          "predict_seconds": 0.0012597290333360434,
           "quality": {
             "ess_bulk_mean": 6691.620675996275,
             "ess_bulk_min": 5779.734205922105,
@@ -3160,14 +3160,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.3203125
+          "rss_mb_after": 369.3671875
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.09970613849000073,
-          "predict_seconds": 0.0012556040310300887,
+          "fit_seconds": 0.09971808084907631,
+          "predict_seconds": 0.0012779540265910327,
           "quality": {
             "ess_bulk_mean": 7047.336872659233,
             "ess_bulk_min": 6082.03240658095,
@@ -3218,14 +3218,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.328125
+          "rss_mb_after": 369.37890625
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.09970622748951427,
-          "predict_seconds": 0.0012500930461101234,
+          "fit_seconds": 0.09971906287052358,
+          "predict_seconds": 0.0012572050327435136,
           "quality": {
             "ess_bulk_mean": 6485.145097864544,
             "ess_bulk_min": 5781.536985581011,
@@ -3276,14 +3276,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.33203125
+          "rss_mb_after": 369.3828125
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.0997059574641753,
-          "predict_seconds": 0.0012455150135792792,
+          "fit_seconds": 0.09972191789808373,
+          "predict_seconds": 0.0012528370134532452,
           "quality": {
             "ess_bulk_mean": 5903.597159199584,
             "ess_bulk_min": 5317.570734242541,
@@ -3334,14 +3334,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.3359375
+          "rss_mb_after": 369.38671875
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.09970334248500876,
-          "predict_seconds": 0.001248480984941125,
+          "fit_seconds": 0.09972005385595063,
+          "predict_seconds": 0.0012610720004886389,
           "quality": {
             "ess_bulk_mean": 5930.42137450931,
             "ess_bulk_min": 5689.022777555813,
@@ -3392,14 +3392,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.34375
+          "rss_mb_after": 369.39453125
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.09970578650827519,
-          "predict_seconds": 0.0012586689554154873,
+          "fit_seconds": 0.09971921287166575,
+          "predict_seconds": 0.0012718520010821521,
           "quality": {
             "ess_bulk_mean": 6633.813685523925,
             "ess_bulk_min": 5860.189397580337,
@@ -3450,14 +3450,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.34765625
+          "rss_mb_after": 369.3984375
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.09970572649617679,
-          "predict_seconds": 0.0012425489840097725,
+          "fit_seconds": 0.09972122685673336,
+          "predict_seconds": 0.0012706199777312577,
           "quality": {
             "ess_bulk_mean": 6383.052685380377,
             "ess_bulk_min": 5943.354153700151,
@@ -3508,14 +3508,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.35546875
+          "rss_mb_after": 369.40234375
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 0.0997033824736718,
-          "predict_seconds": 0.0012580790207721293,
+          "fit_seconds": 0.09972164688321451,
+          "predict_seconds": 0.0012655300088226795,
           "quality": {
             "ess_bulk_mean": 6548.308970391871,
             "ess_bulk_min": 5480.504082747918,
@@ -3566,14 +3566,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.3671875
+          "rss_mb_after": 369.41015625
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.09970715951058082,
-          "predict_seconds": 0.001248811953701079,
+          "fit_seconds": 0.09972443188695858,
+          "predict_seconds": 0.0012574950233101845,
           "quality": {
             "ess_bulk_mean": 6106.038302233283,
             "ess_bulk_min": 5365.716275726223,
@@ -3624,7 +3624,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 369.37109375
+          "rss_mb_after": 369.4140625
         }
       ],
       "notes": [
@@ -3635,15 +3635,15 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.005758587038144469,
-        "first_fit_seconds": 0.10001795751159079,
-        "median_fit_seconds": 0.09970595248742029,
-        "total_fit_seconds": 2.991531768871937,
-        "total_predict_seconds": 0.03798267390811816,
-        "useful_ess_per_second": 66021.5982426174,
-        "peak_rss_mb": 367.4765625,
-        "peak_children_rss_mb": 62.59765625,
-        "rss_growth_after_first_fit_mb": 0.109375
+        "setup_seconds": 0.005839788995217532,
+        "first_fit_seconds": 0.10004262389071907,
+        "median_fit_seconds": 0.09972109085453364,
+        "total_fit_seconds": 2.991962784959469,
+        "total_predict_seconds": 0.03850396705092862,
+        "useful_ess_per_second": 66010.31749509675,
+        "peak_rss_mb": 367.43359375,
+        "peak_children_rss_mb": 62.78515625,
+        "rss_growth_after_first_fit_mb": 0.1015625
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -3698,16 +3698,16 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.2629071620176546,
-        "build": 9.819632396101952e-07
+        "import": 0.2701201229938306,
+        "build": 9.720097295939922e-07
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 0.9201429989770986,
-          "predict_seconds": 0.00012471596710383892,
+          "fit_seconds": 0.9129982650047168,
+          "predict_seconds": 0.00010607100557535887,
           "quality": {
             "ess_bulk_mean": 6393.789712790056,
             "ess_bulk_min": 5152.144350385751,
@@ -3758,14 +3758,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 618.9921875
+          "rss_mb_after": 619.37890625
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.8659301290172152,
-          "predict_seconds": 7.846800144761801e-05,
+          "fit_seconds": 0.9353787240106612,
+          "predict_seconds": 0.00030791194876655936,
           "quality": {
             "ess_bulk_mean": 6461.3778915427465,
             "ess_bulk_min": 6182.944693066637,
@@ -3816,14 +3816,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 653.73828125
+          "rss_mb_after": 653.80078125
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.7753510949551128,
-          "predict_seconds": 9.595201117917895e-05,
+          "fit_seconds": 0.763959470030386,
+          "predict_seconds": 0.00029179104603827,
           "quality": {
             "ess_bulk_mean": 6148.931365634777,
             "ess_bulk_min": 5348.257023414119,
@@ -3874,14 +3874,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 676.8125
+          "rss_mb_after": 683.8828125
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.794364831992425,
-          "predict_seconds": 8.394900942221284e-05,
+          "fit_seconds": 0.778562049032189,
+          "predict_seconds": 0.00029169104527682066,
           "quality": {
             "ess_bulk_mean": 6280.176002369538,
             "ess_bulk_min": 5427.677483150563,
@@ -3932,14 +3932,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 705.58984375
+          "rss_mb_after": 713.09375
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.894507720018737,
-          "predict_seconds": 9.286595741286874e-05,
+          "fit_seconds": 0.8993482069927268,
+          "predict_seconds": 0.00010521902004256845,
           "quality": {
             "ess_bulk_mean": 6310.608721436682,
             "ess_bulk_min": 5456.0467033838195,
@@ -3990,14 +3990,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 728.86328125
+          "rss_mb_after": 734.26953125
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.793524342996534,
-          "predict_seconds": 0.00013870198745280504,
+          "fit_seconds": 0.8206241920124739,
+          "predict_seconds": 9.690300794318318e-05,
           "quality": {
             "ess_bulk_mean": 6741.67819449491,
             "ess_bulk_min": 6224.053949721743,
@@ -4048,14 +4048,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 751.07421875
+          "rss_mb_after": 757.078125
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.7818997949943878,
-          "predict_seconds": 0.00025946099776774645,
+          "fit_seconds": 0.7846682720119134,
+          "predict_seconds": 0.00022146798437461257,
           "quality": {
             "ess_bulk_mean": 6086.975506240447,
             "ess_bulk_min": 5631.83656693856,
@@ -4106,14 +4106,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 774.65625
+          "rss_mb_after": 778.76953125
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.7889356369851157,
-          "predict_seconds": 8.426897693425417e-05,
+          "fit_seconds": 0.7685669729835354,
+          "predict_seconds": 0.0002245740033686161,
           "quality": {
             "ess_bulk_mean": 6854.958914557752,
             "ess_bulk_min": 6121.837136829006,
@@ -4164,14 +4164,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 795.4296875
+          "rss_mb_after": 800.24609375
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.7949222950264812,
-          "predict_seconds": 0.00010033004218712449,
+          "fit_seconds": 0.9053334430209361,
+          "predict_seconds": 0.00023113697534427047,
           "quality": {
             "ess_bulk_mean": 6802.344141722046,
             "ess_bulk_min": 6187.440602725815,
@@ -4222,14 +4222,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 819.13671875
+          "rss_mb_after": 821.45703125
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.9301663269870915,
-          "predict_seconds": 9.471899829804897e-05,
+          "fit_seconds": 0.7843936349963769,
+          "predict_seconds": 0.00010210199980065227,
           "quality": {
             "ess_bulk_mean": 6440.544840664526,
             "ess_bulk_min": 5533.352705831854,
@@ -4280,14 +4280,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 840.36328125
+          "rss_mb_after": 842.80859375
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 0.7875214720261283,
-          "predict_seconds": 9.216403122991323e-05,
+          "fit_seconds": 0.7919373330078088,
+          "predict_seconds": 0.00024304899852722883,
           "quality": {
             "ess_bulk_mean": 6959.222808111319,
             "ess_bulk_min": 6406.477109766832,
@@ -4338,14 +4338,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 859.2421875
+          "rss_mb_after": 864.66015625
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.786616021010559,
-          "predict_seconds": 0.0003015399561263621,
+          "fit_seconds": 0.7744847009889781,
+          "predict_seconds": 0.00023197801783680916,
           "quality": {
             "ess_bulk_mean": 6455.272873545495,
             "ess_bulk_min": 5808.788583730304,
@@ -4396,14 +4396,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 878.703125
+          "rss_mb_after": 881.8125
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.793385948985815,
-          "predict_seconds": 0.0002650509704835713,
+          "fit_seconds": 0.7837435289984569,
+          "predict_seconds": 0.00024183595087379217,
           "quality": {
             "ess_bulk_mean": 6058.87659701908,
             "ess_bulk_min": 4844.637048464666,
@@ -4454,14 +4454,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 899.23828125
+          "rss_mb_after": 904.32421875
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.77511929202592,
-          "predict_seconds": 9.468896314501762e-05,
+          "fit_seconds": 0.8111168990144506,
+          "predict_seconds": 0.00031991396099328995,
           "quality": {
             "ess_bulk_mean": 6384.303698538531,
             "ess_bulk_min": 5288.32837101902,
@@ -4512,14 +4512,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 918.8515625
+          "rss_mb_after": 923.91015625
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.9717763360240497,
-          "predict_seconds": 0.0003114489954896271,
+          "fit_seconds": 0.972278032975737,
+          "predict_seconds": 9.756401414051652e-05,
           "quality": {
             "ess_bulk_mean": 6290.932069264514,
             "ess_bulk_min": 5476.687124170759,
@@ -4570,14 +4570,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 940.73046875
+          "rss_mb_after": 945.17578125
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.7800714150071144,
-          "predict_seconds": 0.00032253999961540103,
+          "fit_seconds": 0.7952962089912035,
+          "predict_seconds": 0.00011308299144729972,
           "quality": {
             "ess_bulk_mean": 6129.353652832993,
             "ess_bulk_min": 5742.270053197295,
@@ -4628,14 +4628,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 959.5390625
+          "rss_mb_after": 964.0234375
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.7946421230444685,
-          "predict_seconds": 9.41779580898583e-05,
+          "fit_seconds": 0.7849631429999135,
+          "predict_seconds": 0.00011345499660819769,
           "quality": {
             "ess_bulk_mean": 6167.522922512886,
             "ess_bulk_min": 5822.463736660983,
@@ -4686,14 +4686,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 980.4296875
+          "rss_mb_after": 984.71484375
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.8015812920057215,
-          "predict_seconds": 0.00023309100652113557,
+          "fit_seconds": 0.7737089290167205,
+          "predict_seconds": 0.00010918598854914308,
           "quality": {
             "ess_bulk_mean": 6640.586267288614,
             "ess_bulk_min": 6016.490877147444,
@@ -4744,14 +4744,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1001.5078125
+          "rss_mb_after": 1005.72265625
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.7887122710235417,
-          "predict_seconds": 9.521999163553119e-05,
+          "fit_seconds": 0.7882897660019808,
+          "predict_seconds": 0.00030305201653391123,
           "quality": {
             "ess_bulk_mean": 6376.916293767257,
             "ess_bulk_min": 5594.313565560616,
@@ -4802,14 +4802,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1022.48046875
+          "rss_mb_after": 1025.40625
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.7904221640201285,
-          "predict_seconds": 9.501999011263251e-05,
+          "fit_seconds": 1.036391216039192,
+          "predict_seconds": 0.00023871095618233085,
           "quality": {
             "ess_bulk_mean": 5975.320825398159,
             "ess_bulk_min": 4991.73814633176,
@@ -4860,14 +4860,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1039.82421875
+          "rss_mb_after": 1045.73828125
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 1.01873395498842,
-          "predict_seconds": 0.0002786769764497876,
+          "fit_seconds": 0.7995462460094132,
+          "predict_seconds": 9.288499131798744e-05,
           "quality": {
             "ess_bulk_mean": 6964.0559281748965,
             "ess_bulk_min": 6361.680094137785,
@@ -4918,14 +4918,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1058.46484375
+          "rss_mb_after": 1065.23046875
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.777612655016128,
-          "predict_seconds": 0.00025954097509384155,
+          "fit_seconds": 0.779420846956782,
+          "predict_seconds": 9.655195754021406e-05,
           "quality": {
             "ess_bulk_mean": 6979.750296402913,
             "ess_bulk_min": 5788.868582723993,
@@ -4976,14 +4976,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1078.80078125
+          "rss_mb_after": 1083.4921875
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.7920802169828676,
-          "predict_seconds": 0.00023533502826467156,
+          "fit_seconds": 0.7867162569891661,
+          "predict_seconds": 0.00010415696306154132,
           "quality": {
             "ess_bulk_mean": 6000.250793158838,
             "ess_bulk_min": 5476.622469632948,
@@ -5034,14 +5034,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1098.55859375
+          "rss_mb_after": 1106.02734375
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.789862614008598,
-          "predict_seconds": 7.876899326220155e-05,
+          "fit_seconds": 0.7713847609702498,
+          "predict_seconds": 0.00010557897621765733,
           "quality": {
             "ess_bulk_mean": 6782.460925410234,
             "ess_bulk_min": 5997.971609235771,
@@ -5092,14 +5092,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1119.65234375
+          "rss_mb_after": 1120.54296875
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.8089263979927637,
-          "predict_seconds": 8.123402949422598e-05,
+          "fit_seconds": 0.800081749970559,
+          "predict_seconds": 0.00012059800792485476,
           "quality": {
             "ess_bulk_mean": 6737.73251780253,
             "ess_bulk_min": 5984.189491235874,
@@ -5150,14 +5150,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1137.921875
+          "rss_mb_after": 1141.484375
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.8000191050232388,
-          "predict_seconds": 0.00029744202038273215,
+          "fit_seconds": 0.7742224099929444,
+          "predict_seconds": 0.00027974904514849186,
           "quality": {
             "ess_bulk_mean": 6650.385178278116,
             "ess_bulk_min": 6026.153688451178,
@@ -5208,14 +5208,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1155.8359375
+          "rss_mb_after": 1161.671875
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.7796433030162007,
-          "predict_seconds": 9.904697071760893e-05,
+          "fit_seconds": 1.077601833967492,
+          "predict_seconds": 9.660294745117426e-05,
           "quality": {
             "ess_bulk_mean": 6103.921688712262,
             "ess_bulk_min": 5609.037626428053,
@@ -5266,14 +5266,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1176.4375
+          "rss_mb_after": 1180.21875
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.8002801200491376,
-          "predict_seconds": 9.968795347958803e-05,
+          "fit_seconds": 0.7804543619859032,
+          "predict_seconds": 0.00031309103360399604,
           "quality": {
             "ess_bulk_mean": 6489.3361868996635,
             "ess_bulk_min": 5515.440526220652,
@@ -5324,14 +5324,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1198.59765625
+          "rss_mb_after": 1198.98828125
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 1.0894061389844865,
-          "predict_seconds": 0.0003114989958703518,
+          "fit_seconds": 0.8082565129734576,
+          "predict_seconds": 9.039102587848902e-05,
           "quality": {
             "ess_bulk_mean": 6706.730963359019,
             "ess_bulk_min": 5968.680919991787,
@@ -5382,14 +5382,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1213.46484375
+          "rss_mb_after": 1219.703125
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.7777694289688952,
-          "predict_seconds": 0.0003034530091099441,
+          "fit_seconds": 0.7829988589510322,
+          "predict_seconds": 0.00010871503036469221,
           "quality": {
             "ess_bulk_mean": 6967.0403201234,
             "ess_bulk_min": 6018.799833314178,
@@ -5440,7 +5440,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1233.765625
+          "rss_mb_after": 1235.59375
         }
       ],
       "notes": [
@@ -5452,17 +5452,17 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.26290814398089424,
-        "first_fit_seconds": 0.9201429989770986,
-        "median_fit_seconds": 0.7934551459911745,
-        "total_fit_seconds": 24.84392744215438,
-        "total_predict_seconds": 0.0051030587637797,
-        "useful_ess_per_second": 7740.575566813969,
-        "peak_rss_mb": 1232.1015625,
-        "peak_children_rss_mb": 62.5078125,
-        "rss_growth_after_first_fit_mb": 614.7734375
+        "setup_seconds": 0.2701210950035602,
+        "first_fit_seconds": 0.9129982650047168,
+        "median_fit_seconds": 0.7875030114955734,
+        "total_fit_seconds": 24.826726826897357,
+        "total_predict_seconds": 0.005399015906732529,
+        "useful_ess_per_second": 7743.656044090741,
+        "peak_rss_mb": 1234.171875,
+        "peak_children_rss_mb": 62.58203125,
+        "rss_growth_after_first_fit_mb": 616.21484375
       },
-      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 14:25:27,964:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
+      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 15:56:44,992:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
     },
     {
       "schema_version": 1,
@@ -5515,17 +5515,17 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.005661523959133774,
-        "build": 3.389397170394659e-05,
-        "compile": 8.137396071106195e-05
+        "import": 0.005670588987413794,
+        "build": 3.545702202245593e-05,
+        "compile": 8.471001638099551e-05
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 0.10404729703441262,
-          "predict_seconds": 0.0018403700087219477,
+          "fit_seconds": 0.10343706299318,
+          "predict_seconds": 0.0015175960143096745,
           "quality": {
             "ess_bulk_mean": 6281.770452495525,
             "ess_bulk_min": 5496.250357232147,
@@ -5576,14 +5576,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 346.3671875
+          "rss_mb_after": 345.73828125
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.10019400098826736,
-          "predict_seconds": 0.0012847689795307815,
+          "fit_seconds": 0.10607103700749576,
+          "predict_seconds": 0.001548905042000115,
           "quality": {
             "ess_bulk_mean": 6903.708432763608,
             "ess_bulk_min": 5984.229432717726,
@@ -5634,14 +5634,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.01953125
+          "rss_mb_after": 345.71484375
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.09970543999224901,
-          "predict_seconds": 0.0012584190117195249,
+          "fit_seconds": 0.1016275939764455,
+          "predict_seconds": 0.0017629299545660615,
           "quality": {
             "ess_bulk_mean": 5872.140686008206,
             "ess_bulk_min": 5433.71339547803,
@@ -5692,14 +5692,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.03125
+          "rss_mb_after": 345.71875
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.10421645594760776,
-          "predict_seconds": 0.0015964180347509682,
+          "fit_seconds": 0.10295122402021661,
+          "predict_seconds": 0.001454377023037523,
           "quality": {
             "ess_bulk_mean": 7018.609237225666,
             "ess_bulk_min": 6209.82623872542,
@@ -5750,14 +5750,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.046875
+          "rss_mb_after": 345.72265625
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.09758843702729791,
-          "predict_seconds": 0.0012721060193143785,
+          "fit_seconds": 0.10835157398832962,
+          "predict_seconds": 0.0012882229639217257,
           "quality": {
             "ess_bulk_mean": 6417.303037473531,
             "ess_bulk_min": 5728.103099567077,
@@ -5808,14 +5808,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.06640625
+          "rss_mb_after": 345.72265625
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.1147615039953962,
-          "predict_seconds": 0.0015536279533989727,
+          "fit_seconds": 0.10303902998566628,
+          "predict_seconds": 0.00129246199503541,
           "quality": {
             "ess_bulk_mean": 6989.360845894205,
             "ess_bulk_min": 6126.028446760501,
@@ -5866,14 +5866,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.0703125
+          "rss_mb_after": 345.72265625
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.10292376397410408,
-          "predict_seconds": 0.0015703390236012638,
+          "fit_seconds": 0.1020248550339602,
+          "predict_seconds": 0.00143539096461609,
           "quality": {
             "ess_bulk_mean": 5911.9851587060275,
             "ess_bulk_min": 5440.442097686818,
@@ -5924,14 +5924,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.078125
+          "rss_mb_after": 345.7265625
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.10356538603082299,
-          "predict_seconds": 0.0012543309712782502,
+          "fit_seconds": 0.1031925700372085,
+          "predict_seconds": 0.001462101994547993,
           "quality": {
             "ess_bulk_mean": 5734.581022177583,
             "ess_bulk_min": 5064.5373174942715,
@@ -5982,14 +5982,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.09375
+          "rss_mb_after": 345.7265625
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.10166128701530397,
-          "predict_seconds": 0.0014904080308042467,
+          "fit_seconds": 0.10476743499748409,
+          "predict_seconds": 0.0014868279686197639,
           "quality": {
             "ess_bulk_mean": 5430.601144133933,
             "ess_bulk_min": 4529.300267199869,
@@ -6040,14 +6040,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.10546875
+          "rss_mb_after": 345.73046875
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.10088153200922534,
-          "predict_seconds": 0.0012650309945456684,
+          "fit_seconds": 0.10727867699461058,
+          "predict_seconds": 0.0013135999906808138,
           "quality": {
             "ess_bulk_mean": 6856.05399033094,
             "ess_bulk_min": 6348.689049943287,
@@ -6098,14 +6098,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.1171875
+          "rss_mb_after": 345.77734375
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 0.11042873305268586,
-          "predict_seconds": 0.001554359041620046,
+          "fit_seconds": 0.09916096698725596,
+          "predict_seconds": 0.0012928209616802633,
           "quality": {
             "ess_bulk_mean": 6193.6344962742005,
             "ess_bulk_min": 5593.448516906929,
@@ -6156,14 +6156,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.125
+          "rss_mb_after": 345.7421875
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.10165152896661311,
-          "predict_seconds": 0.0016094929887913167,
+          "fit_seconds": 0.1003414549631998,
+          "predict_seconds": 0.0016378829604946077,
           "quality": {
             "ess_bulk_mean": 5859.9222838854075,
             "ess_bulk_min": 5217.683368946245,
@@ -6214,14 +6214,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.12890625
+          "rss_mb_after": 345.78515625
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.1032754399930127,
-          "predict_seconds": 0.0012729769805446267,
+          "fit_seconds": 0.10885214898735285,
+          "predict_seconds": 0.0016031169798225164,
           "quality": {
             "ess_bulk_mean": 6806.373749614715,
             "ess_bulk_min": 6059.314647614757,
@@ -6272,14 +6272,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.1328125
+          "rss_mb_after": 345.75
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.09735466499114409,
-          "predict_seconds": 0.0016204530256800354,
+          "fit_seconds": 0.09994634904433042,
+          "predict_seconds": 0.0016312410007230937,
           "quality": {
             "ess_bulk_mean": 6056.679372670166,
             "ess_bulk_min": 5445.413809768303,
@@ -6330,14 +6330,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.140625
+          "rss_mb_after": 345.7578125
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.11136752704624087,
-          "predict_seconds": 0.001258018019143492,
+          "fit_seconds": 0.10428291000425816,
+          "predict_seconds": 0.0013060870114713907,
           "quality": {
             "ess_bulk_mean": 6848.509793636706,
             "ess_bulk_min": 6245.594709455623,
@@ -6388,14 +6388,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.15234375
+          "rss_mb_after": 345.76171875
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.10060188500210643,
-          "predict_seconds": 0.001541053003165871,
+          "fit_seconds": 0.10175661800894886,
+          "predict_seconds": 0.0012772830086760223,
           "quality": {
             "ess_bulk_mean": 6350.901601932039,
             "ess_bulk_min": 5874.895220368771,
@@ -6446,14 +6446,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.1640625
+          "rss_mb_after": 345.76953125
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.09479746798751876,
-          "predict_seconds": 0.0015740259550511837,
+          "fit_seconds": 0.1045403559692204,
+          "predict_seconds": 0.0015728010330349207,
           "quality": {
             "ess_bulk_mean": 5767.889420305076,
             "ess_bulk_min": 5058.580772606647,
@@ -6504,14 +6504,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.16796875
+          "rss_mb_after": 345.7734375
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.0997489609871991,
-          "predict_seconds": 0.0013825439964421093,
+          "fit_seconds": 0.10092702199472114,
+          "predict_seconds": 0.001320894982200116,
           "quality": {
             "ess_bulk_mean": 6410.003394717496,
             "ess_bulk_min": 5455.144575960144,
@@ -6562,14 +6562,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.171875
+          "rss_mb_after": 345.77734375
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.11041905399179086,
-          "predict_seconds": 0.0015017399564385414,
+          "fit_seconds": 0.10335866204695776,
+          "predict_seconds": 0.0016072859871201217,
           "quality": {
             "ess_bulk_mean": 6389.180568920868,
             "ess_bulk_min": 5321.977187934066,
@@ -6620,14 +6620,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.17578125
+          "rss_mb_after": 345.78515625
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.11223238299135119,
-          "predict_seconds": 0.001532167021650821,
+          "fit_seconds": 0.10359268501633778,
+          "predict_seconds": 0.0013031410053372383,
           "quality": {
             "ess_bulk_mean": 6598.4073729832535,
             "ess_bulk_min": 5836.7313470721965,
@@ -6678,14 +6678,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.18359375
+          "rss_mb_after": 345.7890625
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 0.10021297895582393,
-          "predict_seconds": 0.0012745200074277818,
+          "fit_seconds": 0.10606415302027017,
+          "predict_seconds": 0.001565166050568223,
           "quality": {
             "ess_bulk_mean": 6299.056191998242,
             "ess_bulk_min": 5823.719476088601,
@@ -6736,14 +6736,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.19140625
+          "rss_mb_after": 345.79296875
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.10289641097187996,
-          "predict_seconds": 0.0014666530187241733,
+          "fit_seconds": 0.10019143199315295,
+          "predict_seconds": 0.0015875590033829212,
           "quality": {
             "ess_bulk_mean": 6376.2287662150975,
             "ess_bulk_min": 5835.957603559221,
@@ -6794,14 +6794,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.19921875
+          "rss_mb_after": 345.8359375
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.10059876804007217,
-          "predict_seconds": 0.0012604829971678555,
+          "fit_seconds": 0.10156901302980259,
+          "predict_seconds": 0.001503288047388196,
           "quality": {
             "ess_bulk_mean": 6927.717207276895,
             "ess_bulk_min": 6342.391163477582,
@@ -6852,14 +6852,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.203125
+          "rss_mb_after": 345.84375
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.10557742102537304,
-          "predict_seconds": 0.001548376982100308,
+          "fit_seconds": 0.10888580197934061,
+          "predict_seconds": 0.0012860889546573162,
           "quality": {
             "ess_bulk_mean": 6447.297096135886,
             "ess_bulk_min": 6006.629631084999,
@@ -6910,14 +6910,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.2109375
+          "rss_mb_after": 345.80859375
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.10135916504077613,
-          "predict_seconds": 0.0014842050150036812,
+          "fit_seconds": 0.10147027700440958,
+          "predict_seconds": 0.0018167810048907995,
           "quality": {
             "ess_bulk_mean": 6336.903688985731,
             "ess_bulk_min": 5960.7934289888535,
@@ -6968,14 +6968,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.21875
+          "rss_mb_after": 345.8125
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.10354503896087408,
-          "predict_seconds": 0.0013838059967383742,
+          "fit_seconds": 0.10303694498725235,
+          "predict_seconds": 0.0014952949713915586,
           "quality": {
             "ess_bulk_mean": 7032.333351314804,
             "ess_bulk_min": 5920.204418666684,
@@ -7026,14 +7026,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.22265625
+          "rss_mb_after": 345.81640625
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.10325943800853565,
-          "predict_seconds": 0.00150907295756042,
+          "fit_seconds": 0.10473890998400748,
+          "predict_seconds": 0.0012906279880553484,
           "quality": {
             "ess_bulk_mean": 6700.919805411079,
             "ess_bulk_min": 5744.256120237431,
@@ -7084,14 +7084,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.234375
+          "rss_mb_after": 345.8203125
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.10154413594864309,
-          "predict_seconds": 0.0012662939843721688,
+          "fit_seconds": 0.10417429404333234,
+          "predict_seconds": 0.0012536380090750754,
           "quality": {
             "ess_bulk_mean": 7560.498905969987,
             "ess_bulk_min": 6604.294101731884,
@@ -7142,14 +7142,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.2421875
+          "rss_mb_after": 345.82421875
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 0.10051056096563116,
-          "predict_seconds": 0.0012558139860630035,
+          "fit_seconds": 0.1004284989903681,
+          "predict_seconds": 0.0013080600183457136,
           "quality": {
             "ess_bulk_mean": 6388.9600843888775,
             "ess_bulk_min": 5644.808065259107,
@@ -7200,14 +7200,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.24609375
+          "rss_mb_after": 345.83203125
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.10165580501779914,
-          "predict_seconds": 0.0016102339723147452,
+          "fit_seconds": 0.10528781701577827,
+          "predict_seconds": 0.0012892350205220282,
           "quality": {
             "ess_bulk_mean": 6417.424107367566,
             "ess_bulk_min": 5945.355846400754,
@@ -7258,7 +7258,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 347.25390625
+          "rss_mb_after": 345.8359375
         }
       ],
       "notes": [
@@ -7270,15 +7270,15 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.005776791891548783,
-        "first_fit_seconds": 0.10404729703441262,
-        "median_fit_seconds": 0.10165854601655155,
-        "total_fit_seconds": 3.0925824719597585,
-        "total_predict_seconds": 0.04329210793366656,
-        "useful_ess_per_second": 62350.72785816371,
-        "peak_rss_mb": 345.51953125,
-        "peak_children_rss_mb": 62.96484375,
-        "rss_growth_after_first_fit_mb": 0.88671875
+        "setup_seconds": 0.005790756025817245,
+        "first_fit_seconds": 0.10343706299318,
+        "median_fit_seconds": 0.10327561604208313,
+        "total_fit_seconds": 3.1053473741048947,
+        "total_predict_seconds": 0.04351070791017264,
+        "useful_ess_per_second": 62094.624920783186,
+        "peak_rss_mb": 344.296875,
+        "peak_children_rss_mb": 62.671875,
+        "rss_growth_after_first_fit_mb": 0.09765625
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -7333,17 +7333,17 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.4284758820431307,
-        "build": 0.009788225986994803,
-        "compile": 7.3060178909800015
+        "import": 0.44120256102178246,
+        "build": 0.009696684021037072,
+        "compile": 7.392250232980587
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 0.07154198200441897,
-          "predict_seconds": 0.0003390710335224867,
+          "fit_seconds": 0.06799621396930888,
+          "predict_seconds": 0.0002729659900069237,
           "quality": {
             "ess_bulk_mean": 5514.069695550104,
             "ess_bulk_min": 4956.070080474287,
@@ -7394,14 +7394,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 538.7109375
+          "rss_mb_after": 537.90625
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.06810275901807472,
-          "predict_seconds": 7.785798516124487e-05,
+          "fit_seconds": 0.06878821999998763,
+          "predict_seconds": 6.78679789416492e-05,
           "quality": {
             "ess_bulk_mean": 5317.577031015233,
             "ess_bulk_min": 5048.774167025633,
@@ -7452,14 +7452,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 542.01171875
+          "rss_mb_after": 541.17578125
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.06923252297565341,
-          "predict_seconds": 6.637495243921876e-05,
+          "fit_seconds": 0.06862355896737427,
+          "predict_seconds": 8.993002120405436e-05,
           "quality": {
             "ess_bulk_mean": 5265.251138680194,
             "ess_bulk_min": 4945.834179686182,
@@ -7510,14 +7510,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 544.68359375
+          "rss_mb_after": 543.78515625
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.06911048397887498,
-          "predict_seconds": 0.00018250499852001667,
+          "fit_seconds": 0.06406673404853791,
+          "predict_seconds": 7.173599442467093e-05,
           "quality": {
             "ess_bulk_mean": 5568.677642729632,
             "ess_bulk_min": 5204.470658364991,
@@ -7568,14 +7568,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 545.3671875
+          "rss_mb_after": 544.27734375
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.05553857400082052,
-          "predict_seconds": 6.702699465677142e-05,
+          "fit_seconds": 0.06120011804159731,
+          "predict_seconds": 5.946203600615263e-05,
           "quality": {
             "ess_bulk_mean": 5991.866019624505,
             "ess_bulk_min": 5559.822104991163,
@@ -7626,14 +7626,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 543.85546875
+          "rss_mb_after": 544.328125
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.0674746009754017,
-          "predict_seconds": 0.0001533399918116629,
+          "fit_seconds": 0.06868609803495929,
+          "predict_seconds": 6.550399120897055e-05,
           "quality": {
             "ess_bulk_mean": 5592.4799850169,
             "ess_bulk_min": 4935.314781733691,
@@ -7684,14 +7684,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 546.140625
+          "rss_mb_after": 547.4375
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.06701030401745811,
-          "predict_seconds": 6.258802022784948e-05,
+          "fit_seconds": 0.05832205299520865,
+          "predict_seconds": 7.06030405126512e-05,
           "quality": {
             "ess_bulk_mean": 5349.386014507942,
             "ess_bulk_min": 4870.774797101744,
@@ -7742,14 +7742,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 548.4375
+          "rss_mb_after": 545.234375
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.05837936501484364,
-          "predict_seconds": 6.307900184765458e-05,
+          "fit_seconds": 0.06737532198894769,
+          "predict_seconds": 6.911001401022077e-05,
           "quality": {
             "ess_bulk_mean": 6028.450932005944,
             "ess_bulk_min": 5229.942964310081,
@@ -7800,14 +7800,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 548.46875
+          "rss_mb_after": 542.15234375
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.06485672201961279,
-          "predict_seconds": 6.006303010508418e-05,
+          "fit_seconds": 0.057089125039055943,
+          "predict_seconds": 9.849597699940205e-05,
           "quality": {
             "ess_bulk_mean": 5545.13701171785,
             "ess_bulk_min": 5303.605471198544,
@@ -7858,14 +7858,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 549.35546875
+          "rss_mb_after": 545.26953125
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.06815714197000489,
-          "predict_seconds": 5.404202966019511e-05,
+          "fit_seconds": 0.06804560899036005,
+          "predict_seconds": 7.8537967056036e-05,
           "quality": {
             "ess_bulk_mean": 5350.1932008881195,
             "ess_bulk_min": 5158.735323326161,
@@ -7916,14 +7916,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.1796875
+          "rss_mb_after": 545.34765625
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 0.061969513015355915,
-          "predict_seconds": 5.8681005612015724e-05,
+          "fit_seconds": 0.056860301992855966,
+          "predict_seconds": 9.54499701038003e-05,
           "quality": {
             "ess_bulk_mean": 5521.94713661725,
             "ess_bulk_min": 4830.256845302519,
@@ -7974,14 +7974,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.1953125
+          "rss_mb_after": 542.2578125
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.0667472259956412,
-          "predict_seconds": 5.8420991990715265e-05,
+          "fit_seconds": 0.06492292101029307,
+          "predict_seconds": 6.367999594658613e-05,
           "quality": {
             "ess_bulk_mean": 5493.896034688347,
             "ess_bulk_min": 5037.536418346913,
@@ -8032,14 +8032,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.296875
+          "rss_mb_after": 545.3828125
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.0652433920186013,
-          "predict_seconds": 5.745899397879839e-05,
+          "fit_seconds": 0.07188827602658421,
+          "predict_seconds": 8.268601959571242e-05,
           "quality": {
             "ess_bulk_mean": 5638.569233470872,
             "ess_bulk_min": 5062.839724347073,
@@ -8090,14 +8090,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.31640625
+          "rss_mb_after": 545.390625
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.06404150102753192,
-          "predict_seconds": 5.814002361148596e-05,
+          "fit_seconds": 0.07039354299195111,
+          "predict_seconds": 6.95509952493012e-05,
           "quality": {
             "ess_bulk_mean": 5422.852097824839,
             "ess_bulk_min": 4621.222635749127,
@@ -8148,14 +8148,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.23828125
+          "rss_mb_after": 542.28515625
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.06810709700221196,
-          "predict_seconds": 5.8910984080284834e-05,
+          "fit_seconds": 0.05710884201107547,
+          "predict_seconds": 6.113597191870213e-05,
           "quality": {
             "ess_bulk_mean": 5618.332912817808,
             "ess_bulk_min": 5151.484766045915,
@@ -8206,14 +8206,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.20703125
+          "rss_mb_after": 545.39453125
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.06797865399857983,
-          "predict_seconds": 0.0001793690025806427,
+          "fit_seconds": 0.05157099198549986,
+          "predict_seconds": 8.32370133139193e-05,
           "quality": {
             "ess_bulk_mean": 5438.730539791695,
             "ess_bulk_min": 4888.168348157875,
@@ -8264,14 +8264,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.2109375
+          "rss_mb_after": 545.40234375
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.06718409201130271,
-          "predict_seconds": 0.00018856697715818882,
+          "fit_seconds": 0.06411956303054467,
+          "predict_seconds": 6.090500392019749e-05,
           "quality": {
             "ess_bulk_mean": 5578.175379431812,
             "ess_bulk_min": 4779.147155059355,
@@ -8322,14 +8322,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 544.140625
+          "rss_mb_after": 545.3984375
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.06731756497174501,
-          "predict_seconds": 0.0001803509658202529,
+          "fit_seconds": 0.06854103301884606,
+          "predict_seconds": 6.02040090598166e-05,
           "quality": {
             "ess_bulk_mean": 5541.768320771637,
             "ess_bulk_min": 5160.942874148506,
@@ -8380,14 +8380,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.23828125
+          "rss_mb_after": 547.67578125
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.06976087199291214,
-          "predict_seconds": 5.871104076504707e-05,
+          "fit_seconds": 0.06428118800977245,
+          "predict_seconds": 6.67870044708252e-05,
           "quality": {
             "ess_bulk_mean": 5463.85841395046,
             "ess_bulk_min": 4747.603034935572,
@@ -8438,14 +8438,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.2421875
+          "rss_mb_after": 546.85546875
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.06823722296394408,
-          "predict_seconds": 5.716795567423105e-05,
+          "fit_seconds": 0.05846076499437913,
+          "predict_seconds": 6.543402560055256e-05,
           "quality": {
             "ess_bulk_mean": 5215.02092058167,
             "ess_bulk_min": 4750.023863120265,
@@ -8496,14 +8496,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 547.24609375
+          "rss_mb_after": 547.71875
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 0.05670851597096771,
-          "predict_seconds": 5.747901741415262e-05,
+          "fit_seconds": 0.0657954880152829,
+          "predict_seconds": 6.150599801912904e-05,
           "quality": {
             "ess_bulk_mean": 5226.008392464412,
             "ess_bulk_min": 4819.256393732763,
@@ -8554,14 +8554,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 546.4375
+          "rss_mb_after": 548.62109375
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.06617245695088059,
-          "predict_seconds": 5.436298670247197e-05,
+          "fit_seconds": 0.06822869397001341,
+          "predict_seconds": 0.00013280997518450022,
           "quality": {
             "ess_bulk_mean": 5717.892022664288,
             "ess_bulk_min": 5413.56126602263,
@@ -8612,14 +8612,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 548.78125
+          "rss_mb_after": 548.62109375
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.068675943010021,
-          "predict_seconds": 5.3611001931130886e-05,
+          "fit_seconds": 0.06023104803171009,
+          "predict_seconds": 6.908102659508586e-05,
           "quality": {
             "ess_bulk_mean": 5690.3286751899095,
             "ess_bulk_min": 5309.380196762152,
@@ -8670,14 +8670,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 548.890625
+          "rss_mb_after": 542.4921875
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.06449200201313943,
-          "predict_seconds": 7.27169681340456e-05,
+          "fit_seconds": 0.05869742197683081,
+          "predict_seconds": 7.140496745705605e-05,
           "quality": {
             "ess_bulk_mean": 5413.217805897331,
             "ess_bulk_min": 4803.222625720995,
@@ -8728,14 +8728,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 549.7734375
+          "rss_mb_after": 545.6796875
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.07051183300791308,
-          "predict_seconds": 6.236799526959658e-05,
+          "fit_seconds": 0.06938947597518563,
+          "predict_seconds": 6.30189897492528e-05,
           "quality": {
             "ess_bulk_mean": 5476.907927258471,
             "ess_bulk_min": 5124.6646799910195,
@@ -8786,14 +8786,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.625
+          "rss_mb_after": 548.02734375
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.06922594195930287,
-          "predict_seconds": 0.000141837983392179,
+          "fit_seconds": 0.06742502597626299,
+          "predict_seconds": 6.124598439782858e-05,
           "quality": {
             "ess_bulk_mean": 5594.515139494241,
             "ess_bulk_min": 4956.474589118463,
@@ -8844,14 +8844,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.59765625
+          "rss_mb_after": 547.19140625
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.06862978503340855,
-          "predict_seconds": 0.0001701720175333321,
+          "fit_seconds": 0.0659934320137836,
+          "predict_seconds": 8.719501784071326e-05,
           "quality": {
             "ess_bulk_mean": 5036.541742342019,
             "ess_bulk_min": 4522.86322386147,
@@ -8902,14 +8902,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.6328125
+          "rss_mb_after": 549.1953125
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.06140660896198824,
-          "predict_seconds": 5.659699672833085e-05,
+          "fit_seconds": 0.06586823600810021,
+          "predict_seconds": 6.298895459622145e-05,
           "quality": {
             "ess_bulk_mean": 5320.807508963073,
             "ess_bulk_min": 4508.205902840606,
@@ -8960,14 +8960,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.65234375
+          "rss_mb_after": 547.03125
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 0.06663060403661802,
-          "predict_seconds": 7.073301821947098e-05,
+          "fit_seconds": 0.06799494300503284,
+          "predict_seconds": 7.566303247585893e-05,
           "quality": {
             "ess_bulk_mean": 5445.638747280213,
             "ess_bulk_min": 4968.778387758355,
@@ -9018,14 +9018,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 550.66015625
+          "rss_mb_after": 550.171875
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.0723670509760268,
-          "predict_seconds": 6.256799679249525e-05,
+          "fit_seconds": 0.06780876195989549,
+          "predict_seconds": 6.32390147075057e-05,
           "quality": {
             "ess_bulk_mean": 5351.1038520976035,
             "ess_bulk_min": 4802.7959648287915,
@@ -9076,7 +9076,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 553.76171875
+          "rss_mb_after": 551.08203125
         }
       ],
       "notes": [
@@ -9088,15 +9088,15 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 7.744281999010127,
-        "first_fit_seconds": 0.07154198200441897,
-        "median_fit_seconds": 0.06739608297357336,
-        "total_fit_seconds": 1.990812332893256,
-        "total_predict_seconds": 0.0028841719613410532,
-        "useful_ess_per_second": 16921.17157360168,
-        "peak_rss_mb": 551.11328125,
-        "peak_children_rss_mb": 393.8984375,
-        "rss_growth_after_first_fit_mb": 15.05078125
+        "setup_seconds": 7.843149478023406,
+        "first_fit_seconds": 0.06799621396930888,
+        "median_fit_seconds": 0.06593083401094191,
+        "total_fit_seconds": 1.9357730040792376,
+        "total_predict_seconds": 0.0024014359805732965,
+        "useful_ess_per_second": 16845.33257900564,
+        "peak_rss_mb": 548.55859375,
+        "peak_children_rss_mb": 393.7109375,
+        "rss_growth_after_first_fit_mb": 13.17578125
       },
       "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\n"
     },
@@ -9151,16 +9151,16 @@
       },
       "status": "ok",
       "setup_phases_seconds": {
-        "import": 0.25791966600809246,
-        "build": 1.0220101103186607e-06
+        "import": 0.2652047150186263,
+        "build": 8.720089681446552e-07
       },
       "fits": [
         {
           "index": 0,
           "observations": 500,
           "data_sha256": "a734ec57c4bf07806328c72486e444f77ed21050a60976feafc875ed3d3d668d",
-          "fit_seconds": 2.9007094579865225,
-          "predict_seconds": 0.00011425599223002791,
+          "fit_seconds": 2.934734980983194,
+          "predict_seconds": 0.00011601898586377501,
           "quality": {
             "ess_bulk_mean": 6873.2290520654515,
             "ess_bulk_min": 6165.866447812054,
@@ -9211,14 +9211,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 709.2265625
+          "rss_mb_after": 719.66015625
         },
         {
           "index": 1,
           "observations": 500,
           "data_sha256": "b791957c10e8305df5efb8d0cd9e9534f75c103a91e5dee2e80daa855e9d2f83",
-          "fit_seconds": 0.955956869001966,
-          "predict_seconds": 0.000142959994263947,
+          "fit_seconds": 0.9591027380083688,
+          "predict_seconds": 0.00010953698074445128,
           "quality": {
             "ess_bulk_mean": 6435.59184781431,
             "ess_bulk_min": 6068.090607816741,
@@ -9269,14 +9269,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 748.99609375
+          "rss_mb_after": 759.28125
         },
         {
           "index": 2,
           "observations": 500,
           "data_sha256": "28f32923b1db67eb8b140977280b8377edc19ff5cf46115aa93df59f1861c38d",
-          "fit_seconds": 0.9639246630249545,
-          "predict_seconds": 7.378903683274984e-05,
+          "fit_seconds": 0.956880831043236,
+          "predict_seconds": 0.00012309197336435318,
           "quality": {
             "ess_bulk_mean": 6591.270159797345,
             "ess_bulk_min": 5847.977885178551,
@@ -9327,14 +9327,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 781.94921875
+          "rss_mb_after": 788.19921875
         },
         {
           "index": 3,
           "observations": 500,
           "data_sha256": "f9354fb07cfdcb6112c489dd903f1767f9553ec40f9b9c125e7bfd2f90e2ac4e",
-          "fit_seconds": 0.9678792809718288,
-          "predict_seconds": 8.394900942221284e-05,
+          "fit_seconds": 0.9536533959908411,
+          "predict_seconds": 0.00010332500096410513,
           "quality": {
             "ess_bulk_mean": 5943.07866962547,
             "ess_bulk_min": 5686.568024883034,
@@ -9385,14 +9385,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 809.35546875
+          "rss_mb_after": 814.0546875
         },
         {
           "index": 4,
           "observations": 500,
           "data_sha256": "6efaf7d7d901a0789405c9de5e386347212f601d6553aee60696a619c37661dd",
-          "fit_seconds": 0.9353387670125812,
-          "predict_seconds": 8.589302888140082e-05,
+          "fit_seconds": 0.944012277002912,
+          "predict_seconds": 0.00011599896242842078,
           "quality": {
             "ess_bulk_mean": 6539.992001886023,
             "ess_bulk_min": 5959.115774046098,
@@ -9443,14 +9443,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 831.0390625
+          "rss_mb_after": 838.4609375
         },
         {
           "index": 5,
           "observations": 500,
           "data_sha256": "350bce35d0f26365a1bb37948087647c6e8c725bf023652bd0ba0fe3f6c9a750",
-          "fit_seconds": 0.9333425730001181,
-          "predict_seconds": 9.338598465546966e-05,
+          "fit_seconds": 0.9410634689847939,
+          "predict_seconds": 0.00011612899834290147,
           "quality": {
             "ess_bulk_mean": 6586.260301672047,
             "ess_bulk_min": 6144.3687391276635,
@@ -9501,14 +9501,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 854.0390625
+          "rss_mb_after": 857.23046875
         },
         {
           "index": 6,
           "observations": 500,
           "data_sha256": "d715c52d91df84a71c87cc8398ea3999299a0a532fbcd75844249a6c0c19ad7a",
-          "fit_seconds": 0.9359698490006849,
-          "predict_seconds": 0.00011239299783483148,
+          "fit_seconds": 0.9596025130013004,
+          "predict_seconds": 9.850598871707916e-05,
           "quality": {
             "ess_bulk_mean": 6538.87348940296,
             "ess_bulk_min": 5962.8137060115405,
@@ -9559,14 +9559,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 874.96875
+          "rss_mb_after": 879.38671875
         },
         {
           "index": 7,
           "observations": 500,
           "data_sha256": "dd3c3585a6cb81ce3615a4c89ef5223315e00cc6d2072ce06366061ac23804be",
-          "fit_seconds": 0.974289158009924,
-          "predict_seconds": 0.00013884296640753746,
+          "fit_seconds": 0.9785616309964098,
+          "predict_seconds": 0.0001167100272141397,
           "quality": {
             "ess_bulk_mean": 7018.991556598088,
             "ess_bulk_min": 6314.020924700503,
@@ -9617,14 +9617,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 897.0078125
+          "rss_mb_after": 900.33203125
         },
         {
           "index": 8,
           "observations": 500,
           "data_sha256": "b77fd91bc2b6faa30907e482cf7fc52080ae15ea2a71cae5de538438aa4843cd",
-          "fit_seconds": 0.9558854320202954,
-          "predict_seconds": 8.417898789048195e-05,
+          "fit_seconds": 0.9913301580236293,
+          "predict_seconds": 0.00010978803038597107,
           "quality": {
             "ess_bulk_mean": 6245.223812307659,
             "ess_bulk_min": 5469.632312750103,
@@ -9675,14 +9675,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 920.421875
+          "rss_mb_after": 921.72265625
         },
         {
           "index": 9,
           "observations": 500,
           "data_sha256": "8765de6d7cb4243cecf9bba41296cb8985293232497a66fbeb0887a748084611",
-          "fit_seconds": 0.9432130120112561,
-          "predict_seconds": 9.626196697354317e-05,
+          "fit_seconds": 0.9709363309666514,
+          "predict_seconds": 0.00011726201046258211,
           "quality": {
             "ess_bulk_mean": 6106.717469070994,
             "ess_bulk_min": 5391.3734064235505,
@@ -9733,14 +9733,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 939.421875
+          "rss_mb_after": 941.94921875
         },
         {
           "index": 10,
           "observations": 500,
           "data_sha256": "5821a1ece4e81499a1879b5bee23cd9962e0587b81f71b6331b3ab9b9e17b7d0",
-          "fit_seconds": 1.072975656017661,
-          "predict_seconds": 8.911901386454701e-05,
+          "fit_seconds": 0.9332560339826159,
+          "predict_seconds": 0.00011260202154517174,
           "quality": {
             "ess_bulk_mean": 6578.4741280829585,
             "ess_bulk_min": 5814.413289378183,
@@ -9791,14 +9791,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 962.41796875
+          "rss_mb_after": 962.265625
         },
         {
           "index": 11,
           "observations": 500,
           "data_sha256": "87fcf57e572a2dfe68c75df13f585ee9c332b6bf12a977543551b978135cde81",
-          "fit_seconds": 0.9562783430446871,
-          "predict_seconds": 0.00011836399789899588,
+          "fit_seconds": 0.9570099789998494,
+          "predict_seconds": 9.037100244313478e-05,
           "quality": {
             "ess_bulk_mean": 6534.317039572046,
             "ess_bulk_min": 5965.918822441995,
@@ -9849,14 +9849,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 981.546875
+          "rss_mb_after": 986.87890625
         },
         {
           "index": 12,
           "observations": 500,
           "data_sha256": "416d98f2b2099035cd57616910d3a8fb3e6825a3f3518bf223a7d2fd0b94f955",
-          "fit_seconds": 0.9789037099690177,
-          "predict_seconds": 9.307597065344453e-05,
+          "fit_seconds": 1.0814249829854816,
+          "predict_seconds": 0.00012145901564508677,
           "quality": {
             "ess_bulk_mean": 6788.7217884638285,
             "ess_bulk_min": 5846.755850737151,
@@ -9907,14 +9907,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1001.7265625
+          "rss_mb_after": 1003.171875
         },
         {
           "index": 13,
           "observations": 500,
           "data_sha256": "cee96221fb37bd7e1fe9ae459a6f161ab61f7343214ddedc98a62d85c33a48cd",
-          "fit_seconds": 0.9335438999696635,
-          "predict_seconds": 8.825695840641856e-05,
+          "fit_seconds": 0.9751297640032135,
+          "predict_seconds": 0.00011933594942092896,
           "quality": {
             "ess_bulk_mean": 6462.601801869341,
             "ess_bulk_min": 5829.859981309028,
@@ -9965,14 +9965,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1022.51171875
+          "rss_mb_after": 1026.46484375
         },
         {
           "index": 14,
           "observations": 500,
           "data_sha256": "96e2dfdda6656cc19ee83d1c85924ebafc47d8c9811274942d4381a4414601be",
-          "fit_seconds": 0.9596908950479701,
-          "predict_seconds": 9.50700487010181e-05,
+          "fit_seconds": 0.9811126339482144,
+          "predict_seconds": 0.00010915601160377264,
           "quality": {
             "ess_bulk_mean": 7024.379700522357,
             "ess_bulk_min": 5696.906594569863,
@@ -10023,14 +10023,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1046.22265625
+          "rss_mb_after": 1045.83203125
         },
         {
           "index": 15,
           "observations": 500,
           "data_sha256": "899bbd508e8253671d291ca4a2e4a8e6a193c6309c1acd701eac4764523a598d",
-          "fit_seconds": 0.9559387000044808,
-          "predict_seconds": 8.06419993750751e-05,
+          "fit_seconds": 0.9596905040089041,
+          "predict_seconds": 9.413802763447165e-05,
           "quality": {
             "ess_bulk_mean": 5825.724651395611,
             "ess_bulk_min": 5421.1255914977955,
@@ -10081,14 +10081,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1066.58203125
+          "rss_mb_after": 1070.59375
         },
         {
           "index": 16,
           "observations": 500,
           "data_sha256": "2051aa3c3ae0f476c660b33e054d89cd9e546e2fb2946da488cb07597f8f205a",
-          "fit_seconds": 0.943877525976859,
-          "predict_seconds": 0.00010902597568929195,
+          "fit_seconds": 0.9583472980302759,
+          "predict_seconds": 0.00010820402530953288,
           "quality": {
             "ess_bulk_mean": 6027.24105992757,
             "ess_bulk_min": 5802.755586995261,
@@ -10139,14 +10139,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1087.33984375
+          "rss_mb_after": 1090.84375
         },
         {
           "index": 17,
           "observations": 500,
           "data_sha256": "1d191a57f36bc9c2cf433b8ad5e25fcfec36349b845b52a5856e597b8e593099",
-          "fit_seconds": 0.9543702439987101,
-          "predict_seconds": 0.00010588002623990178,
+          "fit_seconds": 0.9692920199595392,
+          "predict_seconds": 9.029102511703968e-05,
           "quality": {
             "ess_bulk_mean": 6525.972526988052,
             "ess_bulk_min": 6166.089204463052,
@@ -10197,14 +10197,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1109.0
+          "rss_mb_after": 1108.12890625
         },
         {
           "index": 18,
           "observations": 500,
           "data_sha256": "2993297c5b251ba007471d85db22d732e5004f36f2336f791b9eaaf00e2abe7c",
-          "fit_seconds": 0.9844613349996507,
-          "predict_seconds": 9.625096572563052e-05,
+          "fit_seconds": 0.9664300549775362,
+          "predict_seconds": 0.00011070899199694395,
           "quality": {
             "ess_bulk_mean": 5993.6301666395775,
             "ess_bulk_min": 5712.618865703249,
@@ -10255,14 +10255,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1128.53125
+          "rss_mb_after": 1130.76953125
         },
         {
           "index": 19,
           "observations": 500,
           "data_sha256": "0716d68c61bf211d897b659443b9eece4a97df5fff70542d15ca61b96a69fe86",
-          "fit_seconds": 0.9433729909942485,
-          "predict_seconds": 8.370802970603108e-05,
+          "fit_seconds": 0.9519081579637714,
+          "predict_seconds": 0.0001152280019596219,
           "quality": {
             "ess_bulk_mean": 6361.518384407714,
             "ess_bulk_min": 5407.234194388307,
@@ -10313,14 +10313,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1145.5234375
+          "rss_mb_after": 1146.484375
         },
         {
           "index": 20,
           "observations": 500,
           "data_sha256": "4e926b801549754a4385b499d5e8835dca57ffeff3460b5c532b38d078a44f83",
-          "fit_seconds": 0.9721217939513735,
-          "predict_seconds": 8.838699432089925e-05,
+          "fit_seconds": 0.9792617110069841,
+          "predict_seconds": 0.00013324199244379997,
           "quality": {
             "ess_bulk_mean": 6712.350771884234,
             "ess_bulk_min": 5865.467216826117,
@@ -10371,14 +10371,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1169.44921875
+          "rss_mb_after": 1170.62109375
         },
         {
           "index": 21,
           "observations": 500,
           "data_sha256": "7cc4f9bbfe6046381a373b98a20029b3cca878e6da98c5de87dde677d7fa4dbd",
-          "fit_seconds": 0.9520744709880091,
-          "predict_seconds": 0.00011444598203524947,
+          "fit_seconds": 0.9877001980203204,
+          "predict_seconds": 0.00010868499521166086,
           "quality": {
             "ess_bulk_mean": 6802.8690484888675,
             "ess_bulk_min": 5821.13389066754,
@@ -10429,14 +10429,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1188.1484375
+          "rss_mb_after": 1189.19140625
         },
         {
           "index": 22,
           "observations": 500,
           "data_sha256": "6a7d5b3528eaf69c21a6a947be0128a1b1e05da24298ee43e49f4bd34af3f903",
-          "fit_seconds": 0.9801113590365276,
-          "predict_seconds": 9.355699876323342e-05,
+          "fit_seconds": 0.9512314299936406,
+          "predict_seconds": 9.474903345108032e-05,
           "quality": {
             "ess_bulk_mean": 6340.3428928109215,
             "ess_bulk_min": 6003.814453243715,
@@ -10487,14 +10487,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1206.390625
+          "rss_mb_after": 1205.78515625
         },
         {
           "index": 23,
           "observations": 500,
           "data_sha256": "83b384b77ad156852f7b387210fef47a5af2b2f17745b5f2534c104c88be1a72",
-          "fit_seconds": 0.9389039700035937,
-          "predict_seconds": 9.631196735426784e-05,
+          "fit_seconds": 0.9392326580127701,
+          "predict_seconds": 0.00012034800602123141,
           "quality": {
             "ess_bulk_mean": 6538.88803302148,
             "ess_bulk_min": 5782.038614406041,
@@ -10545,14 +10545,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1223.453125
+          "rss_mb_after": 1224.7421875
         },
         {
           "index": 24,
           "observations": 500,
           "data_sha256": "130c6c47e8eabaf133ac50db0a7d8d0324db041f128c490ce0cf8cc2ed438eb5",
-          "fit_seconds": 0.9518651540274732,
-          "predict_seconds": 8.84870532900095e-05,
+          "fit_seconds": 0.948485815024469,
+          "predict_seconds": 0.00010548002319410443,
           "quality": {
             "ess_bulk_mean": 6965.356933156162,
             "ess_bulk_min": 5788.068996488421,
@@ -10603,14 +10603,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1245.77734375
+          "rss_mb_after": 1242.6640625
         },
         {
           "index": 25,
           "observations": 500,
           "data_sha256": "4ce209da6accda22c8464d9aad4f595aa22142918886df8c11395ee4b4d45771",
-          "fit_seconds": 0.9606858510524035,
-          "predict_seconds": 0.00010676198871806264,
+          "fit_seconds": 0.9683444740367122,
+          "predict_seconds": 9.789399337023497e-05,
           "quality": {
             "ess_bulk_mean": 6181.240887228536,
             "ess_bulk_min": 5405.452874268284,
@@ -10661,14 +10661,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1263.90234375
+          "rss_mb_after": 1259.90234375
         },
         {
           "index": 26,
           "observations": 500,
           "data_sha256": "e61709ab159548d4a9851257ec43941841d3ceae7360f67bd13b035791a5a4e9",
-          "fit_seconds": 0.9495580220245756,
-          "predict_seconds": 7.999199442565441e-05,
+          "fit_seconds": 0.9573440669919364,
+          "predict_seconds": 8.204503683373332e-05,
           "quality": {
             "ess_bulk_mean": 6311.086867462677,
             "ess_bulk_min": 4847.923264129313,
@@ -10719,14 +10719,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1282.96484375
+          "rss_mb_after": 1281.74609375
         },
         {
           "index": 27,
           "observations": 500,
           "data_sha256": "f0d843938fe086ef25c80d0743c8a9c79bbf37e8b69e1045f3acb18d9c06737c",
-          "fit_seconds": 0.948013011016883,
-          "predict_seconds": 7.931998698040843e-05,
+          "fit_seconds": 0.9786092819995247,
+          "predict_seconds": 9.637203766033053e-05,
           "quality": {
             "ess_bulk_mean": 6079.787942770334,
             "ess_bulk_min": 5177.036932172203,
@@ -10777,14 +10777,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1302.5
+          "rss_mb_after": 1298.78515625
         },
         {
           "index": 28,
           "observations": 500,
           "data_sha256": "996565025e03200d785c2cbed58a408c746a440f3607b37697bca100a76e0572",
-          "fit_seconds": 0.9659707320388407,
-          "predict_seconds": 7.534195901826024e-05,
+          "fit_seconds": 0.972640017978847,
+          "predict_seconds": 7.668504258617759e-05,
           "quality": {
             "ess_bulk_mean": 6578.846094277398,
             "ess_bulk_min": 6074.57586814901,
@@ -10835,14 +10835,14 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1323.01953125
+          "rss_mb_after": 1316.02734375
         },
         {
           "index": 29,
           "observations": 500,
           "data_sha256": "1d147551d16402c3e70d6b9a5f5042597a502d606bc740126d9b575ba6deb1a7",
-          "fit_seconds": 0.9524505090084858,
-          "predict_seconds": 0.00012720999075099826,
+          "fit_seconds": 0.9634520849795081,
+          "predict_seconds": 0.00010518799535930157,
           "quality": {
             "ess_bulk_mean": 6834.3177712358265,
             "ess_bulk_min": 5688.730434654049,
@@ -10893,7 +10893,7 @@
             "joint_failures": []
           },
           "status": "passed",
-          "rss_mb_after": 1340.4140625
+          "rss_mb_after": 1338.14453125
         }
       ],
       "notes": [
@@ -10905,17 +10905,17 @@
         "passed": 30,
         "failed": 0,
         "errors": 0,
-        "setup_seconds": 0.2579206880182028,
-        "first_fit_seconds": 2.9007094579865225,
-        "median_fit_seconds": 0.9559120660123881,
-        "total_fit_seconds": 30.721677235211246,
-        "total_predict_seconds": 0.0029351178673096,
-        "useful_ess_per_second": 6273.383448424894,
-        "peak_rss_mb": 1337.140625,
-        "peak_children_rss_mb": 62.765625,
-        "rss_growth_after_first_fit_mb": 631.1875
+        "setup_seconds": 0.26520558702759445,
+        "first_fit_seconds": 2.934734980983194,
+        "median_fit_seconds": 0.9615712944942061,
+        "total_fit_seconds": 30.96978149190545,
+        "total_predict_seconds": 0.003218549187295139,
+        "useful_ess_per_second": 6222.0898750275555,
+        "peak_rss_mb": 1335.12109375,
+        "peak_children_rss_mb": 62.63671875,
+        "rss_growth_after_first_fit_mb": 618.484375
       },
-      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 14:26:14,051:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
+      "stderr_tail": "~/projects/rustmc/.venv/lib/python3.12/site-packages/arviz/__init__.py:50: FutureWarning: \nArviZ is undergoing a major refactor to improve flexibility and extensibility while maintaining a user-friendly interface.\nSome upcoming changes may be backward incompatible.\nFor details and migration guidance, visit: https://python.arviz.org/en/latest/user_guide/migration_guide.html\n  warn(\nWARNING:2026-10-19 15:57:31,305:jax._src.xla_bridge:876: An NVIDIA GPU may be present on this machine, but a CUDA-enabled jaxlib is not installed. Falling back to cpu.\n"
     }
   ]
 }

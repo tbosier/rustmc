@@ -2,7 +2,7 @@
  "build": {
   "version": "0.15.0",
   "file": "~/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py",
-  "revision": "7dde3cb81659e1c1684e5d1490c3f3a2605d1514",
+  "revision": "1db6c67490731a697314132b677b22707ca6fa4a",
   "dirty": false,
   "python": "3.12.9",
   "machine": "x86_64 Linux",
@@ -385,18 +385,18 @@
    "target": "scaled correlated regression d=6",
    "metric": "auto",
    "seed": 2,
-   "leapfrog_steps": 366684,
-   "min_bulk_ess": 2368.1159439658218,
-   "max_r_hat": 1.0032222663857966,
+   "leapfrog_steps": 373072,
+   "min_bulk_ess": 2589.111819074273,
+   "max_r_hat": 1.0011583096630543,
    "divergences": 0
   },
   {
    "target": "scaled correlated regression d=6",
    "metric": "auto",
    "seed": 3,
-   "leapfrog_steps": 335944,
-   "min_bulk_ess": 2801.1355603014254,
-   "max_r_hat": 1.0021530165212285,
+   "leapfrog_steps": 331794,
+   "min_bulk_ess": 2636.545288682535,
+   "max_r_hat": 1.0027143527150266,
    "divergences": 0
   },
   {
@@ -421,9 +421,9 @@
    "target": "scaled correlated regression d=6",
    "metric": "auto",
    "seed": 6,
-   "leapfrog_steps": 312983,
-   "min_bulk_ess": 2624.897264208292,
-   "max_r_hat": 1.0011950022326455,
+   "leapfrog_steps": 309877,
+   "min_bulk_ess": 2758.3072908105,
+   "max_r_hat": 1.0035364260555892,
    "divergences": 0
   },
   {

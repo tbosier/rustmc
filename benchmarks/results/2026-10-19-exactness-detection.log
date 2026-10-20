@@ -14,9 +14,9 @@ OverstepWithoutMetropolis, independent normals (100 dimensions), graph path: cau
 OverstepWithoutMetropolis, correlated Gaussian, rho 0.8 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 0/200; squared-norm error size median 17.70, smallest 12.15 MCSE
 OverstepWithoutMetropolis, correlated Gaussian, rho 0.95 (50 dimensions), custom target path: caught 200/200; per-coordinate checks alone 0/200; squared-norm error size median 17.04, smallest 12.13 MCSE
 OverstepWithoutMetropolis, correlated Gaussian, rho 0.95 (50 dimensions), graph path: caught 200/200; per-coordinate checks alone 150/200; squared-norm error size median 18.50, smallest 14.12 MCSE
-OverstepWithoutMetropolis, conjugate regression (10 dimensions), graph path: caught 200/200; per-coordinate checks alone 185/200; squared-norm error size median 13.61, smallest 9.97 MCSE
-100.5 s
+OverstepWithoutMetropolis, conjugate regression (10 dimensions), graph path: caught 200/200; per-coordinate checks alone 186/200; squared-norm error size median 13.61, smallest 9.97 MCSE
+100.7 s
 test detection_rate_over_seeds ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 100.52s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 100.75s
 

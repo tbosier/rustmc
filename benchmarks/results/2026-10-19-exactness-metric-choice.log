@@ -1,5 +1,5 @@
    Compiling rustmc_core v0.15.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/rust_core)
-    Finished `release` profile [optimized] target(s) in 8.62s
+    Finished `release` profile [optimized] target(s) in 8.65s
      Running tests/exactness.rs (.target/release/deps/exactness-865d07e91f6a4555)
 
 running 1 test
@@ -14,5 +14,5 @@ Dense, seed 2212: worst mean error 1.26 MCSE, worst variance error 1.44 MCSE, sq
 Dense, seed 2213: worst mean error 1.51 MCSE, worst variance error 2.66 MCSE, squared norm error 0.55 MCSE, min bulk ESS 4253, 0 divergences, max R-hat 1.0021; leapfrog steps per min bulk ESS 26.7 (draws only 11.7); PASS
 test metric_choice_on_the_ill_conditioned_graph_target ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 4.20s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out; finished in 4.17s
 

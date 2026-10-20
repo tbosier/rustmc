@@ -185,26 +185,26 @@ between 50 and 2000 (103 to 1949 in this run). Every fit of every engine passed.
 
 | Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
 |---|---|---|---|---|---|
-| rustmc, one dataset at a time | 0.01 | 3.09 | 6.78 | 62351 | 28852 |
-| rustmc, `sample_batch` | 0.01 | 2.99 | 6.52 | 66022 | 29886 |
-| nutpie | 7.74 | 1.99 | 2.84 | 16921 | 15976 |
-| NumPyro, parallel chains | 0.26 | 24.84 | 25.49 | 7741 | 7624 |
-| NumPyro, vectorized chains | 0.26, 0.27 | 30.72 | 53.78 | 6273 | 3613 |
-| PyMC | 0.45, 0.44 | 25.72 | 27.33 | 5796 | 5530 |
+| rustmc, one dataset at a time | 0.01 | 3.11 | 6.81 | 62095 | 28754 |
+| rustmc, `sample_batch` | 0.01 | 2.99 | 6.52 | 66010 | 29918 |
+| nutpie | 7.84, 7.90 | 1.94 | 2.91 | 16845 | 15642 |
+| NumPyro, parallel chains | 0.27 | 24.83 | 25.58 | 7744 | 7596 |
+| NumPyro, vectorized chains | 0.27, 0.26 | 30.97 | 54.15 | 6222 | 3589 |
+| PyMC | 0.44 | 26.04 | 27.29 | 5725 | 5536 |
 
-nutpie fits each dataset faster than rustmc: 1.99 s against 3.09 s for the 30 fixed
-datasets, and 2.84 s against 6.78 s for the ragged ones. Its useful ESS per second is
+nutpie fits each dataset faster than rustmc: 1.94 s against 3.11 s for the 30 fixed
+datasets, and 2.91 s against 6.81 s for the ragged ones. Its useful ESS per second is
 lower over 30 datasets because of about 8 s of compilation and a lower ESS per fit: a
 mean bulk ESS of 5491 and 5636 per fit against rustmc's 6439 and 6530. At these per-fit
-times nutpie's total time would fall below rustmc's after about 210 fixed or 60 ragged
-datasets of this size. PyMC's first fit took 6.6 to 6.7 s and its fits a median of
-0.65 s (fixed) and 0.72 s (ragged). NumPyro with parallel chains took a median of 0.79
-and 0.82 s per fit, compiling each time. With vectorized chains its first fit took 2.9
-to 3.0 s and the later fixed-size ones a median of 0.96 s: reusing the compiled model
+times nutpie's total time would fall below rustmc's after about 200 fixed or 60 ragged
+datasets of this size. PyMC's first fit took 6.7 to 6.8 s and its fits a median of
+0.65 s (fixed) and 0.71 s (ragged). NumPyro with parallel chains took a median of 0.79
+and 0.83 s per fit, compiling each time. With vectorized chains its first fit took 2.9
+to 3.1 s and the later fixed-size ones a median of 0.96 s: reusing the compiled model
 did not make up for sampling the four chains on one device, and in the ragged workload,
 where every dataset has a new shape, the median was 1.8 s. Peak resident memory of the
-engine's own process was 346 to 371 MB for the two rustmc runs, 549 to 551 MB for
-nutpie, 1232 to 1459 MB for NumPyro and 424 MB for PyMC. Child processes, which hold
+engine's own process was 344 to 371 MB for the two rustmc runs, 549 to 554 MB for
+nutpie, 1234 to 1470 MB for NumPyro and 423 to 425 MB for PyMC. Child processes, which hold
 PyMC's chains and anything else an engine or its imports start, are recorded apart
 (`peak_children_rss_mb`, the largest that exited): 394 to 402 MB for PyMC and nutpie
 and 63 to 64 MB for the others. The runs do not record which child reached each peak.

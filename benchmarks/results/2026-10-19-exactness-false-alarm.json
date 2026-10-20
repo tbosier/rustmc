@@ -36,7 +36,7 @@
         "fraction_beyond_4": 0.000205,
         "standard_deviation": 1.0055761495481594
       },
-      "wall_seconds": 119.892183491
+      "wall_seconds": 119.187590226
     },
     {
       "case": "independent normals (100 dimensions), graph path",
@@ -74,7 +74,7 @@
         "fraction_beyond_4": 0.00018,
         "standard_deviation": 1.006481790487478
       },
-      "wall_seconds": 152.788433446
+      "wall_seconds": 95.374467155
     },
     {
       "case": "correlated Gaussian, rho 0.8 (50 dimensions), custom target path",
@@ -112,7 +112,7 @@
         "fraction_beyond_4": 0.00034,
         "standard_deviation": 1.0167247458904816
       },
-      "wall_seconds": 78.511008349
+      "wall_seconds": 76.330848016
     },
     {
       "case": "correlated Gaussian, rho 0.95 (50 dimensions), custom target path",
@@ -150,7 +150,7 @@
         "fraction_beyond_4": 0.00048,
         "standard_deviation": 1.0371729408021282
       },
-      "wall_seconds": 123.488590175
+      "wall_seconds": 126.321226706
     },
     {
       "case": "correlated Gaussian, rho 0.95 (50 dimensions), graph path",
@@ -188,7 +188,7 @@
         "fraction_beyond_4": 0.00019,
         "standard_deviation": 1.0030603818031556
       },
-      "wall_seconds": 94.69205414
+      "wall_seconds": 94.858201435
     },
     {
       "case": "conjugate regression (10 dimensions), graph path",
@@ -205,28 +205,28 @@
       "fits_failed_on_moments": 1,
       "mean_errors": {
         "count": 20000,
-        "fraction_beyond_2": 0.04595,
+        "fraction_beyond_2": 0.0464,
         "fraction_beyond_3": 0.00255,
         "fraction_beyond_4": 0.0,
-        "standard_deviation": 0.9982137688780727
+        "standard_deviation": 0.9999128450250838
       },
       "nominal_moment_false_alarm_rate": 0.001329349918161471,
       "seeds": 2000,
       "squared_norm_errors": {
         "count": 2000,
-        "fraction_beyond_2": 0.0465,
+        "fraction_beyond_2": 0.046,
         "fraction_beyond_3": 0.003,
         "fraction_beyond_4": 0.0,
-        "standard_deviation": 1.007911992194459
+        "standard_deviation": 1.0087910998473237
       },
       "variance_errors": {
         "count": 20000,
-        "fraction_beyond_2": 0.04535,
-        "fraction_beyond_3": 0.00355,
+        "fraction_beyond_2": 0.04575,
+        "fraction_beyond_3": 0.0037,
         "fraction_beyond_4": 0.00005,
-        "standard_deviation": 0.9988339788269854
+        "standard_deviation": 1.0001248071488156
       },
-      "wall_seconds": 30.88961262
+      "wall_seconds": 32.906530817
     }
   ],
   "command": "RUSTMC_EXACTNESS_SEEDS=2000 RUSTMC_EXACTNESS_JSON=<path> cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture false_alarm_rate_over_seeds",
@@ -235,7 +235,7 @@
   "format": "rustmc.exactness-false-alarm",
   "logical_cpus": 24,
   "nominal_exceedance_per_check": 0.00006334248366623996,
-  "revision": "7dde3cb81659e1c1684e5d1490c3f3a2605d1514",
+  "revision": "1db6c67490731a697314132b677b22707ca6fa4a",
   "version": 1,
-  "wall_seconds": 600.293783485
+  "wall_seconds": 544.99368816
 }

@@ -798,7 +798,8 @@ const LAST_WINDOW_MARGIN: f64 = 2.0;
 /// the split cost 4% and 10% more on the scaled correlated regression and
 /// the centered eight schools and 35% less on the banana; the other targets
 /// were within 0.3%. The record is
-/// `benchmarks/results/2026-10-19-targets-margin2-1000.json`.
+/// `benchmarks/results/2026-10-19-targets-margin2-1000.json`, from a build
+/// of this rule with this constant set to 2 (so its provenance says dirty).
 const EARLY_WINDOW_MARGIN: f64 = 1.0;
 
 /// `test` whitened by the variances on `train`'s diagonal: the metric a

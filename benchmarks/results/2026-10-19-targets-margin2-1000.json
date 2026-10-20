@@ -1,12 +1,12 @@
 {
  "build": {
-  "version": "0.14.0",
+  "version": "0.15.0",
   "file": "~/projects/rustmc/.claude/worktrees/margin2/.pybuild/rustmc/__init__.py",
-  "revision": "fb2a99778759493dfca7b8773097941367d04c18",
-  "dirty": false,
+  "revision": "1db6c67490731a697314132b677b22707ca6fa4a",
+  "dirty": true,
   "python": "3.12.9",
   "machine": "x86_64 Linux",
-  "command": "~/projects/rustmc/.claude/worktrees/margin2/benchmarks/auto_metric_targets.py --warmup 1000 --metrics auto --json ~/projects/rustmc/.claude/worktrees/margin2/../v015/benchmarks/results/2026-10-19-targets-margin2-1000.json"
+  "command": "~/projects/rustmc/.claude/worktrees/margin2/benchmarks/auto_metric_targets.py --warmup 1000 --metrics auto --json ~/projects/rustmc/.claude/worktrees/v015/benchmarks/results/2026-10-19-targets-margin2-1000.json"
  },
  "chains": 4,
  "warmup": 1000,

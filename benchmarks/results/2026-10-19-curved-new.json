@@ -2,7 +2,7 @@
  "build": {
   "version": "0.15.0",
   "file": "~/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py",
-  "revision": "7dde3cb81659e1c1684e5d1490c3f3a2605d1514",
+  "revision": "1db6c67490731a697314132b677b22707ca6fa4a",
   "dirty": false,
   "python": "3.12.9",
   "machine": "x86_64 Linux",

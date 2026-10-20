@@ -5,7 +5,7 @@ isotropic d=50                     auto         9.6      12.2         0 / 10    
 isotropic d=100                    auto        16.4      24.7         0 / 10      1.0079
 correlated regression d=10         auto         9.0       9.9         0 / 10      1.0039
 correlated regression d=20         auto        15.8      18.4         0 / 10      1.0066
-scaled correlated regression d=6   auto       119.6     154.8         0 / 10      1.0041
+scaled correlated regression d=6   auto       117.7     144.4         0 / 10      1.0041
 logistic regression d=8            auto         8.3       9.3         0 / 10      1.0036
 eight schools noncentered          auto        28.2      34.3         2 / 10      1.0065
 eight schools centered             auto       917.5   10290.2        10 / 10      1.3391
