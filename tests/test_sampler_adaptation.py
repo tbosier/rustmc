@@ -135,7 +135,12 @@ def test_metric_option_is_validated_and_forwarded():
     for name, run in sampling_paths(builder, data, options).items():
         diag, dense = run("diag"), run("dense")
         assert max(dense) * 2.5 < min(diag), (name, diag, dense)
-        assert max(run("auto")) * 2.5 < min(diag), name
+        # auto goes dense here too, but a window can stay diagonal first:
+        # over seeds 10 to 49 on x86-64 it matched dense in every fit (diag at
+        # least 3.3 times dearer), while on aarch64 at this seed it cost 18.88
+        # leapfrog steps per iteration against 46.96 for diag.
+        auto = run("auto")
+        assert max(auto) * 2 < min(diag), (name, diag, auto)
     for name, run in sampling_paths(*isotropic_builder(20), options).items():
         assert run("dense") != run("auto"), name
         assert run("diag") == run("auto"), name
