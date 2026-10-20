@@ -42,12 +42,25 @@ def _layouts(values):
 def test_numeric_layouts_give_the_same_fit_as_float64(name, fit):
     integers = [1, 2, 1, 3, 2, 3, 3, 4]
     reference = fit(np.asarray(integers, dtype=float))
-    samples = reference.get_samples() if hasattr(reference, "get_samples") else reference.get_samples_2d()
+    samples = reference.get_samples()
     for layout, observations in _layouts(integers).items():
         other = fit(observations)
-        other_samples = other.get_samples() if hasattr(other, "get_samples") else other.get_samples_2d()
+        other_samples = other.get_samples()
         for key, values in samples.items():
             np.testing.assert_array_equal(values, other_samples[key], err_msg=f"{name} {layout} {key}")
+
+
+@pytest.mark.parametrize("name, fit", _fits(), ids=[name for name, _ in _fits()])
+def test_get_samples_merges_the_chain_and_draw_axes_of_get_samples_2d(name, fit):
+    result = fit(np.array([1.0, 2.0, 1.0, 3.0, 2.0, 3.0, 3.0, 4.0]))
+    by_chain = result.get_samples_2d()
+    flat = result.get_samples()
+    assert set(flat) == set(by_chain)
+    for key, values in by_chain.items():
+        assert values.shape[:2] == (result.chains, result.draws), key
+        np.testing.assert_array_equal(
+            flat[key], values.reshape((-1,) + values.shape[2:]), err_msg=f"{name} {key}"
+        )
 
 
 @pytest.mark.parametrize("name, fit", _fits(), ids=[name for name, _ in _fits()])

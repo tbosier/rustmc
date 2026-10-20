@@ -450,3 +450,18 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyInverseGammaPrior>()?;
     Ok(())
 }
+
+/// Warn that the getter `old` is deprecated in favor of `new`, which
+/// returns the same array.
+pub(crate) fn warn_renamed(py: Python<'_>, old: &str, new: &str) -> PyResult<()> {
+    let message = std::ffi::CString::new(format!(
+        "`{old}` is deprecated and will be removed; use `{new}`, which returns the same draws"
+    ))
+    .expect("getter names contain no NUL byte");
+    PyErr::warn(
+        py,
+        &py.get_type::<pyo3::exceptions::PyDeprecationWarning>(),
+        &message,
+        1,
+    )
+}

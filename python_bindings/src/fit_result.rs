@@ -15,6 +15,7 @@ use numpy::{IntoPyArray, PyArray1};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
+use rustmc_core::hmc::TreeTermination;
 use rustmc_core::model::{ModelFit, PredictiveDraws};
 use rustmc_core::sampler::SampleResult;
 use std::collections::HashMap;
@@ -280,8 +281,10 @@ impl FitResult {
     /// on ArviZ 1.x, with:
     ///   - `posterior`             — (n_chains × n_draws) arrays for every parameter
     ///   - `sample_stats`          — `diverging` (bool), `step_size` and
-    ///     `energy` per draw, and `tree_depth` for NUTS; `energy` is left out
-    ///     for a fit restored from an artifact older than version 3
+    ///     `energy` per draw, and `tree_depth` and `reached_max_treedepth`
+    ///     (bool) for NUTS; `energy` is left out for a fit restored from an
+    ///     artifact older than version 3, and `reached_max_treedepth` for one
+    ///     older than version 4
     ///   - `observed_data`         — the fitted response vector for each likelihood
     ///   - `log_likelihood`        — (n_chains × n_draws × n_obs) pointwise values
     ///   - `posterior_predictive`  — ŷ samples (only when include_ppc=True)
@@ -337,11 +340,14 @@ impl FitResult {
         let mut diverging_arr = Array2::<bool>::from_elem((n_chains, n_draws), false);
         let mut energy_arr = Array2::<f64>::zeros((n_chains, n_draws));
         let mut tree_depth_arr = Array2::<i64>::zeros((n_chains, n_draws));
+        let mut max_depth_arr = Array2::<bool>::from_elem((n_chains, n_draws), false);
         // A fit restored from an artifact older than version 3 has no
         // energies, and an HMC fit no trees: those variables are left out
         // rather than exported as placeholders.
         let mut has_energy = true;
         let mut has_tree_depth = true;
+        // Termination reasons exist from artifact version 4, for NUTS only.
+        let mut has_termination = true;
         for (ci, transitions) in raw.transitions.iter().enumerate() {
             let post_warmup: Vec<_> = transitions
                 .iter()
@@ -361,6 +367,12 @@ impl FitResult {
                 match transition.tree_depth {
                     Some(depth) => tree_depth_arr[[ci, di]] = depth as i64,
                     None => has_tree_depth = false,
+                }
+                match transition.termination {
+                    Some(reason) => {
+                        max_depth_arr[[ci, di]] = reason == TreeTermination::MaxTreeDepth
+                    }
+                    None => has_termination = false,
                 }
             }
         }
@@ -389,6 +401,10 @@ impl FitResult {
         }
         if has_tree_depth {
             sample_stats.set_item("tree_depth", tree_depth_arr.into_pyarray(py))?;
+        }
+        // PyMC's name for the same flag.
+        if has_termination {
+            sample_stats.set_item("reached_max_treedepth", max_depth_arr.into_pyarray(py))?;
         }
         groups.set_item("sample_stats", sample_stats)?;
 

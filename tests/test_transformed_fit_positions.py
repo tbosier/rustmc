@@ -13,7 +13,7 @@ import rustmc
 
 def as_legacy(artifact):
     """A version-1 copy of a fresh artifact: no exact positions, and none of
-    the energy telemetry version 3 added."""
+    the energy telemetry version 3 added or the termination reasons of 4."""
     legacy = copy.deepcopy(artifact)
     legacy["version"] = 1
     del legacy["posterior"]["unconstrained_samples"]
@@ -21,6 +21,7 @@ def as_legacy(artifact):
     for chain in legacy["posterior"]["transitions"]:
         for transition in chain:
             del transition["energy"]
+            transition.pop("termination", None)
     return legacy
 
 
@@ -48,7 +49,7 @@ def test_tail_fit_artifact_retains_finite_positions_and_replays(kind):
                           num_leapfrog_steps=1, chains=1, draws=3, warmup=1,
                           seed=17, show_progress=False)
     artifact = json.loads(fit.to_json())
-    assert artifact["version"] == 3
+    assert artifact["version"] == 4
     raw = np.asarray(artifact["posterior"]["unconstrained_samples"])
     assert raw.shape == (1, 3, width)
     assert np.all(np.isfinite(raw))

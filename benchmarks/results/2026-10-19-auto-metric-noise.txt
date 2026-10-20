@@ -1,0 +1,17 @@
+30 windows per case, NumPy seeds 0 to 29; dense choices out of 30
+case                                               draws  old cv m1 cv m2 cv m4
+isotropic, all coordinates 0.6                       200    0     0     0     0
+isotropic, 20 at 0.99 and 20 at 0                    200    6     0     0     0
+isotropic, those rotated in pairs                    200   30     0     0     0
+isotropic, 20 at 0.97 and 20 at 0, rotated           400    0     0     0     0
+isotropic, 100 at 0.5                                400    0     0     0     0
+isotropic, 10 at 0.5, halves of 11                    23    0     3     0     0
+isotropic, 20 at 0.99 and 20 at 0, rotated            89   23    28     0     0
+isotropic, 2 at 0.9 and 0, rotated                   200    0    12     0     0
+isotropic, 2 at 0.99 and 0, rotated                  200    0    22    17     6
+isotropic, 2 at 0.999 and 0, rotated                 200   21    30    30    27
+AR(1) correlation 0.95, all at 0.5                   200   25    30    30    30
+AR(1) correlation 0.95, all at 0.8                   200    0    30    30    27
+AR(1) correlation 0.95, one at 0.99, 49 at 0.3       200   30    30    30    30
+AR(1) correlation 0.8, 20 at 0.3                      80    4    30    25     5
+AR(1) correlation 0.5, all at 0.5                    200    0     0     0     0

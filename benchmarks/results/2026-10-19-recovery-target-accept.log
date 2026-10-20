@@ -1,0 +1,704 @@
+=== target_accept=0.8 seed_offset=0
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 105, target_accept 0.8: 0 divergences, max R-hat 1.0020 (sigma), min bulk ESS 3237 (sigma), min tail ESS 3308 (sigma)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 109, target_accept 0.8: 219 divergences, max R-hat 1.0178 (tau), min bulk ESS 310 (tau), min tail ESS 155 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 113, target_accept 0.8: 1666 divergences, max R-hat 1.0356 (y), min bulk ESS 97 (y), min tail ESS 29 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0011 (mu), min bulk ESS 2242 (tau), min tail ESS 1879 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 101, target_accept 0.8: 0 divergences, max R-hat 1.0007 (mu), min bulk ESS 6077 (mu), min tail ESS 5211 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 102, target_accept 0.8: 0 divergences, max R-hat 1.0009 (alpha), min bulk ESS 7739 (beta), min tail ESS 5559 (alpha)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 103, target_accept 0.8: 0 divergences, max R-hat 1.0011 (alpha), min bulk ESS 3554 (beta), min tail ESS 4013 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0002 (y), min bulk ESS 14068 (y), min tail ESS 10308 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0022 (sigma_alpha), min bulk ESS 1303 (mu_alpha), min tail ESS 2189 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0056 (sigma_alpha), min bulk ESS 921 (mu_alpha), min tail ESS 1626 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 104, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta), min bulk ESS 3619 (beta), min tail ESS 4140 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[1]), min bulk ESS 10395 (beta[0]), min tail ESS 5997 (beta[1])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s
+
+=== target_accept=0.8 seed_offset=1
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0014 (sigma), min bulk ESS 2542 (phi), min tail ESS 2836 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 110, target_accept 0.8: 175 divergences, max R-hat 1.0307 (tau), min bulk ESS 142 (tau), min tail ESS 65 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 114, target_accept 0.8: 1380 divergences, max R-hat 1.0671 (y), min bulk ESS 49 (y), min tail ESS 19 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 111, target_accept 0.8: 1 divergences, max R-hat 1.0011 (z_6), min bulk ESS 2530 (tau), min tail ESS 2610 (tau)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 102, target_accept 0.8: 0 divergences, max R-hat 1.0002 (mu), min bulk ESS 6869 (sigma), min tail ESS 5186 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 103, target_accept 0.8: 0 divergences, max R-hat 1.0007 (sigma), min bulk ESS 8029 (beta), min tail ESS 5628 (alpha)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 104, target_accept 0.8: 0 divergences, max R-hat 1.0020 (alpha), min bulk ESS 3433 (alpha), min tail ESS 3816 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0004 (y), min bulk ESS 12133 (z), min tail ESS 9817 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0023 (sigma_alpha), min bulk ESS 1163 (mu_alpha), min tail ESS 1694 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0045 (sigma_alpha), min bulk ESS 793 (mu_alpha), min tail ESS 1383 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 105, target_accept 0.8: 0 divergences, max R-hat 1.0007 (alpha), min bulk ESS 3630 (beta), min tail ESS 4642 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0010 (beta[3]), min bulk ESS 10601 (beta[0]), min tail ESS 5687 (beta[1])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.33s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=2
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0025 (alpha), min bulk ESS 3160 (phi), min tail ESS 3438 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 111, target_accept 0.8: 126 divergences, max R-hat 1.0490 (tau), min bulk ESS 127 (tau), min tail ESS 26 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 115, target_accept 0.8: 945 divergences, max R-hat 1.0333 (y), min bulk ESS 146 (y), min tail ESS 119 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 112, target_accept 0.8: 1 divergences, max R-hat 1.0021 (tau), min bulk ESS 2312 (tau), min tail ESS 2131 (tau)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 103, target_accept 0.8: 0 divergences, max R-hat 1.0010 (sigma), min bulk ESS 6657 (sigma), min tail ESS 4887 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 104, target_accept 0.8: 0 divergences, max R-hat 1.0003 (sigma), min bulk ESS 7599 (beta), min tail ESS 5508 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 105, target_accept 0.8: 0 divergences, max R-hat 1.0016 (beta), min bulk ESS 3902 (alpha), min tail ESS 4062 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0005 (z), min bulk ESS 12797 (z), min tail ESS 10123 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 110, target_accept 0.8: 1 divergences, max R-hat 1.0026 (sigma_alpha), min bulk ESS 1437 (mu_alpha), min tail ESS 1778 (mu_alpha)
+
+thread 'noncentered_hierarchical_poisson_recovers_partial_pooling_counts' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+FAILED
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0071 (z_1), min bulk ESS 951 (mu_alpha), min tail ESS 1656 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0015 (beta), min bulk ESS 4066 (alpha), min tail ESS 4229 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0012 (beta[3]), min bulk ESS 9695 (beta[2]), min tail ESS 5632 (beta[2])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+    noncentered_hierarchical_poisson_recovers_partial_pooling_counts
+
+test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=3
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0009 (sigma), min bulk ESS 2432 (alpha), min tail ESS 2613 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 112, target_accept 0.8: 101 divergences, max R-hat 1.0109 (tau), min bulk ESS 437 (tau), min tail ESS 169 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 116, target_accept 0.8: 850 divergences, max R-hat 1.0397 (y), min bulk ESS 104 (y), min tail ESS 38 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 113, target_accept 0.8: 1 divergences, max R-hat 1.0036 (mu), min bulk ESS 2349 (tau), min tail ESS 2440 (mu)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 104, target_accept 0.8: 0 divergences, max R-hat 1.0007 (mu), min bulk ESS 6793 (sigma), min tail ESS 5016 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 105, target_accept 0.8: 0 divergences, max R-hat 1.0015 (sigma), min bulk ESS 7312 (beta), min tail ESS 4778 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0017 (alpha), min bulk ESS 3638 (beta), min tail ESS 4044 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0005 (z), min bulk ESS 13897 (z), min tail ESS 10417 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0017 (z_11), min bulk ESS 1406 (sigma_alpha), min tail ESS 1665 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0050 (mu_alpha), min bulk ESS 974 (mu_alpha), min tail ESS 1386 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0003 (alpha), min bulk ESS 4005 (alpha), min tail ESS 4355 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0014 (beta[1]), min bulk ESS 8853 (beta[1]), min tail ESS 5713 (beta[0])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=4
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0020 (sigma), min bulk ESS 3011 (alpha), min tail ESS 2823 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 113, target_accept 0.8: 185 divergences, max R-hat 1.0246 (tau), min bulk ESS 117 (tau), min tail ESS 24 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 117, target_accept 0.8: 844 divergences, max R-hat 1.0081 (y), min bulk ESS 477 (y), min tail ESS 356 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0013 (tau), min bulk ESS 2134 (tau), min tail ESS 2096 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 105, target_accept 0.8: 0 divergences, max R-hat 1.0002 (sigma), min bulk ESS 6905 (sigma), min tail ESS 5668 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0004 (alpha), min bulk ESS 7418 (beta), min tail ESS 5836 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0012 (alpha), min bulk ESS 3689 (alpha), min tail ESS 4145 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0005 (z), min bulk ESS 14982 (y), min tail ESS 11215 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0043 (sigma_alpha), min bulk ESS 1248 (mu_alpha), min tail ESS 2247 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0064 (z_2), min bulk ESS 1036 (sigma_alpha), min tail ESS 1556 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0008 (alpha), min bulk ESS 3954 (beta), min tail ESS 4445 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[3]), min bulk ESS 9534 (beta[0]), min tail ESS 5733 (beta[5])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.40s
+
+=== target_accept=0.8 seed_offset=5
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0005 (sigma), min bulk ESS 3122 (phi), min tail ESS 3384 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 114, target_accept 0.8: 98 divergences, max R-hat 1.0137 (tau), min bulk ESS 623 (tau), min tail ESS 357 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 118, target_accept 0.8: 664 divergences, max R-hat 1.0287 (y), min bulk ESS 206 (y), min tail ESS 180 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 115, target_accept 0.8: 1 divergences, max R-hat 1.0009 (z_3), min bulk ESS 2415 (tau), min tail ESS 2232 (tau)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 106, target_accept 0.8: 0 divergences, max R-hat 1.0006 (mu), min bulk ESS 6682 (mu), min tail ESS 5508 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0005 (alpha), min bulk ESS 7743 (alpha), min tail ESS 5148 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0006 (beta), min bulk ESS 3675 (alpha), min tail ESS 3607 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0004 (z), min bulk ESS 13357 (z), min tail ESS 10846 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0033 (sigma_alpha), min bulk ESS 1403 (sigma_alpha), min tail ESS 1916 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0051 (z_9), min bulk ESS 1089 (z_3), min tail ESS 1717 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0008 (alpha), min bulk ESS 3880 (alpha), min tail ESS 4164 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[4]), min bulk ESS 9904 (beta[5]), min tail ESS 6131 (beta[3])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.64s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=6
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0018 (alpha), min bulk ESS 2958 (alpha), min tail ESS 3450 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 115, target_accept 0.8: 110 divergences, max R-hat 1.0343 (tau), min bulk ESS 137 (tau), min tail ESS 46 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 119, target_accept 0.8: 984 divergences, max R-hat 1.0220 (y), min bulk ESS 124 (y), min tail ESS 54 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0016 (mu), min bulk ESS 2230 (tau), min tail ESS 2109 (mu)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 107, target_accept 0.8: 0 divergences, max R-hat 1.0003 (mu), min bulk ESS 7693 (sigma), min tail ESS 5174 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta), min bulk ESS 7732 (sigma), min tail ESS 5684 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta), min bulk ESS 3876 (beta), min tail ESS 4540 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0001 (z), min bulk ESS 12876 (z), min tail ESS 10245 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0024 (mu_alpha), min bulk ESS 1422 (mu_alpha), min tail ESS 1705 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0058 (z_8), min bulk ESS 892 (mu_alpha), min tail ESS 968 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0008 (beta), min bulk ESS 3933 (beta), min tail ESS 4718 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[2]), min bulk ESS 9686 (beta[3]), min tail ESS 6070 (beta[1])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.46s
+
+=== target_accept=0.8 seed_offset=7
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0015 (sigma), min bulk ESS 3059 (alpha), min tail ESS 3442 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 116, target_accept 0.8: 61 divergences, max R-hat 1.0103 (tau), min bulk ESS 568 (tau), min tail ESS 383 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 120, target_accept 0.8: 1947 divergences, max R-hat 1.1830 (y), min bulk ESS 18 (y), min tail ESS 29 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0019 (z_7), min bulk ESS 1988 (tau), min tail ESS 1817 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 108, target_accept 0.8: 0 divergences, max R-hat 1.0003 (sigma), min bulk ESS 6692 (sigma), min tail ESS 5124 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0005 (alpha), min bulk ESS 7487 (sigma), min tail ESS 5571 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta), min bulk ESS 3576 (beta), min tail ESS 3955 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0007 (z), min bulk ESS 14232 (z), min tail ESS 9862 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0035 (sigma_alpha), min bulk ESS 1510 (mu_alpha), min tail ESS 2067 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0033 (z_11), min bulk ESS 992 (mu_alpha), min tail ESS 1262 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0007 (alpha), min bulk ESS 4108 (alpha), min tail ESS 4068 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0014 (beta[0]), min bulk ESS 10289 (beta[3]), min tail ESS 5767 (beta[3])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.37s
+
+=== target_accept=0.8 seed_offset=8
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0014 (alpha), min bulk ESS 2887 (phi), min tail ESS 3036 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 117, target_accept 0.8: 138 divergences, max R-hat 1.0129 (tau), min bulk ESS 512 (tau), min tail ESS 227 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 121, target_accept 0.8: 488 divergences, max R-hat 1.0201 (y), min bulk ESS 179 (y), min tail ESS 66 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0028 (tau), min bulk ESS 2348 (tau), min tail ESS 2584 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 109, target_accept 0.8: 0 divergences, max R-hat 1.0007 (mu), min bulk ESS 6502 (mu), min tail ESS 4724 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0007 (sigma), min bulk ESS 7237 (beta), min tail ESS 5299 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0002 (beta), min bulk ESS 3627 (alpha), min tail ESS 3805 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0012 (y), min bulk ESS 14951 (y), min tail ESS 10850 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0024 (mu_alpha), min bulk ESS 1384 (mu_alpha), min tail ESS 1915 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0084 (z_11), min bulk ESS 768 (mu_alpha), min tail ESS 1725 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0010 (beta), min bulk ESS 3584 (alpha), min tail ESS 4424 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0011 (beta[3]), min bulk ESS 9401 (beta[1]), min tail ESS 6154 (beta[2])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.44s
+
+=== target_accept=0.8 seed_offset=9
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0019 (phi), min bulk ESS 2599 (phi), min tail ESS 2829 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 118, target_accept 0.8: 261 divergences, max R-hat 1.0395 (tau), min bulk ESS 104 (tau), min tail ESS 60 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 122, target_accept 0.8: 1631 divergences, max R-hat 1.2670 (y), min bulk ESS 11 (y), min tail ESS 13 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0008 (z_7), min bulk ESS 2733 (tau), min tail ESS 2458 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 110, target_accept 0.8: 0 divergences, max R-hat 1.0006 (mu), min bulk ESS 7416 (mu), min tail ESS 5133 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0005 (alpha), min bulk ESS 7802 (sigma), min tail ESS 5721 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0017 (beta), min bulk ESS 3442 (beta), min tail ESS 3790 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0001 (z), min bulk ESS 12261 (y), min tail ESS 9426 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0020 (sigma_alpha), min bulk ESS 1245 (mu_alpha), min tail ESS 1909 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0043 (z_11), min bulk ESS 1022 (mu_alpha), min tail ESS 1455 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0004 (beta), min bulk ESS 3818 (alpha), min tail ESS 4624 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[5]), min bulk ESS 9748 (beta[2]), min tail ESS 5755 (beta[3])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.25s
+
+=== target_accept=0.8 seed_offset=10
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0013 (alpha), min bulk ESS 2881 (alpha), min tail ESS 3312 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 119, target_accept 0.8: 100 divergences, max R-hat 1.0141 (tau), min bulk ESS 486 (tau), min tail ESS 202 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 123, target_accept 0.8: 840 divergences, max R-hat 1.0233 (y), min bulk ESS 207 (y), min tail ESS 123 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0017 (z_1), min bulk ESS 2628 (tau), min tail ESS 2658 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 111, target_accept 0.8: 0 divergences, max R-hat 1.0008 (sigma), min bulk ESS 6513 (sigma), min tail ESS 5208 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0006 (beta), min bulk ESS 6980 (alpha), min tail ESS 5391 (alpha)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0000 (alpha), min bulk ESS 3795 (alpha), min tail ESS 4278 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0004 (z), min bulk ESS 13910 (y), min tail ESS 10224 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0045 (z_11), min bulk ESS 1283 (mu_alpha), min tail ESS 1930 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0054 (z_1), min bulk ESS 1039 (mu_alpha), min tail ESS 1373 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0014 (alpha), min bulk ESS 4016 (beta), min tail ESS 4432 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[4]), min bulk ESS 9660 (beta[0]), min tail ESS 6089 (beta[0])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.48s
+
+=== target_accept=0.8 seed_offset=11
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0017 (phi), min bulk ESS 2836 (alpha), min tail ESS 3453 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 120, target_accept 0.8: 234 divergences, max R-hat 1.0282 (tau), min bulk ESS 116 (tau), min tail ESS 26 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 124, target_accept 0.8: 1014 divergences, max R-hat 1.0432 (y), min bulk ESS 123 (y), min tail ESS 38 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0018 (tau), min bulk ESS 2324 (tau), min tail ESS 2507 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 112, target_accept 0.8: 0 divergences, max R-hat 1.0015 (mu), min bulk ESS 5732 (mu), min tail ESS 4689 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0004 (sigma), min bulk ESS 7952 (beta), min tail ESS 5153 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0000 (alpha), min bulk ESS 3939 (alpha), min tail ESS 4662 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0003 (z), min bulk ESS 12651 (y), min tail ESS 10111 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0015 (mu_alpha), min bulk ESS 1341 (mu_alpha), min tail ESS 2060 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0068 (sigma_alpha), min bulk ESS 1045 (mu_alpha), min tail ESS 1823 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0014 (beta), min bulk ESS 3456 (alpha), min tail ESS 4683 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0017 (beta[0]), min bulk ESS 9480 (beta[4]), min tail ESS 5952 (beta[5])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.34s
+
+=== target_accept=0.8 seed_offset=12
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0015 (phi), min bulk ESS 2823 (alpha), min tail ESS 2870 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 121, target_accept 0.8: 94 divergences, max R-hat 1.0056 (tau), min bulk ESS 477 (tau), min tail ESS 248 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 125, target_accept 0.8: 1968 divergences, max R-hat 1.3005 (y), min bulk ESS 11 (y), min tail ESS 12 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0030 (mu), min bulk ESS 2132 (tau), min tail ESS 1789 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 113, target_accept 0.8: 0 divergences, max R-hat 1.0006 (sigma), min bulk ESS 6494 (sigma), min tail ESS 5297 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0006 (beta), min bulk ESS 7788 (alpha), min tail ESS 5780 (alpha)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0005 (beta), min bulk ESS 3979 (alpha), min tail ESS 4581 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0005 (y), min bulk ESS 13578 (z), min tail ESS 10475 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0035 (z_10), min bulk ESS 1365 (mu_alpha), min tail ESS 1881 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0051 (z_7), min bulk ESS 755 (mu_alpha), min tail ESS 1397 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0015 (alpha), min bulk ESS 4108 (alpha), min tail ESS 4519 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0005 (beta[1]), min bulk ESS 10101 (beta[0]), min tail ESS 5629 (beta[5])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+=== target_accept=0.8 seed_offset=13
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0018 (alpha), min bulk ESS 3010 (alpha), min tail ESS 2982 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 122, target_accept 0.8: 246 divergences, max R-hat 1.0400 (tau), min bulk ESS 82 (tau), min tail ESS 30 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 126, target_accept 0.8: 798 divergences, max R-hat 1.0188 (y), min bulk ESS 324 (y), min tail ESS 275 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 123, target_accept 0.8: 1 divergences, max R-hat 1.0007 (mu), min bulk ESS 2174 (tau), min tail ESS 1969 (mu)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 114, target_accept 0.8: 0 divergences, max R-hat 1.0014 (mu), min bulk ESS 6335 (sigma), min tail ESS 5213 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0015 (beta), min bulk ESS 8173 (sigma), min tail ESS 5646 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0013 (alpha), min bulk ESS 3615 (alpha), min tail ESS 3955 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0004 (y), min bulk ESS 13857 (y), min tail ESS 10907 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0052 (mu_alpha), min bulk ESS 1504 (mu_alpha), min tail ESS 2082 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0056 (mu_alpha), min bulk ESS 918 (mu_alpha), min tail ESS 1411 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0005 (alpha), min bulk ESS 3979 (beta), min tail ESS 4525 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0009 (beta[1]), min bulk ESS 10887 (beta[4]), min tail ESS 5566 (beta[3])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.35s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=14
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0022 (sigma), min bulk ESS 2942 (phi), min tail ESS 3301 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 123, target_accept 0.8: 198 divergences, max R-hat 1.0290 (tau), min bulk ESS 133 (tau), min tail ESS 39 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 127, target_accept 0.8: 1383 divergences, max R-hat 1.0305 (y), min bulk ESS 96 (y), min tail ESS 36 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0014 (mu), min bulk ESS 2170 (tau), min tail ESS 2415 (mu)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 115, target_accept 0.8: 0 divergences, max R-hat 1.0006 (mu), min bulk ESS 7020 (sigma), min tail ESS 5410 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0011 (alpha), min bulk ESS 7744 (beta), min tail ESS 5795 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0015 (alpha), min bulk ESS 3571 (beta), min tail ESS 4031 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 126, target_accept 0.8: 0 divergences, max R-hat 1.0002 (z), min bulk ESS 13544 (z), min tail ESS 10401 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0039 (mu_alpha), min bulk ESS 1409 (mu_alpha), min tail ESS 2075 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0040 (sigma_alpha), min bulk ESS 1058 (mu_alpha), min tail ESS 1672 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0004 (beta), min bulk ESS 4474 (alpha), min tail ESS 5155 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0008 (beta[3]), min bulk ESS 9080 (beta[1]), min tail ESS 6087 (beta[1])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.42s
+
+=== target_accept=0.8 seed_offset=15
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0009 (alpha), min bulk ESS 2693 (alpha), min tail ESS 3263 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 124, target_accept 0.8: 238 divergences, max R-hat 1.0674 (tau), min bulk ESS 40 (tau), min tail ESS 13 (theta_0)
+ok
+test centered_funnel_reports_bad_geometry ... seed 128, target_accept 0.8: 1125 divergences, max R-hat 1.0423 (y), min bulk ESS 67 (y), min tail ESS 19 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0012 (tau), min bulk ESS 2152 (tau), min tail ESS 2503 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 116, target_accept 0.8: 0 divergences, max R-hat 1.0008 (sigma), min bulk ESS 5902 (sigma), min tail ESS 5119 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0010 (sigma), min bulk ESS 7618 (sigma), min tail ESS 5831 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0011 (alpha), min bulk ESS 3605 (alpha), min tail ESS 3747 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 127, target_accept 0.8: 0 divergences, max R-hat 1.0003 (y), min bulk ESS 12827 (y), min tail ESS 9865 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0024 (z_3), min bulk ESS 1366 (sigma_alpha), min tail ESS 1939 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0035 (z_3), min bulk ESS 913 (mu_alpha), min tail ESS 1555 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0012 (alpha), min bulk ESS 4078 (beta), min tail ESS 4531 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[2]), min bulk ESS 9648 (beta[2]), min tail ESS 5838 (beta[4])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.26s
+
+=== target_accept=0.8 seed_offset=16
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0020 (sigma), min bulk ESS 2951 (phi), min tail ESS 2788 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 125, target_accept 0.8: 128 divergences, max R-hat 1.0190 (tau), min bulk ESS 318 (tau), min tail ESS 181 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 129, target_accept 0.8: 1657 divergences, max R-hat 1.0374 (y), min bulk ESS 97 (y), min tail ESS 41 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 126, target_accept 0.8: 0 divergences, max R-hat 1.0022 (tau), min bulk ESS 1999 (tau), min tail ESS 1891 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 117, target_accept 0.8: 0 divergences, max R-hat 1.0003 (sigma), min bulk ESS 5635 (mu), min tail ESS 4147 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0010 (beta), min bulk ESS 7479 (alpha), min tail ESS 5923 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0011 (alpha), min bulk ESS 3615 (alpha), min tail ESS 4063 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 128, target_accept 0.8: 0 divergences, max R-hat 1.0003 (z), min bulk ESS 14940 (z), min tail ESS 10482 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0015 (z_1), min bulk ESS 1369 (mu_alpha), min tail ESS 2043 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0044 (z_5), min bulk ESS 958 (mu_alpha), min tail ESS 1779 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0017 (beta), min bulk ESS 4144 (beta), min tail ESS 4368 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta[5]), min bulk ESS 10236 (beta[5]), min tail ESS 5733 (beta[2])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.39s
+
+=== target_accept=0.8 seed_offset=17
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0010 (sigma), min bulk ESS 3064 (alpha), min tail ESS 3251 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 126, target_accept 0.8: 204 divergences, max R-hat 1.0275 (tau), min bulk ESS 136 (tau), min tail ESS 28 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 130, target_accept 0.8: 902 divergences, max R-hat 1.0082 (y), min bulk ESS 229 (y), min tail ESS 157 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 127, target_accept 0.8: 0 divergences, max R-hat 1.0016 (z_7), min bulk ESS 2556 (tau), min tail ESS 2482 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 118, target_accept 0.8: 0 divergences, max R-hat 1.0008 (sigma), min bulk ESS 7976 (mu), min tail ESS 5530 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0010 (sigma), min bulk ESS 6836 (beta), min tail ESS 5379 (alpha)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0009 (alpha), min bulk ESS 3766 (beta), min tail ESS 4118 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 129, target_accept 0.8: 0 divergences, max R-hat 1.0011 (z), min bulk ESS 15039 (z), min tail ESS 9949 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0021 (mu_alpha), min bulk ESS 1434 (mu_alpha), min tail ESS 1719 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0089 (z_8), min bulk ESS 807 (mu_alpha), min tail ESS 1634 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0015 (beta), min bulk ESS 3815 (alpha), min tail ESS 3719 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[0]), min bulk ESS 10581 (beta[2]), min tail ESS 5587 (beta[2])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.47s
+
+=== target_accept=0.8 seed_offset=18
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0023 (sigma), min bulk ESS 2631 (alpha), min tail ESS 2819 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 127, target_accept 0.8: 262 divergences, max R-hat 1.0155 (tau), min bulk ESS 122 (tau), min tail ESS 30 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 131, target_accept 0.8: 877 divergences, max R-hat 1.0564 (y), min bulk ESS 52 (y), min tail ESS 19 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 128, target_accept 0.8: 0 divergences, max R-hat 1.0013 (mu), min bulk ESS 2464 (tau), min tail ESS 2176 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 119, target_accept 0.8: 0 divergences, max R-hat 1.0005 (sigma), min bulk ESS 7051 (sigma), min tail ESS 5278 (sigma)
+ok
+test linear_regression_recovers_coefficients ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0010 (sigma), min bulk ESS 8095 (sigma), min tail ESS 6031 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0007 (beta), min bulk ESS 3238 (beta), min tail ESS 4451 (beta)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 130, target_accept 0.8: 0 divergences, max R-hat 1.0007 (y), min bulk ESS 13385 (z), min tail ESS 10369 (y)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 126, target_accept 0.8: 1 divergences, max R-hat 1.0028 (sigma_alpha), min bulk ESS 1305 (mu_alpha), min tail ESS 2268 (mu_alpha)
+
+thread 'noncentered_hierarchical_poisson_recovers_partial_pooling_counts' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0048 (sigma_alpha), min bulk ESS 977 (z_11), min tail ESS 1533 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0006 (alpha), min bulk ESS 4278 (beta), min tail ESS 4623 (beta)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0010 (beta[4]), min bulk ESS 10475 (beta[0]), min tail ESS 5884 (beta[0])
+ok
+
+failures:
+
+failures:
+    noncentered_hierarchical_poisson_recovers_partial_pooling_counts
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.54s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`
+=== target_accept=0.8 seed_offset=19
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0014 (phi), min bulk ESS 2834 (phi), min tail ESS 3171 (alpha)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 128, target_accept 0.8: 367 divergences, max R-hat 1.1573 (tau), min bulk ESS 18 (tau), min tail ESS 11 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 132, target_accept 0.8: 1488 divergences, max R-hat 1.0332 (y), min bulk ESS 177 (y), min tail ESS 81 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 129, target_accept 0.8: 0 divergences, max R-hat 1.0016 (tau), min bulk ESS 2404 (tau), min tail ESS 2585 (tau)
+ok
+test intercept_only_gaussian_recovers_location_and_scale ... seed 120, target_accept 0.8: 0 divergences, max R-hat 1.0009 (mu), min bulk ESS 6168 (sigma), min tail ESS 4581 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0005 (sigma), min bulk ESS 7324 (beta), min tail ESS 5304 (beta)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0013 (alpha), min bulk ESS 3766 (alpha), min tail ESS 4373 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 131, target_accept 0.8: 0 divergences, max R-hat 1.0002 (z), min bulk ESS 13728 (z), min tail ESS 10356 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 127, target_accept 0.8: 0 divergences, max R-hat 1.0029 (z_11), min bulk ESS 1346 (mu_alpha), min tail ESS 2062 (mu_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 126, target_accept 0.8: 0 divergences, max R-hat 1.0078 (z_5), min bulk ESS 817 (mu_alpha), min tail ESS 1447 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0012 (alpha), min bulk ESS 3530 (beta), min tail ESS 4078 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0013 (beta[1]), min bulk ESS 9285 (beta[5]), min tail ESS 5785 (beta[3])
+ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.41s
+
+=== target_accept=0.8 seed_offset=20
+
+running 12 tests
+test ar1_style_regression_recovers_lag_coefficient ... seed 125, target_accept 0.8: 0 divergences, max R-hat 1.0007 (sigma), min bulk ESS 2872 (alpha), min tail ESS 3126 (phi)
+ok
+test centered_eight_schools_reports_bad_geometry ... seed 129, target_accept 0.8: 162 divergences, max R-hat 1.0150 (tau), min bulk ESS 434 (tau), min tail ESS 189 (tau)
+ok
+test centered_funnel_reports_bad_geometry ... seed 133, target_accept 0.8: 1959 divergences, max R-hat 1.1389 (y), min bulk ESS 20 (y), min tail ESS 30 (y)
+ok
+test eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean ... seed 130, target_accept 0.8: 1 divergences, max R-hat 1.0025 (tau), min bulk ESS 2332 (tau), min tail ESS 2120 (tau)
+
+thread 'eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean' panicked at rust_core/tests/recovery_suite.rs:176:5:
+divergences 1 > 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test intercept_only_gaussian_recovers_location_and_scale ... seed 121, target_accept 0.8: 0 divergences, max R-hat 1.0002 (mu), min bulk ESS 5971 (mu), min tail ESS 4868 (mu)
+ok
+test linear_regression_recovers_coefficients ... seed 122, target_accept 0.8: 0 divergences, max R-hat 1.0003 (beta), min bulk ESS 7663 (alpha), min tail ESS 5650 (sigma)
+ok
+test logistic_regression_recovers_linear_predictor ... seed 123, target_accept 0.8: 0 divergences, max R-hat 1.0010 (alpha), min bulk ESS 4080 (alpha), min tail ESS 4641 (alpha)
+ok
+test noncentered_funnel_is_stable_and_matches_the_analytic_latent_marginal ... seed 132, target_accept 0.8: 0 divergences, max R-hat 1.0001 (z), min bulk ESS 13198 (z), min tail ESS 10051 (z)
+ok
+test noncentered_hierarchical_poisson_recovers_partial_pooling_counts ... seed 128, target_accept 0.8: 0 divergences, max R-hat 1.0080 (mu_alpha), min bulk ESS 1293 (mu_alpha), min tail ESS 1950 (sigma_alpha)
+ok
+test noncentered_partial_pooling_panel_recovers_group_effects ... seed 127, target_accept 0.8: 0 divergences, max R-hat 1.0050 (z_7), min bulk ESS 826 (mu_alpha), min tail ESS 1188 (mu_alpha)
+ok
+test poisson_glm_recovers_rate_coefficients ... seed 124, target_accept 0.8: 0 divergences, max R-hat 1.0008 (alpha), min bulk ESS 3519 (alpha), min tail ESS 4321 (alpha)
+ok
+test ridge_regression_recovers_high_dimensional_coefficients ... seed 126, target_accept 0.8: 0 divergences, max R-hat 1.0008 (beta[3]), min bulk ESS 8861 (beta[5]), min tail ESS 5930 (beta[4])
+ok
+
+failures:
+
+failures:
+    eight_schools_noncentered_is_healthy_and_recovers_the_hierarchical_mean
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 6.21s
+
+error: test failed, to rerun pass `-p rustmc_core --test recovery_suite`

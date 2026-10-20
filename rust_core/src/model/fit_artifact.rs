@@ -5,14 +5,17 @@
 //! sampler positions, which a rounded transform cannot recover (for example
 //! `sigmoid(40)` rounds to one). Version 3 also stores each transition's
 //! energy and, for NUTS, the maximum tree depth the chains ran with, from
-//! which E-BFMI and tree-depth saturation are computed. All three load.
-//! Saving writes version 3, except for a fit with no energies to store (one
-//! loaded from a version 1 or 2 artifact), which is written as version 2 so
-//! that readers which predate version 3 can still load it.
+//! which E-BFMI and tree-depth saturation are computed. Version 4 also stores
+//! why each NUTS transition's tree stopped. All four load. Saving writes
+//! version 4, except for a fit with less to store, which is written as the
+//! newest version that holds all of it so that older readers can still load
+//! it: version 3 for a NUTS fit without termination reasons (one loaded from
+//! a version 3 artifact), and version 2 for a fit with no energies (one
+//! loaded from a version 1 or 2 artifact).
 use crate::autodiff::Evaluator;
 use crate::data::{DataBinding, DataInputs, MatrixBinding};
 use crate::graph::{Graph, ParamTransform};
-use crate::hmc::TransitionStats;
+use crate::hmc::{TransitionStats, TreeTermination};
 use crate::sampler::SampleResult;
 use rayon::prelude::*;
 use std::collections::BTreeMap;
@@ -21,7 +24,9 @@ use std::sync::Arc;
 use super::*;
 
 const FORMAT: &str = "rustmc.graph-fit";
-const VERSION: u32 = 3;
+const VERSION: u32 = 4;
+/// What a NUTS fit without termination reasons is saved as.
+const VERSION_WITHOUT_TERMINATION: u32 = 3;
 /// What a fit without energy telemetry is saved as.
 const VERSION_WITHOUT_ENERGY: u32 = 2;
 const COORDINATE_SPACE: &str = "constrained_graph_parameters";
@@ -77,6 +82,37 @@ struct Transition {
     /// Version 3: the Hamiltonian of the state the transition ended in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     energy: Option<f64>,
+    /// Version 4, NUTS only: why the tree stopped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    termination: Option<Termination>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Termination {
+    UTurn,
+    Divergence,
+    MaxTreeDepth,
+}
+
+impl From<TreeTermination> for Termination {
+    fn from(value: TreeTermination) -> Self {
+        match value {
+            TreeTermination::UTurn => Self::UTurn,
+            TreeTermination::Divergence => Self::Divergence,
+            TreeTermination::MaxTreeDepth => Self::MaxTreeDepth,
+        }
+    }
+}
+
+impl From<Termination> for TreeTermination {
+    fn from(value: Termination) -> Self {
+        match value {
+            Termination::UTurn => Self::UTurn,
+            Termination::Divergence => Self::Divergence,
+            Termination::MaxTreeDepth => Self::MaxTreeDepth,
+        }
+    }
 }
 
 /// Divergent transitions can legitimately have nonfinite energy errors. JSON numbers
@@ -118,6 +154,7 @@ impl From<&TransitionStats> for Transition {
             // A non-finite energy cannot be written as a JSON number; the
             // writer saves such a fit without energies (version 2).
             energy: value.energy.is_finite().then_some(value.energy),
+            termination: value.termination.map(Termination::from),
         }
     }
 }
@@ -156,6 +193,9 @@ impl Transition {
             step_size: self.step_size,
             num_leapfrog_steps: self.num_leapfrog_steps,
             tree_depth: self.tree_depth,
+            // Checked against the version and the tree in
+            // `validate_terminations`.
+            termination: self.termination.map(TreeTermination::from),
         })
     }
 }
@@ -244,11 +284,13 @@ impl ModelFit {
         Ok(TrainingData { vectors, matrices })
     }
 
-    /// Serialise the fit as a version-3 `rustmc.graph-fit` artifact: the
+    /// Serialize the fit as a version-4 `rustmc.graph-fit` artifact: the
     /// model, the training data, the raw posterior draws and exact positions,
-    /// and the sampler telemetry, energies included. A fit whose energies are
-    /// not all finite, which is only a fit loaded from a version 1 or 2
-    /// artifact, has none to store and is written as version 2.
+    /// and the sampler telemetry, energies and NUTS termination reasons
+    /// included. A NUTS fit without termination reasons, which is only a fit
+    /// loaded from a version 3 artifact, is written as version 3, and a fit
+    /// whose energies are not all finite, which is only a fit loaded from a
+    /// version 1 or 2 artifact, has none to store and is written as version 2.
     pub fn to_json(&self) -> ModelResult<String> {
         let raw = self.raw_samples();
         if raw
@@ -273,9 +315,22 @@ impl ModelFit {
             .iter()
             .map(|chain| chain.iter().map(Transition::from).collect())
             .collect();
-        if !has_energy {
-            for transition in transitions.iter_mut().flatten() {
+        // HMC transitions have no tree and so no termination to store.
+        let has_termination =
+            raw.transitions.iter().flatten().all(|transition| {
+                transition.tree_depth.is_none() || transition.termination.is_some()
+            });
+        let version = match (has_energy, has_termination) {
+            (true, true) => VERSION,
+            (true, false) => VERSION_WITHOUT_TERMINATION,
+            (false, _) => VERSION_WITHOUT_ENERGY,
+        };
+        for transition in transitions.iter_mut().flatten() {
+            if !has_energy {
                 transition.energy = None;
+            }
+            if version < VERSION {
+                transition.termination = None;
             }
         }
         let posterior = Posterior {
@@ -291,11 +346,7 @@ impl ModelFit {
         };
         let artifact = Artifact {
             format: FORMAT.into(),
-            version: if has_energy {
-                VERSION
-            } else {
-                VERSION_WITHOUT_ENERGY
-            },
+            version,
             model: self.model().artifact(),
             training: self.training()?,
             posterior,
@@ -303,7 +354,7 @@ impl ModelFit {
         serde_json::to_string(&artifact).map_err(|error| invalid(&error.to_string()))
     }
 
-    /// Load and fully validate a version 1, 2 or 3 `rustmc.graph-fit` artifact.
+    /// Load and fully validate a version 1, 2, 3 or 4 `rustmc.graph-fit` artifact.
     ///
     /// Every stored draw is checked to be a finite point of the model's
     /// target with a finite gradient, the stored positions to agree with the
@@ -312,7 +363,7 @@ impl ModelFit {
     pub fn from_json(text: &str) -> ModelResult<Self> {
         let artifact: Artifact =
             serde_json::from_str(text).map_err(|error| invalid(&error.to_string()))?;
-        if artifact.format != FORMAT || !matches!(artifact.version, 1..=3) {
+        if artifact.format != FORMAT || !matches!(artifact.version, 1..=4) {
             return Err(invalid("unsupported format/version"));
         }
         if artifact.version == 1 && artifact.posterior.unconstrained_samples.is_some() {
@@ -452,6 +503,7 @@ fn validate_posterior(
         return Err(invalid("invalid diagnostic acceptance rates or step sizes"));
     }
     let max_tree_depth = validate_energy_telemetry(&posterior, version)?;
+    validate_terminations(&posterior, version, max_tree_depth)?;
     let transition_count = posterior.transitions[0].len();
     let mut transitions = Vec::with_capacity(chains);
     for (chain_index, chain) in posterior.transitions.into_iter().enumerate() {
@@ -555,6 +607,53 @@ fn validate_energy_telemetry(posterior: &Posterior, version: u32) -> ModelResult
             "the maximum tree depth disagrees with the transitions' tree depths",
         )),
     }
+}
+
+/// Check the version-4 termination reasons against the trees they ended.
+///
+/// Version 4 stores a reason for every NUTS transition and none for HMC ones;
+/// earlier versions store none. A transition ends in a divergence exactly
+/// when it is flagged divergent, and a tree that ran out of depth used every
+/// doubling the limit allows, each in full: depth equal to the limit and
+/// `2^depth - 1` leapfrog steps. A U-turn is detected only once a subtree of
+/// at least two leaves is complete, so a tree that turned took an odd number
+/// of steps: the `2^(depth-1) - 1` of its full doublings plus an even number
+/// in its last, or the single step of a one-doubling tree.
+fn validate_terminations(
+    posterior: &Posterior,
+    version: u32,
+    max_tree_depth: Option<usize>,
+) -> ModelResult<()> {
+    let all = || posterior.transitions.iter().flatten();
+    if version < 4 {
+        if all().any(|transition| transition.termination.is_some()) {
+            return Err(invalid("termination reasons need artifact version 4"));
+        }
+        return Ok(());
+    }
+    if all().any(|transition| transition.termination.is_some() != transition.tree_depth.is_some()) {
+        return Err(invalid(
+            "version 4 stores a termination reason for every NUTS transition and none for HMC",
+        ));
+    }
+    let impossible = all().any(|transition| match transition.termination {
+        None => false,
+        Some(reason) if (reason == Termination::Divergence) != transition.divergent => true,
+        Some(Termination::MaxTreeDepth) => match (transition.tree_depth, max_tree_depth) {
+            (Some(depth), Some(limit)) => {
+                depth != limit || transition.num_leapfrog_steps != (1usize << depth) - 1
+            }
+            _ => true,
+        },
+        Some(Termination::UTurn) => transition.num_leapfrog_steps % 2 == 0,
+        Some(Termination::Divergence) => false,
+    });
+    if impossible {
+        return Err(invalid(
+            "a termination reason disagrees with its transition's tree",
+        ));
+    }
+    Ok(())
 }
 
 /// Check one chain's draws, returning their unconstrained positions when

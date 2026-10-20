@@ -311,7 +311,18 @@ fn false_alarm_rate_over_seeds() {
             "format": "rustmc.exactness-false-alarm",
             "version": 1,
             "revision": command_output("git", &["rev-parse", "HEAD"]),
-            "dirty": command_output("git", &["status", "--porcelain"]).map(|s| !s.is_empty()),
+            "dirty": command_output(
+                "git",
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                    "--",
+                    ":/",
+                    ":(top,exclude)benchmarks/results",
+                ],
+            )
+            .map(|s| !s.is_empty()),
             "cpu_model": cpu_model(),
             "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).ok(),
             "command": format!(
@@ -412,7 +423,18 @@ fn exactness_cost_report() {
         "date": command_output("date", &["-u", "+%Y-%m-%d"]),
         "rustmc_core": env!("CARGO_PKG_VERSION"),
         "revision": command_output("git", &["rev-parse", "HEAD"]),
-        "dirty": command_output("git", &["status", "--porcelain"]).map(|s| !s.is_empty()),
+        "dirty": command_output(
+                "git",
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=no",
+                    "--",
+                    ":/",
+                    ":(top,exclude)benchmarks/results",
+                ],
+            )
+            .map(|s| !s.is_empty()),
         "machine": {
             "cpu_model": cpu_model(),
             "logical_cpus": std::thread::available_parallelism().map(|n| n.get()).ok(),

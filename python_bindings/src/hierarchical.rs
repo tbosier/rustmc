@@ -387,7 +387,11 @@ impl PyBayesianHierarchicalMeanFit {
         "conjugate_gibbs"
     }
 
+    /// Draws with the chain and draw axes merged, chains concatenated.
     fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::generic_results::merge_chain_draw_axes(&self.posterior(py)?)
+    }
+    fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.posterior(py)
     }
 
@@ -509,6 +513,13 @@ impl PyBayesianHierarchicalForecast {
             |(chain, draw, program, _)| states[chain][draw][program],
         )
         .into_pyarray(py)
+    }
+
+    /// The expected observation of each program: the same draws as
+    /// `state_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray4<f64>> {
+        self.state_samples(py)
     }
 
     #[getter]

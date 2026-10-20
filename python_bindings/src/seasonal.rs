@@ -307,6 +307,10 @@ impl PyBayesianSeasonalLocalLevelFit {
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.posterior(py)
     }
+    /// Draws with the chain and draw axes merged, chains concatenated.
+    fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::generic_results::merge_chain_draw_axes(&self.posterior(py)?)
+    }
 
     #[pyo3(signature = (steps, seed=43))]
     fn forecast(
@@ -361,6 +365,26 @@ impl PyBayesianSeasonalForecast {
     #[getter]
     fn seasonal_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.seasonal_paths)
+    }
+    /// The expected observation of each path: level plus seasonal effect.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        let means: Vec<Vec<Vec<f64>>> = self
+            .inner
+            .level_paths
+            .iter()
+            .zip(&self.inner.seasonal_paths)
+            .map(|(levels, seasonals)| {
+                levels
+                    .iter()
+                    .zip(seasonals)
+                    .map(|(level, seasonal)| {
+                        level.iter().zip(seasonal).map(|(a, b)| a + b).collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        path_array(py, &means)
     }
     #[getter]
     fn observation_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {

@@ -287,6 +287,10 @@ impl PyBayesianLocalLevelFit {
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.posterior(py)
     }
+    /// Draws with the chain and draw axes merged, chains concatenated.
+    fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::generic_results::merge_chain_draw_axes(&self.posterior(py)?)
+    }
 
     #[pyo3(signature = (steps, seed=43))]
     fn forecast(
@@ -344,6 +348,13 @@ impl PyBayesianForecastResult {
     #[getter]
     fn state_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.state_paths)
+    }
+
+    /// The expected observation of each path: the level, so the same draws
+    /// as `state_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        self.state_samples(py)
     }
 
     #[getter]

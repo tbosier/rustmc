@@ -140,9 +140,10 @@ program. How strongly either program leans on its group depends on the learned r
 program to observation variance; the shrinkage strength is inferred rather than manually
 assigned.
 
-`fit.get_samples()` returns scalar population/variance/standard-deviation arrays shaped
-`(chain, draw)`, group means shaped `(chain, draw, group)`, and program means shaped
-`(chain, draw, program)`. `time_counts`, `observed_counts`, `group_index`,
+`fit.get_samples_2d()` returns scalar population/variance/standard-deviation arrays
+shaped `(chain, draw)`, group means shaped `(chain, draw, group)`, and program means
+shaped `(chain, draw, program)`. `fit.get_samples()` returns the same arrays with the
+chain and draw axes merged, chains concatenated, as for every fit. `time_counts`, `observed_counts`, `group_index`,
 `program_names`, and `group_names` preserve the ragged hierarchy metadata.
 Hierarchical validation and numerical failures raise `InferenceError`, which subclasses
 `ValueError`.
@@ -370,8 +371,9 @@ lower, upper = forecast.interval(0.95)
 This is a directly observed AR(p), distinct from the latent
 `LinearGaussianStateSpace.stationary_ar1()` model with separate process and measurement
 noise. The conjugate posterior draws are independent, so there is no warmup or thinning.
-`fit.get_samples()` returns `coefficient` with shape `(chain, draw, p + 1)` and innovation
-variance/standard deviation with shape `(chain, draw)`. Forecast observation and recursive
+`fit.get_samples_2d()` returns `coefficient` with shape `(chain, draw, p + 1)` and
+innovation variance/standard deviation with shape `(chain, draw)`; `fit.get_samples()`
+merges the chain and draw axes, so `coefficient` is `(chain * draw, p + 1)`. Forecast observation and recursive
 conditional-mean paths have shape `(chain, draw, step)`.
 
 The likelihood conditions on the first `p` observations. Input must be complete, finite,
@@ -584,12 +586,16 @@ Notes:
   default diagonal metric. `"dense"` estimates a full covariance for each vector
   parameter of at most 512 elements, shrinking its correlations when a window has
   fewer than two draws per element. `"auto"` (the default) stays diagonal unless a
-  vector parameter's warmup draws show correlation well beyond their own sampling
-  noise, which suits strongly correlated regression coefficients. It considers a
-  dense block only when a warmup window has at least two draws per element, so at
-  the default `warmup=500` vectors of more than 100 elements stay diagonal; use a
-  longer warmup or `"dense"` for a large, strongly correlated vector. Scalar
-  parameters are always diagonal.
+  dense estimate from each half of a warmup window leaves the other half's draws
+  better conditioned than a diagonal estimate does, on average over the two halves:
+  by any amount in the early windows and at least twice as well in the last one,
+  whose metric the draws are sampled with, and the whole-window dense metric that
+  would be installed also conditions each half better than the whole-window diagonal
+  one. That suits strongly correlated regression coefficients. Each half must hold more draws than
+  the vector has elements, so at the default `warmup=500`, whose last window has
+  200 draws, vectors of 100 or more elements stay diagonal; use a longer warmup or
+  `"dense"` for a large, strongly correlated vector. Scalar parameters are always
+  diagonal.
 - Warmup uses a windowed schedule, Stan's from 500 iterations: an initial buffer of
   `min(75, 15%)` of warmup, doubling metric windows from 25 draws (fewer when warmup
   is below about 170), and a terminal
@@ -638,7 +644,7 @@ than absolute batch throughput.
 | `get_samples()` | `dict[str, np.ndarray]` | Flattened samples across chains |
 | `get_samples_2d()` | `dict[str, np.ndarray]` | Samples shaped `(chains, draws)` |
 | `diagnostics()` | `list[dict]` | Per-parameter diagnostics; a value that cannot be computed is `None` |
-| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry, with each chain's `e_bfmi` and `tree_depth_saturation` |
+| `transition_diagnostics()` | `dict` | Per-chain and aggregate energy, tree-depth, and leapfrog telemetry, with each chain's `e_bfmi`, `tree_depth_saturation` and `max_tree_depth_hits` |
 | `warnings()` | `list[dict]` | Every failed or unavailable check; see [fit warnings](#fit-warnings-and-batch-triage) |
 | `accept_rates()` | `list[float]` | Per-chain accept rates |
 | `step_sizes()` | `list[float]` | Per-chain adapted step sizes |
@@ -647,7 +653,7 @@ than absolute batch throughput.
 | `predict(data=None, seed=42, expected=False, sizes=None)` | `dict[str, np.ndarray]` | Predictive draws on `(chain, draw, obs)` axes |
 | `deterministics(data=None, sizes=None)` | `dict[str, np.ndarray]` | Draws of each declared `deterministic()`, on `(chain, draw)` or `(chain, draw, obs)` axes |
 | `log_likelihood()` | `dict[str, np.ndarray]` | Pointwise log-likelihood shaped `(chain, draw, obs)` per likelihood |
-| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood. `sample_stats` holds `diverging`, `step_size`, `energy` and, for NUTS, `tree_depth`, so `az.bfmi()` works on it |
+| `to_arviz(include_ppc=False, ppc_samples=None, ppc_seed=42, include_log_likelihood=True)` | ArviZ inference container | Convert to ArviZ's version-native container (`InferenceData` on 0.x, `DataTree` on 1.x) with observed data, optionally including predictive draws and pointwise log-likelihood. `sample_stats` holds `diverging`, `step_size`, `energy` and, for NUTS, `tree_depth` and `reached_max_treedepth`, so `az.bfmi()` works on it |
 
 `log_likelihood()` is the intended bridge for `az.loo(...)` and `az.waic(...)`.
 
@@ -757,6 +763,18 @@ accurate when the log density carries a large constant. `to_arviz()` exports the
 `transition_diagnostics()`. A NUTS transition's tree depth counts the doubling that
 ended its tree, so a transition counts as saturated when its tree used the last
 doubling `max_tree_depth` allows, however that doubling ended.
+
+Each NUTS transition also records why its tree stopped: a U-turn, a divergence or
+the depth limit. `transition_diagnostics()` reports, per chain and in total,
+`max_tree_depth_hits`: the draw transitions whose tree stopped at the limit rather
+than turning or diverging in its last doubling. It is at most the saturation count
+and can be far below it. On the informative eight-schools data of
+`tests/test_fit_warnings.py`, with seed 1 and `max_tree_depth=3`, 3648 of 4000 draw
+transitions were saturated and none hit the limit: every one of them turned in its
+third doubling. The `tree_depth_saturation` warning still counts saturation, as Stan's
+check does. `to_arviz()` exports the per-draw flag as `reached_max_treedepth`, PyMC's
+name. HMC fits, and fits restored from an artifact older than version 4, report
+`max_tree_depth_hits` as `None` and export no flag.
 
 `BatchFit.flagged(ignore=None)` and `ForecastBatchFit.flagged(ignore=None)` return the
 IDs of the successful cells with at least one `"fail"` record, in batch order. Failed

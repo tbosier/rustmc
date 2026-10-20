@@ -36,6 +36,28 @@ pub(crate) fn samples_flat<'py>(
     Ok(dict)
 }
 
+/// `by_chain`'s `(chain, draw, ...)` arrays with the chain and draw axes
+/// merged, chains concatenated as in [`samples_flat`]. The specialized fits
+/// build `get_samples()` from their `get_samples_2d()` with this, so every
+/// fit's `get_samples()` has one leading draw axis.
+pub(crate) fn merge_chain_draw_axes<'py>(
+    by_chain: &Bound<'py, PyDict>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(by_chain.py());
+    for (name, values) in by_chain.iter() {
+        let shape: Vec<usize> = values.getattr("shape")?.extract()?;
+        if shape.len() < 2 {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(format!(
+                "{name} draws have shape {shape:?}, without chain and draw axes"
+            )));
+        }
+        let mut merged = vec![shape[0] * shape[1]];
+        merged.extend_from_slice(&shape[2..]);
+        dict.set_item(name, values.call_method1("reshape", (merged,))?)?;
+    }
+    Ok(dict)
+}
+
 /// Every parameter's draws as a `(chain, draw)` array.
 pub(crate) fn samples_by_chain<'py>(
     sample: &SampleResult,
@@ -97,6 +119,10 @@ pub(crate) fn transition_diagnostics<'py>(
         "total_tree_depth_saturation",
         report.total_tree_depth_saturation,
     )?;
+    result.set_item(
+        "total_max_tree_depth_hits",
+        report.total_max_tree_depth_hits,
+    )?;
 
     let chains = PyList::empty(py);
     for chain in report.chains {
@@ -116,6 +142,7 @@ pub(crate) fn transition_diagnostics<'py>(
         // Undefined (fewer than two draws, or no recorded energies) is None.
         item.set_item("e_bfmi", (!chain.e_bfmi.is_nan()).then_some(chain.e_bfmi))?;
         item.set_item("tree_depth_saturation", chain.tree_depth_saturation)?;
+        item.set_item("max_tree_depth_hits", chain.max_tree_depth_hits)?;
         chains.append(item)?;
     }
     result.set_item("chains", chains)?;

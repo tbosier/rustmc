@@ -1,0 +1,12 @@
+rustmc 0.15.0 (/home/taylo/projects/rustmc/.claude/worktrees/v015/.pybuild/rustmc/__init__.py)
+chains=4 warmup=500 draws=1000 seeds=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+target                             metric steps/ESS     worst divergent fits worst R-hat
+isotropic d=50                     auto         9.6      12.2         0 / 10      1.0058
+isotropic d=100                    auto        16.4      24.7         0 / 10      1.0079
+correlated regression d=10         auto         9.0       9.9         0 / 10      1.0039
+correlated regression d=20         auto        15.8      18.4         0 / 10      1.0066
+scaled correlated regression d=6   auto       117.7     144.4         0 / 10      1.0041
+logistic regression d=8            auto         8.3       9.3         0 / 10      1.0036
+eight schools noncentered          auto        28.2      34.3         2 / 10      1.0065
+eight schools centered             auto       917.5   10290.2        10 / 10      1.3391
+banana                             auto       838.0   12368.1         8 / 10      1.5014

@@ -34,7 +34,7 @@ company_draws = forecast.total_observation_samples
 division_draws = forecast.group_observation_samples
 company_interval = np.quantile(company_draws, [0.025, 0.975], axis=(0, 1))
 
-print("program posterior means:", fit.get_samples()["program_mean"].mean(axis=(0, 1)))
+print("program posterior means:", fit.get_samples()["program_mean"].mean(axis=0))
 print("company forecast mean:", company_draws.mean(axis=(0, 1)))
 print("company 95% interval:\n", company_interval)
 print("division draw shape:", division_draws.shape)

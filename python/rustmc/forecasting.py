@@ -14,27 +14,10 @@ from .evaluation import _quantiles
 def _conditional_mean_samples(result: Any) -> np.ndarray | None:
     """The conditional expected response draws of a native forecast, or None.
 
-    The native classes name these draws differently - ``mean_samples``
-    (regression, hurdle, structural, dynamic GLM), ``conditional_mean_samples``
-    (AR) and ``state_samples`` / ``level_samples`` (local level, hierarchical,
-    trend), with the seasonal mean the sum of level and seasonal paths - so
-    ``ForecastDraws`` maps each explicitly rather than guessing what an
-    arbitrary state array means. Unknown results get no mean draws.
+    Every native forecast names these draws ``mean_samples``. Unknown results
+    without that attribute get no mean draws.
     """
-    from . import _rustmc as native
-
-    means = getattr(result, "mean_samples", None)
-    if means is not None:
-        return means
-    if isinstance(result, native.BayesianARForecast):
-        return result.conditional_mean_samples
-    if isinstance(result, (native.BayesianForecastResult, native.BayesianHierarchicalForecast)):
-        return result.state_samples
-    if isinstance(result, native.BayesianTrendForecast):
-        return result.level_samples
-    if isinstance(result, native.BayesianSeasonalForecast):
-        return result.level_samples + result.seasonal_samples
-    return None
+    return getattr(result, "mean_samples", None)
 
 
 def _cumulative(values: np.ndarray) -> np.ndarray:

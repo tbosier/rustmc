@@ -6,6 +6,124 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-19
+
+This release changes how the default `metric="auto"` chooses a dense metric, gives
+every fit and forecast the same names and shapes for its draws, records why each NUTS
+tree stopped, and adds a repeated-inference benchmark.
+
+### Breaking changes
+
+- **Seeded draws of vector parameters can change** under the default `metric="auto"`:
+  wherever the new rule below chooses differently from 0.14.0's in some warmup window,
+  and, by rounding only, wherever a window's eligibility for a dense estimate changed,
+  since a block that may become dense computes its diagonal estimate by a different
+  sequence of operations. A model with both scalar and vector parameters changes all
+  its draws, since its trajectories are joint. Models without a vector parameter, and
+  fits with `metric="diag"` or `metric="dense"`, draw as before.
+- `BayesianARFit.get_samples()` and `BayesianHierarchicalMeanFit.get_samples()`
+  return draws with the chain and draw axes merged, chains concatenated, as every
+  other fit's `get_samples()` does: `coefficient` is `(chain * draw, p + 1)` instead
+  of `(chain, draw, p + 1)`. The `(chain, draw, ...)` arrays are now
+  `get_samples_2d()`. Code that averaged with `mean(axis=(0, 1))` gets a scalar
+  instead of an error, so check those calls.
+- Rust struct literals of these types need the new fields:
+  `hmc::TransitionStats::termination`,
+  `diagnostics::ChainTransitionDiagnostics::max_tree_depth_hits` and
+  `diagnostics::TransitionDiagnosticsReport::total_max_tree_depth_hits`.
+- A saved fit is written as version 4 of the `rustmc.graph-fit` artifact, which
+  0.14.0 and earlier cannot load. Versions 1 to 3 still load, and a NUTS fit loaded
+  from version 3 is saved as version 3.
+
+### Added
+
+- Each NUTS transition records why its tree stopped
+  (`TransitionStats::termination`, a `TreeTermination` of `UTurn`, `Divergence` or
+  `MaxTreeDepth`). Recording it reads the tree builder's existing branches and draws
+  nothing, so seeded draws do not change. `transition_diagnostics()` reports
+  `max_tree_depth_hits` per chain and `total_max_tree_depth_hits`, the draw
+  transitions whose tree stopped at the depth limit rather than turning or
+  diverging in its last doubling, and `to_arviz()` exports the per-draw flag as
+  `reached_max_treedepth`. The count can be far below `tree_depth_saturation`: on
+  the informative eight-schools test data with seed 1 and `max_tree_depth=3`, 3648
+  of 4000 draw transitions were saturated and none hit the limit. The
+  `tree_depth_saturation` warning is unchanged. Version 4 artifacts store the
+  reasons and refuse ones that disagree with their trees.
+
+- `get_samples()` on `BayesianLocalLevelFit`, `BayesianLocalLinearTrendFit`,
+  `BayesianSeasonalLocalLevelFit`, `BayesianHurdleLogNormalFit` and
+  `BayesianRegressionFit`, which had only `get_samples_2d()`, and `get_samples_2d()`
+  on `BayesianARFit` and `BayesianHierarchicalMeanFit`. Every fit class that had one
+  of the two now has both.
+- `mean_samples` on every Bayesian forecast: the draws of the expected observation
+  given each parameter and state draw, `(chain, draw, step)`, or with a series axis
+  before `step` for the hierarchical mean (`(chain, draw, program, step)`) and the
+  dynamic GLM (`(chain, draw, group, step)`, as before). It is new on the local level
+  (the state), the local linear trend (the level), the seasonal local level (level
+  plus seasonal effect), the hierarchical mean (the program mean) and the AR
+  forecast (the conditional mean). `ForecastDraws.from_result` reads it from every
+  forecast instead of mapping each class.
+- `StructuralForecast.state_samples`, `component_samples` and
+  `cumulative_observation_samples`, so the structural forecast uses the
+  `*_samples` names of the other forecasts.
+- `benchmarks/repeated.py`, a repeated-inference benchmark: Gaussian linear
+  regressions, fixed-size or ragged, fitted through one model per engine in rustmc
+  (one fit per dataset, and one `sample_batch`), nutpie, NumPyro (parallel and
+  vectorized chains) and PyMC. It times setup, each fit and each prediction, records
+  memory, gates every fit against its exact posterior, including the draws' joint
+  covariance and the predictions, keeps failed and erroring fits with the time they
+  took, and counts only passing fits' ESS. In the recorded run of 30 datasets every
+  fit passed. nutpie fitted each dataset faster than rustmc (1.94 s against 3.11 s for
+  30 datasets of 500 rows), and its compilation of about 8 s left rustmc ahead over 30
+  datasets. See benchmarks/README.md.
+- Rust: `MassMatrixAccumulator::for_warmup_window`, which takes whether the window is
+  the last one, since `auto` asks a dense estimate to win by more there.
+  `for_window` treats its window as the last.
+- `benchmarks/auto_metric_targets.py`, `auto_metric_noise.py`,
+  `compare_metric_records.py` and options for `curved_metric_choice.py`, which measure
+  the `auto` metric's choices, with saved records that name the build they ran on.
+
+### Changed
+
+- **`metric="auto"` decides by cross-validation.** Each half of a warmup window
+  estimates a diagonal and a dense metric, each estimate is scored by the condition
+  number it leaves the other half's sample covariance, and the dense metric is used when
+  the geometric mean of its two scores is lower: by any amount in the early windows and
+  by a factor of 2 in the last window, whose metric the draws are sampled with. The
+  whole-window diagonal and dense metrics that would be installed, regularization
+  included, are then scored on each half, and the block stays diagonal unless the
+  dense one still conditions them better on average; that catches a window whose
+  halves drifted apart, where the whole window's covariance fits neither. Each
+  half must hold more draws than the vector has elements, so at the default
+  `warmup=500` vectors of 100 or more elements stay diagonal (0.14.0's rule allowed up to
+  100). 0.14.0's rule needed the window's effective sample size, and its estimate from
+  the average autocorrelation left the 50-dimensional 0.95 correlated exactness target
+  diagonal. There `auto` now spends 36.4 to 38.5 leapfrog steps per unit of the
+  smallest bulk ESS at the gate seeds, against 317 to 683, and forced `dense` 25.2 to
+  26.7. Its gate fits' smallest bulk ESS rose from 606 to 4148 at seed 2211, and in a
+  2000-seed study the gate's false alarms on it fell from 31 to 15, none of them now
+  from the ESS floor. On nine targets in `benchmarks/auto_metric_targets.py` (ten
+  seeds, 1000 warmup) the median paired cost ratio against 0.14.0 was 0.82 to 1.02
+  on the regressions and isotropic targets; the 20-coefficient correlated regression
+  at 500 warmup was the clearly worse case, 10% dearer. On a curved two-dimensional
+  target over 40 seeds the median smallest bulk ESS rose from 86.7 to 123.8 and
+  divergences fell from 451 to 348, but single fits moved both ways, one falling from
+  226.3 to 24.5. In simulated warmup windows the rule at the last window's margin
+  stayed diagonal on uncorrelated noise, including a 40-dimensional case where
+  0.14.0's chose dense in 30 of 30. It does not protect a direction the chain has
+  hardly explored: in two dimensions with identity covariance and one rotated
+  coordinate mixing at 0.99, it chose dense in 17 of 30 windows where 0.14.0's chose
+  none. At the early windows' margin, short uncorrelated windows went dense in up to
+  28 of 30. The
+  measurements, records and commands are in `docs/statistical-validation.md`.
+
+### Deprecated
+
+- `BayesianARForecast.conditional_mean_samples`, now `mean_samples`, and
+  `StructuralForecast.state_paths`, `component_paths`, `mean_paths`,
+  `observation_paths` and `cumulative_observation_paths`, now the matching
+  `*_samples`. Each returns the same array as before with a `DeprecationWarning`.
+
 ## [0.14.0] - 2026-10-18
 
 This release collects a repository-wide cleanup review; the first item three judges

@@ -31,6 +31,9 @@ def test_joint_fit_forecast_components_and_validation(rustmc_module, model_index
     assert fit.time_count == 30 and fit.observed_count == 29
     for key, value in fit.get_samples_2d().items():
         np.testing.assert_array_equal(value, repeated.get_samples_2d()[key])
+        np.testing.assert_array_equal(
+            fit.get_samples()[key], value.reshape((-1,) + value.shape[2:])
+        )
     beta = fit.get_samples_2d()["coefficients"]
     assert beta.shape == (2, 70, 1)
     assert abs(beta.mean() - 2.0) < 0.4

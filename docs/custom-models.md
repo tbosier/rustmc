@@ -96,7 +96,7 @@ artifact format: the older data-owning Rust `CompiledModelArtifact` and the
 
 ## Saving a fitted graph model
 
-`fit.to_json()` creates a `rustmc.graph-fit` version 3 artifact, and
+`fit.to_json()` creates a `rustmc.graph-fit` version 4 artifact, and
 `rustmc.FitResult.from_json(text)` restores it. This fitted artifact includes the
 compiled declarative model, keyed training data, every stored chain/draw position,
 parameter names/order, and sampler telemetry. Unlike a compiled-model artifact,
@@ -140,3 +140,11 @@ the chains ran with, which E-BFMI and tree-depth saturation are computed from (s
 neither, so a fit restored from one reports those two checks as unavailable, and
 saving it writes version 2 again, which readers older than version 3 can still load.
 A version 1 or 2 artifact that carries energies is refused.
+
+Version 4 adds, for each NUTS transition, why its tree stopped: a U-turn, a
+divergence or the tree-depth limit. A NUTS fit restored from version 3 has none, so
+it reports `max_tree_depth_hits` as `None`, and saving it writes version 3 again.
+An artifact before version 4 that carries termination reasons is refused, and so is
+one whose reasons disagree with their trees: a divergence on a transition not
+flagged divergent, or an exhausted depth on a tree below the limit or with fewer
+than `2^depth - 1` leapfrog steps.

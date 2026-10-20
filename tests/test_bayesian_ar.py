@@ -64,8 +64,8 @@ def test_seeded_ar3_fit_shapes_reproducibility_and_recovery(rustmc_module):
     assert first.regression_count == observations.size - 3
     assert first.seed == 17
 
-    first_samples = first.get_samples()
-    second_samples = second.get_samples()
+    first_samples = first.get_samples_2d()
+    second_samples = second.get_samples_2d()
     assert set(first_samples) == {
         "coefficient",
         "innovation_variance",
@@ -76,6 +76,13 @@ def test_seeded_ar3_fit_shapes_reproducibility_and_recovery(rustmc_module):
     assert first_samples["innovation_sd"].shape == (2, 500)
     for name in first_samples:
         np.testing.assert_array_equal(first_samples[name], second_samples[name])
+    flat = first.get_samples()
+    assert set(flat) == set(first_samples)
+    assert flat["coefficient"].shape == (1000, 4)
+    for name in first_samples:
+        np.testing.assert_array_equal(
+            flat[name], first_samples[name].reshape((1000,) + first_samples[name].shape[2:])
+        )
     np.testing.assert_allclose(
         first_samples["innovation_sd"] ** 2,
         first_samples["innovation_variance"],
@@ -101,24 +108,26 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     assert forecast.chains == 2
     assert forecast.draws == 120
     assert forecast.steps == 5
-    assert forecast.conditional_mean_samples.shape == (2, 120, 5)
+    assert forecast.mean_samples.shape == (2, 120, 5)
+    with pytest.warns(DeprecationWarning, match="`conditional_mean_samples` is deprecated.*`mean_samples`"):
+        np.testing.assert_array_equal(forecast.conditional_mean_samples, forecast.mean_samples)
     assert forecast.observation_samples.shape == (2, 120, 5)
     np.testing.assert_array_equal(
-        forecast.conditional_mean_samples, repeated.conditional_mean_samples
+        forecast.mean_samples, repeated.mean_samples
     )
     np.testing.assert_array_equal(
         forecast.observation_samples, repeated.observation_samples
     )
     np.testing.assert_allclose(
         forecast.conditional_mean,
-        forecast.conditional_mean_samples.mean(axis=(0, 1)),
+        forecast.mean_samples.mean(axis=(0, 1)),
     )
     np.testing.assert_allclose(
         forecast.observation_mean,
         forecast.observation_samples.mean(axis=(0, 1)),
     )
 
-    coefficients = fit.get_samples()["coefficient"]
+    coefficients = fit.get_samples_2d()["coefficient"]
     expected_first = (
         coefficients[:, :, 0]
         + coefficients[:, :, 1] * observations[-1]
@@ -126,7 +135,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
         + coefficients[:, :, 3] * observations[-3]
     )
     np.testing.assert_allclose(
-        forecast.conditional_mean_samples[:, :, 0], expected_first
+        forecast.mean_samples[:, :, 0], expected_first
     )
     # Recursion uses each path's simulated observation, not its conditional mean.
     expected_second = (
@@ -136,7 +145,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
         + coefficients[:, :, 3] * observations[-2]
     )
     np.testing.assert_allclose(
-        forecast.conditional_mean_samples[:, :, 1], expected_second
+        forecast.mean_samples[:, :, 1], expected_second
     )
 
     lower, upper = forecast.interval(0.95)
@@ -151,11 +160,11 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     )
     np.testing.assert_allclose(
         mean_lower,
-        np.quantile(forecast.conditional_mean_samples, 0.025, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.025, axis=(0, 1)),
     )
     np.testing.assert_allclose(
         mean_upper,
-        np.quantile(forecast.conditional_mean_samples, 0.975, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.975, axis=(0, 1)),
     )
     np.testing.assert_allclose(
         forecast.observation_quantile(0.5),
@@ -163,7 +172,7 @@ def test_recursive_forecast_paths_and_empirical_intervals(rustmc_module):
     )
     np.testing.assert_allclose(
         forecast.conditional_mean_quantile(0.5),
-        np.quantile(forecast.conditional_mean_samples, 0.5, axis=(0, 1)),
+        np.quantile(forecast.mean_samples, 0.5, axis=(0, 1)),
     )
     assert forecast.uncertainty_kind == "parameter_integrated_posterior_predictive"
     assert forecast.interval_kind == "pointwise_equal_tailed"
@@ -250,6 +259,6 @@ def test_bayesian_ar_arviz_export_preserves_chain_draw_and_coefficients(
     assert posterior["innovation_variance"].shape == (2, 10)
     assert posterior["innovation_sd"].shape == (2, 10)
     np.testing.assert_array_equal(
-        posterior["coefficient"].values, fit.get_samples()["coefficient"]
+        posterior["coefficient"].values, fit.get_samples_2d()["coefficient"]
     )
     np.testing.assert_array_equal(observed["y"].values, observations)

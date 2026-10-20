@@ -27,17 +27,20 @@ def test_composition_joint_paths_and_persistence():
     assert "Gamma precision" in fit.summary()
     future = np.ones((3, 2))
     paths = fit.forecast(3, exog=future, seed=5)
-    assert paths.state_paths.shape == (2, 8, 3, 9)
+    assert paths.state_samples.shape == (2, 8, 3, 9)
     assert (paths.chains, paths.draws, paths.steps) == (2, 8, 3)
-    np.testing.assert_array_equal(paths.observation_samples, paths.observation_paths)
-    np.testing.assert_array_equal(paths.mean_samples, paths.mean_paths)
-    np.testing.assert_allclose(paths.component_paths.sum(-1), paths.mean_paths)
-    np.testing.assert_allclose(paths.observation_paths.cumsum(-1), paths.cumulative_observation_paths)
+    for old, new in [("state_paths", "state_samples"), ("component_paths", "component_samples"),
+                     ("mean_paths", "mean_samples"), ("observation_paths", "observation_samples"),
+                     ("cumulative_observation_paths", "cumulative_observation_samples")]:
+        with pytest.warns(DeprecationWarning, match=f"`{old}` is deprecated.*`{new}`"):
+            np.testing.assert_array_equal(getattr(paths, old), getattr(paths, new))
+    np.testing.assert_allclose(paths.component_samples.sum(-1), paths.mean_samples)
+    np.testing.assert_allclose(paths.observation_samples.cumsum(-1), paths.cumulative_observation_samples)
     for restored in [mc.StructuralFit.from_json(fit.to_json())]:
-        np.testing.assert_array_equal(paths.observation_paths, restored.forecast(3, exog=future, seed=5).observation_paths)
+        np.testing.assert_array_equal(paths.observation_samples, restored.forecast(3, exog=future, seed=5).observation_samples)
     loaded_model = mc.StructuralModel.from_json(model.to_json())
-    np.testing.assert_array_equal(model.prior_predict(3, exog=future, draws=7).observation_paths,
-                                  loaded_model.prior_predict(3, exog=future, draws=7).observation_paths)
+    np.testing.assert_array_equal(model.prior_predict(3, exog=future, draws=7).observation_samples,
+                                  loaded_model.prior_predict(3, exog=future, draws=7).observation_samples)
     broken = json.loads(fit.to_json())
     broken["version"] = 999
     with pytest.raises(ValueError):
@@ -88,10 +91,10 @@ def test_zero_innovation_ar_singular_states_fit_forecast_and_replay(coefficients
     expected = fit.terminal_states.copy()
     for t in range(3):
         expected = expected @ transition.T
-        np.testing.assert_allclose(forecast.state_paths[:, :, t], expected, atol=1e-7)
+        np.testing.assert_allclose(forecast.state_samples[:, :, t], expected, atol=1e-7)
     restored = mc.StructuralFit.from_json(fit.to_json())
-    np.testing.assert_array_equal(restored.forecast(3, seed=752).observation_paths,
-                                  forecast.observation_paths)
+    np.testing.assert_array_equal(restored.forecast(3, seed=752).observation_samples,
+                                  forecast.observation_samples)
 
 
 def test_forecast_reusing_the_fit_seed_stays_independent_of_the_terminal_state():
@@ -127,8 +130,8 @@ def test_forecast_reusing_the_fit_seed_stays_independent_of_the_terminal_state()
     # step counts line them up, and which ones is an implementation detail.
     for steps in (1, 2, 3):
         paths = fit.forecast(steps, seed=seed)
-        first = paths.observation_paths[0][:, 0]
-        transition = paths.state_paths[0][:, 0, :].sum(-1) - total
+        first = paths.observation_samples[0][:, 0]
+        transition = paths.state_samples[0][:, 0, :].sum(-1) - total
         correlation = float(np.corrcoef(total, transition)[0, 1])
         assert abs(correlation) < .05, (
             f"steps={steps}: terminal state and first forecast innovation correlate "

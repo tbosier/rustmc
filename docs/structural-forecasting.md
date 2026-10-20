@@ -41,7 +41,7 @@ fit = model.fit(y, exog=exog, chains=2, draws=200, warmup=200,
                 thin=1, seed=42, store_states=True)
 future_exog = np.column_stack([np.zeros(7), np.ones(7)])
 forecast = fit.forecast(7, exog=future_exog, seed=43)
-interval = np.quantile(forecast.observation_paths, [.05, .5, .95], axis=(0, 1))
+interval = np.quantile(forecast.observation_samples, [.05, .5, .95], axis=(0, 1))
 ```
 
 Use a level or a trend for the baseline, according to the intended model. Each
@@ -87,8 +87,7 @@ and MCSE for every innovation/noise variance and terminal state. They do not cov
 every historical state or latent Student-t precision. `get_samples_2d()` returns
 named `(chain, draw)` arrays, and `get_samples()` flattens these axes.
 `sampler_stats` identifies the Gibbs/FFBS kernel and fixed Student-t degrees of freedom.
-Forecast `mean_samples` and `observation_samples` alias `mean_paths` and
-`observation_paths`; `chains`, `draws`, and `steps` expose their leading axes/horizon.
+`chains`, `draws`, and `steps` on a forecast expose its leading axes and horizon.
 
 Oversized working/retained array requests raise a validation error before allocation
 at a 25-million-value bound. Predictive Gamma precision underflow/overflow aborts
@@ -114,10 +113,14 @@ The historical decomposition excludes `x[-1]` and sums to fitted latent means.
 
 Forecasts retain each joint state/variance draw for the whole future path:
 
-- `state_paths`: `(chain, draw, horizon, dimension)`.
-- `component_paths`: `(chain, draw, horizon, component)`, labels in `component_names`.
-- `mean_paths`, `observation_paths`, `cumulative_observation_paths`:
+- `state_samples`: `(chain, draw, horizon, dimension)`.
+- `component_samples`: `(chain, draw, horizon, component)`, labels in `component_names`.
+- `mean_samples`, `observation_samples`, `cumulative_observation_samples`:
   `(chain, draw, horizon)`.
+
+The older names `state_paths`, `component_paths`, `mean_paths`, `observation_paths`
+and `cumulative_observation_paths` return the same arrays with a `DeprecationWarning`
+and will be removed in a later release.
 
 Component contributions sum to the latent observation mean. Cumulative paths sum
 future observations, retaining shared parameter uncertainty and all horizon

@@ -1,7 +1,8 @@
 //! Version 3 of the `rustmc.graph-fit` artifact keeps the energy telemetry
-//! E-BFMI and tree-depth saturation need, and fits from older artifacts,
-//! which have none, still load, report those checks as unknown, and save as
-//! version 2, which every reader since version 2 loads.
+//! E-BFMI and tree-depth saturation need, and version 4 also why each NUTS
+//! tree stopped. Fits from older artifacts, which lack some of it, still
+//! load, report what they lack as unknown, and save as the newest version
+//! that holds what they have, which older readers load.
 use rustmc_core::data::{DataInputs, MatrixBinding};
 use rustmc_core::model::{GraphModel, ModelFit};
 use rustmc_core::sampler::{SamplerConfig, SamplerType};
@@ -67,7 +68,7 @@ fn energies(fit: &ModelFit) -> Vec<u64> {
 }
 
 #[test]
-fn version_three_round_trips_energy_and_the_tree_depth_limit() {
+fn version_four_round_trips_energy_terminations_and_the_tree_depth_limit() {
     for (sampler, limit) in [(SamplerType::Nuts, Some(7)), (SamplerType::Hmc, None)] {
         let original = fit(sampler);
         assert!(original
@@ -77,7 +78,18 @@ fn version_three_round_trips_energy_and_the_tree_depth_limit() {
             .flatten()
             .all(|t| t.energy.is_finite()));
         let artifact = json(&original);
-        assert_eq!(artifact["version"], 3);
+        assert_eq!(artifact["version"], 4);
+        let reasons: Vec<&Value> = artifact["posterior"]["transitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|chain| chain.as_array().unwrap())
+            .map(|t| &t["termination"])
+            .collect();
+        match sampler {
+            SamplerType::Nuts => assert!(reasons.iter().all(|r| r.is_string())),
+            _ => assert!(reasons.iter().all(|r| r.is_null())),
+        }
         assert_eq!(
             artifact["posterior"]["max_tree_depth"].as_u64(),
             limit.map(|l| l as u64)
@@ -92,9 +104,48 @@ fn version_three_round_trips_energy_and_the_tree_depth_limit() {
         for (a, b) in before.chains.iter().zip(&after.chains) {
             assert_eq!(a.e_bfmi.to_bits(), b.e_bfmi.to_bits());
             assert_eq!(a.tree_depth_saturation, b.tree_depth_saturation);
+            assert_eq!(a.max_tree_depth_hits, b.max_tree_depth_hits);
+            assert_eq!(
+                a.max_tree_depth_hits.is_some(),
+                sampler == SamplerType::Nuts
+            );
         }
         assert_eq!(json(&restored), artifact);
     }
+}
+
+fn strip_terminations(artifact: &mut Value) {
+    for chain in artifact["posterior"]["transitions"].as_array_mut().unwrap() {
+        for transition in chain.as_array_mut().unwrap() {
+            transition.as_object_mut().unwrap().remove("termination");
+        }
+    }
+}
+
+#[test]
+fn version_three_loads_without_terminations_and_saves_as_version_three() {
+    let original = fit(SamplerType::Nuts);
+    let mut artifact = json(&original);
+    artifact["version"] = 3.into();
+    strip_terminations(&mut artifact);
+    let restored = load(&artifact).unwrap();
+    assert!(restored
+        .raw_samples()
+        .transitions
+        .iter()
+        .flatten()
+        .all(|t| t.termination.is_none()));
+    let report = restored.raw_samples().transition_diagnostics();
+    assert_eq!(report.total_max_tree_depth_hits, None);
+    assert_eq!(
+        report.total_tree_depth_saturation,
+        original
+            .raw_samples()
+            .transition_diagnostics()
+            .total_tree_depth_saturation
+    );
+    // Version 3 holds everything this fit has, so readers of it still load it.
+    assert_eq!(json(&restored), artifact);
 }
 
 #[test]
@@ -110,6 +161,7 @@ fn older_versions_load_without_energy_and_save_as_version_two() {
             transition.as_object_mut().unwrap().remove("energy");
         }
     }
+    strip_terminations(&mut artifact);
     let restored = load(&artifact).unwrap();
     assert!(energies(&restored)
         .iter()
@@ -126,7 +178,7 @@ fn inconsistent_energy_telemetry_is_rejected() {
     let nuts = json(&fit(SamplerType::Nuts));
     let hmc = json(&fit(SamplerType::Hmc));
     type Corruption = fn(&mut Value);
-    let cases: [(&str, &Value, Corruption, &str); 12] = [
+    let cases: [(&str, &Value, Corruption, &str); 18] = [
         (
             "a depth-1 tree with more than one leapfrog step",
             &nuts,
@@ -249,9 +301,82 @@ fn inconsistent_energy_telemetry_is_rejected() {
             "an unknown version",
             &nuts,
             |a| {
-                a["version"] = 4.into();
+                a["version"] = 5.into();
             },
             "unsupported format/version",
+        ),
+        (
+            "a NUTS transition without its termination reason in version 4",
+            &nuts,
+            |a| {
+                a["posterior"]["transitions"][0][3]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("termination");
+            },
+            "termination reason for every NUTS transition",
+        ),
+        (
+            "a termination reason on an HMC transition",
+            &hmc,
+            |a| {
+                a["posterior"]["transitions"][0][3]["termination"] = "u_turn".into();
+            },
+            "termination reason for every NUTS transition",
+        ),
+        (
+            "termination reasons in version 3",
+            &nuts,
+            |a| {
+                a["version"] = 3.into();
+            },
+            "need artifact version 4",
+        ),
+        (
+            "a divergence reason on a transition that did not diverge",
+            &nuts,
+            |a| {
+                let transition = a["posterior"]["transitions"][0]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|t| t["divergent"] == false)
+                    .unwrap();
+                transition["termination"] = "divergence".into();
+            },
+            "disagrees with its transition's tree",
+        ),
+        (
+            "a tree that ran out of depth below the limit",
+            &nuts,
+            |a| {
+                let transition = a["posterior"]["transitions"][1]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|t| t["tree_depth"].as_u64().unwrap() < 7 && t["divergent"] == false)
+                    .unwrap();
+                transition["termination"] = "max_tree_depth".into();
+            },
+            "disagrees with its transition's tree",
+        ),
+        (
+            "a U-turn after an even number of leapfrog steps",
+            &nuts,
+            |a| {
+                let transition = a["posterior"]["transitions"][0]
+                    .as_array_mut()
+                    .unwrap()
+                    .iter_mut()
+                    .find(|t| {
+                        t["termination"] == "u_turn" && t["tree_depth"].as_u64().unwrap() >= 2
+                    })
+                    .unwrap();
+                let depth = transition["tree_depth"].as_u64().unwrap();
+                // The fewest steps a tree of this depth can take, and even.
+                transition["num_leapfrog_steps"] = (1u64 << (depth - 1)).into();
+            },
+            "disagrees with its transition's tree",
         ),
     ];
     for (label, source, corrupt, reason) in cases {

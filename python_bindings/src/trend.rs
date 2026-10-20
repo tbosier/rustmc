@@ -351,6 +351,10 @@ impl PyBayesianLocalLinearTrendFit {
     fn get_samples_2d<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
         self.posterior(py)
     }
+    /// Draws with the chain and draw axes merged, chains concatenated.
+    fn get_samples<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        crate::generic_results::merge_chain_draw_axes(&self.posterior(py)?)
+    }
 
     #[pyo3(signature = (steps, seed=43))]
     fn forecast(
@@ -407,6 +411,13 @@ impl PyBayesianTrendForecast {
     #[getter]
     fn level_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
         path_array(py, &self.inner.level_paths)
+    }
+
+    /// The expected observation of each path: the level, so the same draws
+    /// as `level_samples`.
+    #[getter]
+    fn mean_samples<'py>(&self, py: Python<'py>) -> Bound<'py, PyArray3<f64>> {
+        self.level_samples(py)
     }
 
     #[getter]

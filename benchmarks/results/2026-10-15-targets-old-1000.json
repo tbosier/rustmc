@@ -1,0 +1,826 @@
+{
+ "build": {
+  "version": "0.14.0",
+  "file": "~/projects/rustmc/.pybuild/rustmc/__init__.py",
+  "revision": "d5f3e1f10ecbfc4302eb9fd6b75d793f4ec09ce7",
+  "dirty": false,
+  "python": "3.12.9",
+  "machine": "x86_64 Linux",
+  "command": "~/projects/rustmc/.claude/worktrees/auto-metric/benchmarks/auto_metric_targets.py --warmup 1000 --metrics auto --json benchmarks/results/2026-10-15-targets-old-1000.json"
+ },
+ "chains": 4,
+ "warmup": 1000,
+ "draws": 1000,
+ "fits": [
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 63570,
+   "min_bulk_ess": 5710.885773271345,
+   "max_r_hat": 1.0038538654177216,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 64516,
+   "min_bulk_ess": 5851.9629148017475,
+   "max_r_hat": 1.0038859602052084,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 63310,
+   "min_bulk_ess": 5602.757598090168,
+   "max_r_hat": 1.0045515574811192,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 63876,
+   "min_bulk_ess": 6934.646119197108,
+   "max_r_hat": 1.0065250268006436,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 63390,
+   "min_bulk_ess": 6174.099007242103,
+   "max_r_hat": 1.004931003420925,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 63550,
+   "min_bulk_ess": 6032.713252651518,
+   "max_r_hat": 1.0041221253026165,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 63818,
+   "min_bulk_ess": 5589.933467859999,
+   "max_r_hat": 1.0041396023036568,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 63578,
+   "min_bulk_ess": 5843.666168632272,
+   "max_r_hat": 1.0046673231334917,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 64770,
+   "min_bulk_ess": 6348.520756183026,
+   "max_r_hat": 1.003788072073285,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=50",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 63428,
+   "min_bulk_ess": 6122.702842886727,
+   "max_r_hat": 1.0037469621709432,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 70756,
+   "min_bulk_ess": 4593.469999437315,
+   "max_r_hat": 1.0048109024680896,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 99154,
+   "min_bulk_ess": 4447.536285969698,
+   "max_r_hat": 1.003465711072657,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 98780,
+   "min_bulk_ess": 4158.160707138693,
+   "max_r_hat": 1.0058714269829436,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 88024,
+   "min_bulk_ess": 4550.922627194905,
+   "max_r_hat": 1.0037955311650548,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 70936,
+   "min_bulk_ess": 4635.373415385232,
+   "max_r_hat": 1.0041762185906995,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 110342,
+   "min_bulk_ess": 4429.349652582214,
+   "max_r_hat": 1.007150980733521,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 71348,
+   "min_bulk_ess": 5231.34691013736,
+   "max_r_hat": 1.0041992154849386,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 93638,
+   "min_bulk_ess": 4419.1884046779805,
+   "max_r_hat": 1.0063387539863795,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 91952,
+   "min_bulk_ess": 4268.9937194670565,
+   "max_r_hat": 1.0057940842281385,
+   "divergences": 0
+  },
+  {
+   "target": "isotropic d=100",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 77918,
+   "min_bulk_ess": 4766.105426473226,
+   "max_r_hat": 1.0044602538166432,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 66779,
+   "min_bulk_ess": 7736.647080783378,
+   "max_r_hat": 1.0023096725266263,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 67825,
+   "min_bulk_ess": 6906.327952603614,
+   "max_r_hat": 1.0029062863705391,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 65228,
+   "min_bulk_ess": 6519.579423182326,
+   "max_r_hat": 1.0018817305036531,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 64947,
+   "min_bulk_ess": 6189.1896273411585,
+   "max_r_hat": 1.0018004620507657,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 66133,
+   "min_bulk_ess": 5648.04944919945,
+   "max_r_hat": 1.0018474444540757,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 65859,
+   "min_bulk_ess": 6993.885915904073,
+   "max_r_hat": 1.0032482231737634,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 68245,
+   "min_bulk_ess": 6536.121146590251,
+   "max_r_hat": 1.003353962193233,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 64662,
+   "min_bulk_ess": 5729.929765833532,
+   "max_r_hat": 1.0023460394561425,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 67888,
+   "min_bulk_ess": 7244.990031240345,
+   "max_r_hat": 1.0023908577704892,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=10",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 64367,
+   "min_bulk_ess": 6370.32339446399,
+   "max_r_hat": 1.002601673576888,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 94339,
+   "min_bulk_ess": 6574.506578885639,
+   "max_r_hat": 1.0027949094968513,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 94403,
+   "min_bulk_ess": 6386.255281297992,
+   "max_r_hat": 1.0062781755753656,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 94641,
+   "min_bulk_ess": 6843.654151987891,
+   "max_r_hat": 1.0026731027968958,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 93261,
+   "min_bulk_ess": 7464.014742797987,
+   "max_r_hat": 1.0042404146681843,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 94528,
+   "min_bulk_ess": 7283.669159606276,
+   "max_r_hat": 1.0033128470985488,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 95499,
+   "min_bulk_ess": 6892.397871322225,
+   "max_r_hat": 1.004174293274894,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 95176,
+   "min_bulk_ess": 7858.82156377294,
+   "max_r_hat": 1.0039000578317578,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 94929,
+   "min_bulk_ess": 6994.439849371228,
+   "max_r_hat": 1.0041991777274941,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 92958,
+   "min_bulk_ess": 6456.411099225615,
+   "max_r_hat": 1.0033545500225087,
+   "divergences": 0
+  },
+  {
+   "target": "correlated regression d=20",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 94276,
+   "min_bulk_ess": 7235.671856499926,
+   "max_r_hat": 1.003942305015257,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 286111,
+   "min_bulk_ess": 2862.127840918027,
+   "max_r_hat": 1.003078537170288,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 379784,
+   "min_bulk_ess": 2707.419199198662,
+   "max_r_hat": 1.0023396788366112,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 341161,
+   "min_bulk_ess": 2943.6008102828,
+   "max_r_hat": 1.003980048138122,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 299501,
+   "min_bulk_ess": 2780.2427585386395,
+   "max_r_hat": 1.0019447377132367,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 279559,
+   "min_bulk_ess": 2870.6691511744752,
+   "max_r_hat": 1.0011805732429286,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 309540,
+   "min_bulk_ess": 2712.803661290487,
+   "max_r_hat": 1.0044353100419496,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 376669,
+   "min_bulk_ess": 2916.8694924635706,
+   "max_r_hat": 1.000853398466178,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 328681,
+   "min_bulk_ess": 2838.0326994831285,
+   "max_r_hat": 1.0016030055914245,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 341244,
+   "min_bulk_ess": 3062.884126925043,
+   "max_r_hat": 1.0014159389375583,
+   "divergences": 0
+  },
+  {
+   "target": "scaled correlated regression d=6",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 323607,
+   "min_bulk_ess": 2789.594680542861,
+   "max_r_hat": 1.0023735862356862,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 61186,
+   "min_bulk_ess": 6496.016643578539,
+   "max_r_hat": 1.0030417519969348,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 61409,
+   "min_bulk_ess": 5221.567770574796,
+   "max_r_hat": 1.0017078234290744,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 62278,
+   "min_bulk_ess": 6107.639808345222,
+   "max_r_hat": 1.0036737040289114,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 60495,
+   "min_bulk_ess": 6003.552602260003,
+   "max_r_hat": 1.0024484964532427,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 62475,
+   "min_bulk_ess": 5942.694683512491,
+   "max_r_hat": 1.003551712812321,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 62008,
+   "min_bulk_ess": 6005.114076431418,
+   "max_r_hat": 1.0034823967275954,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 61730,
+   "min_bulk_ess": 5341.12132301496,
+   "max_r_hat": 1.0023178320714154,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 65054,
+   "min_bulk_ess": 6027.14006037633,
+   "max_r_hat": 1.0008455798883586,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 60874,
+   "min_bulk_ess": 5901.245426866871,
+   "max_r_hat": 1.0022073868413937,
+   "divergences": 0
+  },
+  {
+   "target": "logistic regression d=8",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 60860,
+   "min_bulk_ess": 5857.698695629673,
+   "max_r_hat": 1.0026235583520338,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 77255,
+   "min_bulk_ess": 1990.1783350225517,
+   "max_r_hat": 1.0024949766375375,
+   "divergences": 1
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 80588,
+   "min_bulk_ess": 2270.1752734683564,
+   "max_r_hat": 1.0026101905896212,
+   "divergences": 1
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 88347,
+   "min_bulk_ess": 2682.863971839313,
+   "max_r_hat": 1.0019571562253444,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 84798,
+   "min_bulk_ess": 2118.2762855073574,
+   "max_r_hat": 1.0031703853718175,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 75220,
+   "min_bulk_ess": 2193.6147730519865,
+   "max_r_hat": 1.0065005313505033,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 74607,
+   "min_bulk_ess": 2125.848167352418,
+   "max_r_hat": 1.0042422428819084,
+   "divergences": 2
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 75351,
+   "min_bulk_ess": 2154.1772114031955,
+   "max_r_hat": 1.0023766669981673,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 72505,
+   "min_bulk_ess": 2183.295805545033,
+   "max_r_hat": 1.0026209621262159,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 74962,
+   "min_bulk_ess": 2247.126678530787,
+   "max_r_hat": 1.0023387216389477,
+   "divergences": 0
+  },
+  {
+   "target": "eight schools noncentered",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 77806,
+   "min_bulk_ess": 2324.3430966236992,
+   "max_r_hat": 1.0024451753647505,
+   "divergences": 1
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 132359,
+   "min_bulk_ess": 154.89280364291682,
+   "max_r_hat": 1.0231715804190857,
+   "divergences": 90
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 136829,
+   "min_bulk_ess": 87.00384268540104,
+   "max_r_hat": 1.0416957040407133,
+   "divergences": 153
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 181254,
+   "min_bulk_ess": 219.7240158715754,
+   "max_r_hat": 1.0218928881572804,
+   "divergences": 33
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 151896,
+   "min_bulk_ess": 188.7971324311835,
+   "max_r_hat": 1.0301434375347405,
+   "divergences": 53
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 159087,
+   "min_bulk_ess": 161.42346769776117,
+   "max_r_hat": 1.018651919663468,
+   "divergences": 76
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 180235,
+   "min_bulk_ess": 72.80568550142705,
+   "max_r_hat": 1.0442370908003409,
+   "divergences": 102
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 142856,
+   "min_bulk_ess": 271.22595806734506,
+   "max_r_hat": 1.0162345923744498,
+   "divergences": 53
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 137380,
+   "min_bulk_ess": 39.117807547835184,
+   "max_r_hat": 1.0756403504093928,
+   "divergences": 71
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 148503,
+   "min_bulk_ess": 231.88094319100244,
+   "max_r_hat": 1.0078686760675704,
+   "divergences": 33
+  },
+  {
+   "target": "eight schools centered",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 163782,
+   "min_bulk_ess": 32.045145149079744,
+   "max_r_hat": 1.0926626503698837,
+   "divergences": 98
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 1,
+   "leapfrog_steps": 143803,
+   "min_bulk_ess": 17.098274578022387,
+   "max_r_hat": 1.1639141792216638,
+   "divergences": 10
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 2,
+   "leapfrog_steps": 177902,
+   "min_bulk_ess": 30.567076423666638,
+   "max_r_hat": 1.0923958670729081,
+   "divergences": 1
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 3,
+   "leapfrog_steps": 161744,
+   "min_bulk_ess": 276.6008401891698,
+   "max_r_hat": 1.0363235052741573,
+   "divergences": 1
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 4,
+   "leapfrog_steps": 131004,
+   "min_bulk_ess": 6.915469754800907,
+   "max_r_hat": 1.5837350798895553,
+   "divergences": 31
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 5,
+   "leapfrog_steps": 144478,
+   "min_bulk_ess": 84.62251447040109,
+   "max_r_hat": 1.05600817830013,
+   "divergences": 34
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 6,
+   "leapfrog_steps": 180144,
+   "min_bulk_ess": 235.5594439061824,
+   "max_r_hat": 1.0238349999772487,
+   "divergences": 0
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 7,
+   "leapfrog_steps": 153127,
+   "min_bulk_ess": 107.15844376937378,
+   "max_r_hat": 1.0392246112384527,
+   "divergences": 3
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 8,
+   "leapfrog_steps": 162278,
+   "min_bulk_ess": 85.04184770842713,
+   "max_r_hat": 1.046099970319332,
+   "divergences": 1
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 9,
+   "leapfrog_steps": 179903,
+   "min_bulk_ess": 392.8310429944974,
+   "max_r_hat": 1.0271372630836948,
+   "divergences": 0
+  },
+  {
+   "target": "banana",
+   "metric": "auto",
+   "seed": 10,
+   "leapfrog_steps": 167578,
+   "min_bulk_ess": 304.0368601972623,
+   "max_r_hat": 1.0206443210830818,
+   "divergences": 0
+  }
+ ]
+}

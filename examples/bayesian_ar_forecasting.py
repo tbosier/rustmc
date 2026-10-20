@@ -46,7 +46,7 @@ def main() -> None:
     forecast = fit.forecast(steps=12, seed=43)
     lower, upper = forecast.interval(0.95)
 
-    coefficient_mean = fit.get_samples()["coefficient"].mean(axis=(0, 1))
+    coefficient_mean = fit.get_samples()["coefficient"].mean(axis=0)
     print("Bayesian AR(3) posterior")
     print("  coefficient order: intercept, lag_1, lag_2, lag_3")
     print("  posterior mean:   ", np.round(coefficient_mean, 3))

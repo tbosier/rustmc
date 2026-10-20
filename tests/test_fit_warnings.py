@@ -75,11 +75,19 @@ def test_e_bfmi_equals_arviz_bfmi_on_the_exported_energies():
         stats = getattr(idata.sample_stats, "dataset", idata.sample_stats)
         assert stats["energy"].shape == (4, 1000)
         assert ("tree_depth" in stats) == (sampler == "nuts")
+        assert ("reached_max_treedepth" in stats) == (sampler == "nuts")
+        if sampler == "nuts":
+            reached = stats["reached_max_treedepth"].values
+            assert reached.dtype == bool
+            assert np.all(stats["tree_depth"].values[reached] == 10)
         ours = [chain["e_bfmi"] for chain in fit.transition_diagnostics()["chains"]]
         # ArviZ 0.x returns an array, 1.x a DataTree with an `energy` variable.
         theirs = az.bfmi(idata)
         theirs = theirs if isinstance(theirs, np.ndarray) else theirs["energy"]
-        np.testing.assert_allclose(ours, np.asarray(theirs), rtol=1e-12, atol=0)
+        # Ours subtracts each chain's first energy before squaring and ArviZ's
+        # does not, so the two round differently: 1.4e-12 apart, relative, on
+        # one chain of one seed.
+        np.testing.assert_allclose(ours, np.asarray(theirs), rtol=1e-10, atol=0)
 
 
 def test_transition_diagnostics_report_e_bfmi_and_saturation():
@@ -91,6 +99,23 @@ def test_transition_diagnostics_report_e_bfmi_and_saturation():
     )
     for chain in telemetry["chains"]:
         assert chain["e_bfmi"] > 0.3
+        assert 0 <= chain["max_tree_depth_hits"] <= chain["tree_depth_saturation"]
+    assert telemetry["total_max_tree_depth_hits"] == sum(
+        chain["max_tree_depth_hits"] for chain in telemetry["chains"]
+    )
+    # A two-doubling limit: every tree here reaches it, and only those that did
+    # not turn or diverge in their second doubling ran out of depth.
+    shallow = centred_eight_schools().sample(
+        INFORMATIVE, seed=1, max_tree_depth=2, show_progress=False
+    ).transition_diagnostics()
+    assert shallow["total_tree_depth_saturation"] == shallow["total_draw_transitions"]
+    assert 0 < shallow["total_max_tree_depth_hits"] < shallow["total_tree_depth_saturation"]
+    # One more doubling and most trees still use the last one, but they turn in
+    # it: saturation counts them, hits do not (3648 and 0 on x86-64).
+    third = centred_eight_schools().sample(
+        INFORMATIVE, seed=1, max_tree_depth=3, show_progress=False
+    ).transition_diagnostics()
+    assert third["total_max_tree_depth_hits"] * 10 < third["total_tree_depth_saturation"]
     hmc = centred_eight_schools().sample(
         INFORMATIVE, seed=1, sampler="hmc", num_leapfrog_steps=10, show_progress=False
     )
@@ -98,6 +123,8 @@ def test_transition_diagnostics_report_e_bfmi_and_saturation():
     assert telemetry["max_tree_depth_limit"] is None
     assert telemetry["total_tree_depth_saturation"] is None
     assert all(chain["tree_depth_saturation"] is None for chain in telemetry["chains"])
+    assert telemetry["total_max_tree_depth_hits"] is None
+    assert all(chain["max_tree_depth_hits"] is None for chain in telemetry["chains"])
 
 
 @pytest.mark.parametrize("seed", SEEDS)

@@ -1439,6 +1439,7 @@ mod tests {
                     step_size: 0.1,
                     num_leapfrog_steps: 4,
                     tree_depth: Some(2),
+                    termination: None,
                 },
                 TransitionStats {
                     is_warmup: false,
@@ -1450,6 +1451,7 @@ mod tests {
                     step_size: 0.1,
                     num_leapfrog_steps: 4,
                     tree_depth: Some(2),
+                    termination: None,
                 },
             ]],
             param_names: vec!["x".to_string()],
