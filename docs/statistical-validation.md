@@ -386,6 +386,31 @@ The Gaussian partial-pooling case uses noncentered effects. Centered funnel and
 centered eight-schools cases remain negative controls: poor recovery must produce a
 diagnostic signal. None of these checks establishes calibration under misspecification.
 
+## Exact posteriors for three Gibbs samplers
+
+The local level, the seasonal local level and the Gaussian hierarchical mean are each
+checked against their exact joint posterior, by a unit test in each sampler's module
+using `rust_core/src/exact_reference.rs`. Given its variances, each model is a sum of
+independent normal terms, so the observations' covariance is written from the model's
+definition, without the filter, FFBS or Gibbs conditionals the samplers use. A grid
+over the log variances, weighted by the inverse-gamma priors, gives the exact moments
+of every variance and, by Gaussian conditioning, of every latent mean: the terminal
+level or state, and the hierarchy's population, group and program means. Each test
+fits 4 chains of 25,000 draws at a fixed seed, on a short series or ragged collection
+with missing values, and holds each quantity's mean, and its mean squared deviation
+about the exact mean, within 4 Monte Carlo standard errors, the rule the NUTS gate
+uses.
+
+Each test also requires the same check to tell the draws from the prior's moments, so
+a sampler that ignored the data fails. Ten bugs planted by hand while the tests were
+written all failed them, among them an off-by-one count in one variance's update
+(missed by 22.7 MCSE), counting missing steps as observations, and a 10% error in one
+conjugate precision. Each grid agrees with a finer, wider one to within 3e-7 posterior
+standard deviations.
+
+These are small fixed datasets at one seed each. They check that each sampler targets
+the right posterior, not how fast it mixes on long series.
+
 ## Known limitation: forecasting samplers' mixing
 
 None of these gates covers the forecasting samplers' mixing. Several Gibbs/FFBS

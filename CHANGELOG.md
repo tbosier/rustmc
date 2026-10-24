@@ -6,6 +6,19 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Tests
+
+- The local-level, seasonal local-level and hierarchical-mean Gibbs samplers' draws
+  are checked against their exact joint posteriors, computed on a grid of variances
+  from the model's definition rather than the samplers' own filters. Before, the
+  hierarchy's sampler was never compared with a reference posterior, and the two
+  local-level samplers' variances only had to land within 20% to 30% of a simulation's
+  truth.
+  See "Exact posteriors for three Gibbs samplers" in `docs/statistical-validation.md`.
+- The hierarchy's `program_conditional_moments_match_analytic_adaptive_shrinkage`, which
+  checks a helper's arithmetic and not the sampler, is renamed
+  `normal_moments_from_precision_match_the_shrinkage_formula`.
+
 ## [0.15.0] - 2026-10-19
 
 This release changes how the default `metric="auto"` chooses a dense metric, gives
