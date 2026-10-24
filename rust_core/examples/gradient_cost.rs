@@ -25,8 +25,8 @@ enum Likelihood {
 fn graph(likelihood: Likelihood, rows: usize, columns: usize) -> (Graph, usize) {
     let mut g = Graph::new();
     let start = g.add_vector_params("beta", columns);
-    let prior = g.vector_normal_logp(start, columns, 0.0, 1.0);
-    g.add_logp_term(prior);
+    // `vector_normal_logp` adds itself to the log density.
+    g.vector_normal_logp(start, columns, 0.0, 1.0);
     let design = (0..rows * columns)
         .map(|i| ((i * 7919) % 1000) as f64 / 1000.0 - 0.5)
         .collect();

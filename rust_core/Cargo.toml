@@ -22,6 +22,9 @@ rand = "0.8"
 rand_chacha = "0.3"
 rand_distr = "0.4"
 faer = { version = "0.19", features = ["rayon"] }
+# The version faer 0.19 already depends on, used to run the narrow
+# matrix-product loops with FMA enabled where the CPU has it.
+pulp = "0.18"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 

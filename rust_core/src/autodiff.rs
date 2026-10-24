@@ -1676,27 +1676,26 @@ pub(crate) use reference::{eval_logp, grad_logp};
 
 /// Designs up to this many columns use the loops below; wider ones use faer.
 ///
-/// Measured with `examples/gradient_cost.rs` on a Ryzen 9 5900X, for a normal
-/// likelihood at 500 and 5,000 rows: at 8 columns the loops took 4.6 and 46 µs
-/// per gradient against faer's 9.4 and 93, at 64 columns 13 and 136 against 16
-/// and 142, and at 96 columns 18 and 185 against 17 and 166. faer's general
-/// `matmul` is slow on a narrow row-major product, and faster on wide ones,
-/// where its runtime choice of AVX2 and FMA kernels pays for itself.
+/// Measured with `examples/gradient_cost.rs` (records in
+/// `benchmarks/results/2026-10-24-gradient-cost.txt`): the loops are several
+/// times faster on narrow designs, faer's general `matmul` being slow on a
+/// narrow row-major product, and faer is faster from about 96 columns, where
+/// its wider kernels pay for themselves.
 const LOOP_MAX_COLUMNS: usize = 64;
 
 /// `out[i] += row_i · beta` for the row-major `rows x beta.len()` matrix.
-///
-/// The loops keep the summation order fixed, so results do not depend on
-/// threads; four accumulators let the dot product use SIMD.
 fn add_matrix_times_vector(matrix: &[f64], rows: usize, beta: &[f64], out: &mut [f64]) {
     let columns = beta.len();
     if columns == 0 {
         return;
     }
-    if columns <= LOOP_MAX_COLUMNS {
-        for (row, out) in matrix.chunks_exact(columns).zip(out) {
-            *out += dot(row, beta);
-        }
+    if columns <= LOOP_MAX_COLUMNS
+        && with_fused_multiply_add(MatrixTimesVector {
+            matrix,
+            beta,
+            out: &mut *out,
+        })
+    {
         return;
     }
     use faer::{col, linalg::matmul::matmul, mat};
@@ -1717,12 +1716,13 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
     if columns == 0 {
         return;
     }
-    if columns <= LOOP_MAX_COLUMNS {
-        for (row, &weight) in matrix.chunks_exact(columns).zip(weights) {
-            for (sum, &entry) in target.iter_mut().zip(row) {
-                *sum += weight * entry;
-            }
-        }
+    if columns <= LOOP_MAX_COLUMNS
+        && with_fused_multiply_add(TransposeTimesVector {
+            matrix,
+            weights,
+            target: &mut *target,
+        })
+    {
         return;
     }
     use faer::{col, linalg::matmul::matmul, mat};
@@ -1734,6 +1734,75 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
         1.0,
         FAER_PARALLELISM,
     );
+}
+
+/// Runs `kernel` where `f64::mul_add` is a hardware fused multiply-add, and
+/// returns whether it ran.
+///
+/// The loops accumulate with `mul_add`, as faer's kernels do on a CPU with
+/// FMA: one rounding per term, and no overflow in a product whose sum is
+/// representable (`2 * 1e308 - 1e308` is `1e308`, not `inf`). Without the
+/// hardware instruction `mul_add` is a slow library call, so on x86-64 CPUs
+/// without AVX2 and FMA this returns `false` and the caller uses faer.
+fn with_fused_multiply_add<K: pulp::WithSimd<Output = ()>>(kernel: K) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        match pulp::x86::V3::try_new() {
+            Some(simd) => {
+                <pulp::x86::V3 as pulp::Simd>::vectorize(simd, kernel);
+                true
+            }
+            None => false,
+        }
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        // Fused multiply-add is part of the base aarch64 instruction set.
+        kernel.with_simd(pulp::Scalar::new());
+        true
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    {
+        let _ = kernel;
+        false
+    }
+}
+
+struct MatrixTimesVector<'a> {
+    matrix: &'a [f64],
+    beta: &'a [f64],
+    out: &'a mut [f64],
+}
+
+impl pulp::WithSimd for MatrixTimesVector<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, _simd: S) {
+        for (row, out) in self.matrix.chunks_exact(self.beta.len()).zip(self.out) {
+            *out += dot(row, self.beta);
+        }
+    }
+}
+
+struct TransposeTimesVector<'a> {
+    matrix: &'a [f64],
+    weights: &'a [f64],
+    target: &'a mut [f64],
+}
+
+impl pulp::WithSimd for TransposeTimesVector<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, _simd: S) {
+        let columns = self.target.len();
+        for (row, &weight) in self.matrix.chunks_exact(columns).zip(self.weights) {
+            for (sum, &entry) in self.target.iter_mut().zip(row) {
+                *sum = weight.mul_add(entry, *sum);
+            }
+        }
+    }
 }
 
 /// The parallelism the wide products hand faer.
@@ -1748,18 +1817,19 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
 /// that a parallel product still gives seeded sampling the same bits.
 const FAER_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
 
+/// A dot product in four interleaved fused accumulators, so its summation
+/// order is fixed and does not depend on threads.
+#[inline(always)]
 fn dot(a: &[f64], b: &[f64]) -> f64 {
     let mut lanes = [0.0f64; 4];
     let (a_chunks, b_chunks) = (a.chunks_exact(4), b.chunks_exact(4));
-    let tail = a_chunks
-        .remainder()
-        .iter()
-        .zip(b_chunks.remainder())
-        .map(|(x, y)| x * y)
-        .sum::<f64>();
+    let mut tail = 0.0f64;
+    for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
+        tail = x.mul_add(*y, tail);
+    }
     for (x, y) in a_chunks.zip(b_chunks) {
         for lane in 0..4 {
-            lanes[lane] += x[lane] * y[lane];
+            lanes[lane] = x[lane].mul_add(y[lane], lanes[lane]);
         }
     }
     (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]) + tail
