@@ -591,8 +591,14 @@ mod tests {
         }
         observations[7] = f64::NAN;
         observations[steps - 1] = f64::NAN;
+        // The two priors differ in shape as well as scale, so an update
+        // that reads the other variance's prior shows.
         let config = BayesianLocalLevelConfig {
             initial_mean: 0.5,
+            observation_variance_prior: InverseGammaPrior {
+                shape: 4.0,
+                scale: 1.2,
+            },
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,

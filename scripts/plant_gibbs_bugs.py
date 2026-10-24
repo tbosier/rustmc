@@ -4,9 +4,12 @@
 Each mutation replaces one piece of sampler code, runs the matching unit test in
 release mode, and restores the file. A bug counts as caught only when the test
 ran and failed one of its moment checks; any other failure, such as a build
-error, stops the script. The unmutated tests must pass first. Before each
-mutation the original file is copied beside it as `*.unmutated`; if the script
-is killed, the next run restores any such copy before doing anything else.
+error, stops the script, and so does a failure caught only by the ESS floor or a
+control. The unmutated tests must pass first. Before each mutation the original
+file is copied beside it as `*.unmutated`, and the copy is removed once the file
+is restored. If the script is killed mid-mutation, the copy remains and the next
+run refuses to start until someone restores or deletes it by hand, so a later
+edit to the file is never overwritten.
 
     python3 scripts/plant_gibbs_bugs.py            # the planted bugs
     python3 scripts/plant_gibbs_bugs.py --seeds 100 [FIRST]  # false alarms
@@ -36,12 +39,18 @@ MUTATIONS = [
     ("observation variance counts missing steps", LOCAL_LEVEL, None,
      "                observed_count,\n                observation_sum_sq,",
      "                observations.len(),\n                observation_sum_sq,"),
+    ("observation variance updated from the process variance's prior", LOCAL_LEVEL, None,
+     "*observation_variance = config.observation_variance_prior.conditional_draw(",
+     "*observation_variance = config.process_variance_prior.conditional_draw("),
     ("process sum of squares 15% low", LOCAL_LEVEL, None,
      "                process_sum_sq,\n                rng,",
      "                0.85 * process_sum_sq,\n                rng,"),
     ("seasonal residual uses 90% of the previous effects", SEASONAL, None,
      "let seasonal_residual = pair[1][1] + pair[0][1..].iter().sum::<f64>();",
      "let seasonal_residual = pair[1][1] + 0.9 * pair[0][1..].iter().sum::<f64>();"),
+    ("seasonal variance updated from the level variance's prior", SEASONAL, None,
+     "*seasonal_variance = config.seasonal_variance_prior.conditional_draw(",
+     "*seasonal_variance = config.level_variance_prior.conditional_draw("),
     ("seasonal variance counts one transition too few", SEASONAL, None,
      "                transitions,\n                seasonal_sum_sq,",
      "                transitions - 1,\n                seasonal_sum_sq,"),
@@ -99,12 +108,9 @@ def run(test, environment=None):
     return passed, output
 
 
-def restore_backups():
-    for backup in Path("rust_core/src").glob("*" + BACKUP_SUFFIX):
-        original = backup.with_name(backup.name[: -len(BACKUP_SUFFIX)])
-        original.write_text(backup.read_text())
-        backup.unlink()
-        print(f"restored {original} from an interrupted run")
+def leftover_backups():
+    """Copies left by a run that was killed mid-mutation."""
+    return sorted(Path("rust_core/src").glob("*" + BACKUP_SUFFIX))
 
 
 def worst_miss(output):
@@ -144,7 +150,13 @@ def seed_study(first, last):
 
 
 def main():
-    restore_backups()
+    leftovers = leftover_backups()
+    if leftovers:
+        print("an earlier run was interrupted; compare each file with its copy, restore it "
+              "with `mv COPY FILE` if it is still mutated, or delete the copy:")
+        for backup in leftovers:
+            print(f"  {backup}")
+        return 1
     if len(sys.argv) in (3, 4) and sys.argv[1] == "--seeds":
         first = int(sys.argv[3]) if len(sys.argv) == 4 else 1
         return seed_study(first, first + int(sys.argv[2]) - 1)
@@ -168,6 +180,10 @@ def main():
         finally:
             path.write_text(original)
             backup.unlink()
+        if not passed and " MCSE from the exact " not in output:
+            print(f"{description}: failed only on the ESS floor or a control, not a moment:\n"
+                  f"{output[-3000:]}")
+            return 1
         print(f"{'ESCAPED' if passed else 'caught '}  {description}: {worst_miss(output)}")
         if passed:
             escaped.append(description)

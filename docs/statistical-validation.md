@@ -429,22 +429,27 @@ groups, and the seasonal test uses nonzero initial effects placed as documented,
 cycle in forecast order. The initial states' independence and variances are taken from
 the constructor rather than checked.
 
-`scripts/plant_gibbs_bugs.py` plants 14 bugs of those kinds and in the conjugate
+`scripts/plant_gibbs_bugs.py` plants 16 bugs of those kinds and in the conjugate
 updates' counts and sums, and counts one as caught only when its test ran and missed a
-moment. Every one is caught; the narrowest, reading the initial seasonal effects in
-reverse, misses by 6.3 MCSE. Each comparison's tolerance is the normal quantile
-that holds the chance of any one of a test's comparisons missing to 0.1%, and never
-below 4 MCSE: 4.00, 4.25 and 4.51 in the three tests. At a flat 4 MCSE the hierarchy
-failed 4 of 100 seeds of the correct sampler, each by a single comparison at 4.1 to 4.3,
-which is how the rule was chosen. `scripts/plant_gibbs_bugs.py --seeds 100 101` then
-reruns each test on 100 seeds not used to choose it: 1 of the 300 runs failed, the
-seasonal test at seed 192 with one comparison at 4.52 MCSE. That rate is above the
-0.1% the rule aims at, so its estimated MCSEs are somewhat optimistic. The committed
-tests use fixed seeds, so this matters only when a change moves the samplers' draws.
+moment, not when it failed only on the ESS floor or a control. Every one is caught; the
+narrowest, reading the initial seasonal effects in reverse, misses by 5.9 MCSE.
+
+Each comparison's tolerance is the normal quantile that would hold the chance of any
+of a test's comparisons missing to 0.1% if their standardized errors were normal, and
+never below 4 MCSE: 4.00, 4.25 and 4.51 in the three tests. Estimated MCMC errors are
+only roughly normal, so 0.1% is a target. At a flat 4 MCSE the hierarchy failed 4 of
+100 seeds of the correct sampler, each by a single comparison at 4.1 to 4.3, which is
+how the rule was chosen. `scripts/plant_gibbs_bugs.py --seeds 100 101` reruns each test
+on seed offsets 101 to 200, which were not used to choose it: 1 of the 300 runs failed,
+the seasonal test at offset 161 (sampler seed 168), by one comparison at 4.42 MCSE.
+One failure in 300 neither confirms nor rules out the target. The committed tests use
+fixed seeds, so a chance failure can only appear when a change moves the samplers'
+draws.
 
 These are small fixed datasets. They check that each sampler targets the right
 posterior, not how fast it mixes on long series. The hierarchy's test integrates about
-2.1 million grid points and takes about 15 seconds in a release build.
+2.1 million grid points; the three tests together took 16 seconds in a release build on
+a 12-core Ryzen 9 5900X. CI runs them on Linux only.
 
 ## Known limitation: forecasting samplers' mixing
 

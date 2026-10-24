@@ -507,7 +507,11 @@ mod tests {
             observations.push(level + effect + standard_normal(&mut rng) * 0.5);
         }
         observations[5] = f64::NAN;
+        // The three priors differ in shape as well as scale, so an update
+        // that reads another variance's prior shows.
         let config = BayesianSeasonalLocalLevelConfig {
+            seasonal_variance_prior: InverseGammaPrior::new(4.0, 0.15).unwrap(),
+            observation_variance_prior: InverseGammaPrior::new(3.5, 0.6).unwrap(),
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,

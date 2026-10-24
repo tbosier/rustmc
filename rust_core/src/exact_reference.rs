@@ -143,7 +143,14 @@ impl ExactPosterior {
         let count = self.quantity_count();
         let sd = |a: usize| self.moments(a).sd;
         let mut worst = (0.0f64, String::new());
+        // A NaN difference, such as 0 / 0 on a grid that collapsed onto
+        // one point, counts as the largest possible.
         let mut consider = |difference: f64, label: &dyn Fn() -> String| {
+            let difference = if difference.is_nan() {
+                f64::INFINITY
+            } else {
+                difference
+            };
             if difference > worst.0 {
                 worst = (difference, label());
             }
@@ -237,7 +244,7 @@ pub(crate) fn exact_posterior(
         axes.iter().all(|axis| axis.points % 2 == 1),
         "an odd number of points holds a grid of twice the spacing"
     );
-    let (fine, coarse) = integrate(model, priors, axes);
+    let (fine, coarse) = integrate(model, priors, axes, true);
     for (k, coarse) in coarse.iter().enumerate() {
         let (coarser, moment) = fine.largest_difference(coarse);
         assert!(
@@ -247,7 +254,7 @@ pub(crate) fn exact_posterior(
         );
     }
     let widened = axes.iter().map(|axis| axis.widened()).collect::<Vec<_>>();
-    let (wide, _) = integrate(model, priors, &widened);
+    let (wide, _) = integrate(model, priors, &widened, false);
     let (wider, moment) = fine.largest_difference(&wide);
     if wider >= WIDENING_TOLERANCE {
         // Name the axis whose widening moves the moments most.
@@ -257,7 +264,8 @@ pub(crate) fn exact_posterior(
                 one[k] = axes[k].widened();
                 (
                     k,
-                    fine.largest_difference(&integrate(model, priors, &one).0).0,
+                    fine.largest_difference(&integrate(model, priors, &one, false).0)
+                        .0,
                 )
             })
             .fold(
@@ -336,6 +344,7 @@ fn integrate(
     model: &LinearGaussianModel,
     priors: &[InverseGammaPrior],
     axes: &[Axis],
+    half_resolution: bool,
 ) -> (ExactPosterior, Vec<ExactPosterior>) {
     let dimension = priors.len();
     let observed = model.observed.len();
@@ -347,7 +356,8 @@ fn integrate(
         .map(|(quantity, value)| value - quantity.constant)
         .collect::<Vec<_>>();
     let mut fine = Sums::new(count, dimension);
-    let mut coarse = (0..dimension)
+    let halved = if half_resolution { dimension } else { 0 };
+    let mut coarse = (0..halved)
         .map(|_| Sums::new(count, dimension))
         .collect::<Vec<_>>();
 
@@ -550,18 +560,21 @@ const MIN_MCSE_TOLERANCE: f64 = 4.0;
 const FAMILY_FALSE_ALARM: f64 = 0.001;
 
 /// The tolerance for each of `comparisons` estimates: the two-sided normal
-/// quantile that holds the chance any one of them misses to
-/// `FAMILY_FALSE_ALARM`, and never less than `MIN_MCSE_TOLERANCE`. At 4 MCSE
-/// each, the hierarchy's 152 comparisons failed 4 of 100 seeds of a correct
-/// sampler, each by a single comparison at 4.1 to 4.3.
+/// quantile that would hold the chance any one of them misses to
+/// `FAMILY_FALSE_ALARM` if their standardized errors were normal, and never
+/// less than `MIN_MCSE_TOLERANCE`. Estimated MCMC errors are only roughly
+/// normal, so the rate is a target, not a guarantee. At 4 MCSE each, the
+/// hierarchy's 152 comparisons failed 4 of 100 seeds of a correct sampler,
+/// each by a single comparison at 4.1 to 4.3.
 fn mcse_tolerance(comparisons: usize) -> f64 {
     let quantile =
         crate::diagnostics::inv_normal_cdf(1.0 - FAMILY_FALSE_ALARM / (2.0 * comparisons as f64));
     quantile.max(MIN_MCSE_TOLERANCE)
 }
-/// The smallest bulk ESS a checked estimate may rest on, as in the NUTS gate,
-/// so stuck chains cannot pass by inflating an MCSE.
-const MIN_ESS_BULK: f64 = 400.0;
+/// The smallest bulk ESS, as in the NUTS gate, and the smallest raw ESS a
+/// checked estimate may rest on, so stuck chains or a block of bad draws
+/// cannot pass by inflating an MCSE.
+const MIN_ESS: f64 = 400.0;
 
 /// A sampler's draws of every quantity of an `ExactPosterior`, in its order,
 /// as `[quantity][chain][draw]` with each quantity's name.
@@ -595,10 +608,11 @@ impl std::fmt::Debug for Failure {
 /// squared deviation about the exact mean, the mean of every pairwise product
 /// of deviations, and the mean of each variance times each latent's squared
 /// deviation. Each must lie within `mcse_tolerance` of the number of
-/// comparisons, in Monte Carlo standard errors, of its exact value and rest on a bulk ESS of at least `MIN_ESS_BULK`. A mean's
-/// MCSE uses the exact standard deviation, so an outlier cannot widen its own
-/// tolerance; the other checks have no exact fourth moments to use and estimate
-/// theirs from the draws.
+/// comparisons, in Monte Carlo standard errors, of its exact value, and rest on
+/// a bulk ESS and a raw ESS of at least `MIN_ESS`. A mean's MCSE uses the exact
+/// standard deviation, and the ESS floor bounds how far poor mixing can widen
+/// it; the other checks have no exact fourth moments to use and estimate their
+/// standard deviations from the draws.
 pub(crate) fn check_posterior(draws: &Draws, exact: &ExactPosterior) -> Vec<Failure> {
     let count = exact.quantity_count();
     assert_eq!(draws.len(), count, "one set of draws per quantity");
@@ -715,18 +729,19 @@ impl<'a> Estimate<'a> {
         let count = all.len() as f64;
         let mean = all.iter().sum::<f64>() / count;
         let bulk = crate::diagnostics::ess_bulk_chains(chains);
+        let raw = crate::diagnostics::ess_raw(chains);
         // A NaN (draws that never move) fails rather than passing every
         // comparison against it.
-        if bulk.is_nan() || bulk < MIN_ESS_BULK {
+        if bulk.is_nan() || raw.is_nan() || bulk.min(raw) < MIN_ESS {
             failures.push(Failure::LowEss(format!(
-                "{name}: bulk ESS {bulk} is below {MIN_ESS_BULK}"
+                "{name}: bulk ESS {bulk} or raw ESS {raw} is below {MIN_ESS}"
             )));
             return f64::INFINITY;
         }
         let sd = exact_sd.unwrap_or_else(|| {
             (all.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (count - 1.0)).sqrt()
         });
-        let mcse = sd / crate::diagnostics::ess_raw(chains).sqrt();
+        let mcse = sd / raw.sqrt();
         let error = (mean - exact).abs() / mcse;
         if error.is_nan() || error >= tolerance {
             failures.push(Failure::Missed(
@@ -914,6 +929,24 @@ mod tests {
         exact_posterior(&model, &[prior], &[axis(-10.0, 6.0, 61)]);
     }
 
+    /// `InverseGamma(10000, 10000)` is about 0.01 wide in log coordinates, so
+    /// five points 0.5 apart put all its weight on the one at `v = 1`, where
+    /// every moment's spread is zero. The 0 / 0 that leaves is a failure.
+    #[test]
+    #[should_panic(expected = "halving the grid's resolution along axis 0")]
+    fn a_grid_that_collapses_onto_one_point_is_refused() {
+        let model = LinearGaussianModel {
+            terms: vec![Fixed(1.0)],
+            observed: vec![(Linear::term(0, 1), 0.3)],
+            latents: Vec::new(),
+        };
+        let prior = InverseGammaPrior {
+            shape: 10_000.0,
+            scale: 10_000.0,
+        };
+        exact_posterior(&model, &[prior], &[axis(-1.0, 1.0, 5)]);
+    }
+
     #[test]
     fn draws_that_never_move_stuck_chains_and_an_outlier_fail() {
         let check = |chains: &[Vec<f64>]| {
@@ -947,7 +980,13 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(check(&chains).is_empty());
+        let clean = chains.clone();
         chains[2][100] = 1e8;
         assert!(matches!(check(&chains)[..], [Failure::Missed(..)]));
+        // A block of 1,000 draws shifted by 10 keeps bulk ESS above 400 but
+        // drags raw ESS, and with it the MCSE, far enough to pass otherwise.
+        let mut shifted = clean;
+        shifted[1][5_000..6_000].iter_mut().for_each(|x| *x += 10.0);
+        assert!(matches!(check(&shifted)[..], [Failure::LowEss(..)]));
     }
 }
