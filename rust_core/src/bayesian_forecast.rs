@@ -578,7 +578,7 @@ mod tests {
     fn draws_match_the_exact_posterior_of_both_variances_and_the_terminal_level() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
         use crate::exact_reference::{
-            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+            assert_matches, exact_posterior, seed_offset, Axis, Linear, LinearGaussianModel,
         };
 
         let mut rng = ChaCha8Rng::seed_from_u64(1203);
@@ -596,7 +596,7 @@ mod tests {
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,
-            ..compact_config(1204)
+            ..compact_config(1204 + seed_offset())
         };
 
         // Terms: the initial state x[-1], one innovation per step, and one
@@ -625,7 +625,22 @@ mod tests {
             config.process_variance_prior,
             config.observation_variance_prior,
         ];
-        let exact = exact_posterior(&model, &priors, -9.0, 7.0, 150);
+        let exact = exact_posterior(
+            &model,
+            &priors,
+            &[
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 91,
+                },
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 91,
+                },
+            ],
+        );
 
         let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
         let draws = |name: &str, pick: &dyn Fn(&LocalLevelPosteriorDraw) -> f64| {

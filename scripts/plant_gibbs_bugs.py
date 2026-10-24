@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
-"""Plant bugs in the Gibbs samplers and check that their exact-posterior tests fail.
+"""Plant bugs in the Gibbs samplers and check that their exact-posterior tests catch them.
 
-Each mutation replaces one line of sampler code, runs the matching unit test in
-release mode, and restores the file, whatever happens. The unmutated tests must
-pass first. Exit status 1 means a test passed with a bug planted, or failed
-without one. Run from the repository root:
+Each mutation replaces one piece of sampler code, runs the matching unit test in
+release mode, and restores the file. A bug counts as caught only when the test
+ran and failed one of its moment checks; any other failure, such as a build
+error, stops the script. The unmutated tests must pass first. Before each
+mutation the original file is copied beside it as `*.unmutated`; if the script
+is killed, the next run restores any such copy before doing anything else.
 
-    python3 scripts/plant_gibbs_bugs.py
+    python3 scripts/plant_gibbs_bugs.py            # the planted bugs
+    python3 scripts/plant_gibbs_bugs.py --seeds 100 [FIRST]  # false alarms
 
-It takes a few minutes, most of it rebuilding the test binary once per mutation.
+`--seeds N` plants nothing: it reruns each test with `RUSTMC_EXACT_SEED_OFFSET`
+set to FIRST (default 1) through FIRST + N - 1, counts the runs that fail, and reports the largest of each
+run's worst comparison, in MCSE, against the test's tolerance. Exit status 1 means a planted
+bug escaped, or an unmutated test failed. Run from the repository root.
 """
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -68,13 +75,36 @@ MUTATIONS = [
 ]
 
 
-def run(test):
-    command = ["cargo", "test", "--release", "-p", "rustmc_core", "--lib", test]
-    result = subprocess.run(command, capture_output=True, text=True)
+BACKUP_SUFFIX = ".unmutated"
+
+# What a failed moment check prints: a missed exact value, too little bulk ESS,
+# or a control that could not fail.
+CHECK_FAILURES = (" MCSE from the exact ", "bulk ESS", "the checks cannot")
+
+
+def run(test, environment=None):
+    """Run one test; return whether it passed and its output. Raise unless the
+    test ran: a build or harness failure is not a caught bug."""
+    # --nocapture shows the margin report a passing test prints.
+    command = ["cargo", "test", "--release", "-p", "rustmc_core", "--lib", test, "--", "--nocapture"]
+    result = subprocess.run(command, capture_output=True, text=True,
+                            env=None if environment is None else {**os.environ, **environment})
     output = result.stdout + result.stderr
-    if "error[" in output:
-        raise RuntimeError(f"the build failed:\n{output[-2000:]}")
-    return result.returncode == 0, output
+    if "running 1 test" not in output or "test result:" not in output:
+        raise RuntimeError(f"{test} did not run:\n{output[-3000:]}")
+    passed = result.returncode == 0 and "test result: ok. 1 passed" in output
+    if not passed and not any(marker in output for marker in CHECK_FAILURES):
+        raise RuntimeError(f"{test} failed for a reason other than a moment check:\n"
+                           f"{output[-3000:]}")
+    return passed, output
+
+
+def restore_backups():
+    for backup in Path("rust_core/src").glob("*" + BACKUP_SUFFIX):
+        original = backup.with_name(backup.name[: -len(BACKUP_SUFFIX)])
+        original.write_text(backup.read_text())
+        backup.unlink()
+        print(f"restored {original} from an interrupted run")
 
 
 def worst_miss(output):
@@ -85,13 +115,39 @@ def worst_miss(output):
         if " MCSE from the exact " in line
     ]
     if not misses:
-        return next((line.strip() for line in output.splitlines() if "ESS" in line), "no MCSE line")
-    count = len(misses)
-    largest = max(misses)[1]
-    return f"{count} checks failed, worst {largest[:120]}"
+        return next((line.strip() for line in output.splitlines()
+                     if any(marker in line for marker in CHECK_FAILURES)), "")
+    return f"{len(misses)} checks missed, worst {max(misses)[1][:120]}"
+
+
+def seed_study(first, last):
+    """Rerun each test on other seeds; report failures and the worst margin."""
+    failing = 0
+    seeds = last - first + 1
+    for _, test in (LOCAL_LEVEL, SEASONAL, HIERARCHY):
+        failures, margins, tolerance = [], [], None
+        for offset in range(first, last + 1):
+            environment = {"RUSTMC_EXACT_SEED_OFFSET": str(offset), "RUSTMC_EXACT_REPORT": "1"}
+            passed, output = run(test, environment)
+            # The first report is the sampler's draws; later ones are controls.
+            report = next(line for line in output.splitlines() if line.startswith("worst comparison:"))
+            margins.append(float(report.split()[2]))
+            tolerance = float(report.split("tolerance ")[1].split()[0])
+            if not passed:
+                failures.append(offset)
+        margins.sort()
+        print(f"{test}: {len(failures)} of {seeds} seeds failed {failures}; worst comparison "
+              f"median {margins[len(margins) // 2]:.2f}, largest {margins[-1]:.2f} MCSE, "
+              f"tolerance {tolerance:.2f}", flush=True)
+        failing += bool(failures)
+    return 1 if failing else 0
 
 
 def main():
+    restore_backups()
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--seeds":
+        first = int(sys.argv[3]) if len(sys.argv) == 4 else 1
+        return seed_study(first, first + int(sys.argv[2]) - 1)
     for _, test in (LOCAL_LEVEL, SEASONAL, HIERARCHY):
         passed, output = run(test)
         if not passed:
@@ -104,11 +160,14 @@ def main():
         if original.count(old) != 1:
             print(f"{description}: the text to mutate is not in {path} exactly once")
             return 1
+        backup = path.with_name(path.name + BACKUP_SUFFIX)
+        backup.write_text(original)
         try:
             path.write_text(original.replace(old, new))
             passed, output = run(test)
         finally:
             path.write_text(original)
+            backup.unlink()
         print(f"{'ESCAPED' if passed else 'caught '}  {description}: {worst_miss(output)}")
         if passed:
             escaped.append(description)

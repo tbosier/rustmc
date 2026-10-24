@@ -779,7 +779,7 @@ mod tests {
     fn draws_match_the_exact_posterior_of_every_variance_and_mean() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
         use crate::exact_reference::{
-            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+            assert_matches, exact_posterior, seed_offset, Axis, Linear, LinearGaussianModel,
         };
 
         let series = vec![
@@ -810,7 +810,7 @@ mod tests {
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,
-            ..config(41)
+            ..config(41 + seed_offset())
         };
         let group_count = 3;
         let observed = series
@@ -865,7 +865,27 @@ mod tests {
             config.program_variance_prior,
             config.observation_variance_prior,
         ];
-        let exact = exact_posterior(&model, &priors, -6.0, 11.0, 66);
+        let exact = exact_posterior(
+            &model,
+            &priors,
+            &[
+                Axis {
+                    low: -5.0,
+                    high: 12.0,
+                    points: 131,
+                },
+                Axis {
+                    low: -3.0,
+                    high: 8.0,
+                    points: 75,
+                },
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 61,
+                },
+            ],
+        );
 
         let posterior = fit_hierarchical_mean(&series, &groups, &config).unwrap();
         let draws = |name: String, pick: &dyn Fn(&HierarchicalMeanPosteriorDraw) -> f64| {

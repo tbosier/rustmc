@@ -482,12 +482,14 @@ mod tests {
     /// effect plus error. Written from that definition, without the
     /// state-space matrices or FFBS the sampler uses. The initial effects are
     /// placed as documented, one cycle in forecast order: their expected value
-    /// at step `t` is `initial_seasonal_effects[t % period]`.
+    /// at step `t` is `initial_seasonal_effects[t % period]`. The initial
+    /// states' independence and variances follow `seasonal_local_level`, so
+    /// this test does not check them.
     #[test]
     fn draws_match_the_exact_posterior_of_every_variance_and_the_terminal_state() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
         use crate::exact_reference::{
-            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+            assert_matches, exact_posterior, seed_offset, Axis, Linear, LinearGaussianModel,
         };
         use rand::SeedableRng;
 
@@ -509,6 +511,7 @@ mod tests {
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,
+            seed: 7 + seed_offset(),
             ..config()
         };
         let initial = &config.initial_seasonal_effects;
@@ -561,7 +564,27 @@ mod tests {
             config.seasonal_variance_prior,
             config.observation_variance_prior,
         ];
-        let exact = exact_posterior(&model, &priors, -10.0, 6.0, 60);
+        let exact = exact_posterior(
+            &model,
+            &priors,
+            &[
+                Axis {
+                    low: -6.0,
+                    high: 2.0,
+                    points: 55,
+                },
+                Axis {
+                    low: -8.0,
+                    high: 3.0,
+                    points: 75,
+                },
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 61,
+                },
+            ],
+        );
 
         let posterior = fit_bayesian_seasonal_local_level(&observations, &config).unwrap();
         let draws = |name: String, pick: &dyn Fn(&SeasonalLocalLevelPosteriorDraw) -> f64| {

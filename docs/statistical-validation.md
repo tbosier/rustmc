@@ -394,35 +394,57 @@ sampler's module using `rust_core/src/exact_reference.rs`. Given its variances, 
 model is a sum of independent normal terms, so the observations' covariance is written
 from the model's definition, without the filter, FFBS or Gibbs conditionals the
 samplers use. A trapezoid rule over a grid of log variances, weighted by the
-inverse-gamma priors, gives the exact moments of the variances and, by Gaussian
+inverse-gamma priors, gives the moments of the variances and, by Gaussian
 conditioning, of the latent means: the terminal level or state, and the hierarchy's
-population, group and program means. The same integral over a grid two units wider at
-each end must agree to within 1e-6 standard deviations, so a grid that cuts off a tail
-fails instead of producing a wrong reference, and a conjugate case checks the
-integration against its closed form to 1e-9.
+population, group and program means.
 
-Each test fits 4 chains of 25,000 draws at a fixed seed, on a short series or ragged
-collection with missing values. It compares each quantity's mean and variance, the
-covariance of every pair, and each variance times each latent's squared deviation,
-where a hierarchy's dependence between a spread and the means it governs shows. Each
-estimate must lie within 4 Monte Carlo standard errors of its exact value and rest on
-an ESS of at least 400, the rules of the NUTS gate, so draws that never move or chains
-that disagree fail rather than passing on an inflated error. Matching these moments is
-necessary for the right posterior, not sufficient: higher moments are not compared.
+Two checks guard each grid, and a test fails if either does. Along each variance's
+axis in turn, the integral on every other point must agree with the full grid to 1e-4
+of the quantities' standard deviations, so an axis too coarse for its posterior fails.
+The integral on a grid at least two units wider at each end must agree to 1e-6, so an
+axis that cuts off a tail fails. Agreement is evidence that the grid has converged,
+not a bound on its error. Separate unit tests check the integration against a
+conjugate variance's closed form and the conditioning against a normal update, both to
+1e-9 or better, and check that a grid too coarse or too narrow is refused.
 
-Each test has two controls. The variances' draws must be distinguishable from the
-prior's moments, and the same draws with each quantity shifted by a different number of
-iterations, which keeps every marginal and breaks every dependence, must fail. The
-hierarchy gives each variance its own prior, a nonzero population prior mean and
-unequal, interleaved groups, and the seasonal test uses nonzero initial effects, so
-miswired priors and misread memberships or initial effects show.
-`scripts/plant_gibbs_bugs.py` plants 14 bugs of those kinds and of the conjugate
-updates' counts and sums, and every one fails its test; the narrowest miss, reading the
-initial seasonal effects in reverse, is 6.3 MCSE. Over 20 further sampler seeds per
-test, none of the three failed without a bug.
+Each test fits 4 chains of 25,000 draws on a short series or ragged collection with
+missing values. It compares each quantity's mean and variance, the covariance of every
+pair, and each variance times each latent's squared deviation, where a hierarchy's
+dependence between a spread and the means it governs shows: 11, 47 and 152 comparisons
+in the three tests. Each estimate must lie within a tolerance, below, in Monte Carlo
+standard errors of its exact value and rest on a bulk ESS of at least 400, as in the
+NUTS gate, so draws that never move or chains stuck apart fail. A mean's MCSE uses the exact standard
+deviation, so an outlier cannot widen its own tolerance. The second-moment checks have
+no exact fourth moments to use, estimate theirs from the draws, and a few symmetric
+outliers could still hide in them. Matching these moments is necessary for the right
+posterior, not sufficient: higher moments are not compared.
+
+Each test has two controls that must fail for the reason they exist. The variances'
+draws, compared with the prior's mean and variance, must miss them, so a sampler that
+ignored the data fails. The same draws with each quantity rotated by a different
+number of iterations, which keeps every marginal's values and takes the quantities'
+draws from different iterations, must miss a dependence check. The hierarchy gives
+each variance its own prior, a nonzero population prior mean and unequal, interleaved
+groups, and the seasonal test uses nonzero initial effects placed as documented, one
+cycle in forecast order. The initial states' independence and variances are taken from
+the constructor rather than checked.
+
+`scripts/plant_gibbs_bugs.py` plants 14 bugs of those kinds and in the conjugate
+updates' counts and sums, and counts one as caught only when its test ran and missed a
+moment. Every one is caught; the narrowest, reading the initial seasonal effects in
+reverse, misses by 6.3 MCSE. Each comparison's tolerance is the normal quantile
+that holds the chance of any one of a test's comparisons missing to 0.1%, and never
+below 4 MCSE: 4.00, 4.25 and 4.51 in the three tests. At a flat 4 MCSE the hierarchy
+failed 4 of 100 seeds of the correct sampler, each by a single comparison at 4.1 to 4.3,
+which is how the rule was chosen. `scripts/plant_gibbs_bugs.py --seeds 100 101` then
+reruns each test on 100 seeds not used to choose it: 1 of the 300 runs failed, the
+seasonal test at seed 192 with one comparison at 4.52 MCSE. That rate is above the
+0.1% the rule aims at, so its estimated MCSEs are somewhat optimistic. The committed
+tests use fixed seeds, so this matters only when a change moves the samplers' draws.
 
 These are small fixed datasets. They check that each sampler targets the right
-posterior, not how fast it mixes on long series.
+posterior, not how fast it mixes on long series. The hierarchy's test integrates about
+2.1 million grid points and takes about 15 seconds in a release build.
 
 ## Known limitation: forecasting samplers' mixing
 

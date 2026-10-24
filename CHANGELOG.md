@@ -14,7 +14,8 @@ versioning while the public API is stabilized.
   model's definition rather than the samplers' own filters. Before, the hierarchy's
   sampler was never compared with a reference posterior, and the two local-level
   samplers' variances only had to land within 20% to 30% of a simulation's truth.
-  `scripts/plant_gibbs_bugs.py` checks that 14 planted bugs fail the new tests. See
+  `scripts/plant_gibbs_bugs.py` checks that 14 planted bugs fail the new tests and
+  measures false alarms over sampler seeds. See
   "Exact posteriors for three Gibbs samplers" in `docs/statistical-validation.md`.
 - The hierarchy's `program_conditional_moments_match_analytic_adaptive_shrinkage`, which
   checks a helper's arithmetic and not the sampler, is renamed
