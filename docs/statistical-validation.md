@@ -202,8 +202,11 @@ On a 400-row regression with 50 coefficients whose columns are correlated at 0.9
 500 warmup and 200 draws, `auto` took under half the diagonal metric's leapfrog steps
 and at most 1.5 times the dense metric's on 52 of 60 datasets with faer's matrix
 products and on 51 of 60 with the fused loops that replaced them for narrow designs.
-The misses fell on different datasets, all but one: data seed 28 missed under both. A
-fit that misses takes about 7 times dense's steps. The per-dataset numbers are in
+The misses fell on different datasets, all but one: data seed 28 missed under both. Of
+the 8 and 9 misses, 4 and 7 were narrow, at 1.5 to 2 times dense's steps; the others
+lost the dense metric and took 4 to 13 times. `benchmarks/auto_dense_panels.py` turns
+the record into the thresholds of the test below, which catches a rule that stops
+choosing dense or loses it on about half the datasets; a smaller loss needs the study. The per-dataset numbers are in
 `benchmarks/results/2026-10-24-auto-dense-50d.txt`, from the ignored study test
 `correlated_coefficients_study` in `rust_core/src/nuts.rs`, and
 `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checks datasets

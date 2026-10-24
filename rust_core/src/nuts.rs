@@ -1226,16 +1226,19 @@ mod tests {
         // keeps the benefit turns on rounding, so a single seed would pass or
         // fail on how a product sums. `correlated_coefficients_study`
         // recorded data seeds 1 to 60 under faer's matrix products and under
-        // the loops that replaced them for narrow designs
+        // the fused loops that replaced them for narrow designs
         // (`benchmarks/results/2026-10-24-auto-dense-50d.txt`): auto kept the
-        // benefit on 52 and 51 of the 60, and a fit that misses it takes
-        // about 7 times dense's steps. On panels of 10 drawn from the 40
-        // held-out datasets, 21 to 60, the ratio of auto's total steps to
-        // dense's exceeded 4.0 in about 1% (3.58 and 2.97 at the 99th
-        // percentiles); an auto that never went dense would score 8.3 to 9.0.
-        // So datasets 1 to 10 must keep the benefit on at least 6 and hold
-        // that ratio to 4.0. A rule that misses somewhat more often than
-        // today can still pass; one that stops choosing dense cannot.
+        // benefit on 52 and 51 of the 60. Of the misses, 4 of 8 and 7 of 9
+        // were narrow, 1.5 to 2 times dense's steps; the rest lost the dense
+        // metric and took 4 to 13 times. `benchmarks/auto_dense_panels.py` draws 200,000 sets of 10
+        // distinct held-out datasets (21 to 60) from that record: the ratio
+        // of auto's total steps to dense's was at most 3.52 under faer and
+        // 2.41 under the loops, and above 3.5 in 2 sets of 200,000 under
+        // faer and none under the loops. On datasets 1 to 10, switching auto
+        // to diagonal on the 4 or 5 where that costs least lifts the ratio
+        // past 3.5, and an auto that never went dense scores 8 to 9. So the
+        // test catches a rule that stops choosing dense, or loses it on about
+        // half the datasets; a smaller loss needs the study.
         assert!(correlated_coefficients_case(2, 10, 4));
         let steps = (1..=10)
             .map(|data_seed| correlated_coefficients_steps(data_seed, 50, 4))
@@ -1246,7 +1249,7 @@ mod tests {
             .count();
         let ratio = steps.iter().map(|s| s.0).sum::<f64>() / steps.iter().map(|s| s.2).sum::<f64>();
         assert!(
-            kept >= 6 && ratio <= 4.0,
+            kept >= 6 && ratio <= 3.5,
             "auto kept the dense benefit on {kept} of 10 datasets, at {ratio:.2} times dense's \
              total steps"
         );

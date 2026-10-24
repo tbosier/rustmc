@@ -1740,30 +1740,43 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
 /// returns whether it ran.
 ///
 /// The loops accumulate with `mul_add`, as faer's kernels do on a CPU with
-/// FMA: one rounding per term, and no overflow in a product whose sum is
-/// representable (`2 * 1e308 - 1e308` is `1e308`, not `inf`). Without the
+/// FMA: one rounding per term, and no overflow in a product that the running
+/// sum brings back into range (`2 * 1e308 - 1e308` is `1e308`, not `inf`). A
+/// running sum that overflows on its own still gives `inf`. Without the
 /// hardware instruction `mul_add` is a slow library call, so on x86-64 CPUs
 /// without AVX2 and FMA this returns `false` and the caller uses faer.
 fn with_fused_multiply_add<K: pulp::WithSimd<Output = ()>>(kernel: K) -> bool {
+    if !has_fused_multiply_add() {
+        return false;
+    }
     #[cfg(target_arch = "x86_64")]
     {
-        match pulp::x86::V3::try_new() {
-            Some(simd) => {
-                <pulp::x86::V3 as pulp::Simd>::vectorize(simd, kernel);
-                true
-            }
-            None => false,
-        }
+        let simd = pulp::x86::V3::try_new().expect("checked by has_fused_multiply_add");
+        <pulp::x86::V3 as pulp::Simd>::vectorize(simd, kernel);
     }
     #[cfg(target_arch = "aarch64")]
     {
         // Fused multiply-add is part of the base aarch64 instruction set.
         kernel.with_simd(pulp::Scalar::new());
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    let _ = kernel;
+    true
+}
+
+/// Whether the narrow products run as fused loops on this CPU, rather than
+/// falling back to faer.
+fn has_fused_multiply_add() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        pulp::x86::V3::try_new().is_some()
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
         true
     }
     #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
     {
-        let _ = kernel;
         false
     }
 }
@@ -1779,8 +1792,11 @@ impl pulp::WithSimd for MatrixTimesVector<'_> {
 
     #[inline(always)]
     fn with_simd<S: pulp::Simd>(self, _simd: S) {
+        // Each output already holds its intercept, which the dot product
+        // starts from, so a product that only the intercept brings back into
+        // range is fused with it rather than overflowing first.
         for (row, out) in self.matrix.chunks_exact(self.beta.len()).zip(self.out) {
-            *out += dot(row, self.beta);
+            *out = dot_onto(row, self.beta, *out);
         }
     }
 }
@@ -1817,13 +1833,15 @@ impl pulp::WithSimd for TransposeTimesVector<'_> {
 /// that a parallel product still gives seeded sampling the same bits.
 const FAER_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
 
-/// A dot product in four interleaved fused accumulators, so its summation
-/// order is fixed and does not depend on threads.
+/// `start + a · b`, in four interleaved fused accumulators so the summation
+/// order is fixed and does not depend on threads. `start` begins the
+/// accumulator for the trailing elements, so with one column the result is
+/// the single fused `a[0] * b[0] + start`, as in faer.
 #[inline(always)]
-fn dot(a: &[f64], b: &[f64]) -> f64 {
+fn dot_onto(a: &[f64], b: &[f64], start: f64) -> f64 {
     let mut lanes = [0.0f64; 4];
     let (a_chunks, b_chunks) = (a.chunks_exact(4), b.chunks_exact(4));
-    let mut tail = 0.0f64;
+    let mut tail = start;
     for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
         tail = x.mul_add(*y, tail);
     }
@@ -2681,7 +2699,30 @@ mod tests {
         g.obs_logp_normal(mu, sigma, obs_idx);
         let mut evaluator = Evaluator::new(&g);
         evaluator.compute(&g, &[0.0, 0.0]);
-        assert_eq!(evaluator.grad, vec![1e308, 0.0]);
+        // faer's scalar fallback, on a CPU without FMA, multiplies and adds
+        // separately and gives `inf` here.
+        if has_fused_multiply_add() {
+            assert_eq!(evaluator.grad, vec![1e308, 0.0]);
+        }
+    }
+
+    /// The forward product starts from the intercept, so `2 * 1e308` brought
+    /// back by an intercept of `-1e308` is fused with it, as in faer's
+    /// one-column kernel, instead of overflowing first.
+    #[test]
+    fn narrow_mat_vec_mul_fuses_the_intercept() {
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", 1);
+        g.vector_normal_logp(start, 1, 0.0, 1.0);
+        let intercept = g.add_constant(-1e308);
+        let matrix_idx = g.store_matrix(vec![1e308, 1e308], 2, 1);
+        let mu = g.mat_vec_mul(matrix_idx, start, 1, Some(intercept));
+        let mut evaluator = Evaluator::new(&g);
+        evaluator.compute(&g, &[2.0]);
+        if has_fused_multiply_add() {
+            assert_eq!(evaluator.vec_elem(mu, 0), 1e308);
+            assert_eq!(evaluator.vec_elem(mu, 1), 1e308);
+        }
     }
 
     /// Seeded sampling must not depend on how many threads the pool has. With

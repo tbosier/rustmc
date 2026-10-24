@@ -29,12 +29,14 @@ versioning while the public API is stabilized.
 - `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checked one seed
   at 50 dimensions, where whether the auto rule keeps the dense benefit turns on
   rounding, and the new products' rounding changed that seed's outcome. It now checks
-  10 datasets, by count and by total leapfrog steps against dense's. The ignored
+  10 datasets, by count and by total leapfrog steps against dense's, with thresholds
+  from `benchmarks/auto_dense_panels.py`. The ignored
   `correlated_coefficients_study` prints the numbers for any range of datasets; on 60,
   auto kept the benefit on 52 before this change and 51 after.
-- A gradient whose sum is representable must stay finite when a product along the way
-  overflows, which the fused accumulation guarantees and separate multiply-and-add
-  did not.
+- On CPUs with FMA, a narrow product whose running sum or intercept brings an
+  overflowing term back into range must stay finite, as with faer:
+  `2 * 1e308 - 1e308` is `1e308` fused and `inf` with separate multiply and add. A
+  running sum that overflows on its own still gives `inf`.
 
 ## [0.15.0] - 2026-10-19
 

@@ -67,7 +67,8 @@ fn microseconds_per_gradient(g: &Graph, parameters: usize) -> f64 {
     let mut position = (0..parameters)
         .map(|k| 0.05 * k as f64 - 0.1)
         .collect::<Vec<_>>();
-    // Enough calls per batch for about 20 ms of work at the slowest width.
+    // A batch takes from milliseconds at narrow widths to about a second at
+    // 5,000 rows and 512 columns.
     let calls = 2_000;
     let mut batches = Vec::new();
     for _ in 0..9 {
