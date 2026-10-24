@@ -208,7 +208,8 @@ to 1462 MB for NumPyro and 423 to 424 MB for PyMC. Child processes, which hold P
 chains and anything else an engine or its imports start, are recorded apart
 (`peak_children_rss_mb`, the largest that exited): 394 to 402 MB for PyMC and nutpie
 and 62 to 64 MB for the others. The runs do not record which child reached each peak.
-The runs started at a load average below 2.5 on a machine shared with other work. One
+The runs were made on a machine shared with other work, each started only once the
+one-minute load average was below 2.5; the records do not store the load. One
 run on one machine is not a stable ranking; rerun it before quoting a ratio.
 
 The 2026-10-19 records, from before narrow design matrices were multiplied with fused

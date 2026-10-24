@@ -1230,15 +1230,16 @@ mod tests {
         // (`benchmarks/results/2026-10-24-auto-dense-50d.txt`): auto kept the
         // benefit on 52 and 51 of the 60. Of the misses, 4 of 8 and 7 of 9
         // were narrow, 1.5 to 2 times dense's steps; the rest lost the dense
-        // metric and took 4 to 13 times. `benchmarks/auto_dense_panels.py` draws 200,000 sets of 10
-        // distinct held-out datasets (21 to 60) from that record: the ratio
-        // of auto's total steps to dense's was at most 3.52 under faer and
-        // 2.41 under the loops, and above 3.5 in 2 sets of 200,000 under
+        // metric and took 4 to 13 times. `benchmarks/auto_dense_panels.py`
+        // draws 200,000 sets of 10 distinct held-out datasets (21 to 60) from
+        // that record and applies this test's assertion to each: 412 sets
+        // failed it under faer and 72 under the loops, all on the count, and
+        // the ratio of auto's total steps to dense's passed 3.5 in 3 under
         // faer and none under the loops. On datasets 1 to 10, switching auto
         // to diagonal on the 4 or 5 where that costs least lifts the ratio
-        // past 3.5, and an auto that never went dense scores 8 to 9. So the
-        // test catches a rule that stops choosing dense, or loses it on about
-        // half the datasets; a smaller loss needs the study.
+        // past 3.5, and an auto that never went dense scores 7.6 to 8.2. So
+        // the test catches a rule that stops choosing dense, or loses it on
+        // about half the datasets; a smaller loss needs the study.
         assert!(correlated_coefficients_case(2, 10, 4));
         let steps = (1..=10)
             .map(|data_seed| correlated_coefficients_steps(data_seed, 50, 4))

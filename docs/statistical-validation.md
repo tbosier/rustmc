@@ -204,9 +204,12 @@ and at most 1.5 times the dense metric's on 52 of 60 datasets with faer's matrix
 products and on 51 of 60 with the fused loops that replaced them for narrow designs.
 The misses fell on different datasets, all but one: data seed 28 missed under both. Of
 the 8 and 9 misses, 4 and 7 were narrow, at 1.5 to 2 times dense's steps; the others
-lost the dense metric and took 4 to 13 times. `benchmarks/auto_dense_panels.py` turns
-the record into the thresholds of the test below, which catches a rule that stops
-choosing dense or loses it on about half the datasets; a smaller loss needs the study. The per-dataset numbers are in
+lost the dense metric and took 4 to 13 times. The test below asks datasets 1 to 10 to
+keep the benefit on at least 6 and to hold auto's total steps to 3.5 times dense's.
+`benchmarks/auto_dense_panels.py` applies that assertion to 200,000 sets of 10 held-out
+datasets from the record: 412 sets failed it under faer and 72 under the loops. It
+catches a rule that stops choosing dense or loses it on about half the datasets; a
+smaller loss needs the study. The per-dataset numbers are in
 `benchmarks/results/2026-10-24-auto-dense-50d.txt`, from the ignored study test
 `correlated_coefficients_study` in `rust_core/src/nuts.rs`, and
 `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checks datasets

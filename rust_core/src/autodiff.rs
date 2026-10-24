@@ -1740,9 +1740,11 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
 /// returns whether it ran.
 ///
 /// The loops accumulate with `mul_add`, as faer's kernels do on a CPU with
-/// FMA: one rounding per term, and no overflow in a product that the running
-/// sum brings back into range (`2 * 1e308 - 1e308` is `1e308`, not `inf`). A
-/// running sum that overflows on its own still gives `inf`. Without the
+/// FMA: one rounding per term, so a product added straight into the
+/// accumulator that brings it back into range does not overflow
+/// (`2 * 1e308 - 1e308` is `1e308`, not `inf`). A product landing in an
+/// accumulator that cannot, or a running sum that overflows on its own,
+/// still gives `inf`. Without the
 /// hardware instruction `mul_add` is a slow library call, so on x86-64 CPUs
 /// without AVX2 and FMA this returns `false` and the caller uses faer.
 fn with_fused_multiply_add<K: pulp::WithSimd<Output = ()>>(kernel: K) -> bool {
@@ -1793,8 +1795,7 @@ impl pulp::WithSimd for MatrixTimesVector<'_> {
     #[inline(always)]
     fn with_simd<S: pulp::Simd>(self, _simd: S) {
         // Each output already holds its intercept, which the dot product
-        // starts from, so a product that only the intercept brings back into
-        // range is fused with it rather than overflowing first.
+        // starts from, so the first column's product is fused with it.
         for (row, out) in self.matrix.chunks_exact(self.beta.len()).zip(self.out) {
             *out = dot_onto(row, self.beta, *out);
         }
@@ -1835,13 +1836,19 @@ const FAER_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
 
 /// `start + a · b`, in four interleaved fused accumulators so the summation
 /// order is fixed and does not depend on threads. `start` begins the
-/// accumulator for the trailing elements, so with one column the result is
-/// the single fused `a[0] * b[0] + start`, as in faer.
+/// accumulator that takes the first column, so the first column's product is
+/// fused with it: with one column the result is the single fused
+/// `a[0] * b[0] + start`, as in faer.
 #[inline(always)]
 fn dot_onto(a: &[f64], b: &[f64], start: f64) -> f64 {
     let mut lanes = [0.0f64; 4];
     let (a_chunks, b_chunks) = (a.chunks_exact(4), b.chunks_exact(4));
-    let mut tail = start;
+    let mut tail = 0.0f64;
+    if a.len() >= 4 {
+        lanes[0] = start;
+    } else {
+        tail = start;
+    }
     for (x, y) in a_chunks.remainder().iter().zip(b_chunks.remainder()) {
         tail = x.mul_add(*y, tail);
     }
@@ -2706,22 +2713,30 @@ mod tests {
         }
     }
 
-    /// The forward product starts from the intercept, so `2 * 1e308` brought
-    /// back by an intercept of `-1e308` is fused with it, as in faer's
-    /// one-column kernel, instead of overflowing first.
+    /// The forward product starts the first column's accumulator from the
+    /// intercept, so `2 * 1e308` in the first column, brought back by an
+    /// intercept of `-1e308`, is fused with it instead of overflowing first,
+    /// with one column (as in faer's one-column kernel) and with four or more.
     #[test]
-    fn narrow_mat_vec_mul_fuses_the_intercept() {
-        let mut g = Graph::new();
-        let start = g.add_vector_params("beta", 1);
-        g.vector_normal_logp(start, 1, 0.0, 1.0);
-        let intercept = g.add_constant(-1e308);
-        let matrix_idx = g.store_matrix(vec![1e308, 1e308], 2, 1);
-        let mu = g.mat_vec_mul(matrix_idx, start, 1, Some(intercept));
-        let mut evaluator = Evaluator::new(&g);
-        evaluator.compute(&g, &[2.0]);
-        if has_fused_multiply_add() {
-            assert_eq!(evaluator.vec_elem(mu, 0), 1e308);
-            assert_eq!(evaluator.vec_elem(mu, 1), 1e308);
+    fn narrow_mat_vec_mul_fuses_the_intercept_with_the_first_column() {
+        for columns in [1usize, 3, 4, 9] {
+            let mut g = Graph::new();
+            let start = g.add_vector_params("beta", columns);
+            g.vector_normal_logp(start, columns, 0.0, 1.0);
+            let intercept = g.add_constant(-1e308);
+            let mut design = vec![0.0; 2 * columns];
+            design[0] = 1e308;
+            design[columns] = 1e308;
+            let matrix_idx = g.store_matrix(design, 2, columns);
+            let mu = g.mat_vec_mul(matrix_idx, start, columns, Some(intercept));
+            let mut beta = vec![0.0; columns];
+            beta[0] = 2.0;
+            let mut evaluator = Evaluator::new(&g);
+            evaluator.compute(&g, &beta);
+            if has_fused_multiply_add() {
+                assert_eq!(evaluator.vec_elem(mu, 0), 1e308, "{columns} columns");
+                assert_eq!(evaluator.vec_elem(mu, 1), 1e308, "{columns} columns");
+            }
         }
     }
 

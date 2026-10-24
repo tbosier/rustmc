@@ -33,10 +33,11 @@ versioning while the public API is stabilized.
   from `benchmarks/auto_dense_panels.py`. The ignored
   `correlated_coefficients_study` prints the numbers for any range of datasets; on 60,
   auto kept the benefit on 52 before this change and 51 after.
-- On CPUs with FMA, a narrow product whose running sum or intercept brings an
-  overflowing term back into range must stay finite, as with faer:
-  `2 * 1e308 - 1e308` is `1e308` fused and `inf` with separate multiply and add. A
-  running sum that overflows on its own still gives `inf`.
+- On CPUs with FMA, two narrow-product cases must stay finite where separate multiply
+  and add overflowed: a gradient term `2 * 1e308` added to a running `-1e308`, and a
+  first-column product `2 * 1e308` added to an intercept of `-1e308`. Both are `1e308`
+  fused. Other orders of overflowing terms can still give `inf`, as they could with
+  faer.
 
 ## [0.15.0] - 2026-10-19
 
