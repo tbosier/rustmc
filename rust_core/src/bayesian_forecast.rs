@@ -569,7 +569,7 @@ mod tests {
         assert!(last_width > first_width, "{first_width} vs {last_width}");
     }
 
-    /// The draws against the exact joint posterior. Given the two variances,
+    /// The draws against moments of the exact joint posterior. Given the two variances,
     /// `x[t]` is the initial state plus the first `t + 1` innovations and each
     /// observation adds its own error, which is the model as written, with no
     /// filter or Gibbs conditional. One step inside the series and the last
@@ -577,7 +577,9 @@ mod tests {
     #[test]
     fn draws_match_the_exact_posterior_of_both_variances_and_the_terminal_level() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
-        use crate::exact_reference::{check_draws, exact_posterior, Linear, LinearGaussianModel};
+        use crate::exact_reference::{
+            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+        };
 
         let mut rng = ChaCha8Rng::seed_from_u64(1203);
         let steps = 20;
@@ -626,33 +628,20 @@ mod tests {
         let exact = exact_posterior(&model, &priors, -9.0, 7.0, 150);
 
         let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
-        let draws = |pick: &dyn Fn(&LocalLevelPosteriorDraw) -> f64| {
-            posterior
+        let draws = |name: &str, pick: &dyn Fn(&LocalLevelPosteriorDraw) -> f64| {
+            let chains = posterior
                 .chains
                 .iter()
-                .map(|chain| chain.iter().map(pick).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
+                .map(|chain| chain.iter().map(pick).collect())
+                .collect();
+            (name.to_string(), chains)
         };
-        let mut failures = Vec::new();
-        for (k, name) in ["process_variance", "observation_variance"]
-            .iter()
-            .enumerate()
-        {
-            let chains = draws(&|d| [d.process_variance, d.observation_variance][k]);
-            failures.extend(check_draws(name, &chains, exact.variances[k]));
-            // A sampler that ignored the data would draw from the prior, so
-            // the same check must tell these draws from the prior's moments.
-            assert!(
-                !check_draws(name, &chains, priors[k].moments()).is_empty(),
-                "{name}: the check cannot tell the posterior from the prior"
-            );
-        }
-        failures.extend(check_draws(
-            "terminal_level",
-            &draws(&|d| d.terminal_level),
-            exact.latents[0],
-        ));
-        assert!(failures.is_empty(), "{failures:#?}");
+        let all = vec![
+            draws("process_variance", &|d| d.process_variance),
+            draws("observation_variance", &|d| d.observation_variance),
+            draws("terminal_level", &|d| d.terminal_level),
+        ];
+        assert_matches(&all, &exact, &priors);
     }
 
     #[test]

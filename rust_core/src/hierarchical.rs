@@ -766,26 +766,47 @@ mod tests {
         assert!((20.0 - one_point_mean).abs() > (10.0 - long_mean).abs());
     }
 
-    /// The draws themselves against the exact joint posterior. Given the three
-    /// variances, every mean and observation is a sum of independent normals:
-    /// the population mean, each group's offset from it, each program's offset
-    /// from its group, and each observation's error. That is the model as the
-    /// module documents it, written without the Gibbs conditionals.
+    /// The draws themselves against moments of the exact joint posterior.
+    /// Given the three variances, every mean and observation is a sum of
+    /// independent normals: the population mean, each group's offset from it,
+    /// each program's offset from its group, and each observation's error. That
+    /// is the model as the module documents it, written without the Gibbs
+    /// conditionals. Each variance has its own prior and the population prior
+    /// mean is not zero, so a prior wired to the wrong update shows, and the
+    /// groups are unequal and interleaved, so membership must come from
+    /// `group_index`.
     #[test]
     fn draws_match_the_exact_posterior_of_every_variance_and_mean() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
-        use crate::exact_reference::{check_draws, exact_posterior, Linear, LinearGaussianModel};
+        use crate::exact_reference::{
+            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+        };
 
         let series = vec![
+            vec![6.4, 5.9],
             vec![-3.1, -2.4, -3.6],
-            vec![-0.9],
             vec![1.2, f64::NAN, 0.4],
-            vec![3.3, 2.7],
+            vec![-0.9],
             vec![7.9],
-            vec![5.1, 5.8, 4.6],
+            vec![-4.2, -3.8],
+            vec![3.3, 2.7, 2.9],
         ];
-        let groups = vec![0, 0, 1, 1, 2, 2];
+        let groups = vec![2, 0, 1, 0, 2, 0, 1];
         let config = HierarchicalMeanConfig {
+            population_mean_prior: 1.5,
+            population_variance_prior: 50.0,
+            group_variance_prior: InverseGammaPrior {
+                shape: 3.0,
+                scale: 4.0,
+            },
+            program_variance_prior: InverseGammaPrior {
+                shape: 4.0,
+                scale: 3.0,
+            },
+            observation_variance_prior: InverseGammaPrior {
+                shape: 5.0,
+                scale: 2.0,
+            },
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,
@@ -844,49 +865,30 @@ mod tests {
             config.program_variance_prior,
             config.observation_variance_prior,
         ];
-        let exact = exact_posterior(&model, &priors, -6.0, 9.0, 60);
+        let exact = exact_posterior(&model, &priors, -6.0, 11.0, 66);
 
         let posterior = fit_hierarchical_mean(&series, &groups, &config).unwrap();
-        let draws = |pick: &dyn Fn(&HierarchicalMeanPosteriorDraw) -> f64| {
-            posterior
+        let draws = |name: String, pick: &dyn Fn(&HierarchicalMeanPosteriorDraw) -> f64| {
+            let chains = posterior
                 .chains
                 .iter()
-                .map(|chain| chain.iter().map(pick).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
+                .map(|chain| chain.iter().map(pick).collect())
+                .collect();
+            (name, chains)
         };
-        let mut failures = Vec::new();
-        let variance_names = ["group_variance", "program_variance", "observation_variance"];
-        for (k, name) in variance_names.iter().enumerate() {
-            let chains =
-                draws(&|d| [d.group_variance, d.program_variance, d.observation_variance][k]);
-            failures.extend(check_draws(name, &chains, exact.variances[k]));
-            // A sampler that ignored the data would draw from the prior, so
-            // the same check must tell these draws from the prior's moments.
-            assert!(
-                !check_draws(name, &chains, priors[k].moments()).is_empty(),
-                "{name}: the check cannot tell the posterior from the prior"
-            );
-        }
-        failures.extend(check_draws(
-            "population_mean",
-            &draws(&|d| d.population_mean),
-            exact.latents[0],
-        ));
-        for group in 0..group_count {
-            failures.extend(check_draws(
-                &format!("group_mean[{group}]"),
-                &draws(&|d| d.group_means[group]),
-                exact.latents[1 + group],
-            ));
-        }
-        for program in 0..series.len() {
-            failures.extend(check_draws(
-                &format!("program_mean[{program}]"),
-                &draws(&|d| d.program_means[program]),
-                exact.latents[1 + group_count + program],
-            ));
-        }
-        assert!(failures.is_empty(), "{failures:#?}");
+        let mut all = vec![
+            draws("group_variance".into(), &|d| d.group_variance),
+            draws("program_variance".into(), &|d| d.program_variance),
+            draws("observation_variance".into(), &|d| d.observation_variance),
+            draws("population_mean".into(), &|d| d.population_mean),
+        ];
+        all.extend(
+            (0..group_count).map(|g| draws(format!("group_mean[{g}]"), &|d| d.group_means[g])),
+        );
+        all.extend(
+            (0..series.len()).map(|p| draws(format!("program_mean[{p}]"), &|d| d.program_means[p])),
+        );
+        assert_matches(&all, &exact, &priors);
     }
 
     #[test]

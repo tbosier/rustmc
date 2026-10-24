@@ -475,17 +475,20 @@ mod tests {
         ));
     }
 
-    /// The draws against the exact joint posterior. Given the three variances,
-    /// the model is the textbook dummy seasonal: the level is a random walk,
-    /// the new seasonal effect is minus the sum of the previous `period - 1`
-    /// plus an innovation, and each observation is level plus effect plus
-    /// error. Written from that definition, without the state-space matrices or
-    /// FFBS the sampler uses. The initial effects are zero, so which lag each
-    /// initial state stands for does not enter.
+    /// The draws against moments of the exact joint posterior. Given the three
+    /// variances, the model is the textbook dummy seasonal: the level is a
+    /// random walk, the new seasonal effect is minus the sum of the previous
+    /// `period - 1` plus an innovation, and each observation is level plus
+    /// effect plus error. Written from that definition, without the
+    /// state-space matrices or FFBS the sampler uses. The initial effects are
+    /// placed as documented, one cycle in forecast order: their expected value
+    /// at step `t` is `initial_seasonal_effects[t % period]`.
     #[test]
     fn draws_match_the_exact_posterior_of_every_variance_and_the_terminal_state() {
         use crate::exact_reference::TermVariance::{Fixed, Inferred};
-        use crate::exact_reference::{check_draws, exact_posterior, Linear, LinearGaussianModel};
+        use crate::exact_reference::{
+            assert_matches, exact_posterior, Linear, LinearGaussianModel,
+        };
         use rand::SeedableRng;
 
         let period = 4;
@@ -503,12 +506,13 @@ mod tests {
         }
         observations[5] = f64::NAN;
         let config = BayesianSeasonalLocalLevelConfig {
-            initial_seasonal_effects: vec![0.0; period],
             num_chains: 4,
             num_warmup: 1000,
             num_draws: 25_000,
             ..config()
         };
+        let initial = &config.initial_seasonal_effects;
+        assert!(initial.iter().any(|&effect| effect != 0.0));
 
         // Terms: the initial level and `period - 1` initial effects, then one
         // level innovation, one seasonal innovation and one error per step.
@@ -522,9 +526,14 @@ mod tests {
             constant: config.initial_level,
             ..Linear::term(0, count)
         };
-        // Newest first: effects[0] is the current effect.
+        // Newest first: effects[0] is the current effect. The effect `lag`
+        // steps before the first observation belongs to step `-lag`, which is
+        // step `period - lag` of the cycle.
         let mut effects = (1..period)
-            .map(|lag| Linear::term(lag, count))
+            .map(|lag| Linear {
+                constant: initial[period - lag],
+                ..Linear::term(lag, count)
+            })
             .collect::<Vec<_>>();
         let mut observed = Vec::new();
         for (t, &value) in observations.iter().enumerate() {
@@ -534,6 +543,7 @@ mod tests {
                 .fold(Linear::term(period + steps + t, count), |sum, previous| {
                     sum.scaled_plus(-1.0, previous)
                 });
+            assert!((effect.constant - initial[t % period]).abs() < 1e-12);
             effects.insert(0, effect);
             effects.pop();
             if value.is_finite() {
@@ -554,42 +564,22 @@ mod tests {
         let exact = exact_posterior(&model, &priors, -10.0, 6.0, 60);
 
         let posterior = fit_bayesian_seasonal_local_level(&observations, &config).unwrap();
-        let draws = |pick: &dyn Fn(&SeasonalLocalLevelPosteriorDraw) -> f64| {
-            posterior
+        let draws = |name: String, pick: &dyn Fn(&SeasonalLocalLevelPosteriorDraw) -> f64| {
+            let chains = posterior
                 .chains
                 .iter()
-                .map(|chain| chain.iter().map(pick).collect::<Vec<_>>())
-                .collect::<Vec<_>>()
+                .map(|chain| chain.iter().map(pick).collect())
+                .collect();
+            (name, chains)
         };
-        let mut failures = Vec::new();
-        let names = [
-            "level_variance",
-            "seasonal_variance",
-            "observation_variance",
+        let mut all = vec![
+            draws("level_variance".into(), &|d| d.level_variance),
+            draws("seasonal_variance".into(), &|d| d.seasonal_variance),
+            draws("observation_variance".into(), &|d| d.observation_variance),
         ];
-        for (k, name) in names.iter().enumerate() {
-            let chains = draws(&|d| {
-                [
-                    d.level_variance,
-                    d.seasonal_variance,
-                    d.observation_variance,
-                ][k]
-            });
-            failures.extend(check_draws(name, &chains, exact.variances[k]));
-            // A sampler that ignored the data would draw from the prior, so
-            // the same check must tell these draws from the prior's moments.
-            assert!(
-                !check_draws(name, &chains, priors[k].moments()).is_empty(),
-                "{name}: the check cannot tell the posterior from the prior"
-            );
-        }
-        for (index, moments) in exact.latents.iter().enumerate() {
-            failures.extend(check_draws(
-                &format!("terminal_state[{index}]"),
-                &draws(&|d| d.terminal_state[index]),
-                *moments,
-            ));
-        }
-        assert!(failures.is_empty(), "{failures:#?}");
+        all.extend(
+            (0..period).map(|i| draws(format!("terminal_state[{i}]"), &|d| d.terminal_state[i])),
+        );
+        assert_matches(&all, &exact, &priors);
     }
 }

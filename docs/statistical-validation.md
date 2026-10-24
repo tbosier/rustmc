@@ -389,27 +389,40 @@ diagnostic signal. None of these checks establishes calibration under misspecifi
 ## Exact posteriors for three Gibbs samplers
 
 The local level, the seasonal local level and the Gaussian hierarchical mean are each
-checked against their exact joint posterior, by a unit test in each sampler's module
-using `rust_core/src/exact_reference.rs`. Given its variances, each model is a sum of
-independent normal terms, so the observations' covariance is written from the model's
-definition, without the filter, FFBS or Gibbs conditionals the samplers use. A grid
-over the log variances, weighted by the inverse-gamma priors, gives the exact moments
-of every variance and, by Gaussian conditioning, of every latent mean: the terminal
-level or state, and the hierarchy's population, group and program means. Each test
-fits 4 chains of 25,000 draws at a fixed seed, on a short series or ragged collection
-with missing values, and holds each quantity's mean, and its mean squared deviation
-about the exact mean, within 4 Monte Carlo standard errors, the rule the NUTS gate
-uses.
+checked against moments of their exact joint posterior, by a unit test in each
+sampler's module using `rust_core/src/exact_reference.rs`. Given its variances, each
+model is a sum of independent normal terms, so the observations' covariance is written
+from the model's definition, without the filter, FFBS or Gibbs conditionals the
+samplers use. A trapezoid rule over a grid of log variances, weighted by the
+inverse-gamma priors, gives the exact moments of the variances and, by Gaussian
+conditioning, of the latent means: the terminal level or state, and the hierarchy's
+population, group and program means. The same integral over a grid two units wider at
+each end must agree to within 1e-6 standard deviations, so a grid that cuts off a tail
+fails instead of producing a wrong reference, and a conjugate case checks the
+integration against its closed form to 1e-9.
 
-Each test also requires the same check to tell the draws from the prior's moments, so
-a sampler that ignored the data fails. Ten bugs planted by hand while the tests were
-written all failed them, among them an off-by-one count in one variance's update
-(missed by 22.7 MCSE), counting missing steps as observations, and a 10% error in one
-conjugate precision. Each grid agrees with a finer, wider one to within 3e-7 posterior
-standard deviations.
+Each test fits 4 chains of 25,000 draws at a fixed seed, on a short series or ragged
+collection with missing values. It compares each quantity's mean and variance, the
+covariance of every pair, and each variance times each latent's squared deviation,
+where a hierarchy's dependence between a spread and the means it governs shows. Each
+estimate must lie within 4 Monte Carlo standard errors of its exact value and rest on
+an ESS of at least 400, the rules of the NUTS gate, so draws that never move or chains
+that disagree fail rather than passing on an inflated error. Matching these moments is
+necessary for the right posterior, not sufficient: higher moments are not compared.
 
-These are small fixed datasets at one seed each. They check that each sampler targets
-the right posterior, not how fast it mixes on long series.
+Each test has two controls. The variances' draws must be distinguishable from the
+prior's moments, and the same draws with each quantity shifted by a different number of
+iterations, which keeps every marginal and breaks every dependence, must fail. The
+hierarchy gives each variance its own prior, a nonzero population prior mean and
+unequal, interleaved groups, and the seasonal test uses nonzero initial effects, so
+miswired priors and misread memberships or initial effects show.
+`scripts/plant_gibbs_bugs.py` plants 14 bugs of those kinds and of the conjugate
+updates' counts and sums, and every one fails its test; the narrowest miss, reading the
+initial seasonal effects in reverse, is 6.3 MCSE. Over 20 further sampler seeds per
+test, none of the three failed without a bug.
+
+These are small fixed datasets. They check that each sampler targets the right
+posterior, not how fast it mixes on long series.
 
 ## Known limitation: forecasting samplers' mixing
 
