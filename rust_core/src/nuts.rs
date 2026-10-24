@@ -1221,14 +1221,29 @@ mod tests {
         // warmup leaves a last window of four draws per dimension; an earlier
         // auto rule that demanded five stayed diagonal here at ~100 steps per
         // draw against ~12 for dense.
-        for dim in [10, 50] {
-            correlated_coefficients_case(dim);
-        }
+        //
+        // At 50 dimensions the rule is near its edge, and whether one fit
+        // keeps the benefit turns on rounding. On 40 datasets not used to set
+        // this test (data seeds 21 to 60, sampler seed 4) it kept it in 34
+        // with faer's matrix products and in 32 with the loops that replaced
+        // them for narrow designs, so the test asks for 6 of 10 datasets: at
+        // a rate of 0.8 a correct rule fails that 3.3% of the time when a
+        // change moves the draws.
+        assert!(correlated_coefficients_case(2, 10, 4));
+        let kept = (1..=10)
+            .filter(|&data_seed| correlated_coefficients_case(data_seed, 50, 4))
+            .count();
+        assert!(
+            kept >= 6,
+            "auto kept the dense benefit on {kept} of 10 datasets"
+        );
     }
 
-    fn correlated_coefficients_case(dim: usize) {
+    /// Whether `auto` on correlated columns takes less than half the
+    /// diagonal metric's leapfrog steps and at most 1.5 times dense's.
+    fn correlated_coefficients_case(data_seed: u64, dim: usize, seed: u64) -> bool {
         let n_rows = 400;
-        let mut rng = ChaCha8Rng::seed_from_u64(2);
+        let mut rng = ChaCha8Rng::seed_from_u64(data_seed);
         let mut normal =
             || -> f64 { rand_distr::Distribution::sample(&rand_distr::StandardNormal, &mut rng) };
         let mut x = Vec::with_capacity(n_rows * dim);
@@ -1244,10 +1259,9 @@ mod tests {
             y.push(mean + normal());
         }
         let graph = vector_regression(x, n_rows, dim, y);
-        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, 4);
-        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, 4);
-        let dense = mean_draw_leapfrog_steps(&graph, MetricKind::Dense, 4);
-        assert!(auto < 0.5 * diagonal, "auto {auto} vs diagonal {diagonal}");
-        assert!(auto <= 1.5 * dense, "auto {auto} vs dense {dense}");
+        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, seed);
+        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, seed);
+        let dense = mean_draw_leapfrog_steps(&graph, MetricKind::Dense, seed);
+        auto < 0.5 * diagonal && auto <= 1.5 * dense
     }
 }

@@ -1010,7 +1010,6 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
@@ -1019,11 +1018,6 @@ impl Evaluator {
                     let base = intercept.map_or(0.0, |n| self.scalars[n.0]);
                     let out = &mut self.vec_buf[out_off..out_off + vl];
                     out.fill(base);
-                    let x = mat::from_row_major_slice::<f64>(
-                        &matrix.data,
-                        matrix.n_rows,
-                        matrix.n_cols,
-                    );
                     let transforms =
                         &graph.param_transforms[*param_start..*param_start + *n_params];
                     let all_identity = transforms
@@ -1039,16 +1033,7 @@ impl Evaluator {
                         }
                         scratch
                     };
-                    let beta_col = col::from_slice::<f64>(beta_slice);
-                    let out_col = col::from_slice_mut::<f64>(out);
-                    matmul(
-                        out_col.as_2d_mut(),
-                        x,
-                        beta_col.as_2d(),
-                        Some(1.0),
-                        1.0,
-                        MATVEC_PARALLELISM,
-                    );
+                    add_matrix_times_vector(&matrix.data, matrix.n_rows, beta_slice, out);
                 }
                 Op::VectorNormalLogP {
                     param_start,
@@ -1551,19 +1536,12 @@ impl Evaluator {
                     n_params,
                     intercept,
                 } => {
-                    use faer::{col, linalg::matmul::matmul, mat};
                     let out_off = match self.node_kind[idx] {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
                     };
                     let matrix = &self.binding.matrices[*matrix_idx];
-                    let x = mat::from_row_major_slice::<f64>(
-                        &matrix.data,
-                        matrix.n_rows,
-                        matrix.n_cols,
-                    );
                     let adj_slice = &self.adj_vec_buf[out_off..out_off + vl];
-                    let adj_col = col::from_slice::<f64>(adj_slice);
                     let transforms =
                         &graph.param_transforms[*param_start..*param_start + *n_params];
                     let all_identity = transforms
@@ -1572,28 +1550,12 @@ impl Evaluator {
                     // grad += X^T @ adj
                     if all_identity {
                         let target = &mut self.grad[*param_start..*param_start + *n_params];
-                        let grad_col = col::from_slice_mut::<f64>(target);
-                        matmul(
-                            grad_col.as_2d_mut(),
-                            x.transpose(),
-                            adj_col.as_2d(),
-                            Some(1.0),
-                            1.0,
-                            MATVEC_PARALLELISM,
-                        );
+                        add_transpose_times_vector(&matrix.data, matrix.n_rows, adj_slice, target);
                     } else {
                         let target =
                             &mut self.param_scratch[*param_start..*param_start + *n_params];
                         target.fill(0.0);
-                        let grad_col = col::from_slice_mut::<f64>(target);
-                        matmul(
-                            grad_col.as_2d_mut(),
-                            x.transpose(),
-                            adj_col.as_2d(),
-                            Some(1.0),
-                            1.0,
-                            MATVEC_PARALLELISM,
-                        );
+                        add_transpose_times_vector(&matrix.data, matrix.n_rows, adj_slice, target);
                         for k in 0..*n_params {
                             self.grad[param_start + k] +=
                                 target[k] * transforms[k].derivative(params[param_start + k]);
@@ -1712,19 +1674,96 @@ mod reference;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
-/// The parallelism a `MatVecMul` hands faer.
+/// Designs up to this many columns use the loops below; wider ones use faer.
 ///
-/// Both of its products have a single column, and faer 0.19 routes every
-/// single-column product to a serial kernel without reading this argument:
+/// Measured with `examples/gradient_cost.rs` on a Ryzen 9 5900X, for a normal
+/// likelihood at 500 and 5,000 rows: at 8 columns the loops took 4.6 and 46 µs
+/// per gradient against faer's 9.4 and 93, at 64 columns 13 and 136 against 16
+/// and 142, and at 96 columns 18 and 185 against 17 and 166. faer's general
+/// `matmul` is slow on a narrow row-major product, and faster on wide ones,
+/// where its runtime choice of AVX2 and FMA kernels pays for itself.
+const LOOP_MAX_COLUMNS: usize = 64;
+
+/// `out[i] += row_i · beta` for the row-major `rows x beta.len()` matrix.
+///
+/// The loops keep the summation order fixed, so results do not depend on
+/// threads; four accumulators let the dot product use SIMD.
+fn add_matrix_times_vector(matrix: &[f64], rows: usize, beta: &[f64], out: &mut [f64]) {
+    let columns = beta.len();
+    if columns == 0 {
+        return;
+    }
+    if columns <= LOOP_MAX_COLUMNS {
+        for (row, out) in matrix.chunks_exact(columns).zip(out) {
+            *out += dot(row, beta);
+        }
+        return;
+    }
+    use faer::{col, linalg::matmul::matmul, mat};
+    matmul(
+        col::from_slice_mut::<f64>(out).as_2d_mut(),
+        mat::from_row_major_slice::<f64>(matrix, rows, columns),
+        col::from_slice::<f64>(beta).as_2d(),
+        Some(1.0),
+        1.0,
+        FAER_PARALLELISM,
+    );
+}
+
+/// `target[k] += sum_i matrix[i][k] * weights[i]` for the row-major
+/// `rows x target.len()` matrix.
+fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], target: &mut [f64]) {
+    let columns = target.len();
+    if columns == 0 {
+        return;
+    }
+    if columns <= LOOP_MAX_COLUMNS {
+        for (row, &weight) in matrix.chunks_exact(columns).zip(weights) {
+            for (sum, &entry) in target.iter_mut().zip(row) {
+                *sum += weight * entry;
+            }
+        }
+        return;
+    }
+    use faer::{col, linalg::matmul::matmul, mat};
+    matmul(
+        col::from_slice_mut::<f64>(target).as_2d_mut(),
+        mat::from_row_major_slice::<f64>(matrix, rows, columns).transpose(),
+        col::from_slice::<f64>(weights).as_2d(),
+        Some(1.0),
+        1.0,
+        FAER_PARALLELISM,
+    );
+}
+
+/// The parallelism the wide products hand faer.
+///
+/// Both have a single column, and faer 0.19 routes every single-column product
+/// to a serial kernel without reading this argument:
 /// `linalg::matmul::matmul` calls `matmul_with_conj_gemm_dispatch`, whose
 /// `m == 1 && n == 1`, `k == 1` and `n == 1` branches return before the
-/// parallel gemm path (`src/linalg/matmul/mod.rs` in faer 0.19.4). The
-/// `Rayon(0)` that designs of 100,000 or more elements used to request
-/// therefore never ran anything in parallel; chains already do, on the Rayon
-/// pool. Revisit this on a faer upgrade, where
-/// `mat_vec_mul_is_bitwise_identical_across_thread_counts` is the check that
-/// a parallel product still gives seeded sampling the same bits.
-const MATVEC_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
+/// parallel gemm path (`src/linalg/matmul/mod.rs` in faer 0.19.4). Chains
+/// already run in parallel on the Rayon pool. Revisit this on a faer upgrade,
+/// where `mat_vec_mul_is_bitwise_identical_across_thread_counts` is the check
+/// that a parallel product still gives seeded sampling the same bits.
+const FAER_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
+
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    let mut lanes = [0.0f64; 4];
+    let (a_chunks, b_chunks) = (a.chunks_exact(4), b.chunks_exact(4));
+    let tail = a_chunks
+        .remainder()
+        .iter()
+        .zip(b_chunks.remainder())
+        .map(|(x, y)| x * y)
+        .sum::<f64>();
+    for (x, y) in a_chunks.zip(b_chunks) {
+        for lane in 0..4 {
+            lanes[lane] += x[lane] * y[lane];
+        }
+    }
+    (lanes[0] + lanes[1]) + (lanes[2] + lanes[3]) + tail
+}
 
 /// The summed log density of `n` elements whose constant arguments are
 /// outside their support: `-inf`, or the empty sum.
@@ -2556,10 +2595,11 @@ mod tests {
     }
 
     /// Seeded sampling must not depend on how many threads the pool has. With
-    /// faer 0.19 the products are serial whatever `MATVEC_PARALLELISM` says
-    /// (see its documentation), so today this holds by construction; it is
-    /// here for the faer upgrade that makes a parallel product possible. The
-    /// 400 x 300 design is large enough that faer would split it.
+    /// faer 0.19 the wide products are serial whatever `FAER_PARALLELISM` says
+    /// (see its documentation), and the narrow ones are loops, so today this
+    /// holds by construction; it is here for the faer upgrade that makes a
+    /// parallel product possible. The 400 x 300 design is large enough that
+    /// faer would split it.
     #[test]
     fn mat_vec_mul_is_bitwise_identical_across_thread_counts() {
         let (rows, cols) = (400usize, 300usize);
