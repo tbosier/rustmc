@@ -6,6 +6,25 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Performance
+
+- **Design matrices up to 64 columns are multiplied with plain loops instead of
+  faer.** faer's general `matmul` is slow on a narrow row-major product: a gradient of a
+  500-row, 8-column normal regression took 9.4 µs on main and takes 4.5 µs now, and the
+  repeated benchmark's 30 fixed-size regressions fit in 1.58 s against 3.11 s. Wider
+  designs keep faer, which is faster from about 96 columns. `examples/gradient_cost.rs`
+  times a gradient at several widths. **Seeded draws change**, by rounding, for graph
+  models with a design matrix of up to 64 columns, since the products sum in a different
+  order.
+
+### Tests
+
+- `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checked one seed
+  at 50 dimensions, where the auto rule is near its edge and the new products' rounding
+  flipped its choice. It now asks for the dense benefit on 6 of 10 datasets. On 40
+  datasets not used to set it, auto kept the benefit on 34 before this change and 32
+  after.
+
 ## [0.15.0] - 2026-10-19
 
 This release changes how the default `metric="auto"` chooses a dense metric, gives

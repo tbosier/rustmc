@@ -197,6 +197,15 @@ fitted to a curved target can be worse than none, which a condition-number score
 see. The records are `benchmarks/results/2026-10-15-curved-old.json` and
 `2026-10-19-curved-new.json`.
 
+Near the rule's edge, whether a fit goes dense turns on rounding. On a 400-row regression
+with 50 coefficients whose columns are correlated at 0.9, at 500 warmup and 200 draws,
+`auto` kept the dense metric's benefit (under half the diagonal metric's leapfrog
+steps, and within 1.5 times the dense metric's) on 34 of 40 datasets with faer's matrix
+products and 32 of 40 with the loops that replaced them for narrow designs, mostly on
+different datasets. A fit that misses takes about 7 times the steps.
+`default_metric_keeps_the_dense_benefit_for_correlated_coefficients` in
+`rust_core/src/nuts.rs` checks 6 of 10 datasets.
+
 ```text
 PYTHONPATH=.pybuild python -m benchmarks.auto_metric_targets --warmup 1000 --metrics auto
 PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice --first-seed 100 --seeds 40
