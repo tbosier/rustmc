@@ -15,7 +15,9 @@ versioning while the public API is stabilized.
   Bernoulli-logit and Poisson likelihoods, at about 96 columns the two are even, and
   beyond that faer is faster, so wider designs keep it
   (`benchmarks/results/2026-10-24-gradient-cost.txt`, from
-  `rust_core/examples/gradient_cost.rs`). The loops run under `pulp`'s AVX2 and FMA
+  `rust_core/examples/gradient_cost.rs`). The repeated benchmark's 30 fixed-size
+  regressions fit in 1.53 s against 3.11 s, now ahead of nutpie's 1.93 s on every
+  dataset, and its 30 ragged ones in 3.36 s against 6.81 s, where nutpie takes 2.85 s. The loops run under `pulp`'s AVX2 and FMA
   dispatch on x86-64 and natively on aarch64, and fall back to faer on x86-64 CPUs
   without FMA. **Seeded draws change** for graph models with a design matrix of up to
   64 columns, since the products sum in a different order. At extreme scales the order
