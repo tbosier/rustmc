@@ -1679,8 +1679,8 @@ pub(crate) use reference::{eval_logp, grad_logp};
 /// Measured with `examples/gradient_cost.rs` (records in
 /// `benchmarks/results/2026-10-24-gradient-cost.txt`): the loops are several
 /// times faster on narrow designs, faer's general `matmul` being slow on a
-/// narrow row-major product, and faer is faster from about 96 columns, where
-/// its wider kernels pay for themselves.
+/// narrow row-major product; the two are even at about 96 columns, and
+/// beyond that faer's wider kernels pay for themselves.
 const LOOP_MAX_COLUMNS: usize = 64;
 
 /// `out[i] += row_i · beta` for the row-major `rows x beta.len()` matrix.

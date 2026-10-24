@@ -8,22 +8,31 @@ versioning while the public API is stabilized.
 
 ### Performance
 
-- **Design matrices up to 64 columns are multiplied with plain loops instead of
-  faer.** faer's general `matmul` is slow on a narrow row-major product: a gradient of a
-  500-row, 8-column normal regression took 9.4 µs on main and takes 4.5 µs now, and the
-  repeated benchmark's 30 fixed-size regressions fit in 1.58 s against 3.11 s. Wider
-  designs keep faer, which is faster from about 96 columns. `examples/gradient_cost.rs`
-  times a gradient at several widths. **Seeded draws change**, by rounding, for graph
-  models with a design matrix of up to 64 columns, since the products sum in a different
-  order.
+- **Design matrices up to 64 columns are multiplied with fused multiply-add loops
+  instead of faer.** faer's general `matmul` is slow on a narrow row-major product. A
+  gradient of a 500-row, 8-column normal regression took 9.7 µs and takes 4.5 µs now;
+  at 2 to 64 columns the loops are 1.1 to 2.5 times faster across the normal,
+  Bernoulli-logit and Poisson likelihoods, at about 96 columns the two are even, and
+  beyond that faer is faster, so wider designs keep it
+  (`benchmarks/results/2026-10-24-gradient-cost.txt`, from
+  `rust_core/examples/gradient_cost.rs`). The loops run under `pulp`'s AVX2 and FMA
+  dispatch on x86-64 and natively on aarch64, and fall back to faer on x86-64 CPUs
+  without FMA. **Seeded draws change** for graph models with a design matrix of up to
+  64 columns, since the products sum in a different order. At extreme scales the order
+  also decides whether a sum that cancels overflows first, so a log density there can be
+  NaN where it was finite, or finite where it was NaN.
 
 ### Tests
 
 - `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checked one seed
-  at 50 dimensions, where the auto rule is near its edge and the new products' rounding
-  flipped its choice. It now asks for the dense benefit on 6 of 10 datasets. On 40
-  datasets not used to set it, auto kept the benefit on 34 before this change and 32
-  after.
+  at 50 dimensions, where whether the auto rule keeps the dense benefit turns on
+  rounding, and the new products' rounding changed that seed's outcome. It now checks
+  10 datasets, by count and by total leapfrog steps against dense's. The ignored
+  `correlated_coefficients_study` prints the numbers for any range of datasets; on 60,
+  auto kept the benefit on 52 before this change and 51 after.
+- A gradient whose sum is representable must stay finite when a product along the way
+  overflows, which the fused accumulation guarantees and separate multiply-and-add
+  did not.
 
 ## [0.15.0] - 2026-10-19
 
