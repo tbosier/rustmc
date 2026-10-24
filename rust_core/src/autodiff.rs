@@ -2664,6 +2664,26 @@ mod tests {
         }
     }
 
+    /// The narrow products accumulate with fused multiply-adds, so a gradient
+    /// whose sum is representable stays finite when a product along the way
+    /// is not: `1e308 * 2 - 1e308` is `1e308` fused and `inf` unfused. faer's
+    /// kernels behaved the same way on a CPU with FMA, and the sampler rejects
+    /// a non-finite gradient.
+    #[test]
+    fn narrow_mat_vec_mul_gradient_survives_an_intermediate_overflow() {
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", 2);
+        g.vector_normal_logp(start, 2, 0.0, 1.0);
+        let matrix_idx = g.store_matrix(vec![-1e308, 0.0, 1e308, 0.0], 2, 2);
+        let mu = g.mat_vec_mul(matrix_idx, start, 2, None);
+        let sigma = g.add_constant(1.0);
+        let obs_idx = g.add_obs_data(vec![1.0, 2.0]);
+        g.obs_logp_normal(mu, sigma, obs_idx);
+        let mut evaluator = Evaluator::new(&g);
+        evaluator.compute(&g, &[0.0, 0.0]);
+        assert_eq!(evaluator.grad, vec![1e308, 0.0]);
+    }
+
     /// Seeded sampling must not depend on how many threads the pool has. With
     /// faer 0.19 the wide products are serial whatever `FAER_PARALLELISM` says
     /// (see its documentation), and the narrow ones are loops, so today this

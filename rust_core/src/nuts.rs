@@ -1223,25 +1223,72 @@ mod tests {
         // draw against ~12 for dense.
         //
         // At 50 dimensions the rule is near its edge, and whether one fit
-        // keeps the benefit turns on rounding. On 40 datasets not used to set
-        // this test (data seeds 21 to 60, sampler seed 4) it kept it in 34
-        // with faer's matrix products and in 32 with the loops that replaced
-        // them for narrow designs, so the test asks for 6 of 10 datasets: at
-        // a rate of 0.8 a correct rule fails that 3.3% of the time when a
-        // change moves the draws.
+        // keeps the benefit turns on rounding, so a single seed would pass or
+        // fail on how a product sums. `correlated_coefficients_study`
+        // recorded data seeds 1 to 60 under faer's matrix products and under
+        // the loops that replaced them for narrow designs
+        // (`benchmarks/results/2026-10-24-auto-dense-50d.txt`): auto kept the
+        // benefit on 52 and 51 of the 60, and a fit that misses it takes
+        // about 7 times dense's steps. On panels of 10 drawn from the 40
+        // held-out datasets, 21 to 60, the ratio of auto's total steps to
+        // dense's exceeded 4.0 in about 1% (3.58 and 2.97 at the 99th
+        // percentiles); an auto that never went dense would score 8.3 to 9.0.
+        // So datasets 1 to 10 must keep the benefit on at least 6 and hold
+        // that ratio to 4.0. A rule that misses somewhat more often than
+        // today can still pass; one that stops choosing dense cannot.
         assert!(correlated_coefficients_case(2, 10, 4));
-        let kept = (1..=10)
-            .filter(|&data_seed| correlated_coefficients_case(data_seed, 50, 4))
+        let steps = (1..=10)
+            .map(|data_seed| correlated_coefficients_steps(data_seed, 50, 4))
+            .collect::<Vec<_>>();
+        let kept = steps
+            .iter()
+            .filter(|&&(auto, diagonal, dense)| auto < 0.5 * diagonal && auto <= 1.5 * dense)
             .count();
+        let ratio = steps.iter().map(|s| s.0).sum::<f64>() / steps.iter().map(|s| s.2).sum::<f64>();
         assert!(
-            kept >= 6,
-            "auto kept the dense benefit on {kept} of 10 datasets"
+            kept >= 6 && ratio <= 4.0,
+            "auto kept the dense benefit on {kept} of 10 datasets, at {ratio:.2} times dense's \
+             total steps"
         );
     }
 
     /// Whether `auto` on correlated columns takes less than half the
     /// diagonal metric's leapfrog steps and at most 1.5 times dense's.
     fn correlated_coefficients_case(data_seed: u64, dim: usize, seed: u64) -> bool {
+        let (auto, diagonal, dense) = correlated_coefficients_steps(data_seed, dim, seed);
+        auto < 0.5 * diagonal && auto <= 1.5 * dense
+    }
+
+    /// The study behind the 50-dimensional check above, run by hand:
+    ///
+    /// ```text
+    /// RUSTMC_STUDY_DATA_SEEDS=21-60 cargo test --release -p rustmc_core --lib \
+    ///     correlated_coefficients_study -- --ignored --nocapture
+    /// ```
+    ///
+    /// For each data seed it prints the mean leapfrog steps per draw under
+    /// each metric at sampler seed 4. `benchmarks/results/2026-10-24-auto-dense-50d.txt`
+    /// holds its output.
+    #[test]
+    #[ignore = "study: 3 fits per dataset; run by hand, see the doc comment"]
+    fn correlated_coefficients_study() {
+        let range = std::env::var("RUSTMC_STUDY_DATA_SEEDS").unwrap_or_else(|_| "21-60".into());
+        let (first, last) = range
+            .split_once('-')
+            .map(|(a, b)| (a.parse::<u64>().unwrap(), b.parse::<u64>().unwrap()))
+            .expect("RUSTMC_STUDY_DATA_SEEDS is FIRST-LAST");
+        for data_seed in first..=last {
+            let (auto, diagonal, dense) = correlated_coefficients_steps(data_seed, 50, 4);
+            let kept = auto < 0.5 * diagonal && auto <= 1.5 * dense;
+            println!(
+                "data {data_seed}: auto {auto:.2} diagonal {diagonal:.2} dense {dense:.2} kept {kept}"
+            );
+        }
+    }
+
+    /// Mean leapfrog steps per draw under the auto, diagonal and dense
+    /// metrics, on a 400-row regression whose columns are correlated at 0.9.
+    fn correlated_coefficients_steps(data_seed: u64, dim: usize, seed: u64) -> (f64, f64, f64) {
         let n_rows = 400;
         let mut rng = ChaCha8Rng::seed_from_u64(data_seed);
         let mut normal =
@@ -1259,9 +1306,10 @@ mod tests {
             y.push(mean + normal());
         }
         let graph = vector_regression(x, n_rows, dim, y);
-        let auto = mean_draw_leapfrog_steps(&graph, MetricKind::Auto, seed);
-        let diagonal = mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, seed);
-        let dense = mean_draw_leapfrog_steps(&graph, MetricKind::Dense, seed);
-        auto < 0.5 * diagonal && auto <= 1.5 * dense
+        (
+            mean_draw_leapfrog_steps(&graph, MetricKind::Auto, seed),
+            mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, seed),
+            mean_draw_leapfrog_steps(&graph, MetricKind::Dense, seed),
+        )
     }
 }
