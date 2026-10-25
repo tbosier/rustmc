@@ -903,24 +903,36 @@ mod tests {
         assert_eq!(rebound.grad, fresh.grad);
     }
 
-    /// The evaluator keeps each Bernoulli-logit and Poisson-log exponential
-    /// from the forward pass for the reverse pass. A same-shape rebind, a call
-    /// that only runs the forward pass, and repeated calls at other parameters
-    /// must all leave it matching a fresh evaluator to the bit.
+    /// The evaluator keeps each Bernoulli-logit and Poisson-log exponential,
+    /// and each Normal and LogNormal standardized residual, from the forward
+    /// pass for the reverse pass. A same-shape rebind, a call that only runs
+    /// the forward pass, and repeated calls at other parameters must all leave
+    /// it matching a fresh evaluator to the bit.
     #[test]
-    fn cached_observation_exponentials_follow_rebinds_and_parameters() {
+    fn cached_observation_values_follow_rebinds_and_parameters() {
         let mut graph = Graph::new();
         let beta = graph.add_param("beta");
         let gamma = graph.add_param("gamma");
+        let log_sigma = graph.add_param("log_sigma");
+        let sigma = graph.exp(log_sigma);
+        let unit = graph.add_constant(1.0);
         let x = graph.add_data("x", vec![1.0]);
         let logit = graph.scalar_mul_data(beta, x);
         let log_rate = graph.scalar_mul_data(gamma, x);
         let yes = graph.add_named_obs_data("yes", "occurs", vec![1.0]);
         let count = graph.add_named_obs_data("count", "counts", vec![1.0]);
+        let level = graph.add_named_obs_data("level", "levels", vec![1.0]);
+        let size = graph.add_named_obs_data("size", "sizes", vec![1.0]);
         graph.obs_logp_bernoulli_logit(logit, yes);
         graph.obs_logp_poisson_log(log_rate, count);
+        // Normal terms with an inferred and a constant scale, and LogNormal.
+        graph.obs_logp_normal(logit, sigma, level);
+        graph.obs_logp_normal(log_rate, unit, level);
+        graph.obs_logp_lognormal(log_rate, sigma, size);
         let structure = graph.structure_only();
         let bind = |yes: Vec<f64>, count: Vec<f64>| {
+            let level = count.iter().map(|c| 0.5 * c - 1.0).collect::<Vec<_>>();
+            let size = count.iter().map(|c| c + 0.25).collect::<Vec<_>>();
             DataBinding::bind(
                 &structure.schema,
                 DataInputs {
@@ -928,6 +940,8 @@ mod tests {
                         ("x".into(), Arc::from(vec![0.5, -1.0, 2.0, 0.0])),
                         ("yes".into(), Arc::from(yes)),
                         ("count".into(), Arc::from(count)),
+                        ("level".into(), Arc::from(level)),
+                        ("size".into(), Arc::from(size)),
                     ]),
                     matrices: HashMap::new(),
                 },
@@ -955,13 +969,13 @@ mod tests {
             bits(&evaluator)
         };
         let mut reused = Evaluator::with_binding(&structure, first.clone());
-        reused.compute(&structure, &[0.3, -0.2]);
-        reused.forward(&structure, &[4.0, 1.5]);
-        reused.compute(&structure, &[-0.7, 0.4]);
-        assert_eq!(bits(&reused), fresh_at(first, &[-0.7, 0.4]));
+        reused.compute(&structure, &[0.3, -0.2, 0.1]);
+        reused.forward(&structure, &[4.0, 1.5, -2.0]);
+        reused.compute(&structure, &[-0.7, 0.4, 0.3]);
+        assert_eq!(bits(&reused), fresh_at(first, &[-0.7, 0.4, 0.3]));
         reused.rebind(&structure, second.clone()).unwrap();
-        reused.compute(&structure, &[0.9, 0.1]);
-        assert_eq!(bits(&reused), fresh_at(second, &[0.9, 0.1]));
+        reused.compute(&structure, &[0.9, 0.1, -0.4]);
+        assert_eq!(bits(&reused), fresh_at(second, &[0.9, 0.1, -0.4]));
     }
 
     #[test]

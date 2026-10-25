@@ -62,12 +62,14 @@ pub struct Evaluator {
     /// and the forward pass fills an empty one it needs: see
     /// [`Self::ensure_log_observations`].
     log_observations: Vec<Vec<f64>>,
-    /// Per node, the exponential the forward pass of a Bernoulli-logit or
-    /// Poisson-log observation term took for each observation:
-    /// `exp(-|eta|)` and `exp(eta)`. The reverse pass, which runs only after
-    /// the forward pass on the same parameters, reads them instead of taking
-    /// them again. Empty for every other node.
-    observation_exps: Vec<Vec<f64>>,
+    /// Per node, a value the forward pass of an observation term computed for
+    /// each observation: the standardized residual `(y - mu) / sigma` of a
+    /// Normal term (of `ln(y)` for LogNormal), and the exponential a
+    /// Bernoulli-logit or Poisson-log term took, `exp(-|eta|)` and
+    /// `exp(eta)`. The reverse pass, which runs only after the forward pass
+    /// on the same parameters, reads them instead of computing them again.
+    /// Empty for every other node.
+    observation_cache: Vec<Vec<f64>>,
 }
 
 /// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
@@ -90,15 +92,20 @@ fn fill_log_observations(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec
     }
 }
 
-/// Size `out`, the `Evaluator::observation_exps` cache, for `graph` and
+/// Size `out`, the `Evaluator::observation_cache` cache, for `graph` and
 /// `binding`, reusing its allocations: one value per observation for each
-/// Bernoulli-logit and Poisson-log term, and nothing for every other node.
-fn fill_observation_exps(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
+/// Normal, LogNormal, Bernoulli-logit and Poisson-log term, and nothing for
+/// every other node.
+fn fill_observation_cache(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
     out.resize_with(graph.nodes.len(), Vec::new);
     for (node, cache) in graph.nodes.iter().zip(out.iter_mut()) {
         match node.op {
             Op::ObsLogP {
-                family: ObsFamily::BernoulliLogit | ObsFamily::PoissonLog,
+                family:
+                    ObsFamily::Normal
+                    | ObsFamily::LogNormal
+                    | ObsFamily::BernoulliLogit
+                    | ObsFamily::PoissonLog,
                 obs_data_idx,
                 ..
             } => cache.resize(binding.observations[obs_data_idx].len(), 0.0),
@@ -671,13 +678,13 @@ impl Evaluator {
 
         let mut log_observations = Vec::new();
         fill_log_observations(graph, &binding, &mut log_observations);
-        let mut observation_exps = Vec::new();
-        fill_observation_exps(graph, &binding, &mut observation_exps);
+        let mut observation_cache = Vec::new();
+        fill_observation_cache(graph, &binding, &mut observation_cache);
         // Build the Poisson log-factorial table now rather than during a fit.
         crate::count_sampling::small_log_factorials();
         Self {
             log_observations,
-            observation_exps,
+            observation_cache,
             binding,
             node_lengths,
             node_kind,
@@ -717,12 +724,40 @@ impl Evaluator {
         let node_lengths = validate_node_lengths(graph, &binding)?;
         if node_lengths == self.node_lengths {
             fill_log_observations(graph, &binding, &mut self.log_observations);
-            fill_observation_exps(graph, &binding, &mut self.observation_exps);
+            fill_observation_cache(graph, &binding, &mut self.observation_cache);
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
         }
         Ok(())
+    }
+
+    /// The reverse pass of the Normal or LogNormal observation term `idx`,
+    /// with mean `mu` and scale `sigma`, from the standardized residuals its
+    /// forward pass stored. A constant scale gets no adjoint, which nothing
+    /// reads.
+    fn add_gaussian_residual_adjoints(
+        &mut self,
+        graph: &Graph,
+        idx: usize,
+        mu: usize,
+        sigma: usize,
+        a_s: f64,
+    ) {
+        let residuals = &self.observation_cache[idx];
+        let mu_adjoints = match self.node_kind[mu] {
+            NodeKind::ComputedVec(off) => Some(&mut self.adj_vec_buf[off..off + residuals.len()]),
+            _ => None,
+        };
+        let sigma_adjoint = (!matches!(graph.nodes[sigma].op, Op::Constant(_)))
+            .then_some(&mut self.adj_scalars[sigma]);
+        gaussian_residual_adjoints(
+            residuals,
+            self.scalars[sigma],
+            a_s,
+            mu_adjoints,
+            sigma_adjoint,
+        );
     }
 
     /// Read a vector element from either a Data node (graph reference) or
@@ -775,10 +810,10 @@ impl Evaluator {
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur on the
     /// graph the evaluator was built for or last rebound to; a graph changed
-    /// since then so that an existing observation node becomes a LogNormal,
-    /// Bernoulli-logit or Poisson-log term allocates once for that term's
-    /// cache (see `ensure_log_observations` and `observation_exps`). Adding
-    /// nodes needs a new evaluator.
+    /// since then so that an existing observation node becomes a Normal,
+    /// LogNormal, Bernoulli-logit or Poisson-log term allocates once for that
+    /// term's cache (see `ensure_log_observations` and `observation_cache`).
+    /// Adding nodes needs a new evaluator.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         self.forward(graph, params);
         self.backward(graph, params);
@@ -950,12 +985,15 @@ impl Evaluator {
 
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             let n = obs.len() as f64;
+                            let mut residuals = std::mem::take(&mut self.observation_cache[idx]);
+                            residuals.resize(vl.min(obs.len()), 0.0);
                             let mut sum_sq = 0.0f64;
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
+                            for (i, (&y, d)) in obs.iter().zip(residuals.iter_mut()).enumerate() {
                                 let m = self.read_vec(linpred_vec.0, i);
-                                let d = (y - m) / sv;
-                                sum_sq += d * d;
+                                *d = (y - m) / sv;
+                                sum_sq += *d * *d;
                             }
+                            self.observation_cache[idx] = residuals;
                             self.scalars[idx] = n * log_norm - 0.5 * sum_sq;
                         }
                         crate::graph::ObsFamily::BernoulliLogit => {
@@ -964,7 +1002,7 @@ impl Evaluator {
                             // graph they were given, so the resize does
                             // nothing there; a node changed afterward into
                             // this term allocates once here.
-                            let mut exps = std::mem::take(&mut self.observation_exps[idx]);
+                            let mut exps = std::mem::take(&mut self.observation_cache[idx]);
                             exps.resize(vl.min(obs.len()), 0.0);
                             let mut sum = 0.0f64;
                             for (i, (&y, e)) in obs.iter().zip(exps.iter_mut()).enumerate() {
@@ -972,11 +1010,11 @@ impl Evaluator {
                                 *e = bernoulli_logit_exp(y, eta);
                                 sum += bernoulli_logit_logp_given(y, eta, *e);
                             }
-                            self.observation_exps[idx] = exps;
+                            self.observation_cache[idx] = exps;
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::PoissonLog => {
-                            let mut exps = std::mem::take(&mut self.observation_exps[idx]);
+                            let mut exps = std::mem::take(&mut self.observation_cache[idx]);
                             exps.resize(vl.min(obs.len()), 0.0);
                             let mut sum = 0.0f64;
                             for (i, (&y, rate)) in obs.iter().zip(exps.iter_mut()).enumerate() {
@@ -986,7 +1024,7 @@ impl Evaluator {
                                     y, eta, *rate,
                                 );
                             }
-                            self.observation_exps[idx] = exps;
+                            self.observation_cache[idx] = exps;
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::ExponentialLog => {
@@ -1008,12 +1046,17 @@ impl Evaluator {
                             let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
                             self.ensure_log_observations(*obs_data_idx);
                             let log_obs = &self.log_observations[*obs_data_idx];
+                            let mut residuals = std::mem::take(&mut self.observation_cache[idx]);
+                            residuals.resize(vl.min(log_obs.len()), 0.0);
                             let mut sum = 0.0f64;
-                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
+                            for (i, (&ly, d)) in
+                                log_obs.iter().zip(residuals.iter_mut()).enumerate()
+                            {
                                 let m = self.read_vec(linpred_vec.0, i);
-                                let d = (ly - m) / sv;
-                                sum += log_norm - ly - 0.5 * d * d;
+                                *d = (ly - m) / sv;
+                                sum += log_norm - ly - 0.5 * *d * *d;
                             }
+                            self.observation_cache[idx] = residuals;
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::NegativeBinomialLog => {
@@ -1447,29 +1490,20 @@ impl Evaluator {
                                 continue;
                             }
 
-                            let mut dsigma = 0.0f64;
-
-                            let mu_off = match self.node_kind[linpred_vec.0] {
-                                NodeKind::ComputedVec(o) => Some(o),
-                                _ => None,
-                            };
-
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i);
-                                let diff = (y - m) / sv;
-                                if let Some(off) = mu_off {
-                                    self.adj_vec_buf[off + i] += a_s * (diff / sv);
-                                }
-                                dsigma += (diff * diff - 1.0) / sv;
-                            }
-                            self.adj_scalars[sigma_node.0] += a_s * dsigma;
+                            self.add_gaussian_residual_adjoints(
+                                graph,
+                                idx,
+                                linpred_vec.0,
+                                sigma_node.0,
+                                a_s,
+                            );
                         }
                         crate::graph::ObsFamily::BernoulliLogit => {
                             let eta_off = match self.node_kind[linpred_vec.0] {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            let exps = &self.observation_exps[idx];
+                            let exps = &self.observation_cache[idx];
                             for (i, (&y, &e)) in obs.iter().zip(exps).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i);
                                 let grad = bernoulli_logit_grad_given(y, eta, e);
@@ -1483,7 +1517,7 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            let rates = &self.observation_exps[idx];
+                            let rates = &self.observation_cache[idx];
                             for (i, (&y, &rate)) in obs.iter().zip(rates).enumerate() {
                                 let grad = y - rate;
                                 if let Some(off) = eta_off {
@@ -1511,24 +1545,13 @@ impl Evaluator {
                                 continue;
                             }
 
-                            let mu_off = match self.node_kind[linpred_vec.0] {
-                                NodeKind::ComputedVec(o) => Some(o),
-                                _ => None,
-                            };
-                            // `backward` runs only after `forward` on the same
-                            // graph, which has filled this slot.
-                            let log_obs = &self.log_observations[*obs_data_idx];
-                            debug_assert_eq!(log_obs.len(), obs.len());
-                            let mut dsigma = 0.0f64;
-                            for (i, &ly) in log_obs.iter().take(vl).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i);
-                                let d = (ly - m) / sv;
-                                if let Some(off) = mu_off {
-                                    self.adj_vec_buf[off + i] += a_s * (d / sv);
-                                }
-                                dsigma += (d * d - 1.0) / sv;
-                            }
-                            self.adj_scalars[sigma_node.0] += a_s * dsigma;
+                            self.add_gaussian_residual_adjoints(
+                                graph,
+                                idx,
+                                linpred_vec.0,
+                                sigma_node.0,
+                                a_s,
+                            );
                         }
                         crate::graph::ObsFamily::NegativeBinomialLog => {
                             let alpha_node = aux.expect("NegativeBinomial obs logp requires alpha");
@@ -1921,6 +1944,31 @@ fn invalid_vector_logp(n: usize) -> f64 {
 #[inline]
 fn scale_is_valid(sigma: f64) -> bool {
     sigma.is_finite() && sigma > 0.0
+}
+
+/// Add `a_s` times the gradient of a Normal log density, summed over
+/// observations, with respect to each mean and to the scale `sigma`, given the
+/// standardized residuals `(y - mu) / sigma`. The arithmetic and its order are
+/// those of the loop that recomputed each residual from `y` and `mu`.
+fn gaussian_residual_adjoints(
+    residuals: &[f64],
+    sigma: f64,
+    a_s: f64,
+    mu_adjoints: Option<&mut [f64]>,
+    sigma_adjoint: Option<&mut f64>,
+) {
+    if let Some(adjoints) = mu_adjoints {
+        for (adjoint, &d) in adjoints.iter_mut().zip(residuals) {
+            *adjoint += a_s * (d / sigma);
+        }
+    }
+    if let Some(sigma_adjoint) = sigma_adjoint {
+        let mut dsigma = 0.0f64;
+        for &d in residuals {
+            dsigma += (d * d - 1.0) / sigma;
+        }
+        *sigma_adjoint += a_s * dsigma;
+    }
 }
 
 fn normal_logp_scalar(x: f64, mu: f64, sigma: f64) -> f64 {
@@ -3231,6 +3279,71 @@ mod tests {
         g.vector_uniform_logp(param_start, 3, 0.0, 1.0);
         let params = vec![0.5, -0.3, 1.2];
         full_finite_diff_check(&g, &params, 1e-4);
+    }
+
+    /// The Normal and LogNormal reverse passes read the standardized residuals
+    /// the forward pass stored instead of recomputing them. Starting from
+    /// nonzero adjoints, they must add the bits the recomputing loop added,
+    /// which is reproduced here, NaN payloads included.
+    #[test]
+    fn gaussian_residual_adjoints_match_the_recomputing_loop_bit_for_bit() {
+        let ys = [-1e300, -3.0, -0.0, 0.0, 1e-310, 0.25, 7.5, 1e300];
+        let mus = [
+            -2.0,
+            0.0,
+            -0.0,
+            1e-300,
+            0.25,
+            1e308,
+            f64::INFINITY,
+            f64::from_bits(0x7ff8_0000_0000_1234),
+        ];
+        let sigmas = [1e-300, 1e-12, 0.5, 1.0, 3.0, 1e300];
+        let scales = [1.0, -0.5, 1e-320, 1e300];
+        for &sigma in &sigmas {
+            for &a_s in &scales {
+                for shift in 0..mus.len() {
+                    let mu = (0..ys.len())
+                        .map(|i| mus[(i + shift) % mus.len()])
+                        .collect::<Vec<_>>();
+                    let start = (0..ys.len())
+                        .map(|i| 0.1 * i as f64 - 0.3)
+                        .collect::<Vec<_>>();
+
+                    let mut expected = start.clone();
+                    let mut expected_sigma = 0.75;
+                    let mut dsigma = 0.0f64;
+                    for (i, (&y, &m)) in ys.iter().zip(&mu).enumerate() {
+                        let diff = (y - m) / sigma;
+                        expected[i] += a_s * (diff / sigma);
+                        dsigma += (diff * diff - 1.0) / sigma;
+                    }
+                    expected_sigma += a_s * dsigma;
+
+                    let residuals = ys
+                        .iter()
+                        .zip(&mu)
+                        .map(|(&y, &m)| (y - m) / sigma)
+                        .collect::<Vec<_>>();
+                    let mut actual = start.clone();
+                    let mut actual_sigma = 0.75;
+                    gaussian_residual_adjoints(
+                        &residuals,
+                        sigma,
+                        a_s,
+                        Some(&mut actual),
+                        Some(&mut actual_sigma),
+                    );
+                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                    assert_eq!(bits(&actual), bits(&expected), "{sigma} {a_s} {shift}");
+                    assert_eq!(
+                        actual_sigma.to_bits(),
+                        expected_sigma.to_bits(),
+                        "{sigma} {a_s} {shift}"
+                    );
+                }
+            }
+        }
     }
 
     /// `student_t_derivatives` shares its logarithms and softplus with the
