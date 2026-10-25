@@ -962,7 +962,7 @@ impl Evaluator {
                             // Moved out and back so the loop can read `self`.
                             // Construction and every rebind size it for the
                             // graph they were given, so the resize does
-                            // nothing there; a node changed afterwards into
+                            // nothing there; a node changed afterward into
                             // this term allocates once here.
                             let mut exps = std::mem::take(&mut self.observation_exps[idx]);
                             exps.resize(vl.min(obs.len()), 0.0);
