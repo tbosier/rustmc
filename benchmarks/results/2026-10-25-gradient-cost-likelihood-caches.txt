@@ -1,0 +1,30 @@
+# Microseconds per log-density gradient, from rust_core/examples/gradient_cost.rs
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-25; load at start 1.36 2.76 2.05
+
+## 50a6e45 (perf/narrow-matvec): exponentials taken in both passes
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64
+Normal                          3.73    4.46    6.90   11.14
+NormalWithInferredScale         3.75    5.21    6.73   11.26
+BernoulliLogit                 12.37   13.02   14.95   18.75
+PoissonLog                     14.37   15.54   17.64   22.01
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64
+Normal                         37.16   44.23   71.10  117.87
+NormalWithInferredScale        37.73   46.89   70.12  119.11
+BernoulliLogit                122.86  130.73  151.47  191.77
+PoissonLog                    146.40  154.99  178.83  225.86
+
+## this branch: each exponential taken once, ln(count!) from a table
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64
+Normal                          3.85    4.58    7.17   11.31
+NormalWithInferredScale         3.80    4.69    6.93   11.31
+BernoulliLogit                 10.29   11.09   13.20   16.88
+PoissonLog                     10.98   12.49   14.46   18.95
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64
+Normal                         37.44   45.57   70.02  112.13
+NormalWithInferredScale        37.28   45.90   68.91  114.01
+BernoulliLogit                102.61  114.50  137.76  172.30
+PoissonLog                    107.61  120.89  146.25  191.34

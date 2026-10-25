@@ -903,6 +903,63 @@ mod tests {
         assert_eq!(rebound.grad, fresh.grad);
     }
 
+    /// The evaluator keeps each Bernoulli-logit and Poisson-log exponential
+    /// from the forward pass for the reverse pass. A same-shape rebind, a call
+    /// that only runs the forward pass, and repeated calls at other parameters
+    /// must all leave it matching a fresh evaluator to the bit.
+    #[test]
+    fn cached_observation_exponentials_follow_rebinds_and_parameters() {
+        let mut graph = Graph::new();
+        let beta = graph.add_param("beta");
+        let gamma = graph.add_param("gamma");
+        let x = graph.add_data("x", vec![1.0]);
+        let logit = graph.scalar_mul_data(beta, x);
+        let log_rate = graph.scalar_mul_data(gamma, x);
+        let yes = graph.add_named_obs_data("yes", "occurs", vec![1.0]);
+        let count = graph.add_named_obs_data("count", "counts", vec![1.0]);
+        graph.obs_logp_bernoulli_logit(logit, yes);
+        graph.obs_logp_poisson_log(log_rate, count);
+        let structure = graph.structure_only();
+        let bind = |yes: Vec<f64>, count: Vec<f64>| {
+            DataBinding::bind(
+                &structure.schema,
+                DataInputs {
+                    vectors: HashMap::from([
+                        ("x".into(), Arc::from(vec![0.5, -1.0, 2.0, 0.0])),
+                        ("yes".into(), Arc::from(yes)),
+                        ("count".into(), Arc::from(count)),
+                    ]),
+                    matrices: HashMap::new(),
+                },
+                "",
+                true,
+                true,
+            )
+            .unwrap()
+        };
+        let first = bind(vec![1.0, 0.0, 1.0, 1.0], vec![0.0, 3.0, 1.0, 7.0]);
+        let second = bind(vec![0.0, 0.0, 1.0, 0.0], vec![2.0, 0.0, 5.0, 1.0]);
+        let fresh_at = |binding: DataBinding, params: &[f64]| {
+            let mut evaluator = Evaluator::with_binding(&structure, binding);
+            evaluator.compute(&structure, params);
+            (evaluator.total_logp.to_bits(), evaluator.grad.clone())
+        };
+        let mut reused = Evaluator::with_binding(&structure, first.clone());
+        reused.compute(&structure, &[0.3, -0.2]);
+        reused.forward(&structure, &[4.0, 1.5]);
+        reused.compute(&structure, &[-0.7, 0.4]);
+        assert_eq!(
+            (reused.total_logp.to_bits(), reused.grad.clone()),
+            fresh_at(first, &[-0.7, 0.4])
+        );
+        reused.rebind(&structure, second.clone()).unwrap();
+        reused.compute(&structure, &[0.9, 0.1]);
+        assert_eq!(
+            (reused.total_logp.to_bits(), reused.grad.clone()),
+            fresh_at(second, &[0.9, 0.1])
+        );
+    }
+
     #[test]
     fn evaluator_rejects_a_binding_from_a_different_schema() {
         let mut graph = Graph::new();

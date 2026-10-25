@@ -23,6 +23,14 @@ versioning while the public API is stabilized.
   64 columns, since the products sum in a different order. At extreme scales the order
   also decides whether a sum that cancels overflows first, so a log density there can be
   NaN where it was finite, or finite where it was NaN.
+- **Bernoulli-logit and Poisson-log terms take each exponential once per gradient.**
+  The forward pass keeps `exp(-|eta|)` or `exp(eta)` for every observation and the
+  reverse pass reads it, and a Poisson count below 16 reads `ln(count!)` from a table
+  instead of summing logarithms on every call; the table costs 105 logarithms once per
+  process, when the first evaluator is built. A gradient at 2 to 64 columns is 9% to
+  27% cheaper
+  (`benchmarks/results/2026-10-25-gradient-cost-likelihood-caches.txt`). The values,
+  NaNs included, and so seeded draws, are the same to the bit.
 
 ### Tests
 
