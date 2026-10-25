@@ -178,36 +178,41 @@ PYTHONPATH=.pybuild python -m benchmarks.repeated --config benchmarks/configs/re
   --output repeated-fixed.json
 ```
 
-`benchmarks/results/2026-10-19-repeated-fixed.json` and `-ragged.json` hold one run each
+`benchmarks/results/2026-10-24-repeated-fixed.json` and `-ragged.json` hold one run each
 on a 24-thread AMD Ryzen 9 5900X, with 30 datasets of 8 coefficients, 4 chains, 500
 warmup, 1000 draws and 4 threads: 500 rows each, or a row count drawn per dataset
 between 50 and 2000 (103 to 1949 in this run). Every fit of every engine passed.
 
 | Engine | Setup s | Fits s, fixed | Fits s, ragged | Useful ESS/s, fixed | Useful ESS/s, ragged |
 |---|---|---|---|---|---|
-| rustmc, one dataset at a time | 0.01 | 3.11 | 6.81 | 62095 | 28754 |
-| rustmc, `sample_batch` | 0.01 | 2.99 | 6.52 | 66010 | 29918 |
-| nutpie | 7.84, 7.90 | 1.94 | 2.91 | 16845 | 15642 |
-| NumPyro, parallel chains | 0.27 | 24.83 | 25.58 | 7744 | 7596 |
-| NumPyro, vectorized chains | 0.27, 0.26 | 30.97 | 54.15 | 6222 | 3589 |
-| PyMC | 0.44 | 26.04 | 27.29 | 5725 | 5536 |
+| rustmc, one dataset at a time | 0.01 | 1.53 | 3.36 | 126267 | 57716 |
+| rustmc, `sample_batch` | 0.01 | 1.42 | 3.13 | 136180 | 61819 |
+| nutpie | 7.83, 7.88 | 1.93 | 2.85 | 16869 | 15760 |
+| NumPyro, parallel chains | 0.27 | 25.36 | 26.17 | 7583 | 7427 |
+| NumPyro, vectorized chains | 0.27 | 31.31 | 54.76 | 6154 | 3549 |
+| PyMC | 0.45 | 25.95 | 27.84 | 5744 | 5428 |
 
-nutpie fits each dataset faster than rustmc: 1.94 s against 3.11 s for the 30 fixed
-datasets, and 2.91 s against 6.81 s for the ragged ones. Its useful ESS per second is
-lower over 30 datasets because of about 8 s of compilation and a lower ESS per fit: a
-mean bulk ESS of 5491 and 5636 per fit against rustmc's 6439 and 6530. At these per-fit
-times nutpie's total time would fall below rustmc's after about 200 fixed or 60 ragged
-datasets of this size. PyMC's first fit took 6.7 to 6.8 s and its fits a median of
-0.65 s (fixed) and 0.71 s (ragged). NumPyro with parallel chains took a median of 0.79
-and 0.83 s per fit, compiling each time. With vectorized chains its first fit took 2.9
-to 3.1 s and the later fixed-size ones a median of 0.96 s: reusing the compiled model
-did not make up for sampling the four chains on one device, and in the ragged workload,
-where every dataset has a new shape, the median was 1.8 s. Peak resident memory of the
-engine's own process was 344 to 371 MB for the two rustmc runs, 549 to 554 MB for
-nutpie, 1234 to 1470 MB for NumPyro and 423 to 425 MB for PyMC. Child processes, which hold
-PyMC's chains and anything else an engine or its imports start, are recorded apart
+rustmc's 30 fixed-size fits took 1.53 s against nutpie's 1.93 s, and it was the faster
+of the two on all 30; nutpie also spends about 8 s compiling first. On the ragged
+datasets nutpie's fits took 2.85 s against rustmc's 3.36 s, and it was faster on 24 of
+the 30, so at these times its total would fall below rustmc's after about 460 of them.
+rustmc's mean bulk ESS per fit is 6469 and 6480 against nutpie's 5491 and 5636. PyMC's
+first fit took 6.7 to 6.8 s and its fits a median of 0.65 s (fixed) and 0.73 s
+(ragged). NumPyro with parallel chains took a median of 0.81 and 0.84 s per fit,
+compiling each time. With vectorized chains its first fit took 3.0 to 3.1 s and the
+later fixed-size ones a median of 0.98 s: reusing the compiled model did not make up
+for sampling the four chains on one device, and in the ragged workload, where every
+dataset has a new shape, the median was 1.8 s. Peak resident memory of the engine's
+own process was 345 to 370 MB for the two rustmc runs, 549 to 553 MB for nutpie, 1237
+to 1462 MB for NumPyro and 423 to 424 MB for PyMC. Child processes, which hold PyMC's
+chains and anything else an engine or its imports start, are recorded apart
 (`peak_children_rss_mb`, the largest that exited): 394 to 402 MB for PyMC and nutpie
-and 63 to 64 MB for the others. The runs do not record which child reached each peak.
-The runs were made on a machine shared with other work, at a load average below 5. One
+and 62 to 64 MB for the others. The runs do not record which child reached each peak.
+The runs were made on a machine shared with other work, each started only once the
+one-minute load average was below 2.5; the records do not store the load. One
 run on one machine is not a stable ranking; rerun it before quoting a ratio.
+
+The 2026-10-19 records, from before narrow design matrices were multiplied with fused
+loops instead of faer, show rustmc at 3.11 s and 6.81 s for the same fits, with the
+other engines within a few percent of the times above.
 

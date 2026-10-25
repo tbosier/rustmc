@@ -933,6 +933,7 @@ name = "rustmc_core"
 version = "0.15.0"
 dependencies = [
  "faer",
+ "pulp 0.18.22",
  "rand",
  "rand_chacha",
  "rand_distr",

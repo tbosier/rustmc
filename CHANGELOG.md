@@ -6,6 +6,39 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+### Performance
+
+- **Design matrices up to 64 columns are multiplied with fused multiply-add loops
+  instead of faer.** faer's general `matmul` is slow on a narrow row-major product. A
+  gradient of a 500-row, 8-column normal regression took 9.7 µs and takes 4.5 µs now;
+  at 2 to 64 columns the loops are 1.1 to 2.5 times faster across the normal,
+  Bernoulli-logit and Poisson likelihoods, at about 96 columns the two are even, and
+  beyond that faer is faster, so wider designs keep it
+  (`benchmarks/results/2026-10-24-gradient-cost.txt`, from
+  `rust_core/examples/gradient_cost.rs`). The repeated benchmark's 30 fixed-size
+  regressions fit in 1.53 s against 3.11 s, now ahead of nutpie's 1.93 s on every
+  dataset, and its 30 ragged ones in 3.36 s against 6.81 s, where nutpie takes 2.85 s. The loops run under `pulp`'s AVX2 and FMA
+  dispatch on x86-64 and natively on aarch64, and fall back to faer on x86-64 CPUs
+  without FMA. **Seeded draws change** for graph models with a design matrix of up to
+  64 columns, since the products sum in a different order. At extreme scales the order
+  also decides whether a sum that cancels overflows first, so a log density there can be
+  NaN where it was finite, or finite where it was NaN.
+
+### Tests
+
+- `default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checked one seed
+  at 50 dimensions, where whether the auto rule keeps the dense benefit turns on
+  rounding, and the new products' rounding changed that seed's outcome. It now checks
+  10 datasets, by count and by total leapfrog steps against dense's, with thresholds
+  from `benchmarks/auto_dense_panels.py`. The ignored
+  `correlated_coefficients_study` prints the numbers for any range of datasets; on 60,
+  auto kept the benefit on 52 before this change and 51 after.
+- On CPUs with FMA, two narrow-product cases must stay finite where separate multiply
+  and add overflowed: a gradient term `2 * 1e308` added to a running `-1e308`, and a
+  first-column product `2 * 1e308` added to an intercept of `-1e308`. Both are `1e308`
+  fused. Other orders of overflowing terms can still give `inf`, as they could with
+  faer.
+
 ## [0.15.0] - 2026-10-19
 
 This release changes how the default `metric="auto"` chooses a dense metric, gives

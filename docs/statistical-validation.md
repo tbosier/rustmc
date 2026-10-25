@@ -197,6 +197,24 @@ fitted to a curved target can be worse than none, which a condition-number score
 see. The records are `benchmarks/results/2026-10-15-curved-old.json` and
 `2026-10-19-curved-new.json`.
 
+Near the rule's edge, whether a fit keeps the dense metric's benefit turns on rounding.
+On a 400-row regression with 50 coefficients whose columns are correlated at 0.9, at
+500 warmup and 200 draws, `auto` took under half the diagonal metric's leapfrog steps
+and at most 1.5 times the dense metric's on 52 of 60 datasets with faer's matrix
+products and on 51 of 60 with the fused loops that replaced them for narrow designs.
+The misses fell on different datasets, all but one: data seed 28 missed under both. Of
+the 8 and 9 misses, 4 and 7 were narrow, at 1.5 to 2 times dense's steps; the others
+lost the dense metric and took 4 to 13 times. The test below asks datasets 1 to 10 to
+keep the benefit on at least 6 and to hold auto's total steps to 3.5 times dense's.
+`benchmarks/auto_dense_panels.py` applies that assertion to 200,000 sets of 10 held-out
+datasets from the record: 412 sets failed it under faer and 72 under the loops. It
+catches a rule that stops choosing dense or loses it on about half the datasets; a
+smaller loss needs the study. The per-dataset numbers are in
+`benchmarks/results/2026-10-24-auto-dense-50d.txt`, from the ignored study test
+`correlated_coefficients_study` in `rust_core/src/nuts.rs`, and
+`default_metric_keeps_the_dense_benefit_for_correlated_coefficients` checks datasets
+1 to 10 by count and by total cost.
+
 ```text
 PYTHONPATH=.pybuild python -m benchmarks.auto_metric_targets --warmup 1000 --metrics auto
 PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice --first-seed 100 --seeds 40

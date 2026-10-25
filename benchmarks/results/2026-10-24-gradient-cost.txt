@@ -1,0 +1,44 @@
+# Microseconds per log-density gradient, from rust_core/examples/gradient_cost.rs
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-24; load at start 0.90 0.71 1.05
+
+## main (c836869) evaluator: faer at every width
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                          9.42    9.71   10.93   13.99   17.42   19.57   54.28
+NormalWithInferredScale         9.43    9.63   10.65   14.03   16.99   18.13   56.42
+BernoulliLogit                 18.05   18.15   18.66   20.99   23.24   25.02   62.40
+PoissonLog                     20.10   20.67   22.11   25.11   27.48   30.72   65.24
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                         93.98   94.59  107.85  141.38  163.77  182.36  547.48
+NormalWithInferredScale        94.18   95.51  109.96  149.66  166.18  201.75  550.14
+BernoulliLogit                179.09  181.04  198.27  221.72  241.70  267.65  576.60
+PoissonLog                    203.53  206.07  223.29  260.12  271.85  310.42  622.68
+
+## d0eaeea with LOOP_MAX_COLUMNS set to usize::MAX (temporary build): FMA loops at every width
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                          3.70    4.45    7.20   11.35   20.39   21.78   82.32
+NormalWithInferredScale         3.79    4.64    6.71   11.33   16.13   21.56   82.70
+BernoulliLogit                 12.46   13.22   15.00   18.45   22.72   28.17   92.96
+PoissonLog                     14.51   15.42   18.10   23.84   30.65   31.71   94.05
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                         37.41   45.37   68.46  115.83  160.84  212.86  820.52
+NormalWithInferredScale        37.50   46.90   71.35  117.19  159.81  209.18  818.73
+BernoulliLogit                122.43  131.27  148.14  190.91  227.34  275.58  907.25
+PoissonLog                    144.07  155.81  181.03  226.87  273.22  317.28  952.20
+
+## d0eaeea as committed: FMA loops up to 64 columns, faer above
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                          3.76    4.51    7.11   11.19   17.43   19.52   53.97
+NormalWithInferredScale         3.78    4.68    6.69   11.26   16.27   18.89   55.37
+BernoulliLogit                 12.43   13.20   14.89   18.27   23.76   25.87   61.74
+PoissonLog                     14.30   15.56   17.83   22.41   29.46   31.59   66.07
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64    p=96   p=128   p=512
+Normal                         36.98   44.00   68.05  113.18  164.39  181.77  552.95
+NormalWithInferredScale        37.01   45.25   71.15  114.07  165.17  200.38  553.65
+BernoulliLogit                120.66  128.78  145.94  188.13  236.93  262.78  574.09
+PoissonLog                    142.30  155.97  180.51  226.10  270.33  310.26  617.18

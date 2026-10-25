@@ -1,0 +1,7 @@
+engine              status      pass fail err  setup s    fit s  1st fit     ESS/s  RSS MB
+pymc                ok            30    0   0     0.45    25.95     6.70      5744     423
+rustmc_batch        ok            30    0   0     0.01     1.42     0.05    136180     368
+numpyro             ok            30    0   0     0.27    25.36     0.93      7583    1237
+rustmc              ok            30    0   0     0.01     1.53     0.05    126267     345
+nutpie              ok            30    0   0     7.83     1.93     0.07     16869     549
+numpyro_vectorized  ok            30    0   0     0.27    31.31     2.95      6154    1328
