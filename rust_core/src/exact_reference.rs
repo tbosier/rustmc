@@ -470,7 +470,7 @@ fn integrate(
             &times_square,
         );
         for (k, coarse) in coarse.iter_mut().enumerate() {
-            if index[k] % 2 == 0 {
+            if index[k].is_multiple_of(2) {
                 coarse.add(
                     log_density + ends * log_half,
                     &first,
