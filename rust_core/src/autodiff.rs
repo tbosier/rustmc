@@ -51,12 +51,15 @@ pub struct Evaluator {
     /// Map from param index to node id, for extracting gradients.
     /// `None` for vector params that have no `Op::Param` node (e.g. MatVecMul params).
     param_node_ids: Vec<Option<usize>>,
+    /// Per node, whether it was an `Op::Constant` when the evaluator was
+    /// built, as `param_node_ids` records the parameters of that graph.
+    constant_at_construction: Vec<bool>,
     /// Reusable scratch space for constrained vector parameters and gradients.
     param_scratch: Vec<f64>,
     /// `ln(y)` for every observation slot a LogNormal term reads, indexed like
     /// `binding.observations` and empty for every other slot. The data never
-    /// change for a binding, so both passes read these instead of taking two
-    /// logarithms per observation per gradient. Rebuilt whenever the binding
+    /// change for a binding, so the forward pass reads these instead of taking
+    /// a logarithm per observation per gradient. Rebuilt whenever the binding
     /// changes, including by a same-shape [`Self::rebind`]. A slot is therefore
     /// either empty or holds the logarithms of the binding's current values,
     /// and the forward pass fills an empty one it needs: see
@@ -676,6 +679,12 @@ impl Evaluator {
             }
         }
 
+        let constant_at_construction = graph
+            .nodes
+            .iter()
+            .map(|node| matches!(node.op, Op::Constant(_)))
+            .collect();
+
         let mut log_observations = Vec::new();
         fill_log_observations(graph, &binding, &mut log_observations);
         let mut observation_cache = Vec::new();
@@ -695,6 +704,7 @@ impl Evaluator {
             grad: vec![0.0; graph.param_count],
             total_logp: 0.0,
             param_node_ids,
+            constant_at_construction,
             param_scratch: vec![0.0; graph.param_count],
         }
     }
@@ -734,8 +744,13 @@ impl Evaluator {
 
     /// The reverse pass of the Normal or LogNormal observation term `idx`,
     /// with mean `mu` and scale `sigma`, from the standardized residuals its
-    /// forward pass stored. A constant scale gets no adjoint, which nothing
-    /// reads.
+    /// forward pass stored.
+    ///
+    /// A scale that is a constant now and was one when the evaluator was
+    /// built gets no adjoint: its reverse arm does nothing, and the gradient
+    /// map built with the evaluator cannot name it. Checking only the current
+    /// node would drop the gradient of a parameter that a graph changed after
+    /// construction turned into a constant, which the map still reads.
     fn add_gaussian_residual_adjoints(
         &mut self,
         graph: &Graph,
@@ -749,8 +764,9 @@ impl Evaluator {
             NodeKind::ComputedVec(off) => Some(&mut self.adj_vec_buf[off..off + residuals.len()]),
             _ => None,
         };
-        let sigma_adjoint = (!matches!(graph.nodes[sigma].op, Op::Constant(_)))
-            .then_some(&mut self.adj_scalars[sigma]);
+        let constant = self.constant_at_construction.get(sigma) == Some(&true)
+            && matches!(graph.nodes[sigma].op, Op::Constant(_));
+        let sigma_adjoint = (!constant).then_some(&mut self.adj_scalars[sigma]);
         gaussian_residual_adjoints(
             residuals,
             self.scalars[sigma],
@@ -3287,62 +3303,134 @@ mod tests {
     /// which is reproduced here, NaN payloads included.
     #[test]
     fn gaussian_residual_adjoints_match_the_recomputing_loop_bit_for_bit() {
-        let ys = [-1e300, -3.0, -0.0, 0.0, 1e-310, 0.25, 7.5, 1e300];
-        let mus = [
-            -2.0,
-            0.0,
-            -0.0,
-            1e-300,
-            0.25,
-            1e308,
-            f64::INFINITY,
-            f64::from_bits(0x7ff8_0000_0000_1234),
-        ];
+        // Moderate values, so that most scale adjoints are finite sums, then
+        // values near overflow, an infinity and a NaN with a payload.
+        let moderate = (
+            [-40.0, -3.0, -0.0, 0.0, 1e-310, 0.25, 7.5, 12.0],
+            [-2.0, 0.0, -0.0, 1e-300, 0.25, 1e5, -7.0, 3.5],
+        );
+        let extreme = (
+            [-1e300, -3.0, -0.0, 0.0, 1e-310, 0.25, 7.5, 1e300],
+            [
+                -2.0,
+                0.0,
+                -0.0,
+                1e-300,
+                0.25,
+                1e308,
+                f64::INFINITY,
+                f64::from_bits(0x7ff8_0000_0000_1234),
+            ],
+        );
         let sigmas = [1e-300, 1e-12, 0.5, 1.0, 3.0, 1e300];
         let scales = [1.0, -0.5, 1e-320, 1e300];
-        for &sigma in &sigmas {
-            for &a_s in &scales {
-                for shift in 0..mus.len() {
-                    let mu = (0..ys.len())
-                        .map(|i| mus[(i + shift) % mus.len()])
-                        .collect::<Vec<_>>();
-                    let start = (0..ys.len())
-                        .map(|i| 0.1 * i as f64 - 0.3)
-                        .collect::<Vec<_>>();
+        let mut finite_scale_adjoints = 0;
+        for (ys, mus) in [moderate, extreme] {
+            for &sigma in &sigmas {
+                for &a_s in &scales {
+                    for shift in 0..mus.len() {
+                        let mu = (0..ys.len())
+                            .map(|i| mus[(i + shift) % mus.len()])
+                            .collect::<Vec<_>>();
+                        let start = (0..ys.len())
+                            .map(|i| 0.1 * i as f64 - 0.3)
+                            .collect::<Vec<_>>();
 
-                    let mut expected = start.clone();
-                    let mut expected_sigma = 0.75;
-                    let mut dsigma = 0.0f64;
-                    for (i, (&y, &m)) in ys.iter().zip(&mu).enumerate() {
-                        let diff = (y - m) / sigma;
-                        expected[i] += a_s * (diff / sigma);
-                        dsigma += (diff * diff - 1.0) / sigma;
+                        let mut expected = start.clone();
+                        let mut expected_sigma = 0.75;
+                        let mut dsigma = 0.0f64;
+                        for (i, (&y, &m)) in ys.iter().zip(&mu).enumerate() {
+                            let diff = (y - m) / sigma;
+                            expected[i] += a_s * (diff / sigma);
+                            dsigma += (diff * diff - 1.0) / sigma;
+                        }
+                        expected_sigma += a_s * dsigma;
+
+                        let residuals = ys
+                            .iter()
+                            .zip(&mu)
+                            .map(|(&y, &m)| (y - m) / sigma)
+                            .collect::<Vec<_>>();
+                        let mut actual = start.clone();
+                        let mut actual_sigma = 0.75;
+                        gaussian_residual_adjoints(
+                            &residuals,
+                            sigma,
+                            a_s,
+                            Some(&mut actual),
+                            Some(&mut actual_sigma),
+                        );
+                        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                        assert_eq!(bits(&actual), bits(&expected), "{sigma} {a_s} {shift}");
+                        assert_eq!(
+                            actual_sigma.to_bits(),
+                            expected_sigma.to_bits(),
+                            "{sigma} {a_s} {shift}"
+                        );
+                        finite_scale_adjoints += expected_sigma.is_finite() as usize;
                     }
-                    expected_sigma += a_s * dsigma;
-
-                    let residuals = ys
-                        .iter()
-                        .zip(&mu)
-                        .map(|(&y, &m)| (y - m) / sigma)
-                        .collect::<Vec<_>>();
-                    let mut actual = start.clone();
-                    let mut actual_sigma = 0.75;
-                    gaussian_residual_adjoints(
-                        &residuals,
-                        sigma,
-                        a_s,
-                        Some(&mut actual),
-                        Some(&mut actual_sigma),
-                    );
-                    let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-                    assert_eq!(bits(&actual), bits(&expected), "{sigma} {a_s} {shift}");
-                    assert_eq!(
-                        actual_sigma.to_bits(),
-                        expected_sigma.to_bits(),
-                        "{sigma} {a_s} {shift}"
-                    );
                 }
             }
+        }
+        // Of the 384 cases, so the scale's sums are checked on finite values
+        // and not only on a NaN that every sum carries.
+        assert_eq!(finite_scale_adjoints, 128);
+    }
+
+    /// Normal and LogNormal terms on a design matrix, with an inferred and a
+    /// constant scale, against the reference evaluator and finite
+    /// differences, which recompute every residual.
+    #[test]
+    fn gaussian_terms_match_the_reference_gradients() {
+        for lognormal in [false, true] {
+            for inferred_scale in [false, true] {
+                let mut g = Graph::new();
+                let start = g.add_vector_params("beta", 3);
+                let design = (0..15).map(|i| ((i * 7) % 11) as f64 / 5.0 - 1.0).collect();
+                let matrix = g.store_matrix(design, 5, 3);
+                let eta = g.mat_vec_mul(matrix, start, 3, None);
+                let sigma = if inferred_scale {
+                    let raw = g.add_param("log_sigma");
+                    g.exp(raw)
+                } else {
+                    g.add_constant(0.7)
+                };
+                let obs = g.add_obs_data(vec![0.3, 1.9, 0.8, 2.6, 1.1]);
+                if lognormal {
+                    g.obs_logp_lognormal(eta, sigma, obs);
+                } else {
+                    g.obs_logp_normal(eta, sigma, obs);
+                }
+                let mut params = vec![0.4, -0.3, 0.9];
+                if inferred_scale {
+                    params.push(-0.2);
+                }
+                full_finite_diff_check(&g, &params, 1e-5);
+            }
+        }
+    }
+
+    /// The gradient map is built with the evaluator, so a parameter scale that
+    /// the graph later turns into a constant still reads its adjoint. Its
+    /// value is whatever the recomputing loop gave before the reverse pass
+    /// learned to skip constant scales: here `(2^2 - 1) / 1` for Normal and
+    /// `(0^2 - 1) / 1` for LogNormal.
+    #[test]
+    fn a_scale_turned_constant_after_construction_keeps_its_old_gradient() {
+        for (lognormal, observation, expected) in [(false, 2.0, 3.0), (true, 1.0, -1.0)] {
+            let mut g = Graph::new();
+            let sigma = g.add_param("sigma");
+            let mu = g.add_data("mu", vec![0.0]);
+            let obs = g.add_obs_data(vec![observation]);
+            if lognormal {
+                g.obs_logp_lognormal(mu, sigma, obs);
+            } else {
+                g.obs_logp_normal(mu, sigma, obs);
+            }
+            let mut evaluator = Evaluator::new(&g);
+            g.nodes[sigma.0].op = Op::Constant(1.0);
+            evaluator.compute(&g, &[1.0]);
+            assert_eq!(evaluator.grad[0].to_bits(), f64::to_bits(expected));
         }
     }
 
