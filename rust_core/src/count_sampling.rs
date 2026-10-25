@@ -115,8 +115,9 @@ fn small_log_factorial(count: usize) -> f64 {
 }
 
 /// The table behind [`small_log_factorial`], 105 logarithms built once per
-/// process. Building an evaluator builds it, so a fit never pays for it
-/// partway through sampling.
+/// process. Building a graph evaluator builds it, so a graph fit never pays
+/// for it partway through sampling; other callers of the log mass build it
+/// on first use.
 pub(crate) fn small_log_factorials() -> &'static [f64; 16] {
     static TABLE: std::sync::OnceLock<[f64; 16]> = std::sync::OnceLock::new();
     TABLE.get_or_init(|| {

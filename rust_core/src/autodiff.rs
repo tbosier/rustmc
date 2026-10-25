@@ -775,9 +775,10 @@ impl Evaluator {
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur on the
     /// graph the evaluator was built for or last rebound to; a graph changed
-    /// since then to add a LogNormal, Bernoulli-logit or Poisson-log term
-    /// allocates once for that term's cache (see `ensure_log_observations` and
-    /// `observation_exps`).
+    /// since then so that an existing observation node becomes a LogNormal,
+    /// Bernoulli-logit or Poisson-log term allocates once for that term's
+    /// cache (see `ensure_log_observations` and `observation_exps`). Adding
+    /// nodes needs a new evaluator.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         self.forward(graph, params);
         self.backward(graph, params);
@@ -961,7 +962,7 @@ impl Evaluator {
                             // Moved out and back so the loop can read `self`.
                             // Construction and every rebind size it for the
                             // graph they were given, so the resize does
-                            // nothing there; a graph changed afterwards to add
+                            // nothing there; a node changed afterwards into
                             // this term allocates once here.
                             let mut exps = std::mem::take(&mut self.observation_exps[idx]);
                             exps.resize(vl.min(obs.len()), 0.0);

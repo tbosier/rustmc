@@ -939,25 +939,29 @@ mod tests {
         };
         let first = bind(vec![1.0, 0.0, 1.0, 1.0], vec![0.0, 3.0, 1.0, 7.0]);
         let second = bind(vec![0.0, 0.0, 1.0, 0.0], vec![2.0, 0.0, 5.0, 1.0]);
+        // The log density and every gradient component as bits, so a sign of
+        // zero or a NaN payload cannot pass as equal.
+        let bits = |evaluator: &Evaluator| {
+            let grad = evaluator
+                .grad
+                .iter()
+                .map(|g| g.to_bits())
+                .collect::<Vec<_>>();
+            (evaluator.total_logp.to_bits(), grad)
+        };
         let fresh_at = |binding: DataBinding, params: &[f64]| {
             let mut evaluator = Evaluator::with_binding(&structure, binding);
             evaluator.compute(&structure, params);
-            (evaluator.total_logp.to_bits(), evaluator.grad.clone())
+            bits(&evaluator)
         };
         let mut reused = Evaluator::with_binding(&structure, first.clone());
         reused.compute(&structure, &[0.3, -0.2]);
         reused.forward(&structure, &[4.0, 1.5]);
         reused.compute(&structure, &[-0.7, 0.4]);
-        assert_eq!(
-            (reused.total_logp.to_bits(), reused.grad.clone()),
-            fresh_at(first, &[-0.7, 0.4])
-        );
+        assert_eq!(bits(&reused), fresh_at(first, &[-0.7, 0.4]));
         reused.rebind(&structure, second.clone()).unwrap();
         reused.compute(&structure, &[0.9, 0.1]);
-        assert_eq!(
-            (reused.total_logp.to_bits(), reused.grad.clone()),
-            fresh_at(second, &[0.9, 0.1])
-        );
+        assert_eq!(bits(&reused), fresh_at(second, &[0.9, 0.1]));
     }
 
     #[test]

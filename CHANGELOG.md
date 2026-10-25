@@ -27,8 +27,8 @@ versioning while the public API is stabilized.
   The forward pass keeps `exp(-|eta|)` or `exp(eta)` for every observation and the
   reverse pass reads it, and a Poisson count below 16 reads `ln(count!)` from a table
   instead of summing logarithms on every call; the table costs 105 logarithms once per
-  process, when the first evaluator is built. A gradient at 2 to 64 columns is 9% to
-  27% cheaper
+  process, taken when the first graph evaluator is built, or by the first Poisson log
+  mass computed outside one. A gradient at 2 to 64 columns is 9% to 27% cheaper
   (`benchmarks/results/2026-10-25-gradient-cost-likelihood-caches.txt`). The values,
   NaNs included, and so seeded draws, are the same to the bit.
 
