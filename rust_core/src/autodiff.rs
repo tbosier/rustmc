@@ -1965,7 +1965,9 @@ fn scale_is_valid(sigma: f64) -> bool {
 /// Add `a_s` times the gradient of a Normal log density, summed over
 /// observations, with respect to each mean and to the scale `sigma`, given the
 /// standardized residuals `(y - mu) / sigma`. The arithmetic and its order are
-/// those of the loop that recomputed each residual from `y` and `mu`.
+/// those of the loop that recomputed each residual from `y` and `mu`, so every
+/// value is the same to the bit, except that which payload survives when two
+/// NaNs meet in an adjoint is the compiler's choice, as Rust leaves it.
 fn gaussian_residual_adjoints(
     residuals: &[f64],
     sigma: f64,
@@ -3300,7 +3302,8 @@ mod tests {
     /// The Normal and LogNormal reverse passes read the standardized residuals
     /// the forward pass stored instead of recomputing them. Starting from
     /// nonzero adjoints, they must add the bits the recomputing loop added,
-    /// which is reproduced here, NaN payloads included.
+    /// which is reproduced here. A lone NaN keeps its payload. Rust leaves
+    /// open which payload the sum of two NaNs keeps, so no case adds two.
     #[test]
     fn gaussian_residual_adjoints_match_the_recomputing_loop_bit_for_bit() {
         // Moderate values, so that most scale adjoints are finite sums, then
