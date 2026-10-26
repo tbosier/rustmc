@@ -10,12 +10,18 @@ parent takes an exclusive ``flock`` on ``--lock`` and waits for the one-minute l
 average to fall below ``--max-load``, so other benchmarks on the machine neither
 overlap a cell nor are overlapped by it.
 
-Per fit it records the sampling wall time (warmup and draws, from bound data to
-draws in hand, without compilation), the leapfrog steps of warmup and draws, the
+Per fit it records two wall times, without compilation: from bound data to the
+end of sampling, and from bound data to an ArviZ InferenceData, which nutpie
+builds inside ``nutpie.sample`` and rustmc builds in ``FitResult.to_arviz``. The
+second span is the comparable end point and the one the ratios use; nutpie's
+sampling-only span reads ``_BackgroundSampler`` internals of nutpie 0.16.6. It
+also records the leapfrog steps of warmup and draws, the
 minimum and mean bulk ESS and minimum tail ESS over the model's parameters, R-hat,
 post-warmup divergences, and each parameter's mean and Monte Carlo standard error,
-from which the parent checks that the two engines agree. Compilation is timed
-once per cell and engine.
+from which the parent checks that the engines agree. Compilation is timed once
+per cell and engine. Regression cells also run nutpie with its own default
+warmup of 300 iterations, as ``nutpie_default_tune``, since that is what a user
+gets without asking; the matched comparison keeps the same warmup for both.
 
     python -m benchmarks.head_to_head --output results.json [--quick] [--model NAME]
 
@@ -49,7 +55,11 @@ from benchmarks.protocol import BenchmarkConfig, environment_metadata, package_v
 from benchmarks.run import _child_environment
 
 RESULT_PREFIX = "RUSTMC_HEAD_TO_HEAD_RESULT="
-ENGINES = ("rustmc", "nutpie")
+ENGINES = ("rustmc", "nutpie", "nutpie_default_tune")
+# The matched comparison; `nutpie_default_tune` is an extra column.
+MATCHED = ("rustmc", "nutpie")
+NUTPIE_DEFAULT_TUNE = 300
+REGRESSIONS = ("normal", "normal_sigma", "logistic", "poisson")
 
 
 @dataclass(frozen=True)
@@ -205,18 +215,21 @@ def rustmc_engine(cell: Cell, datasets: list[dict[str, np.ndarray]]) -> tuple[fl
         fit = compiled.sample(bound, chains=cell.chains, warmup=cell.warmup, draws=cell.draws,
                               seed=cell.data_seed + index, threads=cell.threads,
                               show_progress=False)
+        sampled = time.perf_counter()
+        idata = fit.to_arviz()
         seconds = time.perf_counter() - start
         report = fit.transition_diagnostics()
         samples = fit.get_samples_2d()
-        diverging = np.asarray(fit.to_arviz().sample_stats["diverging"].values)
+        diverging = np.asarray(idata.sample_stats["diverging"].values)
         draws = {name: np.asarray(samples[name], dtype=float) for name in names}
-        fits.append({"index": index, "seconds": seconds,
+        fits.append({"index": index, "seconds": seconds, "sampling_seconds": sampled - start,
                      "leapfrog_steps": int(report["total_leapfrog_steps"]),
                      **draw_statistics(draws, diverging)})
     return compile_seconds, fits, {"rustmc": build_provenance(rmc)}
 
 
-def nutpie_engine(cell: Cell, datasets: list[dict[str, np.ndarray]]) -> tuple[float, list[dict[str, Any]], dict[str, Any]]:
+def nutpie_engine(cell: Cell, datasets: list[dict[str, np.ndarray]],
+                  tune: int | None = None) -> tuple[float, list[dict[str, Any]], dict[str, Any]]:
     import nutpie
     import pymc as pm
 
@@ -263,9 +276,16 @@ def nutpie_engine(cell: Cell, datasets: list[dict[str, np.ndarray]]) -> tuple[fl
             bound = compiled.with_data(group=data["group"], y=data["y"])
         else:
             bound = compiled.with_data(X=data["X"], y=data["y"])
-        idata = nutpie.sample(bound, draws=cell.draws, tune=cell.warmup, chains=cell.chains,
-                              cores=cell.threads, seed=cell.data_seed + index,
-                              save_warmup=True, progress_bar=False)
+        # `blocking=False` returns the running sampler, so the end of sampling
+        # and the end of the InferenceData conversion that `nutpie.sample` would
+        # do next can be timed apart; `wait()` is that wait plus `_extract`.
+        sampler = nutpie.sample(bound, draws=cell.draws, tune=tune or cell.warmup,
+                                chains=cell.chains, cores=cell.threads,
+                                seed=cell.data_seed + index, save_warmup=True,
+                                progress_bar=False, blocking=False)
+        sampler._sampler.wait(None)
+        sampled = time.perf_counter()
+        idata = sampler._extract(sampler._sampler.take_results())
         seconds = time.perf_counter() - start
         stats = idata.sample_stats
         steps = int(stats["n_steps"].values.sum() + idata.warmup_sample_stats["n_steps"].values.sum())
@@ -278,12 +298,17 @@ def nutpie_engine(cell: Cell, datasets: list[dict[str, np.ndarray]]) -> tuple[fl
             else:
                 for k in range(length):
                     draws[f"{name}[{k}]"] = values[:, :, k]
-        fits.append({"index": index, "seconds": seconds, "leapfrog_steps": steps,
+        fits.append({"index": index, "seconds": seconds, "sampling_seconds": sampled - start,
+                     "warmup": tune or cell.warmup, "leapfrog_steps": steps,
                      **draw_statistics(draws, np.asarray(stats["diverging"].values))})
     return compile_seconds, fits, {}
 
 
-ADAPTERS: dict[str, Callable[..., Any]] = {"rustmc": rustmc_engine, "nutpie": nutpie_engine}
+ADAPTERS: dict[str, Callable[..., Any]] = {
+    "rustmc": rustmc_engine,
+    "nutpie": nutpie_engine,
+    "nutpie_default_tune": lambda cell, datasets: nutpie_engine(cell, datasets, NUTPIE_DEFAULT_TUNE),
+}
 
 
 def run_child(engine: str, cell: Cell) -> dict[str, Any]:
@@ -315,7 +340,9 @@ def wait_for_quiet(max_load: float, timeout: float = 1800.0) -> float:
 def run_isolated(engine: str, cell: Cell, cache_dir: str) -> dict[str, Any]:
     command = [sys.executable, "-m", "benchmarks.head_to_head", "--child-engine", engine,
                "--child-cell", json.dumps(asdict(cell))]
-    env = _child_environment(engine, replace(BenchmarkConfig(), threads=cell.threads), cache_dir)
+    # Both nutpie runs take nutpie's environment, caches included.
+    env_engine = "nutpie" if engine.startswith("nutpie") else engine
+    env = _child_environment(env_engine, replace(BenchmarkConfig(), threads=cell.threads), cache_dir)
     proc = subprocess.run(command, cwd=str(Path(__file__).resolve().parent.parent), env=env,
                           text=True, capture_output=True, check=False)
     line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith(RESULT_PREFIX)), None)
@@ -349,6 +376,7 @@ def summarize_cell(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "status": "ok",
             "compile_seconds": result["compile_seconds"],
             "seconds": [fit["seconds"] for fit in fits],
+            "sampling_seconds": [fit["sampling_seconds"] for fit in fits],
             "seconds_per_min_bulk_ess": per_ess,
             "leapfrog_steps": [fit["leapfrog_steps"] for fit in fits],
             "min_bulk_ess": [fit["min_bulk_ess"] for fit in fits],
@@ -356,14 +384,22 @@ def summarize_cell(results: dict[str, dict[str, Any]]) -> dict[str, Any]:
             "max_rhat": max(fit["max_rhat"] for fit in fits),
             "divergences": sum(fit["divergences"] for fit in fits),
         }
-    if all(out.get(engine, {}).get("status") == "ok" for engine in ENGINES):
-        r, n = results["rustmc"]["fits"], results["nutpie"]["fits"]
-        out["ratio_seconds"] = [a["seconds"] / b["seconds"] for a, b in zip(r, n)]
-        out["ratio_seconds_per_ess"] = [
-            (a["seconds"] / a["min_bulk_ess"]) / (b["seconds"] / b["min_bulk_ess"])
-            for a, b in zip(r, n)
-        ]
-        out["max_agreement_z"] = max(agreement(a, b) for a, b in zip(r, n))
+    # Paired by dataset: rustmc over each nutpie run that finished.
+    for other in ("nutpie", "nutpie_default_tune"):
+        if out.get("rustmc", {}).get("status") != "ok" or out.get(other, {}).get("status") != "ok":
+            continue
+        r, n = results["rustmc"]["fits"], results[other]["fits"]
+        out[f"vs_{other}"] = {
+            "ratio_seconds": [a["seconds"] / b["seconds"] for a, b in zip(r, n)],
+            "ratio_sampling_seconds": [
+                a["sampling_seconds"] / b["sampling_seconds"] for a, b in zip(r, n)
+            ],
+            "ratio_seconds_per_ess": [
+                (a["seconds"] / a["min_bulk_ess"]) / (b["seconds"] / b["min_bulk_ess"])
+                for a, b in zip(r, n)
+            ],
+            "max_agreement_z": max(agreement(a, b) for a, b in zip(r, n)),
+        }
     return out
 
 
@@ -402,23 +438,32 @@ def number(values: list[float], digits: int = 3) -> str:
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
-    print(f"{'cell':<36} {'engine':<7} {'fit s':<26} {'s per min ESS (ms)':<26} "
-          f"{'min ESS':<22} {'compile s':>9} {'rhat':>6} {'div':>4}")
+    """Fit seconds run to an InferenceData; `sampling` stops when sampling does.
+    Ratio rows are rustmc over nutpie, paired by dataset: median [low, high]."""
+    print(f"{'cell':<36} {'engine':<9} {'fit s':<26} {'sampling s':<26} "
+          f"{'s per min ESS (ms)':<26} {'min ESS':<22} {'compile s':>9} {'rhat':>6} {'div':>4}")
     for row in rows:
         summary = row["summary"]
         for engine in ENGINES:
-            s = summary.get(engine, {})
+            s = summary.get(engine)
+            label = {"nutpie_default_tune": "nutpie300"}.get(engine, engine)
+            if s is None:
+                continue
             if s.get("status") != "ok":
-                print(f"{row['cell']:<36} {engine:<7} {s.get('status')}: {s.get('reason')}")
+                print(f"{row['cell']:<36} {label:<9} {s.get('status')}: {s.get('reason')}")
                 continue
             per_ess_ms = [1e3 * v for v in s["seconds_per_min_bulk_ess"]]
-            print(f"{row['cell']:<36} {engine:<7} {number(s['seconds']):<26} "
-                  f"{number(per_ess_ms):<26} {number(s['min_bulk_ess'], 4):<22} "
+            print(f"{row['cell']:<36} {label:<9} {number(s['seconds']):<26} "
+                  f"{number(s['sampling_seconds']):<26} {number(per_ess_ms):<26} "
+                  f"{number(s['min_bulk_ess'], 4):<22} "
                   f"{s['compile_seconds']:>9.2f} {s['max_rhat']:>6.3f} {s['divergences']:>4}")
-        if "ratio_seconds" in summary:
-            print(f"{'':<36} {'r / n':<7} {number(summary['ratio_seconds']):<26} "
-                  f"{number(summary['ratio_seconds_per_ess']):<26} "
-                  f"agreement z {summary['max_agreement_z']:.1f}")
+        for other, label in (("nutpie", "r/n"), ("nutpie_default_tune", "r/n300")):
+            ratios = summary.get(f"vs_{other}")
+            if ratios:
+                print(f"{'':<36} {label:<9} {number(ratios['ratio_seconds']):<26} "
+                      f"{number(ratios['ratio_sampling_seconds']):<26} "
+                      f"{number(ratios['ratio_seconds_per_ess']):<26} "
+                      f"agreement z {ratios['max_agreement_z']:.1f}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -454,7 +499,10 @@ def main(argv: list[str] | None = None) -> int:
     }
     args.lock.touch(exist_ok=True)
     for position, cell in enumerate(cells):
-        engines = list(ENGINES) if position % 2 == 0 else list(reversed(ENGINES))
+        engines = [engine for engine in ENGINES
+                   if engine != "nutpie_default_tune" or cell.model in REGRESSIONS]
+        shift = position % len(engines)
+        engines = engines[shift:] + engines[:shift]
         with args.lock.open() as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             load = wait_for_quiet(args.max_load)
