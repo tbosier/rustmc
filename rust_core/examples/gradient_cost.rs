@@ -18,6 +18,7 @@ use std::time::Instant;
 enum Likelihood {
     Normal,
     NormalWithInferredScale,
+    LogNormalWithInferredScale,
     BernoulliLogit,
     PoissonLog,
 }
@@ -45,6 +46,13 @@ fn graph(likelihood: Likelihood, rows: usize, columns: usize) -> (Graph, usize) 
             };
             let obs = g.add_obs_data((0..rows).map(|i| 2.0 * response(i) - 1.0).collect());
             g.obs_logp_normal(eta, sigma, obs);
+        }
+        Likelihood::LogNormalWithInferredScale => {
+            parameters += 1;
+            let raw = g.add_param("log_sigma");
+            let sigma = g.exp(raw);
+            let obs = g.add_obs_data((0..rows).map(|i| 0.5 + response(i)).collect());
+            g.obs_logp_lognormal(eta, sigma, obs);
         }
         Likelihood::BernoulliLogit => {
             let obs = g.add_obs_data(
@@ -105,6 +113,7 @@ fn main() {
     for likelihood in [
         Likelihood::Normal,
         Likelihood::NormalWithInferredScale,
+        Likelihood::LogNormalWithInferredScale,
         Likelihood::BernoulliLogit,
         Likelihood::PoissonLog,
     ] {

@@ -1,0 +1,91 @@
+# Microseconds per log-density gradient, from rust_core/examples/gradient_cost.rs
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-25; load at start 0.23 0.87 1.59, at end 1.79 1.29 1.58
+# Both builds ran this branch's example, which adds the LogNormal case, alternating
+# base, this branch, base, this branch at each row count.
+
+## b67e973 (perf/likelihood-caches): residuals recomputed in the reverse pass, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          3.96    4.58    6.92   11.32   19.16
+NormalWithInferredScale         3.78    4.63    6.81   11.29   19.02
+LogNormalWithInferredScale      3.92    4.82    7.12   11.47   19.55
+BernoulliLogit                 10.43   11.18   12.95   17.04   25.17
+PoissonLog                     10.72   12.11   14.51   19.43   27.99
+
+## a4daf61 (this branch): residuals read from the forward pass, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.56    3.40    5.40    9.91   17.23
+NormalWithInferredScale         3.04    3.89    6.33   10.93   19.03
+LogNormalWithInferredScale      3.19    3.93    6.21   11.25   18.86
+BernoulliLogit                 10.63   11.43   13.30   17.96   26.17
+PoissonLog                     11.07   12.26   14.70   19.64   26.79
+
+## b67e973 (perf/likelihood-caches): residuals recomputed in the reverse pass, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          3.74    4.60    6.93   11.78   20.12
+NormalWithInferredScale         3.78    4.63    6.82   11.26   20.67
+LogNormalWithInferredScale      3.90    4.64    7.08   11.42   20.27
+BernoulliLogit                 10.26   10.99   12.67   16.51   25.18
+PoissonLog                     10.91   12.15   14.60   19.47   27.97
+
+## a4daf61 (this branch): residuals read from the forward pass, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.76    3.38    5.39   10.03   18.88
+NormalWithInferredScale         3.03    3.90    6.37   10.78   21.24
+LogNormalWithInferredScale      3.15    3.89    6.16   10.93   20.42
+BernoulliLogit                 10.29   11.00   13.24   16.96   26.55
+PoissonLog                     10.92   12.15   14.56   19.23   28.40
+
+## b67e973 (perf/likelihood-caches): residuals recomputed in the reverse pass, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         37.21   45.34   68.63  156.29  194.19
+NormalWithInferredScale        37.51   45.01   71.58  116.58  217.24
+LogNormalWithInferredScale     38.93   47.41   70.62  155.39  206.76
+BernoulliLogit                103.42  113.91  136.36  174.89  241.47
+PoissonLog                    109.38  121.01  147.25  229.70  283.85
+
+## a4daf61 (this branch): residuals read from the forward pass, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.34   34.60   57.01  143.07  178.55
+NormalWithInferredScale        30.50   37.42   63.09  108.72  195.69
+LogNormalWithInferredScale     31.23   39.35   62.03  149.75  184.50
+BernoulliLogit                102.61  112.81  134.45  173.57  255.62
+PoissonLog                    109.68  122.88  147.06  235.08  270.27
+
+## b67e973 (perf/likelihood-caches): residuals recomputed in the reverse pass, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         37.58   46.47   68.24  155.79  194.40
+NormalWithInferredScale        37.58   45.65   71.28  117.16  217.94
+LogNormalWithInferredScale     38.94   47.47   69.87  156.40  207.22
+BernoulliLogit                103.62  112.99  136.63  176.48  242.73
+PoissonLog                    109.15  144.61  171.69  259.08  309.32
+
+## a4daf61 (this branch): residuals read from the forward pass, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.75   33.96   56.50  145.35  180.40
+NormalWithInferredScale        30.44   38.25   64.19  110.02  193.80
+LogNormalWithInferredScale     31.66   39.96   62.97  151.16  187.59
+BernoulliLogit                103.89  113.31  135.43  173.54  252.59
+PoissonLog                    107.96  119.67  145.37  232.92  268.43
+
+# Whole fits, median seconds over 5 datasets of 500 rows and 8 coefficients, 4 chains of 500
+# warmup and 1000 draws on one thread, vector_normal_prior on the coefficients and
+# half_normal_prior(1.0) on an inferred sigma. Run twice per build, alternating; load at start
+# 0.78 1.12 1.48. Seeded draws of both builds hash identically, so the trees are the same.
+b67e973 run 1  normal 0.187  normal_sigma 0.215  lognormal 0.206
+a4daf61 run 1  normal 0.142  normal_sigma 0.184  lognormal 0.177
+b67e973 run 2  normal 0.183  normal_sigma 0.215  lognormal 0.208
+a4daf61 run 2  normal 0.140  normal_sigma 0.183  lognormal 0.177
+
+# The same normal regression (sigma 1) against nutpie 0.16.6, 5 datasets, 4 chains on one
+# thread, medians; load 0.81 at the end. ESS is the mean bulk ESS of the 8 coefficients.
+engine   seconds  leapfrog steps  bulk ESS  us/step  us/ESS
+rustmc   0.139    37146           6495      3.75     21.4
+nutpie   0.128    28163           5527      4.53     23.2
