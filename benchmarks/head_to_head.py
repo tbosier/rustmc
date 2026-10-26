@@ -1,43 +1,54 @@
 """rustmc against nutpie on matched models, one cell at a time.
 
 A cell is one model at one size and one thread setting. For each cell, each engine
-runs in a fresh subprocess with the environment ``benchmarks.run`` gives it, builds
-and compiles its model once, then fits the same datasets in turn, with the same
-priors, likelihood, chains, warmup and draws, and each engine's own defaults for
-everything else (target acceptance 0.8 and its own metric and step-size
-adaptation). The engines' order rotates from cell to cell. Before each cell the
-parent takes an exclusive ``flock`` on ``--lock`` and waits for the one-minute load
-average to fall below ``--max-load``. The lock only keeps out other benchmarks that
-take it too, and a wait that times out is recorded and marks the cell rather than
-being skipped silently.
+runs in its own worker subprocess, with the environment ``benchmarks.run`` gives
+it, which builds and compiles its model once and then fits datasets on request.
+The parent interleaves the engines dataset by dataset, rotating their order, so a
+drift in the machine's speed during a cell falls on every engine alike. Every
+engine gets the same priors, likelihood, chains, warmup, draws and datasets, and
+its own defaults for everything else (target acceptance 0.8 and its own metric
+and step-size adaptation). The parent holds an exclusive ``flock`` on ``--lock``
+for the whole cell and, before each compile and each fit, waits for the one-minute
+load average to fall below ``--max-load``. The lock only keeps out other
+benchmarks that take it too; a wait that times out is recorded on that fit, and
+the fit is then left out of every verdict and aggregate.
 
-Per fit it records two wall times, without compilation, from bound data:
+Per fit it records three wall times, without compilation, from bound data:
 
-- to an ArviZ InferenceData with the same groups from both engines, the posterior
-  draws and the post-warmup sample statistics: rustmc's
+- ``seconds``, to an ArviZ InferenceData holding the same content from both
+  engines, the posterior draws and the post-warmup sample statistics: rustmc's
   ``FitResult.to_arviz(include_log_likelihood=False)`` (which also carries a small
-  ``observed_data`` group), and nutpie's conversion with ``save_warmup=False``. This
-  is the comparable end point, and the one the efficiency ratios use;
-- to the end of sampling, before any conversion.
+  ``observed_data`` group), and nutpie's arrow trace with the warmup rows sliced
+  off and then converted as nutpie converts it. With the warmup gone, the
+  conversion's only warmup work is building empty arrays. This is the end point
+  the efficiency ratios use;
+- ``sampling_seconds``, to the end of sampling, before any conversion;
+- ``native_seconds``, sampling plus each engine's own default conversion, timed
+  separately: rustmc's ``to_arviz()``, with pointwise log-likelihoods, and nutpie's
+  conversion of the whole trace as ``nutpie.sample(save_warmup=False)`` does it,
+  which still builds the warmup datasets before dropping them. It is what a user
+  of each default API waits for, not matched work. The two conversions take turns
+  going first by dataset, since the second finds caches warm, and each fit
+  records which went first.
 
-Both of nutpie's spans read internals of nutpie 0.16.6: ``nutpie.sample(...,
+nutpie's spans read internals of nutpie 0.16.6: ``nutpie.sample(...,
 blocking=False)`` returns a ``_BackgroundSampler``, whose ``_sampler.wait`` marks
 the end of sampling, and the conversion is ``nutpie.sample._arrow_to_arviz`` as
-``_BackgroundSampler._extract`` calls it, so the arrow statistics that hold the
-warmup's step counts can be read after the timer stops. Each fit's record names the
-InferenceData groups it timed.
+``_BackgroundSampler._extract`` calls it. Each fit's record names the groups of the
+matched InferenceData.
 
 It also records the leapfrog steps of warmup and draws, the minimum and mean bulk
 ESS and minimum tail ESS over the model's parameters, R-hat, post-warmup
-divergences, and each parameter's mean and Monte Carlo standard error. Each fit's
-outcome is kept on its own, so a failure partway through a cell keeps the fits
-before it. Compilation is timed once per cell and engine, with the number of files
-in PyTensor's and Numba's compile caches beforehand, so a cold compile (an empty cache) is told
-apart from a warm one. Regression cells also run nutpie with its own default
-warmup of 300 iterations, as ``nutpie_default_tune``, since that is what a user
-gets without asking; the matched comparison keeps the same warmup for both. One and
-four threads give the same draws in both engines, so a cell's two thread settings
-time the same fits and are not extra replicates.
+divergences, each parameter's mean and Monte Carlo standard error, and the load
+before the fit. Each fit's outcome is kept on its own, so a failure partway
+through a cell keeps the fits before it. Compilation is timed once per cell and
+engine, with the number of files in PyTensor's and Numba's compile caches
+beforehand; an empty cache means a cold compile, and a non-empty one says only that
+something was cached, not that this model was. Regression cells also run nutpie
+with its own default warmup of 300 iterations, as ``nutpie_default_tune``, since
+that is what a user gets without asking; the matched comparison keeps the same
+warmup for both. One and four threads give the same draws in both engines, so a
+cell's two thread settings time the same fits and are not extra replicates.
 
 ``benchmarks/head_to_head_summary.py`` turns a record into verdicts.
 
@@ -45,7 +56,8 @@ time the same fits and are not extra replicates.
 
 The rustmc this measures is whichever ``import rustmc`` finds; point PYTHONPATH at
 a fresh build (``scripts/dev_pytest.sh`` shows how). The record holds the checkout's
-revision and dirty flag, and a SHA-256 of the extension each child loaded.
+revision and dirty flag, and a SHA-256 of the extension the parent and each rustmc
+worker loaded.
 """
 
 from __future__ import annotations
@@ -84,9 +96,8 @@ LOAD_WAIT_SECONDS = 1800.0
 class Cell:
     """One model at one size, fitted on `datasets` datasets with `threads` threads.
 
-    Six datasets let a paired sign test call a winner at the 5% level when all six
-    ratios fall on one side of 1 (two-sided p = 0.031); with five it cannot.
-    """
+    Six datasets let a paired sign test reach the 5% level unadjusted when all six
+    ratios fall on one side of 1 (two-sided p = 0.031); with five it cannot."""
 
     model: str
     rows: int
@@ -193,14 +204,16 @@ def draw_statistics(draws: dict[str, np.ndarray], diverging: np.ndarray) -> dict
 
 
 def fit_problems(fit: dict[str, Any]) -> list[str]:
-    """Why `fit` fails the quality checks; empty when it passes.
+    """Why `fit` cannot enter a verdict; empty when it can.
 
-    A fit fails when it did not finish, when any diagnostic is not finite, when
-    R-hat exceeds 1.01, when any post-warmup transition diverged, or when its
-    smallest bulk ESS is under 400."""
+    A fit fails when it did not finish, when its load wait timed out, when any
+    diagnostic is not finite, when R-hat exceeds 1.01, when any post-warmup
+    transition diverged, or when its smallest bulk ESS is under 400."""
     if fit.get("status") != "ok":
         return [f"{fit.get('status')}: {fit.get('reason')}"]
     problems = []
+    if fit.get("load_wait_timed_out"):
+        problems.append(f"load wait timed out at {fit.get('load_at_start', math.nan):.2f}")
     values = [fit["max_rhat"], fit["min_bulk_ess"], fit["min_tail_ess"],
               *fit["means"].values(), *fit["mcse"].values()]
     if not all(math.isfinite(value) for value in values):
@@ -216,7 +229,7 @@ def fit_problems(fit: dict[str, Any]) -> list[str]:
 
 def mean_difference_z(a: dict[str, Any], b: dict[str, Any]) -> float:
     """Largest |difference of means| / combined MCSE over the parameters of two
-    fits. Equal means with zero MCSE give 0, different ones infinity, and a
+    fits. Equal means with zero MCSE give 0, different ones infinity, and any
     non-finite input NaN."""
     worst = 0.0
     for name, mean in a["means"].items():
@@ -231,6 +244,13 @@ def mean_difference_z(a: dict[str, Any], b: dict[str, Any]) -> float:
             z = difference / spread
         worst = max(worst, z)
     return worst
+
+
+def max_propagating_nan(values: list[float]) -> float:
+    """The largest value, or NaN if any value is NaN, whatever the order."""
+    if not values or any(math.isnan(value) for value in values):
+        return math.nan
+    return max(values)
 
 
 def mean_difference_threshold(tests: int) -> float:
@@ -251,52 +271,60 @@ def sign_test(ratios: list[float]) -> float:
     return min(1.0, 2 * tail)
 
 
-def bootstrap_median_interval(ratios: list[float], level: float = 0.95) -> tuple[float, float]:
-    """Percentile bootstrap interval of the median ratio, with a fixed seed.
-    Coarse with a handful of pairs; reported beside the sign test, not instead."""
-    rng = np.random.default_rng(20261025)
-    values = np.asarray(ratios)
-    medians = np.median(rng.choice(values, size=(10_000, len(values))), axis=1)
-    alpha = (1 - level) / 2
-    return float(np.quantile(medians, alpha)), float(np.quantile(medians, 1 - alpha))
+def median_interval(values: list[float], level: float = 0.95) -> dict[str, float]:
+    """The distribution-free interval for a median, between order statistics
+    x_(k) and x_(n+1-k), the narrowest whose coverage, 1 - 2 P(Bin(n, 1/2) < k),
+    is at least `level`; when none reaches it, [min, max] with its coverage. It
+    excludes 1 exactly when a sign test with the same coverage would reject.
+    With 6 pairs it is [min, max] at 96.9%; with 3, [min, max] at 75%."""
+    x = sorted(values)
+    n = len(x)
+
+    def coverage(k: int) -> float:
+        return 1 - 2 * sum(math.comb(n, j) for j in range(k)) / 2**n
+
+    k = 1
+    for candidate in range(1, n // 2 + 1):
+        if coverage(candidate) >= level:
+            k = candidate
+    return {"low": x[k - 1], "high": x[n - k], "coverage": coverage(k)}
 
 
 def compare(rustmc: dict[str, Any], other: dict[str, Any], parameters: int,
-            load_ok: bool = True, time_key: str = "seconds") -> dict[str, Any]:
+            time_key: str = "seconds", provenance_ok: bool = True) -> dict[str, Any]:
     """Paired comparison of rustmc with one nutpie run of the same cell.
 
     Efficiency ratios are rustmc over nutpie, per dataset. The verdict uses only
-    pairs where both fits pass the quality checks: a two-sided sign test at the
-    5% level names a winner, a non-significant one gives "no clear winner", and
-    no passing pair gives "inconclusive (quality)". A cell whose load wait timed
-    out is "inconclusive (load)". The mean-difference test covers every
-    parameter of every pair in the cell. `time_key` picks the timed span the
-    per-ESS ratios use: "seconds", to the matched InferenceData, or
-    "sampling_seconds"."""
-    pairs = list(zip(rustmc["fits"], other["fits"]))
+    pairs where both fits pass `fit_problems`. In order: a rustmc extension that
+    differs from the record's gives "inconclusive (provenance)"; a mean-difference
+    test across every parameter of every finished pair that crosses its threshold,
+    or cannot be computed, gives "inconclusive (means differ)"; no passing pair
+    gives "inconclusive (quality)"; otherwise a two-sided sign test at the 5% level,
+    unadjusted for the cell being one of many, names a winner, and a non-significant
+    one gives "no clear winner". `time_key` picks the span the per-ESS ratios use:
+    "seconds", "sampling_seconds" or "native_seconds"."""
+    by_index = {fit["index"]: fit for fit in other["fits"]}
+    pairs = [(a, by_index[a["index"]]) for a in rustmc["fits"] if a["index"] in by_index]
     finished = [(a, b) for a, b in pairs if a.get("status") == "ok" and b.get("status") == "ok"]
     passing = [(a, b) for a, b in finished if not fit_problems(a) and not fit_problems(b)]
 
-    def ratios(chosen, key):
-        out = []
-        for a, b in chosen:
-            if key == "per_ess":
-                out.append((a[time_key] / a["min_bulk_ess"]) / (b[time_key] / b["min_bulk_ess"]))
-            else:
-                out.append(a[key] / b[key])
-        return out
+    def per_ess(chosen, key=time_key):
+        return [(a[key] / a["min_bulk_ess"]) / (b[key] / b["min_bulk_ess"]) for a, b in chosen]
 
-    z = max((mean_difference_z(a, b) for a, b in finished), default=math.nan)
+    z = max_propagating_nan([mean_difference_z(a, b) for a, b in finished])
     tests = parameters * max(len(finished), 1)
     threshold = mean_difference_threshold(tests)
-    per_ess = ratios(passing, "per_ess")
-    p_value = sign_test(per_ess) if per_ess else None
-    if not load_ok:
-        verdict = "inconclusive (load)"
-    elif not per_ess:
+    means_flag = not (z <= threshold)
+    ratios = per_ess(passing)
+    p_value = sign_test(ratios) if ratios else None
+    if not provenance_ok:
+        verdict = "inconclusive (provenance)"
+    elif means_flag:
+        verdict = "inconclusive (means differ)"
+    elif not ratios:
         verdict = "inconclusive (quality)"
     elif p_value < 0.05:
-        verdict = "rustmc faster" if np.median(per_ess) < 1 else "nutpie faster"
+        verdict = "rustmc faster" if np.median(ratios) < 1 else "nutpie faster"
     else:
         verdict = "no clear winner"
     return {
@@ -304,24 +332,32 @@ def compare(rustmc: dict[str, Any], other: dict[str, Any], parameters: int,
         "finished_pairs": len(finished),
         "passing_pairs": len(passing),
         # Every finished pair, passing or not, so nothing measured is hidden.
-        "all_ratio_seconds": ratios(finished, "seconds"),
-        "all_ratio_sampling_seconds": ratios(finished, "sampling_seconds"),
-        "all_ratio_seconds_per_ess": ratios(finished, "per_ess"),
+        "all_ratio_seconds_per_ess": per_ess(finished),
+        "all_ratio_seconds": [a[time_key] / b[time_key] for a, b in finished],
         # The pairs the verdict uses.
-        "ratio_seconds_per_ess": per_ess,
-        "ratio_sampling_seconds_per_ess": [
-            (a["sampling_seconds"] / a["min_bulk_ess"]) / (b["sampling_seconds"] / b["min_bulk_ess"])
-            for a, b in passing
-        ],
+        "ratio_seconds_per_ess": ratios,
         "sign_test_p": p_value,
-        "bootstrap_median_95": bootstrap_median_interval(per_ess) if per_ess else None,
+        "median_interval": median_interval(ratios) if ratios else None,
         "verdict": verdict,
         "time_key": time_key,
         "max_mean_difference_z": z,
         "mean_difference_threshold": threshold,
         "mean_difference_tests": tests,
-        "mean_difference_flag": not (z <= threshold),
+        "mean_difference_flag": means_flag,
+        "provenance_ok": provenance_ok,
     }
+
+
+def holm(p_values: list[float | None]) -> list[float | None]:
+    """Holm-adjusted p-values, valid under any dependence; None stays None."""
+    indexed = sorted((p, i) for i, p in enumerate(p_values) if p is not None)
+    m = len(indexed)
+    adjusted: list[float | None] = [None] * len(p_values)
+    running = 0.0
+    for rank, (p, i) in enumerate(indexed):
+        running = max(running, min(1.0, (m - rank) * p))
+        adjusted[i] = running
+    return adjusted
 
 
 # ── engines ────────────────────────────────────────────────────────────────
@@ -359,26 +395,17 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def run_fits(cell: Cell, datasets, payload: dict[str, Any], fit_one: Callable[[int, dict], dict]) -> None:
-    """Fit every dataset, keeping each outcome in `payload["fits"]` as it lands."""
-    for index, data in enumerate(datasets):
-        try:
-            payload["fits"].append({"index": index, "status": "ok", **fit_one(index, data)})
-        except Exception as error:  # noqa: BLE001 - a failed fit becomes result data
-            payload["fits"].append({"index": index, "status": "error",
-                                    "reason": f"{type(error).__name__}: {error}",
-                                    "traceback": traceback.format_exc()[-4_000:]})
-
-
-def rustmc_engine(cell: Cell, datasets, payload: dict[str, Any]) -> None:
+def prepare_rustmc(cell: Cell) -> tuple[dict[str, Any], Callable[[int, dict], dict]]:
     import rustmc as rmc
     import rustmc._rustmc as extension
 
     from benchmarks.build_provenance import build_provenance
 
-    payload["provenance"] = {"rustmc": build_provenance(rmc),
-                             "extension_sha256": file_sha256(extension.__file__)}
-    payload["compile_cache_files_before"] = None
+    meta: dict[str, Any] = {
+        "provenance": {"rustmc": build_provenance(rmc),
+                       "extension_sha256": file_sha256(extension.__file__)},
+        "compile_cache_files_before": None,
+    }
     start = time.perf_counter()
     b = rmc.ModelBuilder()
     if cell.model == "eight_schools":
@@ -408,7 +435,7 @@ def rustmc_engine(cell: Cell, datasets, payload: dict[str, Any]) -> None:
         else:
             b.poisson_log_likelihood("obs", eta, "y")
     compiled = b.compile()
-    payload["compile_seconds"] = time.perf_counter() - start
+    meta["compile_seconds"] = time.perf_counter() - start
     names = scalar_names(cell)
 
     def fit_one(index: int, data: dict) -> dict:
@@ -424,30 +451,41 @@ def rustmc_engine(cell: Cell, datasets, payload: dict[str, Any]) -> None:
                               seed=cell.data_seed + index, threads=cell.threads,
                               show_progress=False)
         sampled = time.perf_counter()
-        idata = fit.to_arviz(include_log_likelihood=False)
-        seconds = time.perf_counter() - start
+        # The matched export and the default one, for the native span, each
+        # timed on its own; whichever runs second finds caches warm, so they
+        # take turns going first.
+        conversions: dict[str, float] = {}
+        for kind in (("matched", "native") if index % 2 == 0 else ("native", "matched")):
+            begin = time.perf_counter()
+            if kind == "matched":
+                idata = fit.to_arviz(include_log_likelihood=False)
+            else:
+                fit.to_arviz()
+            conversions[kind] = time.perf_counter() - begin
         report = fit.transition_diagnostics()
         samples = fit.get_samples_2d()
         diverging = np.asarray(idata.sample_stats["diverging"].values)
         draws = {name: np.asarray(samples[name], dtype=float) for name in names}
-        return {"seconds": seconds, "sampling_seconds": sampled - start,
+        return {"seconds": (sampled - start) + conversions["matched"],
+                "sampling_seconds": sampled - start,
+                "native_seconds": (sampled - start) + conversions["native"],
+                "matched_conversion_first": index % 2 == 0,
                 "warmup": cell.warmup, "groups": list(idata.groups()),
                 "leapfrog_steps": int(report["total_leapfrog_steps"]),
                 **draw_statistics(draws, diverging)}
 
-    run_fits(cell, datasets, payload, fit_one)
+    return meta, fit_one
 
 
-def nutpie_engine(cell: Cell, datasets, payload: dict[str, Any], tune: int | None = None) -> None:
+def prepare_nutpie(cell: Cell, tune: int | None = None) -> tuple[dict[str, Any], Callable[[int, dict], dict]]:
     import nutpie
     import pandas as pd
     import pymc as pm
 
     # `nutpie.sample` is the function; its module holds the conversion.
     sample_module = sys.modules["nutpie.sample"]
-    first = datasets[0]
-    payload["provenance"] = {}
-    payload["compile_cache_files_before"] = compiled_cache_files()
+    first = make_data(cell, 0)
+    meta: dict[str, Any] = {"provenance": {}, "compile_cache_files_before": compiled_cache_files()}
     start = time.perf_counter()
     with pm.Model() as model:
         if cell.model == "eight_schools":
@@ -479,7 +517,23 @@ def nutpie_engine(cell: Cell, datasets, payload: dict[str, Any], tune: int | Non
             else:
                 pm.Poisson("obs", mu=pm.math.exp(eta), observed=y, shape=rows)
     compiled = nutpie.compile_pymc_model(model)
-    payload["compile_seconds"] = time.perf_counter() - start
+    meta["compile_seconds"] = time.perf_counter() - start
+    coords = {name: pd.Index(values) for name, values in compiled.coords.items()}
+
+    def convert(sampler, draw_batches, stat_batches):
+        # As `_BackgroundSampler._extract` converts an arrow trace.
+        skip_vars = []
+        for setting, names in {
+            "store_gradient": ["gradient"],
+            "store_unconstrained": ["unconstrained_draw"],
+            "store_mass_matrix": ["mass_matrix_inv", "mass_matrix_eigvals", "mass_matrix_stds"],
+            "store_divergences": ["divergence_start", "divergence_end", "divergence_momentum",
+                                  "divergence_start_gradient"],
+        }.items():
+            if not getattr(sampler._settings, setting, False):
+                skip_vars.extend(names)
+        return sample_module._arrow_to_arviz(draw_batches, stat_batches, skip_vars=skip_vars,
+                                             coords=coords, save_warmup=False)
 
     def fit_one(index: int, data: dict) -> dict:
         start = time.perf_counter()
@@ -495,25 +549,24 @@ def nutpie_engine(cell: Cell, datasets, payload: dict[str, Any], tune: int | Non
                                 progress_bar=False, blocking=False)
         sampler._sampler.wait(None)
         sampled = time.perf_counter()
-        # As `_BackgroundSampler._extract` converts an arrow trace, which can be
-        # taken only once, so its statistics stay at hand for the step count.
+        # The trace can be taken only once; the batches can be read again.
         draw_batches, stat_batches = sampler._sampler.take_results().get_arrow_trace()
-        skip_vars = []
-        for setting, names in {
-            "store_gradient": ["gradient"],
-            "store_unconstrained": ["unconstrained_draw"],
-            "store_mass_matrix": ["mass_matrix_inv", "mass_matrix_eigvals", "mass_matrix_stds"],
-            "store_divergences": ["divergence_start", "divergence_end", "divergence_momentum",
-                                  "divergence_start_gradient"],
-        }.items():
-            if not getattr(sampler._settings, setting, False):
-                skip_vars.extend(names)
-        idata = sample_module._arrow_to_arviz(
-            draw_batches, stat_batches, skip_vars=skip_vars,
-            coords={name: pd.Index(values) for name, values in compiled.coords.items()},
-            save_warmup=False,
-        )
-        seconds = time.perf_counter() - start
+        taken = time.perf_counter()
+        # The matched conversion drops the warmup rows first, so it handles the
+        # content rustmc's does; the native one converts the whole trace as
+        # `nutpie.sample(save_warmup=False)` would. Each is timed on its own,
+        # taking turns going first, as rustmc's are.
+        conversions: dict[str, float] = {}
+        for kind in (("matched", "native") if index % 2 == 0 else ("native", "matched")):
+            begin = time.perf_counter()
+            if kind == "matched":
+                tuning = [int(batch.column("tuning").to_numpy().sum()) for batch in stat_batches]
+                idata = convert(sampler,
+                                [b.slice(t, b.num_rows - t) for b, t in zip(draw_batches, tuning)],
+                                [b.slice(t, b.num_rows - t) for b, t in zip(stat_batches, tuning)])
+            else:
+                convert(sampler, draw_batches, stat_batches)
+            conversions[kind] = time.perf_counter() - begin
         steps = sum(int(batch.column("n_steps").to_numpy().sum()) for batch in stat_batches)
         posterior = idata.posterior
         draws: dict[str, np.ndarray] = {}
@@ -524,35 +577,49 @@ def nutpie_engine(cell: Cell, datasets, payload: dict[str, Any], tune: int | Non
             else:
                 for k in range(length):
                     draws[f"{name}[{k}]"] = values[:, :, k]
-        return {"seconds": seconds, "sampling_seconds": sampled - start,
+        return {"seconds": (taken - start) + conversions["matched"],
+                "sampling_seconds": sampled - start,
+                "native_seconds": (taken - start) + conversions["native"],
+                "matched_conversion_first": index % 2 == 0,
                 "warmup": tune or cell.warmup, "groups": list(idata.groups()),
                 "leapfrog_steps": steps,
                 **draw_statistics(draws, np.asarray(idata.sample_stats["diverging"].values))}
 
-    run_fits(cell, datasets, payload, fit_one)
+    return meta, fit_one
 
 
-ADAPTERS: dict[str, Callable[..., Any]] = {
-    "rustmc": rustmc_engine,
-    "nutpie": nutpie_engine,
-    "nutpie_default_tune": lambda cell, datasets, payload: nutpie_engine(
-        cell, datasets, payload, NUTPIE_DEFAULT_TUNE),
+PREPARE: dict[str, Callable[[Cell], tuple[dict[str, Any], Callable[[int, dict], dict]]]] = {
+    "rustmc": prepare_rustmc,
+    "nutpie": prepare_nutpie,
+    "nutpie_default_tune": lambda cell: prepare_nutpie(cell, NUTPIE_DEFAULT_TUNE),
 }
 
 
-def run_child(engine: str, cell: Cell) -> dict[str, Any]:
-    payload: dict[str, Any] = {"engine": engine, "cell": asdict(cell), "fits": []}
+def run_worker(engine: str, cell: Cell) -> int:
+    """Compile, report, then fit the datasets the parent asks for, one per line
+    of stdin, until it sends null."""
+    def emit(payload: dict[str, Any]) -> None:
+        print(RESULT_PREFIX + json.dumps(payload), flush=True)
+
     try:
         import arviz  # noqa: F401 - imported before any timing
 
-        datasets = [make_data(cell, index) for index in range(cell.datasets)]
-        ADAPTERS[engine](cell, datasets, payload)
-        failed = sum(fit["status"] != "ok" for fit in payload["fits"])
-        payload["status"] = "ok" if failed == 0 else "partial"
+        meta, fit_one = PREPARE[engine](cell)
+        emit({"status": "ready", **meta})
     except Exception as error:  # noqa: BLE001 - failures become result data
-        payload.update(status="error", reason=f"{type(error).__name__}: {error}",
-                       traceback=traceback.format_exc()[-8_000:])
-    return payload
+        emit({"status": "error", "reason": f"{type(error).__name__}: {error}",
+              "traceback": traceback.format_exc()[-8_000:]})
+        return 0
+    for line in sys.stdin:
+        index = json.loads(line)
+        if index is None:
+            break
+        try:
+            emit({"index": index, "status": "ok", **fit_one(index, make_data(cell, index))})
+        except Exception as error:  # noqa: BLE001 - a failed fit becomes result data
+            emit({"index": index, "status": "error", "reason": f"{type(error).__name__}: {error}",
+                  "traceback": traceback.format_exc()[-4_000:]})
+    return 0
 
 
 # ── parent ─────────────────────────────────────────────────────────────────
@@ -570,23 +637,104 @@ def wait_for_quiet(max_load: float, timeout: float = LOAD_WAIT_SECONDS) -> tuple
         time.sleep(10)
 
 
-def run_isolated(engine: str, cell: Cell, cache_dir: str) -> dict[str, Any]:
-    command = [sys.executable, "-m", "benchmarks.head_to_head", "--child-engine", engine,
-               "--child-cell", json.dumps(asdict(cell))]
-    # Both nutpie runs take nutpie's environment, caches included.
-    env_engine = "nutpie" if engine.startswith("nutpie") else engine
-    env = _child_environment(env_engine, replace(BenchmarkConfig(), threads=cell.threads), cache_dir)
-    proc = subprocess.run(command, cwd=str(Path(__file__).resolve().parent.parent), env=env,
-                          text=True, capture_output=True, check=False)
-    line = next((l for l in reversed(proc.stdout.splitlines()) if l.startswith(RESULT_PREFIX)), None)
-    if line is None:
-        return {"engine": engine, "cell": asdict(cell), "status": "error", "fits": [],
-                "reason": "child produced no machine-readable result",
-                "returncode": proc.returncode, "stderr": proc.stderr[-4_000:]}
-    return json.loads(line.removeprefix(RESULT_PREFIX))
+class Worker:
+    """One engine's worker subprocess for one cell."""
+
+    def __init__(self, engine: str, cell: Cell, cache_dir: str):
+        command = [sys.executable, "-m", "benchmarks.head_to_head", "--child-engine", engine,
+                   "--child-cell", json.dumps(asdict(cell))]
+        # Both nutpie runs take nutpie's environment, caches included.
+        env_engine = "nutpie" if engine.startswith("nutpie") else engine
+        env = _child_environment(env_engine, replace(BenchmarkConfig(), threads=cell.threads),
+                                 cache_dir)
+        self.engine = engine
+        self.stderr = tempfile.TemporaryFile(mode="w+")
+        self.proc = subprocess.Popen(command, cwd=str(Path(__file__).resolve().parent.parent),
+                                     env=env, text=True, stdin=subprocess.PIPE,
+                                     stdout=subprocess.PIPE, stderr=self.stderr)
+
+    def read(self) -> dict[str, Any] | None:
+        for line in self.proc.stdout:
+            if line.startswith(RESULT_PREFIX):
+                return json.loads(line.removeprefix(RESULT_PREFIX))
+        return None
+
+    def stderr_tail(self) -> str:
+        self.stderr.seek(0)
+        return self.stderr.read()[-4_000:]
+
+    def fit(self, index: int) -> dict[str, Any]:
+        try:
+            self.proc.stdin.write(json.dumps(index) + "\n")
+            self.proc.stdin.flush()
+        except (BrokenPipeError, OSError):
+            pass
+        result = self.read()
+        if result is None:
+            return {"index": index, "status": "error", "reason": "worker exited",
+                    "returncode": self.proc.poll(), "stderr": self.stderr_tail()}
+        return result
+
+    def close(self) -> None:
+        try:
+            self.proc.stdin.write("null\n")
+            self.proc.stdin.close()
+        except (BrokenPipeError, OSError):
+            pass
+        try:
+            self.proc.wait(timeout=120)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+        self.stderr.close()
 
 
-def summarize_cell(cell: Cell, results: dict[str, dict[str, Any]], load_ok: bool) -> dict[str, Any]:
+def run_cell(cell: Cell, engines: list[str], position: int, cache_dir: str,
+             max_load: float) -> dict[str, dict[str, Any]]:
+    """Compile every engine, then fit dataset by dataset, interleaving engines and
+    rotating their order, with a load check before each compile and fit."""
+    results: dict[str, dict[str, Any]] = {}
+    workers: dict[str, Worker] = {}
+    try:
+        for engine in engines:
+            load, timed_out = wait_for_quiet(max_load)
+            worker = Worker(engine, cell, cache_dir)
+            ready = worker.read()
+            result: dict[str, Any] = {"engine": engine, "fits": [], "compile_load": load,
+                                      "compile_load_wait_timed_out": timed_out}
+            if ready is None or ready.get("status") != "ready":
+                result.update(status="error",
+                              reason=(ready or {}).get("reason", "worker exited before compiling"),
+                              traceback=(ready or {}).get("traceback"),
+                              stderr=worker.stderr_tail())
+                worker.close()
+            else:
+                result.update({key: value for key, value in ready.items() if key != "status"})
+                result["status"] = "ok"
+                workers[engine] = worker
+            results[engine] = result
+        for index in range(cell.datasets):
+            shift = (position + index) % len(engines)
+            for engine in engines[shift:] + engines[:shift]:
+                if engine not in workers:
+                    continue
+                load, timed_out = wait_for_quiet(max_load)
+                fit = workers[engine].fit(index)
+                fit.update(load_at_start=load, load_wait_timed_out=timed_out,
+                           order=(engines[shift:] + engines[:shift]).index(engine))
+                results[engine]["fits"].append(fit)
+                if fit.get("reason") == "worker exited":
+                    workers.pop(engine).close()
+    finally:
+        for worker in workers.values():
+            worker.close()
+    for result in results.values():
+        failed = sum(fit.get("status") != "ok" for fit in result["fits"])
+        if result["status"] == "ok" and failed:
+            result["status"] = "partial"
+    return results
+
+
+def summarize_cell(cell: Cell, results: dict[str, dict[str, Any]], extension_sha256: str) -> dict[str, Any]:
     """Per engine figures over its finished fits, and rustmc's paired comparison
     with each nutpie run."""
     out: dict[str, Any] = {}
@@ -599,6 +747,7 @@ def summarize_cell(cell: Cell, results: dict[str, dict[str, Any]], load_ok: bool
             "compile_cache_files_before": result.get("compile_cache_files_before"),
             "seconds": [fit["seconds"] for fit in finished],
             "sampling_seconds": [fit["sampling_seconds"] for fit in finished],
+            "native_seconds": [fit["native_seconds"] for fit in finished],
             "seconds_per_min_bulk_ess": [fit["seconds"] / fit["min_bulk_ess"] for fit in finished],
             # Sampling wall time over leapfrog steps: amortized, so it includes
             # everything a sampler does besides gradients, and with several
@@ -607,12 +756,14 @@ def summarize_cell(cell: Cell, results: dict[str, dict[str, Any]], load_ok: bool
                                       for fit in finished],
             "leapfrog_steps": [fit["leapfrog_steps"] for fit in finished],
             "min_bulk_ess": [fit["min_bulk_ess"] for fit in finished],
-            "failed_quality": [fit["index"] for fit in result.get("fits", []) if fit_problems(fit)],
+            "failed_checks": [fit["index"] for fit in result.get("fits", []) if fit_problems(fit)],
         }
+    sha = results.get("rustmc", {}).get("provenance", {}).get("extension_sha256")
+    provenance_ok = sha is not None and sha == extension_sha256
     for other in ("nutpie", "nutpie_default_tune"):
         if other in results and results["rustmc"].get("fits") and results[other].get("fits"):
             out[f"vs_{other}"] = compare(results["rustmc"], results[other],
-                                         len(scalar_names(cell)), load_ok)
+                                         len(scalar_names(cell)), "seconds", provenance_ok)
     return out
 
 
@@ -651,9 +802,10 @@ def number(values: list[float], digits: int = 3) -> str:
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
-    """`fit s` runs to an InferenceData with matched groups; `sampling s` stops when
+    """`fit s` runs to an InferenceData with matched content; `sampling s` stops when
     sampling does. Values are the median and observed range over datasets. Ratio
-    rows are rustmc over nutpie per ESS, over pairs that pass both engines' checks."""
+    rows are rustmc over nutpie per ESS, over pairs that pass both engines' checks,
+    with an unadjusted per-cell sign test."""
     print(f"{'cell':<36} {'engine':<9} {'fit s':<26} {'sampling s':<26} "
           f"{'s per min ESS (ms)':<26} {'min ESS':<22} {'compile s':>9} {'failed':>6}")
     for row in rows:
@@ -671,17 +823,15 @@ def print_table(rows: list[dict[str, Any]]) -> None:
             print(f"{row['cell']:<36} {label:<9} {number(s['seconds']):<26} "
                   f"{number(s['sampling_seconds']):<26} {number(per_ess_ms):<26} "
                   f"{number(s['min_bulk_ess'], 4):<22} {compile_s:>9} "
-                  f"{len(s['failed_quality']):>6}")
+                  f"{len(s['failed_checks']):>6}")
         for other, label in (("nutpie", "r/n"), ("nutpie_default_tune", "r/n300")):
             c = summary.get(f"vs_{other}")
             if c:
+                p = "-" if c["sign_test_p"] is None else f"{c['sign_test_p']:.3f}"
                 print(f"{'':<36} {label:<9} per ESS {number(c['ratio_seconds_per_ess'])} over "
-                      f"{c['passing_pairs']}/{c['pairs']} passing pairs, sign test p "
-                      f"{c['sign_test_p'] if c['sign_test_p'] is None else round(c['sign_test_p'], 3)}: "
+                      f"{c['passing_pairs']}/{c['pairs']} passing pairs, unadjusted sign test p {p}: "
                       f"{c['verdict']}; max mean-difference z {c['max_mean_difference_z']:.1f} "
                       f"(threshold {c['mean_difference_threshold']:.1f})")
-        if row.get("load_wait_timed_out"):
-            print(f"{'':<36} load wait timed out at {row['load_at_start']:.2f}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -700,9 +850,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--child-cell", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.child_engine:
-        cell = Cell(**json.loads(args.child_cell))
-        print(RESULT_PREFIX + json.dumps(run_child(args.child_engine, cell)))
-        return 0
+        return run_worker(args.child_engine, Cell(**json.loads(args.child_cell)))
 
     cells = default_cells(args.quick)
     if args.model:
@@ -715,6 +863,7 @@ def main(argv: list[str] | None = None) -> int:
     import rustmc._rustmc as extension
 
     record: dict[str, Any] = {
+        "schema": 2,
         "revision": _revision(),
         "extension_sha256": file_sha256(extension.__file__),
         "versions": {name: package_version(name) for name in ("rustmc", "nutpie", "pymc", "arviz")},
@@ -722,23 +871,20 @@ def main(argv: list[str] | None = None) -> int:
         "command": " ".join(sys.argv).replace(str(Path.home()), "~"),
         "compile_cache": {"directory_existed": os.path.isdir(cache_dir),
                           "files_at_start": cache_files(cache_dir) or 0},
+        "max_load": args.max_load,
         "cells": [],
     }
     args.lock.touch(exist_ok=True)
     for position, cell in enumerate(cells):
         engines = [engine for engine in ENGINES
                    if engine != "nutpie_default_tune" or cell.model in REGRESSIONS]
-        shift = position % len(engines)
-        engines = engines[shift:] + engines[:shift]
         with args.lock.open() as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
-            load, timed_out = wait_for_quiet(args.max_load)
             started = time.time()
-            results = {engine: run_isolated(engine, cell, cache_dir) for engine in engines}
-        row = {"cell": cell.name, "config": asdict(cell), "engine_order": engines,
-               "load_at_start": load, "load_wait_timed_out": timed_out,
+            results = run_cell(cell, engines, position, cache_dir, args.max_load)
+        row = {"cell": cell.name, "config": asdict(cell), "engines": engines,
                "seconds": time.time() - started, "results": results,
-               "summary": summarize_cell(cell, results, load_ok=not timed_out)}
+               "summary": summarize_cell(cell, results, record["extension_sha256"])}
         record["cells"].append(row)
         print_table([row])
         sys.stdout.flush()

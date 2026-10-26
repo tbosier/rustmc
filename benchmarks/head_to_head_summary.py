@@ -1,23 +1,35 @@
 """Verdicts for a ``benchmarks/head_to_head.py`` record, recomputed from its fits.
 
 Lists every cell that ran and every problem in it: an engine or fit that failed,
-a fit that fails the quality checks (a non-finite diagnostic, R-hat above 1.01,
-any post-warmup divergence, a smallest bulk ESS under 400), a load wait that timed
-out, a mean-difference test that crossed its 0.1% family-wise threshold, and an
-extension hash that differs between children. Then, per cell and comparison, the
-per-ESS ratios (rustmc over nutpie) over the pairs where both fits pass, their
-median and observed range, a two-sided sign test and a bootstrap interval of the
-median, and the verdict: a winner only when the sign test is significant at 5%.
-Every ratio of a finished pair is printed too, passing or not.
+a fit that cannot enter a verdict (its load wait timed out, a diagnostic is not
+finite, R-hat is above 1.01, a post-warmup transition diverged, or its smallest
+bulk ESS is under 400), a mean-difference test that crossed its 0.1% family-wise
+threshold across every parameter of every pair in the cell, and a rustmc extension
+whose SHA-256 differs from the record's.
 
-Ranges are the lowest and highest observed values, not intervals. A cell's two
-thread settings time the same draws, so they are not replicates of each other.
+Then, per cell and comparison, the per-ESS ratios (rustmc over nutpie) of the
+pairs where both fits pass, their median and observed range (not an interval),
+the distribution-free order-statistic interval for the median with its exact
+coverage, and two verdicts:
 
-    python benchmarks/head_to_head_summary.py RECORD.json [--endpoint sampling]
+- unadjusted: a two-sided sign test at 5% for that cell alone, which is
+  exploratory, since the study makes many such tests;
+- Holm-adjusted, within a family declared before looking: one comparison (rustmc
+  against nutpie at matched warmup, or against nutpie at its default warmup) and
+  one model class, across all of that class's sizes and both thread counts. Holm
+  holds under any dependence, which matters because a cell's two thread settings
+  share draws and the two comparisons share rustmc's fits.
 
-``--endpoint sampling`` uses the time to the end of sampling for the per-ESS
-ratios instead of the time to an InferenceData. Records written before the
-InferenceData groups were matched (2026-10-25) should be read that way.
+A cell whose mean-difference test fired, or whose extension differs, gets no
+winner in either verdict. Class aggregates pool only passing pairs; every
+finished pair's ratio is printed besides.
+
+    python benchmarks/head_to_head_summary.py RECORD.json [--endpoint sampling|native]
+
+``--endpoint`` picks the span the per-ESS ratios use: the default matched
+InferenceData (``seconds``), the end of sampling, or each engine's native default
+output. Records written before schema 2 should be read with ``sampling``: their
+InferenceData spans were not matched.
 """
 from __future__ import annotations
 
@@ -31,7 +43,10 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.head_to_head import Cell, compare, fit_problems, scalar_names
+from benchmarks.head_to_head import Cell, compare, fit_problems, holm, scalar_names
+
+ENDPOINTS = {"inferencedata": "seconds", "sampling": "sampling_seconds", "native": "native_seconds"}
+COMPARISONS = ("nutpie", "nutpie_default_tune")
 
 
 def normalized(result: dict) -> dict:
@@ -46,66 +61,96 @@ def fmt(values, digits=2):
     return f"{np.median(values):.{digits}f} [{min(values):.{digits}f}, {max(values):.{digits}f}]"
 
 
+def adjusted_verdict(c: dict) -> str:
+    if c["verdict"].startswith("inconclusive"):
+        return c["verdict"]
+    if c["holm_p"] is not None and c["holm_p"] < 0.05:
+        return "rustmc faster" if np.median(c["ratio_seconds_per_ess"]) < 1 else "nutpie faster"
+    return "no clear winner"
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("record", type=Path)
-    parser.add_argument("--endpoint", choices=("inferencedata", "sampling"), default="inferencedata")
+    parser.add_argument("--endpoint", choices=tuple(ENDPOINTS), default="inferencedata")
     args = parser.parse_args(argv)
-    time_key = "seconds" if args.endpoint == "inferencedata" else "sampling_seconds"
+    time_key = ENDPOINTS[args.endpoint]
     record = json.loads(args.record.read_text())
+    expected_sha = record.get("extension_sha256")
 
-    print(f"revision {record['revision']}, versions {record['versions']}")
-    print(f"extension sha256 {record.get('extension_sha256', 'not recorded')}")
-    print(f"compile cache at start: {record.get('compile_cache', 'not recorded')}")
-    print(f"per-ESS ratios use the time to "
-          f"{'an InferenceData' if time_key == 'seconds' else 'the end of sampling'}")
+    print(f"revision {record['revision']}, schema {record.get('schema', 1)}, versions {record['versions']}")
+    print(f"extension sha256 {expected_sha or 'not recorded'}")
+    print(f"compile cache directory at start: {record.get('compile_cache', 'not recorded')}")
+    print(f"per-ESS ratios use {time_key}")
     print(f"cells run: {len(record['cells'])}")
     problems = []
     comparisons = []
     for row in record["cells"]:
         cell = Cell(**row["config"])
         results = {engine: normalized(result) for engine, result in row["results"].items()}
-        load_ok = not row.get("load_wait_timed_out", False)
-        if not load_ok:
-            problems.append(f"{row['cell']}: load wait timed out at {row['load_at_start']:.2f}")
+        if row.get("load_wait_timed_out"):
+            # Schema 1 recorded one load wait per cell.
+            for result in results.values():
+                for fit in result["fits"]:
+                    fit["load_wait_timed_out"] = True
+        sha = results.get("rustmc", {}).get("provenance", {}).get("extension_sha256")
+        provenance_ok = expected_sha is None or sha == expected_sha
+        if not provenance_ok:
+            problems.append(f"{row['cell']}: rustmc loaded extension {sha}, not {expected_sha}")
         for engine, result in results.items():
             if result.get("status") not in ("ok", "partial"):
                 problems.append(f"{row['cell']}: {engine} {result.get('status')}: {result.get('reason')}")
-            sha = result.get("provenance", {}).get("extension_sha256")
-            if sha and record.get("extension_sha256") and sha != record["extension_sha256"]:
-                problems.append(f"{row['cell']}: {engine} loaded a different extension, {sha}")
-            if engine.startswith("nutpie") and "compile_cache_files_before" in result:
+            if result.get("compile_load_wait_timed_out"):
+                problems.append(f"{row['cell']}: {engine} compiled after a timed-out load wait")
+            if engine.startswith("nutpie") and result.get("compile_cache_files_before") is not None:
                 before = result["compile_cache_files_before"]
-                kind = "cold" if not before else "warm"
-                result["compile_label"] = f"{kind} ({before or 0} cache files before)"
+                print(f"  {row['cell']}: {engine} compile {result.get('compile_seconds', 0):.2f} s, "
+                      f"{'empty cache directory' if before == 0 else f'non-empty cache, {before} files'}")
             for fit in result["fits"]:
                 reasons = fit_problems(fit)
                 if reasons:
                     problems.append(f"{row['cell']}: {engine} dataset {fit['index']}: " + ", ".join(reasons))
-        for other in ("nutpie", "nutpie_default_tune"):
+        for other in COMPARISONS:
             if other not in results or not results["rustmc"]["fits"] or not results[other]["fits"]:
                 continue
-            c = compare(results["rustmc"], results[other], len(scalar_names(cell)), load_ok, time_key)
+            c = compare(results["rustmc"], results[other], len(scalar_names(cell)), time_key,
+                        provenance_ok)
             if c["mean_difference_flag"]:
-                problems.append(f"{row['cell']}: rustmc and {other} means differ, max z "
-                                f"{c['max_mean_difference_z']:.1f} over {c['mean_difference_tests']} "
-                                f"tests (threshold {c['mean_difference_threshold']:.1f})")
+                problems.append(f"{row['cell']}: rustmc and {other} means differ or cannot be "
+                                f"compared, max z {c['max_mean_difference_z']:.1f} over "
+                                f"{c['mean_difference_tests']} tests (threshold "
+                                f"{c['mean_difference_threshold']:.1f})")
             comparisons.append(dict(c, cell=row["cell"], model=cell.model, threads=cell.threads,
-                                    other=other, compile=(results["rustmc"].get("compile_seconds"),
-                                                          results[other].get("compile_seconds"),
-                                                          results[other].get("compile_label"))))
+                                    other=other))
+
+    # Holm within each declared family: one comparison and one model class.
+    families: dict[tuple[str, str], list[dict]] = {}
+    for c in comparisons:
+        families.setdefault((c["other"], c["model"]), []).append(c)
+    for members in families.values():
+        eligible = [c["sign_test_p"] if not c["verdict"].startswith("inconclusive") else None
+                    for c in members]
+        for c, adjusted in zip(members, holm(eligible)):
+            c["holm_p"] = adjusted
+            c["family_size"] = sum(p is not None for p in eligible)
+            c["adjusted_verdict"] = adjusted_verdict(c)
 
     print()
-    print(f"{'cell':<36} {'vs':<9} {'pass':>5} {'per-ESS ratio, passing pairs':<28} {'sign p':>7} "
-          f"{'bootstrap 95% of median':<24} {'verdict':<24} {'max z / threshold':<18} all finished pairs' per-ESS ratios")
+    print(f"{'cell':<36} {'vs':<9} {'pass':>5} {'per-ESS ratio, passing pairs':<28} "
+          f"{'order-stat interval (coverage)':<32} {'sign p':>7} {'Holm p':>7} "
+          f"{'unadjusted':<24} {'Holm-adjusted':<24} {'max z / thr':<12} all finished pairs")
     for c in comparisons:
         vs = "nutpie" if c["other"] == "nutpie" else "nutpie300"
         p = "-" if c["sign_test_p"] is None else f"{c['sign_test_p']:.3f}"
-        boot = "-" if c["bootstrap_median_95"] is None else "[{:.2f}, {:.2f}]".format(*c["bootstrap_median_95"])
+        hp = "-" if c["holm_p"] is None else f"{c['holm_p']:.3f}"
+        interval = c["median_interval"]
+        iv = ("-" if interval is None else
+              f"[{interval['low']:.2f}, {interval['high']:.2f}] ({100 * interval['coverage']:.1f}%)")
         ratios = " ".join(f"{x:.2f}" for x in c["all_ratio_seconds_per_ess"])
         print(f"{c['cell']:<36} {vs:<9} {c['passing_pairs']:>2}/{c['pairs']:<2} "
-              f"{fmt(c['ratio_seconds_per_ess']):<28} {p:>7} {boot:<24} {c['verdict']:<24} "
-              f"{c['max_mean_difference_z']:.1f} / {c['mean_difference_threshold']:.1f}       {ratios}")
+              f"{fmt(c['ratio_seconds_per_ess']):<28} {iv:<32} {p:>7} {hp:>7} "
+              f"{c['verdict']:<24} {c['adjusted_verdict']:<24} "
+              f"{c['max_mean_difference_z']:.1f}/{c['mean_difference_threshold']:.1f}    {ratios}")
 
     print()
     print(f"Problems ({len(problems)}):")
@@ -113,9 +158,10 @@ def main(argv=None) -> int:
         print("  " + line)
 
     print()
-    print("By model class: verdict counts over cells, and the median and observed range of the "
-          "per-ESS ratios of every passing pair in the class (n values).")
-    for other in ("nutpie", "nutpie_default_tune"):
+    print("By model class: per-ESS ratios of every passing pair in the class, median and observed "
+          "range (n values; a cell's two thread settings share draws), and verdict counts over "
+          "cells, Holm-adjusted within the class.")
+    for other in COMPARISONS:
         for model in dict.fromkeys(c["model"] for c in comparisons):
             for threads in (1, 4):
                 chosen = [c for c in comparisons
@@ -123,9 +169,9 @@ def main(argv=None) -> int:
                 if not chosen:
                     continue
                 values = [x for c in chosen for x in c["ratio_seconds_per_ess"]]
-                counts = {}
+                counts: dict[str, int] = {}
                 for c in chosen:
-                    counts[c["verdict"]] = counts.get(c["verdict"], 0) + 1
+                    counts[c["adjusted_verdict"]] = counts.get(c["adjusted_verdict"], 0) + 1
                 verdicts = ", ".join(f"{name} {count}" for name, count in counts.items())
                 print(f"  vs {other:<20} {model:<18} threads={threads}: per ESS {fmt(values)} "
                       f"(n={len(values)}); cells: {verdicts}")
