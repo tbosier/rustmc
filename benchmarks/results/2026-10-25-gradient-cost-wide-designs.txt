@@ -1,0 +1,233 @@
+# Microseconds per log-density gradient, from rust_core/examples/gradient_cost.rs
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-25.
+# Every run held a lock shared with the other benchmarks on this machine. The timed
+# binary of this branch was built from 57d2dad, which differs from 9c13aeb only in a
+# doc comment.
+#
+# The base's times at some 5,000-row widths depend on the run, not the code: with the
+# width list 8 32 64 96 128 256 512 a normal regression takes 104.9-107.5 us at 32
+# columns and 101.7-109.7 at 64; with the list 2 8 32 64 128 it takes 56.2-56.9 and
+# 145.0-145.5, most likely because its time there moves with allocation layout. This
+# branch's loops take 41.3-42.5 and 99.4-100.7 with both lists. The comparisons below
+# therefore use the base's fastest run of all sessions.
+
+# Summary: the base's fastest run of all five sessions, and this branch's mean over
+# them, in us, with the change. Sessions 1 to 5 below.
+
+500 rows
+likelihood                                     p=2                   p=8                  p=32                  p=64                  p=96                 p=128                 p=256                 p=512
+Normal                                                 3.4 -> 2.0 (-41%)     5.4 -> 3.8 (-28%)    10.0 -> 7.4 (-26%)   15.3 -> 11.9 (-22%)   17.6 -> 14.8 (-16%)    30.7 -> 31.9 (+4%)    56.3 -> 56.4 (+0%)
+NormalWithInferredScale                                3.8 -> 2.4 (-36%)     6.2 -> 4.5 (-28%)    10.8 -> 8.5 (-21%)   15.4 -> 12.2 (-21%)   19.3 -> 16.2 (-16%)    29.9 -> 30.6 (+2%)    55.1 -> 57.1 (+4%)
+LogNormalWithInferredScale                             3.9 -> 2.6 (-34%)     6.2 -> 4.7 (-25%)    10.6 -> 8.5 (-20%)   15.7 -> 12.4 (-21%)   19.4 -> 17.2 (-12%)    30.7 -> 31.3 (+2%)    56.0 -> 58.0 (+4%)
+BernoulliLogit                                        11.1 -> 9.7 (-13%)   13.3 -> 11.3 (-14%)   17.1 -> 15.0 (-12%)   21.9 -> 18.5 (-15%)    24.5 -> 23.1 (-6%)    35.4 -> 35.6 (+1%)    61.2 -> 63.3 (+3%)
+PoissonLog                                           12.3 -> 10.7 (-13%)   14.5 -> 12.9 (-11%)    18.8 -> 17.2 (-9%)   25.1 -> 20.6 (-18%)    27.2 -> 25.3 (-7%)    40.0 -> 40.9 (+2%)    64.8 -> 66.5 (+3%)
+
+5000 rows
+likelihood                                     p=2                   p=8                  p=32                  p=64                  p=96                 p=128                 p=256                 p=512
+Normal                         25.6 -> 21.0 (-18%)   32.7 -> 19.3 (-41%)   56.2 -> 42.1 (-25%)  101.7 -> 100.0 (-2%) 159.1 -> 129.7 (-18%) 181.0 -> 159.4 (-12%)  289.0 -> 289.3 (+0%)  507.6 -> 516.5 (+2%)
+NormalWithInferredScale        30.2 -> 25.8 (-15%)   37.9 -> 24.2 (-36%)   61.0 -> 49.7 (-19%)  107.2 -> 106.7 (-1%)  156.6 -> 141.9 (-9%) 193.6 -> 164.8 (-15%)  292.3 -> 292.7 (+0%)  502.5 -> 503.2 (+0%)
+LogNormalWithInferredScale     31.4 -> 27.2 (-13%)   39.5 -> 25.5 (-35%)   62.2 -> 51.4 (-17%)  109.0 -> 107.9 (-1%) 165.5 -> 142.8 (-14%) 184.0 -> 166.2 (-10%)  280.8 -> 285.2 (+2%)  501.0 -> 518.1 (+3%)
+BernoulliLogit                 103.5 -> 98.1 (-5%)  110.7 -> 96.9 (-12%)  131.8 -> 119.5 (-9%)  170.7 -> 168.1 (-2%) 216.0 -> 193.2 (-11%) 252.5 -> 223.6 (-11%)  334.2 -> 342.4 (+2%)  574.8 -> 582.0 (+1%)
+PoissonLog                    109.5 -> 103.9 (-5%) 120.7 -> 106.6 (-12%)  147.1 -> 135.1 (-8%)  193.6 -> 191.5 (-1%) 246.7 -> 217.3 (-12%)  269.5 -> 248.9 (-8%)  416.1 -> 414.4 (-0%)  614.9 -> 625.3 (+2%)
+
+## Session 1: 500 rows, widths 8 to 512, load checked below 1.5 before each run
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 1 (load 1.33 2.69 2.05)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          3.42    5.46   10.17   15.31   17.69   30.73   57.23
+NormalWithInferredScale         3.81    6.23   10.77   16.40   19.48   30.21   57.23
+LogNormalWithInferredScale      3.94    6.22   10.59   15.86   20.05   31.19   57.88
+BernoulliLogit                 11.15   13.32   17.11   22.18   24.50   35.44   63.35
+PoissonLog                     12.30   14.57   18.99   25.47   27.21   40.90   66.50
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 1 (load 1.26 2.60 2.03)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          2.13    3.78    7.41   12.17   14.52   31.74   55.40
+NormalWithInferredScale         2.42    4.77    8.17   11.60   16.28   30.24   57.19
+LogNormalWithInferredScale      2.59    4.66    8.13   11.88   17.52   31.56   59.41
+BernoulliLogit                  9.71   11.35   14.91   17.86   23.04   35.85   63.09
+PoissonLog                     10.72   12.87   17.09   20.50   25.65   40.80   65.84
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 2 (load 1.20 2.53 2.01)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          3.37    5.37   10.60   15.59   18.87   33.09   57.04
+NormalWithInferredScale         3.81    6.24   10.89   15.46   19.74   29.89   57.30
+LogNormalWithInferredScale      3.94    6.24   10.58   15.66   19.66   31.80   58.36
+BernoulliLogit                 11.17   13.32   17.10   21.85   25.66   36.00   63.47
+PoissonLog                     12.33   14.58   18.95   25.23   28.17   40.95   66.60
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 2 (load 1.15 2.45 1.99)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          1.96    3.85    7.23   11.50   14.50   31.64   56.88
+NormalWithInferredScale         2.45    4.33    8.86   12.18   15.46   30.96   58.09
+LogNormalWithInferredScale      2.60    4.66    8.87   12.49   16.39   31.28   58.60
+BernoulliLogit                  9.72   11.41   15.29   18.97   23.04   35.68   64.49
+PoissonLog                     10.71   13.15   17.52   20.94   25.56   41.29   67.26
+
+## Session 2: 5,000 rows, widths 8 to 512, load checked below 1.5 before each run
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 1 (load 1.35 2.43 2.00)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         32.77  107.45  109.67  159.98  188.68  289.06  512.77
+NormalWithInferredScale        39.32   61.78  107.60  157.68  193.57  298.07  786.00
+LogNormalWithInferredScale     53.18  135.80  139.83  167.37  193.30  280.79  535.92
+BernoulliLogit                115.03  133.86  171.62  217.52  252.67  344.47  641.82
+PoissonLog                    124.02  194.99  194.52  250.88  275.10  419.78  614.93
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 1 (load 1.40 3.70 2.85)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         19.61   41.65  100.49  128.44  158.86  288.41  516.55
+NormalWithInferredScale        24.63   48.60  106.65  141.30  165.74  292.07  502.66
+LogNormalWithInferredScale     25.36   51.07  107.81  143.38  167.11  283.74  518.47
+BernoulliLogit                 97.13  117.66  166.72  193.01  225.74  339.95  579.21
+PoissonLog                    106.51  132.54  190.39  215.63  243.70  412.16  623.81
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 2 (load 1.37 2.87 2.65)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         33.86  104.87  103.33  160.18  187.19  289.16  507.65
+NormalWithInferredScale        38.34   61.05  107.22  156.62  207.36  292.28  502.46
+LogNormalWithInferredScale     39.93  109.11  109.05  166.74  190.12  283.32  501.02
+BernoulliLogit                110.73  131.81  172.23  215.98  265.47  334.24  574.80
+PoissonLog                    120.67  193.60  193.94  248.94  275.77  416.09  629.15
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 2 (load 1.21 2.22 2.43)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         19.24   42.45   99.52  131.14  158.85  291.30  516.68
+NormalWithInferredScale        24.08   49.15  106.68  141.89  165.31  293.60  503.01
+LogNormalWithInferredScale     25.48   50.58  107.95  142.68  167.20  286.38  517.31
+BernoulliLogit                 97.10  118.01  169.26  192.87  225.57  340.46  583.91
+PoissonLog                    106.12  134.89  191.98  217.77  250.82  414.30  625.32
+
+## Session 3: 5,000 rows, widths 2 8 32 64 128, load checked below 1.5 before each run
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 1 (load 1.08 1.81 2.25)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.60   33.90   56.62  145.49  182.12
+NormalWithInferredScale        30.22   38.17   63.51  109.67  222.33
+LogNormalWithInferredScale     31.45   40.36   62.23  149.86  186.33
+BernoulliLogit                103.61  113.16  134.67  172.27  282.80
+PoissonLog                    111.07  123.85  147.11  234.13  269.96
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 1 (load 1.12 1.70 2.19)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         20.91   18.79   41.28   99.98  161.18
+NormalWithInferredScale        25.78   23.85   50.67  105.28  162.87
+LogNormalWithInferredScale     27.26   25.82   52.30  107.04  164.88
+BernoulliLogit                 98.09   97.01  121.44  168.72  220.64
+PoissonLog                    104.21  105.59  134.90  189.28  247.07
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 2 (load 1.06 1.60 2.13)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         26.30   34.51   56.87  145.33  180.98
+NormalWithInferredScale        30.26   37.93   63.44  108.46  195.18
+LogNormalWithInferredScale     31.49   39.63   62.18  150.60  183.96
+BernoulliLogit                103.46  112.89  134.42  173.05  254.56
+PoissonLog                    109.49  122.36  147.17  235.21  269.54
+
+### 9c13aeb (this branch): four rows interleaved, loops up to 128 columns, run 2 (load 1.32 1.58 2.09)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         21.17   19.05   42.39  100.72  158.51
+NormalWithInferredScale        25.82   23.74   50.56  105.62  162.16
+LogNormalWithInferredScale     27.24   25.14   52.25  106.27  164.06
+BernoulliLogit                 98.19   96.63  121.43  164.91  217.49
+PoissonLog                    103.52  107.89  136.06  189.87  246.73
+
+## Session 4: an earlier session, both row counts in one sequence, load checked below
+## 1.5 once at its start only. The branch then had the same kernels and cutoff.
+# start load 1.34 3.36 2.48
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          3.37    5.41    9.98   16.40   17.56   31.75   56.73
+NormalWithInferredScale         3.80    6.21   11.07   15.47   19.34   30.06   55.06
+LogNormalWithInferredScale      3.93    6.21   10.76   15.93   19.50   31.00   55.97
+BernoulliLogit                 11.13   13.28   17.25   21.95   25.57   35.51   61.16
+PoissonLog                     12.41   14.62   19.11   26.37   27.99   40.56   64.83
+
+### 3037928 (this branch): four rows interleaved, loops up to 128 columns, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          1.96    3.86    7.55   12.05   15.22   31.52   56.61
+NormalWithInferredScale         2.47    4.35    8.09   12.35   16.75   30.61   55.38
+LogNormalWithInferredScale      2.59    4.67    8.10   12.24   17.49   30.89   56.05
+BernoulliLogit                  9.73   11.33   14.53   18.40   23.04   35.79   62.13
+PoissonLog                     10.49   12.72   16.63   20.70   24.67   40.72   66.65
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          3.43    5.46   10.07   16.35   18.67   32.11   56.30
+NormalWithInferredScale         3.80    6.24   10.92   15.37   19.44   29.95   56.91
+LogNormalWithInferredScale      3.94    6.22   10.56   15.81   19.44   30.67   58.42
+BernoulliLogit                 11.16   13.26   17.06   22.13   25.51   35.63   62.55
+PoissonLog                     12.27   14.54   18.82   25.05   28.04   40.02   66.28
+
+### 3037928 (this branch): four rows interleaved, loops up to 128 columns, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                          1.94    3.87    7.47   11.96   15.01   32.76   56.85
+NormalWithInferredScale         2.44    4.39    8.93   12.62   16.36   30.60   57.62
+LogNormalWithInferredScale      2.59    4.68    8.88   13.01   17.31   31.58   57.84
+BernoulliLogit                  9.73   11.30   15.17   18.70   23.09   35.17   63.43
+PoissonLog                     10.76   12.84   17.45   20.27   25.17   40.94   66.25
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         32.70  105.17  102.84  159.05  187.97  289.02  517.41
+NormalWithInferredScale        39.82   62.73  108.53  160.55  196.32  292.51  504.30
+LogNormalWithInferredScale     39.62  109.05  109.88  167.57  194.01  283.67  517.31
+BernoulliLogit                113.34  131.94  170.68  217.54  256.12  342.11  583.16
+PoissonLog                    122.04  193.43  193.59  246.69  278.97  416.72  626.89
+
+### 3037928 (this branch): four rows interleaved, loops up to 128 columns, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         18.99   42.26   99.61  129.91  159.60  288.70  516.82
+NormalWithInferredScale        24.02   49.97  107.38  142.03  166.43  292.07  503.25
+LogNormalWithInferredScale     25.42   51.28  108.63  142.20  166.77  285.23  518.49
+BernoulliLogit                 96.64  120.08  169.43  194.20  227.77  345.88  583.62
+PoissonLog                    106.39  137.50  194.53  218.73  253.30  415.76  626.68
+
+### 0a91f6d (perf/normal-likelihood): one row at a time, loops up to 64 columns, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         32.90  105.42  101.70  161.29  189.98  289.98  544.67
+NormalWithInferredScale        39.57   62.60  107.91  159.18  194.16  292.84  505.89
+LogNormalWithInferredScale     39.48  108.90  109.85  165.49  191.83  284.01  520.77
+BernoulliLogit                112.55  131.90  170.90  217.40  252.46  342.88  583.45
+PoissonLog                    121.69  193.07  194.55  248.13  276.03  423.56  628.39
+
+### 3037928 (this branch): four rows interleaved, loops up to 128 columns, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=8    p=32    p=64    p=96   p=128   p=256   p=512
+Normal                         19.68   42.34   99.42  129.45  159.25  288.80  516.06
+NormalWithInferredScale        24.60   49.32  108.38  142.28  166.18  293.09  503.71
+LogNormalWithInferredScale     25.85   50.64  109.86  143.14  166.95  285.48  518.00
+BernoulliLogit                 97.01  118.37  169.53  192.78  224.65  343.20  581.10
+PoissonLog                    107.26  134.95  192.77  217.27  251.91  415.31  625.54
+# end load 1.37 1.49 1.85
+
+## Session 5: the lead reviewer's runs under the same lock, as reported, normal regression
+## at 5,000 rows with the width list 2 8 32 64 128 (8, 32 and 64 columns shown)
+base          33.8   56.2  145.0
+this branch   19.7   42.0  100.6
+
+# Kernels tried along the way, normal likelihood, in earlier sessions held in the scratch
+# notes: column blocks of up to 32 in the reverse product at every width were slower than
+# faer at 512 columns (5,000 x 512: 655-657 against 509-540) and mixed at 256 (500 x 256:
+# 30.7-45.7 against 31.9-32.3); streaming four rows at every width was slower at 8 and 32
+# columns (5,000 x 32: 51.7-51.9 against 41.8-42.2 for column blocks).
