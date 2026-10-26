@@ -57,6 +57,19 @@ versioning while the public API is stabilized.
   designs a log density can be NaN or -inf where faer's was finite, or finite where it
   was NaN. Wider designs keep faer. Other CPUs keep faer at every width, and their draws
   do not change.
+- **Poisson-log counts below 16 multiply the log rate itself.** For a count from 1 to 15
+  at a normal rate, the log mass took `ln(exp(eta))` to get back a log rate it was given,
+  and every call tested its count with `fract()`, which is `x - trunc(x)`; on x86-64
+  without SSE4.1 that `trunc` is a function call. A gradient of a 500-row, 8-column Poisson regression takes
+  7.9 µs against 12.2 µs, 15% to 37% cheaper from 2 to 128 columns, and a 4-chain fit
+  0.31 s against 0.48 s (`benchmarks/results/2026-10-25-gradient-cost-poisson-log-rate.txt`).
+  Against 60-digit references for counts 1 to 15, sampled across the range of normal
+  rates, the largest error is unchanged at every count and the mean moves by under
+  0.01 ulp (`benchmarks/poisson_small_count_accuracy.py`). The term's derivative with
+  respect to eta, `y - rate`, is unchanged. Its value for a count from 1 to 15 can move by
+  a few units in the last place, so anything computed from that value moves with it, and
+  **seeded draws change** for models with Poisson-log terms. Every other input keeps its
+  log mass to the bit.
 - **Indexed effects, elementwise expressions and scalar broadcast adds read their
   operands once per node.** A non-centered varying-intercept mean such as
   `mu + tau * z["group"]` read every operand through a per-element match on the node,
