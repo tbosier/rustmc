@@ -57,6 +57,23 @@ versioning while the public API is stabilized.
   designs a log density can be NaN or -inf where faer's was finite, or finite where it
   was NaN. Wider designs keep faer. Other CPUs keep faer at every width, and their draws
   do not change.
+- **Indexed effects, elementwise expressions and scalar broadcast adds read their
+  operands once per node.** A non-centered varying-intercept mean such as
+  `mu + tau * z["group"]` read every operand through a per-element match on the node,
+  called the operator's value and adjoint functions out of line, and applied the
+  parameter transform once per row instead of once per group. Its gradient at 500 rows
+  and 20 groups takes 5.1 to 5.2 µs, from about 13, and at 5,000 rows and 100 groups
+  about 50 µs, from about 129, and a 4-chain fit of either takes 56% to 61% less time
+  (`benchmarks/results/2026-10-25-indexed-effects.txt`). A gather with more groups than
+  rows, or with more than one kind of transform among its groups, keeps transforming
+  per row; a whole model's gradient with such a sparse gather is 6% to 10% cheaper,
+  from its other nodes. On the x86-64 Linux build tested, log densities, gradients and
+  seeded draws match the previous code bit for bit at every compared input, NaNs
+  included; Rust guarantees neither NaN signs and payloads nor the same `exp` or `powf`
+  results on every platform. nutpie still fits these models about 6 and 11 times
+  faster, from about 14 and 26 to 29 times before: rustmc's warmup ends on a step a
+  third to under half of nutpie's, so a fit takes 2.6 to 2.9 times the leapfrog steps,
+  and each step still costs 2.1 to 4.5 times nutpie's.
 
 ### Tests
 
