@@ -31,6 +31,14 @@ versioning while the public API is stabilized.
   mass computed outside one. A gradient at 2 to 64 columns is 9% to 27% cheaper
   (`benchmarks/results/2026-10-25-gradient-cost-likelihood-caches.txt`). The values,
   NaNs included, and so seeded draws, are the same to the bit.
+- **Normal and LogNormal terms keep each standardized residual from the forward
+  pass.** The reverse pass reads it instead of dividing by the scale again, and skips
+  the scale's adjoint when the scale is a constant, as it was when the evaluator was
+  built. A gradient at 500 rows and 8 columns is 16% to 27% cheaper, and a whole fit
+  of that size 15% to 25% faster
+  (`benchmarks/results/2026-10-25-gradient-cost-gaussian-residuals.txt`). Seeded draws
+  are the same to the bit; only which payload survives when two NaNs meet in one
+  adjoint can differ.
 
 ### Tests
 
