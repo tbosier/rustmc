@@ -232,103 +232,103 @@ eight_schools 8x8 threads=4          nutpie    0.036 [0.0349, 0.0414]     0.0161
                                      r/n       0.669 [0.614, 0.713]       1.03 [0.98, 1.16]          0.702 [0.684, 0.767]       agreement z 2.1
 
 # Analysis: python benchmarks/head_to_head_summary.py benchmarks/results/2026-10-25-head-to-head.json --endpoint
-# sampling, the rules of that script: verdicts from pairs where both fits pass, a winner
-# only at a two-sided sign-test p below 0.05 (impossible with 3 datasets), ranges
-# observed, not intervals.
+# sampling, under that script's rules: verdicts from pairs where both fits pass, unadjusted
+# and Holm-adjusted within each declared family, a winner only at p below 0.05 (impossible
+# with 3 datasets), ranges observed, intervals order-statistic with their exact coverage.
 
-revision {'commit': 'a57342d315ee6443760fb756ab285e4fe5947d25', 'dirty': False}, versions {'rustmc': '0.15.0', 'nutpie': '0.16.6', 'pymc': '5.28.0', 'arviz': '0.23.4'}
+revision {'commit': 'a57342d315ee6443760fb756ab285e4fe5947d25', 'dirty': False}, schema 1, versions {'rustmc': '0.15.0', 'nutpie': '0.16.6', 'pymc': '5.28.0', 'arviz': '0.23.4'}
 extension sha256 not recorded
-compile cache at start: not recorded
-per-ESS ratios use the time to the end of sampling
+compile cache directory at start: not recorded
+per-ESS ratios use sampling_seconds
 cells run: 46
 
-cell                                 vs         pass per-ESS ratio, passing pairs  sign p bootstrap 95% of median  verdict                  max z / threshold  all finished pairs' per-ESS ratios
-normal 100x4 threads=1               nutpie     3/3  0.84 [0.77, 0.93]              0.250 [0.77, 0.93]             no clear winner          2.1 / 4.0       0.93 0.84 0.77
-normal 100x4 threads=1               nutpie300  3/3  1.07 [0.89, 1.24]              1.000 [0.89, 1.24]             no clear winner          2.1 / 4.0       1.24 1.07 0.89
-normal 100x4 threads=4               nutpie     3/3  1.09 [0.95, 1.24]              1.000 [0.95, 1.24]             no clear winner          2.1 / 4.0       1.24 1.09 0.95
-normal 100x4 threads=4               nutpie300  3/3  1.38 [0.96, 1.58]              1.000 [0.96, 1.58]             no clear winner          2.1 / 4.0       1.58 1.38 0.96
-normal 1000x16 threads=1             nutpie     3/3  0.51 [0.46, 0.55]              0.250 [0.46, 0.55]             no clear winner          1.8 / 4.3       0.51 0.55 0.46
-normal 1000x16 threads=1             nutpie300  3/3  0.80 [0.66, 0.83]              0.250 [0.66, 0.83]             no clear winner          2.1 / 4.3       0.66 0.83 0.80
-normal 1000x16 threads=4             nutpie     3/3  0.49 [0.48, 0.52]              0.250 [0.48, 0.52]             no clear winner          1.8 / 4.3       0.49 0.52 0.48
-normal 1000x16 threads=4             nutpie300  3/3  0.76 [0.74, 0.82]              0.250 [0.74, 0.82]             no clear winner          2.1 / 4.3       0.74 0.76 0.82
-normal 10000x16 threads=1            nutpie     3/3  0.42 [0.41, 0.42]              0.250 [0.41, 0.42]             no clear winner          2.8 / 4.3       0.42 0.42 0.41
-normal 10000x16 threads=1            nutpie300  3/3  0.61 [0.58, 0.64]              0.250 [0.58, 0.64]             no clear winner          2.8 / 4.3       0.61 0.58 0.64
-normal 10000x16 threads=4            nutpie     3/3  0.39 [0.38, 0.41]              0.250 [0.38, 0.41]             no clear winner          2.8 / 4.3       0.41 0.38 0.39
-normal 10000x16 threads=4            nutpie300  3/3  0.59 [0.50, 0.63]              0.250 [0.50, 0.63]             no clear winner          2.8 / 4.3       0.59 0.50 0.63
-normal 1000x64 threads=1             nutpie     3/3  0.53 [0.45, 0.56]              0.250 [0.45, 0.56]             no clear winner          2.9 / 4.6       0.45 0.53 0.56
-normal 1000x64 threads=1             nutpie300  3/3  0.77 [0.72, 0.94]              0.250 [0.72, 0.94]             no clear winner          2.9 / 4.6       0.72 0.77 0.94
-normal 1000x64 threads=4             nutpie     3/3  0.85 [0.66, 0.96]              0.250 [0.66, 0.96]             no clear winner          2.9 / 4.6       0.85 0.66 0.96
-normal 1000x64 threads=4             nutpie300  3/3  1.23 [0.98, 1.50]              1.000 [0.98, 1.50]             no clear winner          2.9 / 4.6       1.23 0.98 1.50
-normal 1000x128 threads=1            nutpie     3/3  0.16 [0.16, 0.20]              0.250 [0.16, 0.20]             no clear winner          3.2 / 4.7       0.16 0.20 0.16
-normal 1000x128 threads=1            nutpie300  3/3  0.31 [0.28, 0.31]              0.250 [0.28, 0.31]             no clear winner          3.3 / 4.7       0.31 0.31 0.28
-normal 1000x128 threads=4            nutpie     3/3  0.16 [0.15, 0.21]              0.250 [0.15, 0.21]             no clear winner          3.2 / 4.7       0.15 0.21 0.16
-normal 1000x128 threads=4            nutpie300  3/3  0.28 [0.28, 0.36]              0.250 [0.28, 0.36]             no clear winner          3.3 / 4.7       0.28 0.36 0.28
-normal_sigma 100x4 threads=1         nutpie     3/3  0.65 [0.62, 0.76]              0.250 [0.62, 0.76]             no clear winner          2.3 / 4.0       0.65 0.76 0.62
-normal_sigma 100x4 threads=1         nutpie300  3/3  0.84 [0.79, 1.05]              1.000 [0.79, 1.05]             no clear winner          1.7 / 4.0       1.05 0.84 0.79
-normal_sigma 100x4 threads=4         nutpie     3/3  0.64 [0.58, 0.71]              0.250 [0.58, 0.71]             no clear winner          2.3 / 4.0       0.58 0.71 0.64
-normal_sigma 100x4 threads=4         nutpie300  3/3  0.77 [0.74, 0.84]              0.250 [0.74, 0.84]             no clear winner          1.7 / 4.0       0.84 0.74 0.77
-normal_sigma 1000x16 threads=1       nutpie     3/3  0.52 [0.47, 0.56]              0.250 [0.47, 0.56]             no clear winner          2.5 / 4.3       0.47 0.52 0.56
-normal_sigma 1000x16 threads=1       nutpie300  3/3  0.79 [0.73, 0.80]              0.250 [0.73, 0.80]             no clear winner          2.6 / 4.3       0.73 0.79 0.80
-normal_sigma 1000x16 threads=4       nutpie     3/3  0.51 [0.46, 0.53]              0.250 [0.46, 0.53]             no clear winner          2.5 / 4.3       0.46 0.51 0.53
-normal_sigma 1000x16 threads=4       nutpie300  3/3  0.76 [0.62, 0.76]              0.250 [0.62, 0.76]             no clear winner          2.6 / 4.3       0.62 0.76 0.76
-normal_sigma 10000x16 threads=1      nutpie     3/3  0.39 [0.36, 0.40]              0.250 [0.36, 0.40]             no clear winner          2.0 / 4.3       0.39 0.40 0.36
-normal_sigma 10000x16 threads=1      nutpie300  3/3  0.69 [0.66, 0.69]              0.250 [0.66, 0.69]             no clear winner          2.3 / 4.3       0.66 0.69 0.69
-normal_sigma 10000x16 threads=4      nutpie     3/3  0.38 [0.37, 0.38]              0.250 [0.37, 0.38]             no clear winner          2.0 / 4.3       0.38 0.38 0.37
-normal_sigma 10000x16 threads=4      nutpie300  3/3  0.65 [0.62, 0.67]              0.250 [0.62, 0.67]             no clear winner          2.3 / 4.3       0.62 0.67 0.65
-normal_sigma 1000x64 threads=1       nutpie     3/3  0.45 [0.39, 0.49]              0.250 [0.39, 0.49]             no clear winner          3.3 / 4.6       0.45 0.39 0.49
-normal_sigma 1000x64 threads=1       nutpie300  3/3  0.70 [0.67, 0.82]              0.250 [0.67, 0.82]             no clear winner          3.6 / 4.6       0.70 0.67 0.82
-normal_sigma 1000x64 threads=4       nutpie     3/3  0.56 [0.42, 0.60]              0.250 [0.42, 0.60]             no clear winner          3.3 / 4.6       0.60 0.42 0.56
-normal_sigma 1000x64 threads=4       nutpie300  3/3  0.69 [0.64, 0.81]              0.250 [0.64, 0.81]             no clear winner          3.6 / 4.6       0.81 0.69 0.64
-normal_sigma 1000x128 threads=1      nutpie     3/3  0.18 [0.14, 0.19]              0.250 [0.14, 0.19]             no clear winner          3.1 / 4.7       0.19 0.18 0.14
-normal_sigma 1000x128 threads=1      nutpie300  3/3  0.22 [0.21, 0.32]              0.250 [0.21, 0.32]             no clear winner          3.3 / 4.7       0.32 0.22 0.21
-normal_sigma 1000x128 threads=4      nutpie     3/3  0.20 [0.15, 0.20]              0.250 [0.15, 0.20]             no clear winner          3.1 / 4.7       0.20 0.20 0.15
-normal_sigma 1000x128 threads=4      nutpie300  3/3  0.25 [0.22, 0.29]              0.250 [0.22, 0.29]             no clear winner          3.3 / 4.7       0.29 0.25 0.22
-logistic 100x4 threads=1             nutpie     3/3  0.64 [0.63, 0.69]              0.250 [0.63, 0.69]             no clear winner          2.0 / 4.0       0.69 0.64 0.63
-logistic 100x4 threads=1             nutpie300  3/3  0.97 [0.92, 1.03]              1.000 [0.92, 1.03]             no clear winner          2.3 / 4.0       1.03 0.92 0.97
-logistic 100x4 threads=4             nutpie     3/3  0.65 [0.63, 0.66]              0.250 [0.63, 0.66]             no clear winner          2.0 / 4.0       0.65 0.63 0.66
-logistic 100x4 threads=4             nutpie300  3/3  0.92 [0.87, 0.93]              0.250 [0.87, 0.93]             no clear winner          2.3 / 4.0       0.92 0.87 0.93
-logistic 1000x16 threads=1           nutpie     3/3  0.44 [0.41, 0.50]              0.250 [0.41, 0.50]             no clear winner          1.9 / 4.3       0.41 0.50 0.44
-logistic 1000x16 threads=1           nutpie300  3/3  0.64 [0.59, 0.79]              0.250 [0.59, 0.79]             no clear winner          2.3 / 4.3       0.64 0.79 0.59
-logistic 1000x16 threads=4           nutpie     3/3  0.44 [0.40, 0.49]              0.250 [0.40, 0.49]             no clear winner          1.9 / 4.3       0.40 0.49 0.44
-logistic 1000x16 threads=4           nutpie300  3/3  0.62 [0.59, 0.80]              0.250 [0.59, 0.80]             no clear winner          2.3 / 4.3       0.62 0.80 0.59
-logistic 10000x16 threads=1          nutpie     3/3  0.45 [0.42, 0.51]              0.250 [0.42, 0.51]             no clear winner          3.1 / 4.3       0.45 0.42 0.51
-logistic 10000x16 threads=1          nutpie300  3/3  0.64 [0.59, 0.70]              0.250 [0.59, 0.70]             no clear winner          2.1 / 4.3       0.64 0.59 0.70
-logistic 10000x16 threads=4          nutpie     3/3  0.45 [0.42, 0.51]              0.250 [0.42, 0.51]             no clear winner          3.1 / 4.3       0.45 0.42 0.51
-logistic 10000x16 threads=4          nutpie300  3/3  0.63 [0.58, 0.71]              0.250 [0.58, 0.71]             no clear winner          2.1 / 4.3       0.63 0.58 0.71
-logistic 1000x64 threads=1           nutpie     3/3  0.49 [0.44, 0.57]              0.250 [0.44, 0.57]             no clear winner          2.8 / 4.6       0.49 0.44 0.57
-logistic 1000x64 threads=1           nutpie300  3/3  0.76 [0.70, 0.82]              0.250 [0.70, 0.82]             no clear winner          2.9 / 4.6       0.76 0.70 0.82
-logistic 1000x64 threads=4           nutpie     3/3  0.59 [0.43, 0.66]              0.250 [0.43, 0.66]             no clear winner          2.8 / 4.6       0.59 0.43 0.66
-logistic 1000x64 threads=4           nutpie300  3/3  0.93 [0.65, 0.97]              0.250 [0.65, 0.97]             no clear winner          2.9 / 4.6       0.93 0.65 0.97
-logistic 1000x128 threads=1          nutpie     3/3  0.21 [0.20, 0.25]              0.250 [0.20, 0.25]             no clear winner          3.1 / 4.7       0.25 0.21 0.20
-logistic 1000x128 threads=1          nutpie300  3/3  0.32 [0.30, 0.40]              0.250 [0.30, 0.40]             no clear winner          3.1 / 4.7       0.40 0.32 0.30
-logistic 1000x128 threads=4          nutpie     3/3  0.21 [0.20, 0.27]              0.250 [0.20, 0.27]             no clear winner          3.1 / 4.7       0.27 0.21 0.20
-logistic 1000x128 threads=4          nutpie300  3/3  0.31 [0.30, 0.44]              0.250 [0.30, 0.44]             no clear winner          3.1 / 4.7       0.44 0.31 0.30
-poisson 100x4 threads=1              nutpie     3/3  0.51 [0.36, 0.74]              0.250 [0.36, 0.74]             no clear winner          1.7 / 4.0       0.74 0.51 0.36
-poisson 100x4 threads=1              nutpie300  3/3  0.74 [0.67, 0.79]              0.250 [0.67, 0.79]             no clear winner          1.9 / 4.0       0.74 0.79 0.67
-poisson 100x4 threads=4              nutpie     3/3  0.42 [0.21, 0.53]              0.250 [0.21, 0.53]             no clear winner          1.7 / 4.0       0.53 0.42 0.21
-poisson 100x4 threads=4              nutpie300  3/3  0.40 [0.39, 0.51]              0.250 [0.39, 0.51]             no clear winner          1.9 / 4.0       0.40 0.51 0.39
-poisson 1000x16 threads=1            nutpie     3/3  0.52 [0.50, 0.52]              0.250 [0.50, 0.52]             no clear winner          2.3 / 4.3       0.52 0.50 0.52
-poisson 1000x16 threads=1            nutpie300  3/3  0.76 [0.75, 0.80]              0.250 [0.75, 0.80]             no clear winner          1.9 / 4.3       0.76 0.75 0.80
-poisson 1000x16 threads=4            nutpie     3/3  0.37 [0.36, 0.39]              0.250 [0.36, 0.39]             no clear winner          2.3 / 4.3       0.36 0.37 0.39
-poisson 1000x16 threads=4            nutpie300  3/3  0.55 [0.55, 0.58]              0.250 [0.55, 0.58]             no clear winner          1.9 / 4.3       0.55 0.55 0.58
-poisson 10000x16 threads=1           nutpie     3/3  0.50 [0.48, 0.57]              0.250 [0.48, 0.57]             no clear winner          2.8 / 4.3       0.50 0.48 0.57
-poisson 10000x16 threads=1           nutpie300  3/3  0.79 [0.73, 0.85]              0.250 [0.73, 0.85]             no clear winner          2.4 / 4.3       0.73 0.79 0.85
-poisson 10000x16 threads=4           nutpie     3/3  0.39 [0.38, 0.43]              0.250 [0.38, 0.43]             no clear winner          2.8 / 4.3       0.39 0.38 0.43
-poisson 10000x16 threads=4           nutpie300  3/3  0.62 [0.56, 0.65]              0.250 [0.56, 0.65]             no clear winner          2.4 / 4.3       0.56 0.62 0.65
-poisson 1000x64 threads=1            nutpie     3/3  0.45 [0.39, 0.52]              0.250 [0.39, 0.52]             no clear winner          3.0 / 4.6       0.45 0.52 0.39
-poisson 1000x64 threads=1            nutpie300  3/3  0.60 [0.58, 0.77]              0.250 [0.58, 0.77]             no clear winner          2.9 / 4.6       0.60 0.77 0.58
-poisson 1000x64 threads=4            nutpie     3/3  0.43 [0.36, 0.52]              0.250 [0.36, 0.52]             no clear winner          3.0 / 4.6       0.43 0.52 0.36
-poisson 1000x64 threads=4            nutpie300  3/3  0.60 [0.54, 0.71]              0.250 [0.54, 0.71]             no clear winner          2.9 / 4.6       0.60 0.71 0.54
-poisson 1000x128 threads=1           nutpie     3/3  0.20 [0.19, 0.22]              0.250 [0.19, 0.22]             no clear winner          3.3 / 4.7       0.20 0.19 0.22
-poisson 1000x128 threads=1           nutpie300  3/3  0.35 [0.33, 0.36]              0.250 [0.33, 0.36]             no clear winner          3.2 / 4.7       0.35 0.33 0.36
-poisson 1000x128 threads=4           nutpie     3/3  0.22 [0.19, 0.22]              0.250 [0.19, 0.22]             no clear winner          3.3 / 4.7       0.22 0.19 0.22
-poisson 1000x128 threads=4           nutpie300  3/3  0.35 [0.32, 0.38]              0.250 [0.32, 0.38]             no clear winner          3.2 / 4.7       0.38 0.32 0.35
-varying_intercept 500x20 threads=1   nutpie     0/3  -                                  - -                        inconclusive (quality)   2.5 / 4.3       4.46 4.50 5.85
-varying_intercept 500x20 threads=4   nutpie     0/3  -                                  - -                        inconclusive (quality)   2.5 / 4.3       4.20 3.84 6.24
-varying_intercept 5000x100 threads=1 nutpie     0/3  -                                  - -                        inconclusive (quality)   2.9 / 4.7       17.78 30.05 28.55
-varying_intercept 5000x100 threads=4 nutpie     0/3  -                                  - -                        inconclusive (quality)   2.9 / 4.7       16.43 28.91 26.92
-eight_schools 8x8 threads=1          nutpie     0/3  -                                  - -                        inconclusive (quality)   2.1 / 4.1       1.06 0.99 1.05
-eight_schools 8x8 threads=4          nutpie     0/3  -                                  - -                        inconclusive (quality)   2.1 / 4.1       1.09 1.14 1.19
+cell                                 vs         pass per-ESS ratio, passing pairs order-stat interval (coverage)    sign p  Holm p unadjusted               Holm-adjusted            max z / thr  all finished pairs
+normal 100x4 threads=1               nutpie     3/3  0.84 [0.77, 0.93]            [0.77, 0.93] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.1/4.0    0.93 0.84 0.77
+normal 100x4 threads=1               nutpie300  3/3  1.07 [0.89, 1.24]            [0.89, 1.24] (75.0%)               1.000   1.000 no clear winner          no clear winner          2.1/4.0    1.24 1.07 0.89
+normal 100x4 threads=4               nutpie     3/3  1.09 [0.95, 1.24]            [0.95, 1.24] (75.0%)               1.000   1.000 no clear winner          no clear winner          2.1/4.0    1.24 1.09 0.95
+normal 100x4 threads=4               nutpie300  3/3  1.38 [0.96, 1.58]            [0.96, 1.58] (75.0%)               1.000   1.000 no clear winner          no clear winner          2.1/4.0    1.58 1.38 0.96
+normal 1000x16 threads=1             nutpie     3/3  0.51 [0.46, 0.55]            [0.46, 0.55] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.8/4.3    0.51 0.55 0.46
+normal 1000x16 threads=1             nutpie300  3/3  0.80 [0.66, 0.83]            [0.66, 0.83] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.1/4.3    0.66 0.83 0.80
+normal 1000x16 threads=4             nutpie     3/3  0.49 [0.48, 0.52]            [0.48, 0.52] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.8/4.3    0.49 0.52 0.48
+normal 1000x16 threads=4             nutpie300  3/3  0.76 [0.74, 0.82]            [0.74, 0.82] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.1/4.3    0.74 0.76 0.82
+normal 10000x16 threads=1            nutpie     3/3  0.42 [0.41, 0.42]            [0.41, 0.42] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.42 0.42 0.41
+normal 10000x16 threads=1            nutpie300  3/3  0.61 [0.58, 0.64]            [0.58, 0.64] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.61 0.58 0.64
+normal 10000x16 threads=4            nutpie     3/3  0.39 [0.38, 0.41]            [0.38, 0.41] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.41 0.38 0.39
+normal 10000x16 threads=4            nutpie300  3/3  0.59 [0.50, 0.63]            [0.50, 0.63] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.59 0.50 0.63
+normal 1000x64 threads=1             nutpie     3/3  0.53 [0.45, 0.56]            [0.45, 0.56] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.45 0.53 0.56
+normal 1000x64 threads=1             nutpie300  3/3  0.77 [0.72, 0.94]            [0.72, 0.94] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.72 0.77 0.94
+normal 1000x64 threads=4             nutpie     3/3  0.85 [0.66, 0.96]            [0.66, 0.96] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.85 0.66 0.96
+normal 1000x64 threads=4             nutpie300  3/3  1.23 [0.98, 1.50]            [0.98, 1.50] (75.0%)               1.000   1.000 no clear winner          no clear winner          2.9/4.6    1.23 0.98 1.50
+normal 1000x128 threads=1            nutpie     3/3  0.16 [0.16, 0.20]            [0.16, 0.20] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.2/4.7    0.16 0.20 0.16
+normal 1000x128 threads=1            nutpie300  3/3  0.31 [0.28, 0.31]            [0.28, 0.31] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.31 0.31 0.28
+normal 1000x128 threads=4            nutpie     3/3  0.16 [0.15, 0.21]            [0.15, 0.21] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.2/4.7    0.15 0.21 0.16
+normal 1000x128 threads=4            nutpie300  3/3  0.28 [0.28, 0.36]            [0.28, 0.36] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.28 0.36 0.28
+normal_sigma 100x4 threads=1         nutpie     3/3  0.65 [0.62, 0.76]            [0.62, 0.76] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.0    0.65 0.76 0.62
+normal_sigma 100x4 threads=1         nutpie300  3/3  0.84 [0.79, 1.05]            [0.79, 1.05] (75.0%)               1.000   1.000 no clear winner          no clear winner          1.7/4.0    1.05 0.84 0.79
+normal_sigma 100x4 threads=4         nutpie     3/3  0.64 [0.58, 0.71]            [0.58, 0.71] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.0    0.58 0.71 0.64
+normal_sigma 100x4 threads=4         nutpie300  3/3  0.77 [0.74, 0.84]            [0.74, 0.84] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.7/4.0    0.84 0.74 0.77
+normal_sigma 1000x16 threads=1       nutpie     3/3  0.52 [0.47, 0.56]            [0.47, 0.56] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.5/4.3    0.47 0.52 0.56
+normal_sigma 1000x16 threads=1       nutpie300  3/3  0.79 [0.73, 0.80]            [0.73, 0.80] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.6/4.3    0.73 0.79 0.80
+normal_sigma 1000x16 threads=4       nutpie     3/3  0.51 [0.46, 0.53]            [0.46, 0.53] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.5/4.3    0.46 0.51 0.53
+normal_sigma 1000x16 threads=4       nutpie300  3/3  0.76 [0.62, 0.76]            [0.62, 0.76] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.6/4.3    0.62 0.76 0.76
+normal_sigma 10000x16 threads=1      nutpie     3/3  0.39 [0.36, 0.40]            [0.36, 0.40] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.0/4.3    0.39 0.40 0.36
+normal_sigma 10000x16 threads=1      nutpie300  3/3  0.69 [0.66, 0.69]            [0.66, 0.69] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.66 0.69 0.69
+normal_sigma 10000x16 threads=4      nutpie     3/3  0.38 [0.37, 0.38]            [0.37, 0.38] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.0/4.3    0.38 0.38 0.37
+normal_sigma 10000x16 threads=4      nutpie300  3/3  0.65 [0.62, 0.67]            [0.62, 0.67] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.62 0.67 0.65
+normal_sigma 1000x64 threads=1       nutpie     3/3  0.45 [0.39, 0.49]            [0.39, 0.49] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.6    0.45 0.39 0.49
+normal_sigma 1000x64 threads=1       nutpie300  3/3  0.70 [0.67, 0.82]            [0.67, 0.82] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.6/4.6    0.70 0.67 0.82
+normal_sigma 1000x64 threads=4       nutpie     3/3  0.56 [0.42, 0.60]            [0.42, 0.60] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.6    0.60 0.42 0.56
+normal_sigma 1000x64 threads=4       nutpie300  3/3  0.69 [0.64, 0.81]            [0.64, 0.81] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.6/4.6    0.81 0.69 0.64
+normal_sigma 1000x128 threads=1      nutpie     3/3  0.18 [0.14, 0.19]            [0.14, 0.19] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.19 0.18 0.14
+normal_sigma 1000x128 threads=1      nutpie300  3/3  0.22 [0.21, 0.32]            [0.21, 0.32] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.32 0.22 0.21
+normal_sigma 1000x128 threads=4      nutpie     3/3  0.20 [0.15, 0.20]            [0.15, 0.20] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.20 0.20 0.15
+normal_sigma 1000x128 threads=4      nutpie300  3/3  0.25 [0.22, 0.29]            [0.22, 0.29] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.29 0.25 0.22
+logistic 100x4 threads=1             nutpie     3/3  0.64 [0.63, 0.69]            [0.63, 0.69] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.0/4.0    0.69 0.64 0.63
+logistic 100x4 threads=1             nutpie300  3/3  0.97 [0.92, 1.03]            [0.92, 1.03] (75.0%)               1.000   1.000 no clear winner          no clear winner          2.3/4.0    1.03 0.92 0.97
+logistic 100x4 threads=4             nutpie     3/3  0.65 [0.63, 0.66]            [0.63, 0.66] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.0/4.0    0.65 0.63 0.66
+logistic 100x4 threads=4             nutpie300  3/3  0.92 [0.87, 0.93]            [0.87, 0.93] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.0    0.92 0.87 0.93
+logistic 1000x16 threads=1           nutpie     3/3  0.44 [0.41, 0.50]            [0.41, 0.50] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.3    0.41 0.50 0.44
+logistic 1000x16 threads=1           nutpie300  3/3  0.64 [0.59, 0.79]            [0.59, 0.79] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.64 0.79 0.59
+logistic 1000x16 threads=4           nutpie     3/3  0.44 [0.40, 0.49]            [0.40, 0.49] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.3    0.40 0.49 0.44
+logistic 1000x16 threads=4           nutpie300  3/3  0.62 [0.59, 0.80]            [0.59, 0.80] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.62 0.80 0.59
+logistic 10000x16 threads=1          nutpie     3/3  0.45 [0.42, 0.51]            [0.42, 0.51] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.3    0.45 0.42 0.51
+logistic 10000x16 threads=1          nutpie300  3/3  0.64 [0.59, 0.70]            [0.59, 0.70] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.1/4.3    0.64 0.59 0.70
+logistic 10000x16 threads=4          nutpie     3/3  0.45 [0.42, 0.51]            [0.42, 0.51] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.3    0.45 0.42 0.51
+logistic 10000x16 threads=4          nutpie300  3/3  0.63 [0.58, 0.71]            [0.58, 0.71] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.1/4.3    0.63 0.58 0.71
+logistic 1000x64 threads=1           nutpie     3/3  0.49 [0.44, 0.57]            [0.44, 0.57] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.6    0.49 0.44 0.57
+logistic 1000x64 threads=1           nutpie300  3/3  0.76 [0.70, 0.82]            [0.70, 0.82] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.76 0.70 0.82
+logistic 1000x64 threads=4           nutpie     3/3  0.59 [0.43, 0.66]            [0.43, 0.66] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.6    0.59 0.43 0.66
+logistic 1000x64 threads=4           nutpie300  3/3  0.93 [0.65, 0.97]            [0.65, 0.97] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.93 0.65 0.97
+logistic 1000x128 threads=1          nutpie     3/3  0.21 [0.20, 0.25]            [0.20, 0.25] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.25 0.21 0.20
+logistic 1000x128 threads=1          nutpie300  3/3  0.32 [0.30, 0.40]            [0.30, 0.40] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.40 0.32 0.30
+logistic 1000x128 threads=4          nutpie     3/3  0.21 [0.20, 0.27]            [0.20, 0.27] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.27 0.21 0.20
+logistic 1000x128 threads=4          nutpie300  3/3  0.31 [0.30, 0.44]            [0.30, 0.44] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.1/4.7    0.44 0.31 0.30
+poisson 100x4 threads=1              nutpie     3/3  0.51 [0.36, 0.74]            [0.36, 0.74] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.7/4.0    0.74 0.51 0.36
+poisson 100x4 threads=1              nutpie300  3/3  0.74 [0.67, 0.79]            [0.67, 0.79] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.0    0.74 0.79 0.67
+poisson 100x4 threads=4              nutpie     3/3  0.42 [0.21, 0.53]            [0.21, 0.53] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.7/4.0    0.53 0.42 0.21
+poisson 100x4 threads=4              nutpie300  3/3  0.40 [0.39, 0.51]            [0.39, 0.51] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.0    0.40 0.51 0.39
+poisson 1000x16 threads=1            nutpie     3/3  0.52 [0.50, 0.52]            [0.50, 0.52] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.52 0.50 0.52
+poisson 1000x16 threads=1            nutpie300  3/3  0.76 [0.75, 0.80]            [0.75, 0.80] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.3    0.76 0.75 0.80
+poisson 1000x16 threads=4            nutpie     3/3  0.37 [0.36, 0.39]            [0.36, 0.39] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.3/4.3    0.36 0.37 0.39
+poisson 1000x16 threads=4            nutpie300  3/3  0.55 [0.55, 0.58]            [0.55, 0.58] (75.0%)               0.250   1.000 no clear winner          no clear winner          1.9/4.3    0.55 0.55 0.58
+poisson 10000x16 threads=1           nutpie     3/3  0.50 [0.48, 0.57]            [0.48, 0.57] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.50 0.48 0.57
+poisson 10000x16 threads=1           nutpie300  3/3  0.79 [0.73, 0.85]            [0.73, 0.85] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.4/4.3    0.73 0.79 0.85
+poisson 10000x16 threads=4           nutpie     3/3  0.39 [0.38, 0.43]            [0.38, 0.43] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.8/4.3    0.39 0.38 0.43
+poisson 10000x16 threads=4           nutpie300  3/3  0.62 [0.56, 0.65]            [0.56, 0.65] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.4/4.3    0.56 0.62 0.65
+poisson 1000x64 threads=1            nutpie     3/3  0.45 [0.39, 0.52]            [0.39, 0.52] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.0/4.6    0.45 0.52 0.39
+poisson 1000x64 threads=1            nutpie300  3/3  0.60 [0.58, 0.77]            [0.58, 0.77] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.60 0.77 0.58
+poisson 1000x64 threads=4            nutpie     3/3  0.43 [0.36, 0.52]            [0.36, 0.52] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.0/4.6    0.43 0.52 0.36
+poisson 1000x64 threads=4            nutpie300  3/3  0.60 [0.54, 0.71]            [0.54, 0.71] (75.0%)               0.250   1.000 no clear winner          no clear winner          2.9/4.6    0.60 0.71 0.54
+poisson 1000x128 threads=1           nutpie     3/3  0.20 [0.19, 0.22]            [0.19, 0.22] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.20 0.19 0.22
+poisson 1000x128 threads=1           nutpie300  3/3  0.35 [0.33, 0.36]            [0.33, 0.36] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.2/4.7    0.35 0.33 0.36
+poisson 1000x128 threads=4           nutpie     3/3  0.22 [0.19, 0.22]            [0.19, 0.22] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.3/4.7    0.22 0.19 0.22
+poisson 1000x128 threads=4           nutpie300  3/3  0.35 [0.32, 0.38]            [0.32, 0.38] (75.0%)               0.250   1.000 no clear winner          no clear winner          3.2/4.7    0.38 0.32 0.35
+varying_intercept 500x20 threads=1   nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.5/4.3    4.46 4.50 5.85
+varying_intercept 500x20 threads=4   nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.5/4.3    4.20 3.84 6.24
+varying_intercept 5000x100 threads=1 nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.7    17.78 30.05 28.55
+varying_intercept 5000x100 threads=4 nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.7    16.43 28.91 26.92
+eight_schools 8x8 threads=1          nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.1/4.1    1.06 0.99 1.05
+eight_schools 8x8 threads=4          nutpie     0/3  -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.1/4.1    1.09 1.14 1.19
 
 Problems (24):
   varying_intercept 500x20 threads=1: nutpie dataset 0: R-hat 1.012
@@ -356,7 +356,7 @@ Problems (24):
   eight_schools 8x8 threads=4: nutpie dataset 2: 2 divergences
   eight_schools 8x8 threads=4: rustmc dataset 1: 1 divergences
 
-By model class: verdict counts over cells, and the median and observed range of the per-ESS ratios of every passing pair in the class (n values).
+By model class: per-ESS ratios of every passing pair in the class, median and observed range (n values; a cell's two thread settings share draws), and verdict counts over cells, Holm-adjusted within the class.
   vs nutpie               normal             threads=1: per ESS 0.46 [0.16, 0.93] (n=15); cells: no clear winner 5
   vs nutpie               normal             threads=4: per ESS 0.49 [0.15, 1.24] (n=15); cells: no clear winner 5
   vs nutpie               normal_sigma       threads=1: per ESS 0.45 [0.14, 0.76] (n=15); cells: no clear winner 5
