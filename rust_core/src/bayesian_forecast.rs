@@ -569,6 +569,102 @@ mod tests {
         assert!(last_width > first_width, "{first_width} vs {last_width}");
     }
 
+    /// The draws against moments of the exact joint posterior. Given the two variances,
+    /// `x[t]` is the initial state plus the first `t + 1` innovations and each
+    /// observation adds its own error, which is the model as written, with no
+    /// filter or Gibbs conditional. One step inside the series and the last
+    /// step are missing, so the terminal level is a one-step prediction.
+    #[test]
+    fn draws_match_the_exact_posterior_of_both_variances_and_the_terminal_level() {
+        use crate::exact_reference::TermVariance::{Fixed, Inferred};
+        use crate::exact_reference::{
+            assert_matches, exact_posterior, seed_offset, Axis, Linear, LinearGaussianModel,
+        };
+
+        let mut rng = ChaCha8Rng::seed_from_u64(1203);
+        let steps = 20;
+        let mut level = 1.0;
+        let mut observations = Vec::with_capacity(steps);
+        for _ in 0..steps {
+            level += standard_normal(&mut rng) * 0.6;
+            observations.push(level + standard_normal(&mut rng) * 0.3);
+        }
+        observations[7] = f64::NAN;
+        observations[steps - 1] = f64::NAN;
+        // The two priors differ in shape as well as scale, so an update
+        // that reads the other variance's prior shows.
+        let config = BayesianLocalLevelConfig {
+            initial_mean: 0.5,
+            observation_variance_prior: InverseGammaPrior {
+                shape: 4.0,
+                scale: 1.2,
+            },
+            num_chains: 4,
+            num_warmup: 1000,
+            num_draws: 25_000,
+            ..compact_config(1204 + seed_offset())
+        };
+
+        // Terms: the initial state x[-1], one innovation per step, and one
+        // error per step.
+        let mut terms = vec![Fixed(config.initial_variance)];
+        terms.extend((0..steps).map(|_| Inferred(0)));
+        terms.extend((0..steps).map(|_| Inferred(1)));
+        let count = terms.len();
+        let mut state = Linear {
+            constant: config.initial_mean,
+            ..Linear::term(0, count)
+        };
+        let mut observed = Vec::new();
+        for (t, &value) in observations.iter().enumerate() {
+            state = state.plus(&Linear::term(1 + t, count));
+            if value.is_finite() {
+                observed.push((state.plus(&Linear::term(1 + steps + t, count)), value));
+            }
+        }
+        let model = LinearGaussianModel {
+            terms,
+            observed,
+            latents: vec![state],
+        };
+        let priors = [
+            config.process_variance_prior,
+            config.observation_variance_prior,
+        ];
+        let exact = exact_posterior(
+            &model,
+            &priors,
+            &[
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 91,
+                },
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 91,
+                },
+            ],
+        );
+
+        let posterior = fit_bayesian_local_level(&observations, &config).unwrap();
+        let draws = |name: &str, pick: &dyn Fn(&LocalLevelPosteriorDraw) -> f64| {
+            let chains = posterior
+                .chains
+                .iter()
+                .map(|chain| chain.iter().map(pick).collect())
+                .collect();
+            (name.to_string(), chains)
+        };
+        let all = vec![
+            draws("process_variance", &|d| d.process_variance),
+            draws("observation_variance", &|d| d.observation_variance),
+            draws("terminal_level", &|d| d.terminal_level),
+        ];
+        assert_matches(&all, &exact, &priors);
+    }
+
     #[test]
     fn ffbs_matches_pre_transition_initial_state_and_preserves_trailing_missing_steps() {
         use crate::state_space::LinearGaussianStateSpace;

@@ -31,6 +31,14 @@ versioning while the public API is stabilized.
   mass computed outside one. A gradient at 2 to 64 columns is 9% to 27% cheaper
   (`benchmarks/results/2026-10-25-gradient-cost-likelihood-caches.txt`). The values,
   NaNs included, and so seeded draws, are the same to the bit.
+- **Normal and LogNormal terms keep each standardized residual from the forward
+  pass.** The reverse pass reads it instead of dividing by the scale again, and skips
+  the scale's adjoint when the scale is a constant, as it was when the evaluator was
+  built. A gradient at 500 rows and 8 columns is 16% to 27% cheaper, and a whole fit
+  of that size 15% to 25% faster
+  (`benchmarks/results/2026-10-25-gradient-cost-gaussian-residuals.txt`). Seeded draws
+  are the same to the bit; only which payload survives when two NaNs meet in one
+  adjoint can differ.
 - **The design-matrix loops interleave four rows and cover designs up to 128 columns.**
   The forward product runs four rows' dot products side by side, sixteen independent
   accumulator chains in flight where one row at a time had four, sharing each load of
@@ -64,6 +72,18 @@ versioning while the public API is stabilized.
   first-column product `2 * 1e308` added to an intercept of `-1e308`. Both are `1e308`
   fused. Other orders of overflowing terms can still give `inf`, as they could with
   faer.
+- The local-level, seasonal local-level and hierarchical-mean Gibbs samplers' draws
+  are checked against first and second moments of their exact joint posteriors,
+  including every pairwise covariance, computed on a grid of variances from the
+  model's definition rather than the samplers' own filters. Before, the hierarchy's
+  sampler was never compared with a reference posterior, and the two local-level
+  samplers' variances only had to land within 20% to 30% of a simulation's truth (the
+  seasonal one in a Python test). `scripts/plant_gibbs_bugs.py` checks that 16 planted
+  bugs fail the new tests and measures false alarms over sampler seeds. See "Exact
+  posteriors for three Gibbs samplers" in `docs/statistical-validation.md`.
+- The hierarchy's `program_conditional_moments_match_analytic_adaptive_shrinkage`, which
+  checks a helper's arithmetic and not the sampler, is renamed
+  `normal_moments_from_precision_match_the_shrinkage_formula`.
 
 ## [0.15.0] - 2026-10-19
 
