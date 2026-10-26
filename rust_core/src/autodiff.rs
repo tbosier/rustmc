@@ -1763,11 +1763,13 @@ pub(crate) use reference::{eval_logp, grad_logp};
 /// Designs up to this many columns use the loops below; wider ones use faer.
 ///
 /// Measured with `examples/gradient_cost.rs` (records in
-/// `benchmarks/results/2026-10-24-gradient-cost.txt`): the loops are several
-/// times faster on narrow designs, faer's general `matmul` being slow on a
-/// narrow row-major product; the two are even at about 96 columns, and
-/// beyond that faer's wider kernels pay for themselves.
-const LOOP_MAX_COLUMNS: usize = 64;
+/// `benchmarks/results/2026-10-24-gradient-cost.txt` and
+/// `2026-10-25-gradient-cost-wide-designs.txt`): the loops are several times
+/// faster on narrow designs, faer's general `matmul` being slow on a narrow
+/// row-major product, and still 6% to 22% faster at 96 and 128 columns than
+/// faer's fastest runs. At 256 the two are even for a Normal likelihood and
+/// faer is faster for a Bernoulli-logit one at 500 rows.
+const LOOP_MAX_COLUMNS: usize = 128;
 
 /// `out[i] += row_i · beta` for the row-major `rows x beta.len()` matrix.
 fn add_matrix_times_vector(matrix: &[f64], rows: usize, beta: &[f64], out: &mut [f64]) {
@@ -1775,6 +1777,8 @@ fn add_matrix_times_vector(matrix: &[f64], rows: usize, beta: &[f64], out: &mut 
     if columns == 0 {
         return;
     }
+    // The loops pair rows with outputs in blocks, so the shapes must agree.
+    debug_assert_eq!((matrix.len(), out.len()), (rows * columns, rows));
     if columns <= LOOP_MAX_COLUMNS
         && with_fused_multiply_add(MatrixTimesVector {
             matrix,
@@ -1802,6 +1806,8 @@ fn add_transpose_times_vector(matrix: &[f64], rows: usize, weights: &[f64], targ
     if columns == 0 {
         return;
     }
+    // The loops pair rows with weights in blocks, so the shapes must agree.
+    debug_assert_eq!((matrix.len(), weights.len()), (rows * columns, rows));
     if columns <= LOOP_MAX_COLUMNS
         && with_fused_multiply_add(TransposeTimesVector {
             matrix,
@@ -1882,7 +1888,14 @@ impl pulp::WithSimd for MatrixTimesVector<'_> {
     fn with_simd<S: pulp::Simd>(self, _simd: S) {
         // Each output already holds its intercept, which the dot product
         // starts from, so the first column's product is fused with it.
-        for (row, out) in self.matrix.chunks_exact(self.beta.len()).zip(self.out) {
+        let columns = self.beta.len();
+        let mut blocks = self.matrix.chunks_exact(ROWS_PER_BLOCK * columns);
+        let mut outs = self.out.chunks_exact_mut(ROWS_PER_BLOCK);
+        for (block, out) in (&mut blocks).zip(&mut outs) {
+            dot_rows_onto(block, self.beta, out);
+        }
+        let rest = blocks.remainder();
+        for (row, out) in rest.chunks_exact(columns).zip(outs.into_remainder()) {
             *out = dot_onto(row, self.beta, *out);
         }
     }
@@ -1900,10 +1913,45 @@ impl pulp::WithSimd for TransposeTimesVector<'_> {
     #[inline(always)]
     fn with_simd<S: pulp::Simd>(self, _simd: S) {
         let columns = self.target.len();
-        for (row, &weight) in self.matrix.chunks_exact(columns).zip(self.weights) {
-            for (sum, &entry) in self.target.iter_mut().zip(row) {
-                *sum = weight.mul_add(entry, *sum);
+        if columns > STREAM_MIN_COLUMNS {
+            add_rows_streaming(self.matrix, self.weights, self.target);
+            return;
+        }
+        let mut start = 0;
+        while columns - start >= 32 {
+            add_column_block::<32>(self.matrix, columns, start, self.weights, self.target);
+            start += 32;
+        }
+        for width in [16, 8, 4] {
+            if columns - start >= width {
+                match width {
+                    16 => add_column_block::<16>(
+                        self.matrix,
+                        columns,
+                        start,
+                        self.weights,
+                        self.target,
+                    ),
+                    8 => add_column_block::<8>(
+                        self.matrix,
+                        columns,
+                        start,
+                        self.weights,
+                        self.target,
+                    ),
+                    _ => add_column_block::<4>(
+                        self.matrix,
+                        columns,
+                        start,
+                        self.weights,
+                        self.target,
+                    ),
+                }
+                start += width;
             }
+        }
+        for column in start..columns {
+            add_column_block::<1>(self.matrix, columns, column, self.weights, self.target);
         }
     }
 }
@@ -1919,6 +1967,109 @@ impl pulp::WithSimd for TransposeTimesVector<'_> {
 /// where `mat_vec_mul_is_bitwise_identical_across_thread_counts` is the check
 /// that a parallel product still gives seeded sampling the same bits.
 const FAER_PARALLELISM: faer::Parallelism<'static> = faer::Parallelism::None;
+
+/// Rows the forward product interleaves. `dot_onto` keeps four accumulator
+/// lanes per row; running four rows side by side puts sixteen independent
+/// chains in flight and loads each slice of `b` once for all four rows.
+const ROWS_PER_BLOCK: usize = 4;
+
+/// `out[r] = dot_onto(row r of block, b, out[r])` for `ROWS_PER_BLOCK` rows
+/// at once. Each row's accumulators take the same products in the same order
+/// as in `dot_onto`, so every result has the same bits, except that which payload survives when two NaNs meet is the compiler's choice; the rows only
+/// share the loads of `b`.
+#[inline(always)]
+fn dot_rows_onto(block: &[f64], b: &[f64], out: &mut [f64]) {
+    let columns = b.len();
+    let mut lanes = [[0.0f64; 4]; ROWS_PER_BLOCK];
+    let mut tails = [0.0f64; ROWS_PER_BLOCK];
+    for r in 0..ROWS_PER_BLOCK {
+        if columns >= 4 {
+            lanes[r][0] = out[r];
+        } else {
+            tails[r] = out[r];
+        }
+    }
+    let rows: [&[f64]; ROWS_PER_BLOCK] =
+        std::array::from_fn(|r| &block[r * columns..(r + 1) * columns]);
+    let whole = columns - columns % 4;
+    for r in 0..ROWS_PER_BLOCK {
+        for (x, y) in rows[r][whole..].iter().zip(&b[whole..]) {
+            tails[r] = x.mul_add(*y, tails[r]);
+        }
+    }
+    for c in (0..whole).step_by(4) {
+        let y = &b[c..c + 4];
+        for r in 0..ROWS_PER_BLOCK {
+            let x = &rows[r][c..c + 4];
+            for lane in 0..4 {
+                lanes[r][lane] = x[lane].mul_add(y[lane], lanes[r][lane]);
+            }
+        }
+    }
+    for r in 0..ROWS_PER_BLOCK {
+        let l = lanes[r];
+        out[r] = (l[0] + l[1]) + (l[2] + l[3]) + tails[r];
+    }
+}
+
+/// Above this many columns the transpose product streams four rows at a time
+/// across the columns; up to it, blocks of columns stay in registers across
+/// all rows, which is faster while a block is a few registers wide.
+const STREAM_MIN_COLUMNS: usize = 64;
+
+/// The transpose update four rows at a time, streaming across the columns:
+/// each sum still takes the rows' fused products in row order, so the bits are
+/// those of the row-by-row update, except that which payload survives when two NaNs meet is the compiler's choice.
+#[inline(always)]
+fn add_rows_streaming(matrix: &[f64], weights: &[f64], target: &mut [f64]) {
+    let columns = target.len();
+    let mut blocks = matrix.chunks_exact(4 * columns);
+    let mut block_weights = weights.chunks_exact(4);
+    for (block, w) in (&mut blocks).zip(&mut block_weights) {
+        let (r0, rest) = block.split_at(columns);
+        let (r1, rest) = rest.split_at(columns);
+        let (r2, r3) = rest.split_at(columns);
+        for ((((sum, &a0), &a1), &a2), &a3) in target.iter_mut().zip(r0).zip(r1).zip(r2).zip(r3) {
+            let mut s = *sum;
+            s = w[0].mul_add(a0, s);
+            s = w[1].mul_add(a1, s);
+            s = w[2].mul_add(a2, s);
+            s = w[3].mul_add(a3, s);
+            *sum = s;
+        }
+    }
+    for (row, &weight) in blocks
+        .remainder()
+        .chunks_exact(columns)
+        .zip(block_weights.remainder())
+    {
+        for (sum, &entry) in target.iter_mut().zip(row) {
+            *sum = weight.mul_add(entry, *sum);
+        }
+    }
+}
+
+/// `target[start + j] += sum_i matrix[i][start + j] * weights[i]` for
+/// `j < W`, accumulating in registers across all rows. Each sum takes the
+/// rows' fused products in row order, as the row-by-row update did, so the
+/// bits are the same, except that which payload survives when two NaNs meet is the compiler's choice.
+#[inline(always)]
+fn add_column_block<const W: usize>(
+    matrix: &[f64],
+    columns: usize,
+    start: usize,
+    weights: &[f64],
+    target: &mut [f64],
+) {
+    let mut sums: [f64; W] = target[start..start + W].try_into().unwrap();
+    for (row, &weight) in matrix.chunks_exact(columns).zip(weights) {
+        let entries: &[f64; W] = row[start..start + W].try_into().unwrap();
+        for j in 0..W {
+            sums[j] = weight.mul_add(entries[j], sums[j]);
+        }
+    }
+    target[start..start + W].copy_from_slice(&sums);
+}
 
 /// `start + a · b`, in four interleaved fused accumulators so the summation
 /// order is fixed and does not depend on threads. `start` begins the
@@ -2969,6 +3120,268 @@ mod tests {
                 assert_eq!(evaluator.vec_elem(mu, 1), 1e308, "{columns} columns");
             }
         }
+    }
+
+    /// The product loops interleave rows and keep blocks of columns in
+    /// registers, which must not change any result: every output of either
+    /// product has the bits of the row-by-row loops it replaced, which are
+    /// reproduced here. The shapes cover every row count modulo the four rows
+    /// interleaved, every width modulo four, and the widths on either side of
+    /// each column-block size and of the 64 columns where the reverse product
+    /// starts streaming. One pass uses moderate entries, so that every output
+    /// is finite and a change of order shows in its bits; a second adds
+    /// signed zeros, values near overflow and an infinity. No case has two
+    /// NaNs with different payloads, whose sum keeps a payload of the
+    /// compiler's choosing. `mul_add` is correctly rounded with or without a
+    /// hardware instruction, so the scalar path runs everywhere and the
+    /// dispatched one wherever it exists.
+    #[test]
+    fn blocked_product_loops_match_the_row_by_row_loops_bit_for_bit() {
+        fn row_by_row(matrix: &[f64], beta: &[f64], out: &mut [f64]) {
+            for (row, out) in matrix.chunks_exact(beta.len()).zip(out) {
+                *out = dot_onto(row, beta, *out);
+            }
+        }
+        fn transpose_row_by_row(matrix: &[f64], weights: &[f64], target: &mut [f64]) {
+            let columns = target.len();
+            for (row, &weight) in matrix.chunks_exact(columns).zip(weights) {
+                for (sum, &entry) in target.iter_mut().zip(row) {
+                    *sum = weight.mul_add(entry, *sum);
+                }
+            }
+        }
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        let mut draw = move |extreme: bool| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            match state % 37 {
+                0 if extreme => -0.0,
+                1 if extreme => 1e308,
+                2 if extreme => -1e308,
+                3 if extreme => f64::INFINITY,
+                _ => (state >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0,
+            }
+        };
+        let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        let row_counts = [1usize, 2, 3, 4, 5, 6, 8, 10, 11];
+        let widths = [
+            1usize, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 16, 17, 18, 31, 32, 33, 34, 47, 63, 64, 65, 66,
+            100,
+        ];
+        let mut finite_moderate_outputs = 0;
+        for extreme in [false, true] {
+            for rows in row_counts {
+                for columns in widths {
+                    let mut next = || draw(extreme);
+                    let matrix = (0..rows * columns).map(|_| next()).collect::<Vec<_>>();
+                    let beta = (0..columns).map(|_| next()).collect::<Vec<_>>();
+                    let weights = (0..rows).map(|_| next()).collect::<Vec<_>>();
+                    let intercepts = (0..rows).map(|_| next()).collect::<Vec<_>>();
+                    let start = (0..columns).map(|_| next()).collect::<Vec<_>>();
+
+                    let mut expected = intercepts.clone();
+                    row_by_row(&matrix, &beta, &mut expected);
+                    let mut expected_target = start.clone();
+                    transpose_row_by_row(&matrix, &weights, &mut expected_target);
+                    if !extreme {
+                        finite_moderate_outputs += expected
+                            .iter()
+                            .chain(&expected_target)
+                            .filter(|x| x.is_finite())
+                            .count();
+                    }
+
+                    let mut scalar = intercepts.clone();
+                    pulp::WithSimd::with_simd(
+                        MatrixTimesVector {
+                            matrix: &matrix,
+                            beta: &beta,
+                            out: &mut scalar,
+                        },
+                        pulp::Scalar::new(),
+                    );
+                    let mut scalar_target = start.clone();
+                    pulp::WithSimd::with_simd(
+                        TransposeTimesVector {
+                            matrix: &matrix,
+                            weights: &weights,
+                            target: &mut scalar_target,
+                        },
+                        pulp::Scalar::new(),
+                    );
+                    assert_eq!(bits(&scalar), bits(&expected), "{rows} x {columns}");
+                    assert_eq!(
+                        bits(&scalar_target),
+                        bits(&expected_target),
+                        "{rows} x {columns}"
+                    );
+
+                    let mut dispatched = intercepts.clone();
+                    let mut dispatched_target = start.clone();
+                    let ran = with_fused_multiply_add(MatrixTimesVector {
+                        matrix: &matrix,
+                        beta: &beta,
+                        out: &mut dispatched,
+                    }) && with_fused_multiply_add(TransposeTimesVector {
+                        matrix: &matrix,
+                        weights: &weights,
+                        target: &mut dispatched_target,
+                    });
+                    assert_eq!(ran, has_fused_multiply_add());
+                    if ran {
+                        assert_eq!(bits(&dispatched), bits(&expected), "{rows} x {columns}");
+                        assert_eq!(
+                            bits(&dispatched_target),
+                            bits(&expected_target),
+                            "{rows} x {columns}"
+                        );
+                    }
+                }
+            }
+        }
+        // Every output of the moderate pass is finite, so its bits compare
+        // ordinary sums rather than infinities and NaNs.
+        let moderate_outputs: usize = row_counts
+            .iter()
+            .map(|rows| widths.iter().map(|columns| rows + columns).sum::<usize>())
+            .sum();
+        assert_eq!(finite_moderate_outputs, moderate_outputs);
+    }
+
+    /// Designs of 65 to 128 columns moved from faer to the loops. Both products
+    /// must stay within the rounding error any order of `n` fused or separate
+    /// multiply-adds can make, `gamma_n * sum |a_i b_i|` with
+    /// `gamma_n = n u / (1 - n u)`, of a compensated sum, at widths through and
+    /// beyond the change, at row counts that leave a remainder of the four rows
+    /// the loops interleave. The bound assumes that no product, partial sum or
+    /// rounding error overflows or underflows. The entries are uniform on
+    /// [-1, 1] in steps of 2^-52, which keeps every exponent far from both
+    /// ends of the range. Outside it the bound need not hold: the loops can
+    /// overflow on a sum that another order would cancel first, and the
+    /// reference can lose a rounding error that is not representable.
+    #[test]
+    fn wide_products_stay_within_the_rounding_error_bound() {
+        // Neumaier's compensated sum of each product and its rounding error,
+        // which `mul_add` gives exactly when that error is representable, as
+        // it is when the factors' exponents sit well above the subnormal range,
+        // as here. Under that condition and without overflow the sum is
+        // accurate to about one rounding of the result. Also returns the sum
+        // of the products' magnitudes.
+        fn reference(terms: impl Iterator<Item = (f64, f64)>, start: f64) -> (f64, f64) {
+            let (mut sum, mut compensation, mut magnitude) = (start, 0.0f64, start.abs());
+            for (a, b) in terms {
+                let product = a * b;
+                let error = a.mul_add(b, -product);
+                for term in [product, error] {
+                    let next = sum + term;
+                    compensation += if sum.abs() >= term.abs() {
+                        (sum - next) + term
+                    } else {
+                        (term - next) + sum
+                    };
+                    sum = next;
+                }
+                magnitude += product.abs();
+            }
+            (sum + compensation, magnitude)
+        }
+        let mut state = 0x8f1b_bcdc_bfa5_3e0bu64;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0
+        };
+        let unit = f64::EPSILON / 2.0;
+        for (rows, columns) in [
+            (5usize, 65usize),
+            (7, 96),
+            (9, 100),
+            (13, 128),
+            (6, 129),
+            (3, 200),
+        ] {
+            let matrix = (0..rows * columns).map(|_| next()).collect::<Vec<_>>();
+            let beta = (0..columns).map(|_| next()).collect::<Vec<_>>();
+            let weights = (0..rows).map(|_| next()).collect::<Vec<_>>();
+            let intercepts = (0..rows).map(|_| next()).collect::<Vec<_>>();
+            let start = (0..columns).map(|_| next()).collect::<Vec<_>>();
+
+            let mut out = intercepts.clone();
+            add_matrix_times_vector(&matrix, rows, &beta, &mut out);
+            let gamma = |n: usize| n as f64 * unit / (1.0 - n as f64 * unit);
+            for (i, &value) in out.iter().enumerate() {
+                let row = &matrix[i * columns..(i + 1) * columns];
+                let (exact, magnitude) =
+                    reference(row.iter().copied().zip(beta.iter().copied()), intercepts[i]);
+                let bound = gamma(columns + 1) * magnitude + unit * exact.abs();
+                assert!(
+                    (value - exact).abs() <= bound,
+                    "{rows} x {columns}, row {i}"
+                );
+            }
+
+            let mut target = start.clone();
+            add_transpose_times_vector(&matrix, rows, &weights, &mut target);
+            for (k, &value) in target.iter().enumerate() {
+                let column = (0..rows).map(|i| (matrix[i * columns + k], weights[i]));
+                let (exact, magnitude) = reference(column, start[k]);
+                let bound = gamma(rows + 1) * magnitude + unit * exact.abs();
+                assert!(
+                    (value - exact).abs() <= bound,
+                    "{rows} x {columns}, column {k}"
+                );
+            }
+        }
+    }
+
+    /// The loops' summation order decides whether a sum that cancels overflows
+    /// first, at 65 to 128 columns as at narrower widths. Here every row's
+    /// exact product is 0, but its first accumulator lane takes columns 0, 4,
+    /// 8 and 12, `1e308 + 1e308 - 1e308 - 1e308`, and overflows on the second
+    /// term. faer 0.19, which these widths used before, returns a finite
+    /// value for this design; this pins the loops' result so the trade is
+    /// visible.
+    #[test]
+    fn wide_product_loops_can_overflow_on_a_sum_that_cancels() {
+        let (rows, columns) = (4usize, 96usize);
+        let mut matrix = vec![0.0; rows * columns];
+        for row in matrix.chunks_exact_mut(columns) {
+            row[0] = 1e308;
+            row[4] = 1e308;
+            row[8] = -1e308;
+            row[12] = -1e308;
+        }
+        let beta = vec![1.0; columns];
+        let mut out = vec![0.0; rows];
+        add_matrix_times_vector(&matrix, rows, &beta, &mut out);
+        if has_fused_multiply_add() {
+            assert_eq!(out, vec![f64::INFINITY; rows]);
+        }
+    }
+
+    /// A Normal regression on a 100-column design, which now runs on the
+    /// loops, against finite differences.
+    #[test]
+    fn wide_design_gradients_match_finite_differences() {
+        let (rows, columns) = (9usize, 100usize);
+        let mut g = Graph::new();
+        let start = g.add_vector_params("beta", columns);
+        g.vector_normal_logp(start, columns, 0.0, 1.0);
+        let design = (0..rows * columns)
+            .map(|i| ((i * 37) % 23) as f64 / 11.0 - 1.0)
+            .collect();
+        let matrix = g.store_matrix(design, rows, columns);
+        let intercept = g.add_param("intercept");
+        let eta = g.mat_vec_mul(matrix, start, columns, Some(intercept));
+        let sigma = g.add_constant(1.5);
+        let obs = g.add_obs_data((0..rows).map(|i| i as f64 / 3.0 - 1.0).collect());
+        g.obs_logp_normal(eta, sigma, obs);
+        let params = (0..=columns)
+            .map(|k| ((k * 13) % 7) as f64 / 10.0 - 0.3)
+            .collect::<Vec<_>>();
+        full_finite_diff_check(&g, &params, 2e-5);
     }
 
     /// Seeded sampling must not depend on how many threads the pool has. With

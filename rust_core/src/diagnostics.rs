@@ -881,7 +881,7 @@ fn basic_r_hat(chains: &[Vec<f64>]) -> f64 {
 /// The chains are split before they are ranked, as Stan and ArviZ do. Ranking
 /// first differs for an odd draw count, because the split drops each chain's
 /// middle draw and so changes every rank.
-fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
+pub(crate) fn ess_bulk_chains(chains: &[Vec<f64>]) -> f64 {
     let split = split_chains(chains);
     if !has_enough_split_draws(&split) {
         return f64::NAN;

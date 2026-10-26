@@ -404,6 +404,71 @@ The Gaussian partial-pooling case uses noncentered effects. Centered funnel and
 centered eight-schools cases remain negative controls: poor recovery must produce a
 diagnostic signal. None of these checks establishes calibration under misspecification.
 
+## Exact posteriors for three Gibbs samplers
+
+The local level, the seasonal local level and the Gaussian hierarchical mean are each
+checked against moments of their exact joint posterior, by a unit test in each
+sampler's module using `rust_core/src/exact_reference.rs`. Given its variances, each
+model is a sum of independent normal terms, so the observations' covariance is written
+from the model's definition, without the filter, FFBS or Gibbs conditionals the
+samplers use. A trapezoid rule over a grid of log variances, weighted by the
+inverse-gamma priors, gives the moments of the variances and, by Gaussian
+conditioning, of the latent means: the terminal level or state, and the hierarchy's
+population, group and program means.
+
+Two checks guard each grid, and a test fails if either does. Along each variance's
+axis in turn, the integral on every other point must agree with the full grid to 1e-4
+of the quantities' standard deviations, so an axis too coarse for its posterior fails.
+The integral on a grid at least two units wider at each end must agree to 1e-6, so an
+axis that cuts off a tail fails. Agreement is evidence that the grid has converged,
+not a bound on its error. Separate unit tests check the integration against a
+conjugate variance's closed form and the conditioning against a normal update, both to
+1e-9 or better, and check that a grid too coarse or too narrow is refused.
+
+Each test fits 4 chains of 25,000 draws on a short series or ragged collection with
+missing values. It compares each quantity's mean and variance, the covariance of every
+pair, and each variance times each latent's squared deviation, where a hierarchy's
+dependence between a spread and the means it governs shows: 11, 47 and 152 comparisons
+in the three tests. Each estimate must lie within a tolerance, below, in Monte Carlo
+standard errors of its exact value and rest on a bulk ESS of at least 400, as in the
+NUTS gate, so draws that never move or chains stuck apart fail. A mean's MCSE uses the exact standard
+deviation, so an outlier cannot widen its own tolerance. The second-moment checks have
+no exact fourth moments to use, estimate theirs from the draws, and a few symmetric
+outliers could still hide in them. Matching these moments is necessary for the right
+posterior, not sufficient: higher moments are not compared.
+
+Each test has two controls that must fail for the reason they exist. The variances'
+draws, compared with the prior's mean and variance, must miss them, so a sampler that
+ignored the data fails. The same draws with each quantity rotated by a different
+number of iterations, which keeps every marginal's values and takes the quantities'
+draws from different iterations, must miss a dependence check. The hierarchy gives
+each variance its own prior, a nonzero population prior mean and unequal, interleaved
+groups, and the seasonal test uses nonzero initial effects placed as documented, one
+cycle in forecast order. The initial states' independence and variances are taken from
+the constructor rather than checked.
+
+`scripts/plant_gibbs_bugs.py` plants 16 bugs of those kinds and in the conjugate
+updates' counts and sums, and counts one as caught only when its test ran and missed a
+moment, not when it failed only on the ESS floor or a control. Every one is caught; the
+narrowest, reading the initial seasonal effects in reverse, misses by 5.9 MCSE.
+
+Each comparison's tolerance is the normal quantile that would hold the chance of any
+of a test's comparisons missing to 0.1% if their standardized errors were normal, and
+never below 4 MCSE: 4.00, 4.25 and 4.51 in the three tests. Estimated MCMC errors are
+only roughly normal, so 0.1% is a target. At a flat 4 MCSE the hierarchy failed 4 of
+100 seeds of the correct sampler, each by a single comparison at 4.1 to 4.3, which is
+how the rule was chosen. `scripts/plant_gibbs_bugs.py --seeds 100 101` reruns each test
+on seed offsets 101 to 200, which were not used to choose it: 1 of the 300 runs failed,
+the seasonal test at offset 161 (sampler seed 168), by one comparison at 4.42 MCSE.
+One failure in 300 neither confirms nor rules out the target. The committed tests use
+fixed seeds, so a chance failure can only appear when a change moves the samplers'
+draws.
+
+These are small fixed datasets. They check that each sampler targets the right
+posterior, not how fast it mixes on long series. The hierarchy's test integrates about
+2.1 million grid points; the three tests together took 16 seconds in a release build on
+a 12-core Ryzen 9 5900X. CI runs them on Linux only.
+
 ## Known limitation: forecasting samplers' mixing
 
 None of these gates covers the forecasting samplers' mixing. Several Gibbs/FFBS

@@ -12,6 +12,8 @@ pub mod diagnostics;
 pub mod distributions;
 pub mod dynamic_glm;
 pub mod elliptical_slice;
+#[cfg(test)]
+mod exact_reference;
 #[cfg(feature = "fault-injection")]
 #[doc(hidden)]
 pub mod fault_injection;

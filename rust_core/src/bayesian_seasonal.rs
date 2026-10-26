@@ -474,4 +474,139 @@ mod tests {
             Err(BayesianForecastError::InvalidObservations(_))
         ));
     }
+
+    /// The draws against moments of the exact joint posterior. Given the three
+    /// variances, the model is the textbook dummy seasonal: the level is a
+    /// random walk, the new seasonal effect is minus the sum of the previous
+    /// `period - 1` plus an innovation, and each observation is level plus
+    /// effect plus error. Written from that definition, without the
+    /// state-space matrices or FFBS the sampler uses. The initial effects are
+    /// placed as documented, one cycle in forecast order: their expected value
+    /// at step `t` is `initial_seasonal_effects[t % period]`. The initial
+    /// states' independence and variances follow `seasonal_local_level`, so
+    /// this test does not check them.
+    #[test]
+    fn draws_match_the_exact_posterior_of_every_variance_and_the_terminal_state() {
+        use crate::exact_reference::TermVariance::{Fixed, Inferred};
+        use crate::exact_reference::{
+            assert_matches, exact_posterior, seed_offset, Axis, Linear, LinearGaussianModel,
+        };
+        use rand::SeedableRng;
+
+        let period = 4;
+        let steps = 16;
+        let mut rng = rand_chacha::ChaCha8Rng::seed_from_u64(1301);
+        let mut level = 5.0;
+        let mut effects = vec![1.2, -0.3, -0.9];
+        let mut observations = Vec::with_capacity(steps);
+        for _ in 0..steps {
+            level += standard_normal(&mut rng) * 0.4;
+            let effect = -effects.iter().sum::<f64>() + standard_normal(&mut rng) * 0.2;
+            effects.insert(0, effect);
+            effects.pop();
+            observations.push(level + effect + standard_normal(&mut rng) * 0.5);
+        }
+        observations[5] = f64::NAN;
+        // The three priors differ in shape as well as scale, so an update
+        // that reads another variance's prior shows.
+        let config = BayesianSeasonalLocalLevelConfig {
+            seasonal_variance_prior: InverseGammaPrior::new(4.0, 0.15).unwrap(),
+            observation_variance_prior: InverseGammaPrior::new(3.5, 0.6).unwrap(),
+            num_chains: 4,
+            num_warmup: 1000,
+            num_draws: 25_000,
+            seed: 7 + seed_offset(),
+            ..config()
+        };
+        let initial = &config.initial_seasonal_effects;
+        assert!(initial.iter().any(|&effect| effect != 0.0));
+
+        // Terms: the initial level and `period - 1` initial effects, then one
+        // level innovation, one seasonal innovation and one error per step.
+        let mut terms = vec![Fixed(config.initial_level_variance)];
+        terms.extend((1..period).map(|_| Fixed(config.initial_seasonal_variance)));
+        terms.extend((0..steps).map(|_| Inferred(0)));
+        terms.extend((0..steps).map(|_| Inferred(1)));
+        terms.extend((0..steps).map(|_| Inferred(2)));
+        let count = terms.len();
+        let mut level = Linear {
+            constant: config.initial_level,
+            ..Linear::term(0, count)
+        };
+        // Newest first: effects[0] is the current effect. The effect `lag`
+        // steps before the first observation belongs to step `-lag`, which is
+        // step `period - lag` of the cycle.
+        let mut effects = (1..period)
+            .map(|lag| Linear {
+                constant: initial[period - lag],
+                ..Linear::term(lag, count)
+            })
+            .collect::<Vec<_>>();
+        let mut observed = Vec::new();
+        for (t, &value) in observations.iter().enumerate() {
+            level = level.plus(&Linear::term(period + t, count));
+            let effect = effects
+                .iter()
+                .fold(Linear::term(period + steps + t, count), |sum, previous| {
+                    sum.scaled_plus(-1.0, previous)
+                });
+            assert!((effect.constant - initial[t % period]).abs() < 1e-12);
+            effects.insert(0, effect);
+            effects.pop();
+            if value.is_finite() {
+                let error = Linear::term(period + 2 * steps + t, count);
+                observed.push((level.plus(&effects[0]).plus(&error), value));
+            }
+        }
+        let model = LinearGaussianModel {
+            terms,
+            observed,
+            latents: std::iter::once(level).chain(effects).collect(),
+        };
+        let priors = [
+            config.level_variance_prior,
+            config.seasonal_variance_prior,
+            config.observation_variance_prior,
+        ];
+        let exact = exact_posterior(
+            &model,
+            &priors,
+            &[
+                Axis {
+                    low: -6.0,
+                    high: 2.0,
+                    points: 55,
+                },
+                Axis {
+                    low: -8.0,
+                    high: 3.0,
+                    points: 75,
+                },
+                Axis {
+                    low: -6.0,
+                    high: 3.0,
+                    points: 61,
+                },
+            ],
+        );
+
+        let posterior = fit_bayesian_seasonal_local_level(&observations, &config).unwrap();
+        let draws = |name: String, pick: &dyn Fn(&SeasonalLocalLevelPosteriorDraw) -> f64| {
+            let chains = posterior
+                .chains
+                .iter()
+                .map(|chain| chain.iter().map(pick).collect())
+                .collect();
+            (name, chains)
+        };
+        let mut all = vec![
+            draws("level_variance".into(), &|d| d.level_variance),
+            draws("seasonal_variance".into(), &|d| d.seasonal_variance),
+            draws("observation_variance".into(), &|d| d.observation_variance),
+        ];
+        all.extend(
+            (0..period).map(|i| draws(format!("terminal_state[{i}]"), &|d| d.terminal_state[i])),
+        );
+        assert_matches(&all, &exact, &priors);
+    }
 }

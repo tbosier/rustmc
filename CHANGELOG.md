@@ -31,6 +31,32 @@ versioning while the public API is stabilized.
   mass computed outside one. A gradient at 2 to 64 columns is 9% to 27% cheaper
   (`benchmarks/results/2026-10-25-gradient-cost-likelihood-caches.txt`). The values,
   NaNs included, and so seeded draws, are the same to the bit.
+- **Normal and LogNormal terms keep each standardized residual from the forward
+  pass.** The reverse pass reads it instead of dividing by the scale again, and skips
+  the scale's adjoint when the scale is a constant, as it was when the evaluator was
+  built. A gradient at 500 rows and 8 columns is 16% to 27% cheaper, and a whole fit
+  of that size 15% to 25% faster
+  (`benchmarks/results/2026-10-25-gradient-cost-gaussian-residuals.txt`). Seeded draws
+  are the same to the bit; only which payload survives when two NaNs meet in one
+  adjoint can differ.
+- **The design-matrix loops interleave four rows and cover designs up to 128 columns.**
+  The forward product runs four rows' dot products side by side, sixteen independent
+  accumulator chains in flight where one row at a time had four, sharing each load of
+  the coefficients. The reverse product keeps blocks of up to 32 columns in registers
+  across all rows, or above 64 columns streams four rows at a time, instead of loading
+  and storing the whole target for every row. Every sum takes the same fused products
+  in the same order as before, so designs up to 64 columns keep their bits and their
+  seeded draws, except which payload survives when two NaNs meet. A gradient of a
+  500-row, 8-column normal regression takes about 2 µs, from about 3.4, and one of a
+  5,000-row, 32-column one about 42 µs, from at least 56
+  (`benchmarks/results/2026-10-25-gradient-cost-wide-designs.txt`). On CPUs where the
+  loops run, x86-64 with AVX2 and FMA and aarch64, designs of 65 to 128 columns move
+  from faer to the loops, which are 6% to 22% faster there than faer's fastest runs, so
+  **their seeded draws change**, since the products sum in a different order. At extreme
+  scales the order also decides whether a sum that cancels overflows first, so for those
+  designs a log density can be NaN or -inf where faer's was finite, or finite where it
+  was NaN. Wider designs keep faer. Other CPUs keep faer at every width, and their draws
+  do not change.
 - **Poisson-log counts below 16 multiply the log rate itself.** For a count from 1 to 15
   at a normal rate, the log mass took `ln(exp(eta))` to get back a log rate it was given,
   and every call tested its count with `fract()`, which is `x - trunc(x)`; on x86-64
@@ -59,6 +85,18 @@ versioning while the public API is stabilized.
   first-column product `2 * 1e308` added to an intercept of `-1e308`. Both are `1e308`
   fused. Other orders of overflowing terms can still give `inf`, as they could with
   faer.
+- The local-level, seasonal local-level and hierarchical-mean Gibbs samplers' draws
+  are checked against first and second moments of their exact joint posteriors,
+  including every pairwise covariance, computed on a grid of variances from the
+  model's definition rather than the samplers' own filters. Before, the hierarchy's
+  sampler was never compared with a reference posterior, and the two local-level
+  samplers' variances only had to land within 20% to 30% of a simulation's truth (the
+  seasonal one in a Python test). `scripts/plant_gibbs_bugs.py` checks that 16 planted
+  bugs fail the new tests and measures false alarms over sampler seeds. See "Exact
+  posteriors for three Gibbs samplers" in `docs/statistical-validation.md`.
+- The hierarchy's `program_conditional_moments_match_analytic_adaptive_shrinkage`, which
+  checks a helper's arithmetic and not the sampler, is renamed
+  `normal_moments_from_precision_match_the_shrinkage_formula`.
 
 ## [0.15.0] - 2026-10-19
 
