@@ -82,10 +82,16 @@ pub(crate) fn poisson<R: Rng + ?Sized>(rate: f64, rng: &mut R) -> Result<f64, Co
 /// Poisson log mass with a log-rate input. Keeping eta for underflowed rates
 /// preserves finite log probabilities for positive observations in that tail.
 pub(crate) fn log_mass_from_log_rate(count: f64, log_rate: f64) -> f64 {
+    log_mass_from_log_rate_given_rate(count, log_rate, log_rate.exp())
+}
+
+/// [`log_mass_from_log_rate`] for a caller that already holds
+/// `rate = log_rate.exp()`, as the graph evaluator does to reuse it in the
+/// gradient. The result is the same to the bit.
+pub(crate) fn log_mass_from_log_rate_given_rate(count: f64, log_rate: f64, rate: f64) -> f64 {
     if !log_rate.is_finite() || !count.is_finite() || count < 0.0 || count.fract() != 0.0 {
         return f64::NEG_INFINITY;
     }
-    let rate = log_rate.exp();
     if !rate.is_finite() {
         return f64::NEG_INFINITY;
     }
@@ -95,6 +101,28 @@ pub(crate) fn log_mass_from_log_rate(count: f64, log_rate: f64) -> f64 {
         return count * log_rate - rate - crate::autodiff::ln_gamma(count + 1.0);
     }
     log_mass(count, rate)
+}
+
+/// `ln(count!)` for `count` below 16, summed once in the order the log mass
+/// used to sum it on every call, so the values are the same to the bit on any
+/// platform's `ln`. Counts below 2 take the old empty sum itself, which is
+/// `-0.0` rather than `0.0`, and no table lookup.
+fn small_log_factorial(count: usize) -> f64 {
+    if count < 2 {
+        return (2..=count as u32).map(|k| (k as f64).ln()).sum();
+    }
+    small_log_factorials()[count]
+}
+
+/// The table behind [`small_log_factorial`], 105 logarithms built once per
+/// process. Building a graph evaluator builds it, so a graph fit never pays
+/// for it partway through sampling; other callers of the log mass build it
+/// on first use.
+pub(crate) fn small_log_factorials() -> &'static [f64; 16] {
+    static TABLE: std::sync::OnceLock<[f64; 16]> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        std::array::from_fn(|count| (2..=count as u32).map(|k| (k as f64).ln()).sum())
+    })
 }
 
 pub(crate) fn log_mass(count: f64, rate: f64) -> f64 {
@@ -109,8 +137,7 @@ pub(crate) fn log_mass(count: f64, rate: f64) -> f64 {
         return -rate;
     }
     if count < 16.0 {
-        let log_factorial: f64 = (2..=count as u32).map(|k| (k as f64).ln()).sum();
-        return count * rate.ln() - rate - log_factorial;
+        return count * rate.ln() - rate - small_log_factorial(count as usize);
     }
     let relative_delta = (count - rate) / rate;
     let deviance = if relative_delta.abs() < 0.125 {
@@ -155,6 +182,86 @@ mod tests {
     use super::*;
     use rand::SeedableRng;
     use rand_chacha::ChaCha8Rng;
+
+    /// The log mass from a log rate before the table and the given rate, copied
+    /// here as it was, so the new forms are compared with the old code rather
+    /// than with themselves.
+    fn log_mass_from_log_rate_before(count: f64, log_rate: f64) -> f64 {
+        if !log_rate.is_finite() || !count.is_finite() || count < 0.0 || count.fract() != 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        let rate = log_rate.exp();
+        if !rate.is_finite() {
+            return f64::NEG_INFINITY;
+        }
+        if rate < f64::MIN_POSITIVE {
+            return count * log_rate - rate - crate::autodiff::ln_gamma(count + 1.0);
+        }
+        if count == 0.0 {
+            return -rate;
+        }
+        if count < 16.0 {
+            let log_factorial: f64 = (2..=count as u32).map(|k| (k as f64).ln()).sum();
+            return count * rate.ln() - rate - log_factorial;
+        }
+        // From 16 up the log mass is unchanged.
+        log_mass(count, rate)
+    }
+
+    #[test]
+    fn the_table_and_the_given_rate_match_the_old_log_mass_bit_for_bit() {
+        for count in 0..16usize {
+            let summed: f64 = (2..=count as u32).map(|k| (k as f64).ln()).sum();
+            assert_eq!(
+                small_log_factorial(count).to_bits(),
+                summed.to_bits(),
+                "{count}"
+            );
+        }
+        let counts = [
+            0.0,
+            1.0,
+            2.0,
+            3.0,
+            7.0,
+            14.0,
+            15.0,
+            16.0,
+            17.0,
+            40.0,
+            1e6,
+            2.5,
+            -1.0,
+            f64::NAN,
+        ];
+        let log_rates = [
+            -800.0,
+            -745.0,
+            -708.0,
+            -30.0,
+            -1.0,
+            -0.0,
+            0.0,
+            0.7,
+            2.0,
+            3.0,
+            20.0,
+            709.0,
+            710.0,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        for count in counts {
+            for log_rate in log_rates {
+                let before = log_mass_from_log_rate_before(count, log_rate);
+                let given = log_mass_from_log_rate_given_rate(count, log_rate, log_rate.exp());
+                let from_log = log_mass_from_log_rate(count, log_rate);
+                let label = format!("count {count}, log rate {log_rate}");
+                assert_eq!(given.to_bits(), before.to_bits(), "{label}");
+                assert_eq!(from_log.to_bits(), before.to_bits(), "{label}");
+            }
+        }
+    }
 
     #[test]
     fn out_of_range_rates_are_typed_errors_with_their_message() {

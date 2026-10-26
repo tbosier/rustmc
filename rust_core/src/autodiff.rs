@@ -62,6 +62,12 @@ pub struct Evaluator {
     /// and the forward pass fills an empty one it needs: see
     /// [`Self::ensure_log_observations`].
     log_observations: Vec<Vec<f64>>,
+    /// Per node, the exponential the forward pass of a Bernoulli-logit or
+    /// Poisson-log observation term took for each observation:
+    /// `exp(-|eta|)` and `exp(eta)`. The reverse pass, which runs only after
+    /// the forward pass on the same parameters, reads them instead of taking
+    /// them again. Empty for every other node.
+    observation_exps: Vec<Vec<f64>>,
 }
 
 /// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
@@ -80,6 +86,23 @@ fn fill_log_observations(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec
             if cache.is_empty() {
                 cache.extend(binding.observations[obs_data_idx].iter().map(|y| y.ln()));
             }
+        }
+    }
+}
+
+/// Size `out`, the `Evaluator::observation_exps` cache, for `graph` and
+/// `binding`, reusing its allocations: one value per observation for each
+/// Bernoulli-logit and Poisson-log term, and nothing for every other node.
+fn fill_observation_exps(graph: &Graph, binding: &DataBinding, out: &mut Vec<Vec<f64>>) {
+    out.resize_with(graph.nodes.len(), Vec::new);
+    for (node, cache) in graph.nodes.iter().zip(out.iter_mut()) {
+        match node.op {
+            Op::ObsLogP {
+                family: ObsFamily::BernoulliLogit | ObsFamily::PoissonLog,
+                obs_data_idx,
+                ..
+            } => cache.resize(binding.observations[obs_data_idx].len(), 0.0),
+            _ => cache.clear(),
         }
     }
 }
@@ -648,8 +671,13 @@ impl Evaluator {
 
         let mut log_observations = Vec::new();
         fill_log_observations(graph, &binding, &mut log_observations);
+        let mut observation_exps = Vec::new();
+        fill_observation_exps(graph, &binding, &mut observation_exps);
+        // Build the Poisson log-factorial table now rather than during a fit.
+        crate::count_sampling::small_log_factorials();
         Self {
             log_observations,
+            observation_exps,
             binding,
             node_lengths,
             node_kind,
@@ -689,6 +717,7 @@ impl Evaluator {
         let node_lengths = validate_node_lengths(graph, &binding)?;
         if node_lengths == self.node_lengths {
             fill_log_observations(graph, &binding, &mut self.log_observations);
+            fill_observation_exps(graph, &binding, &mut self.observation_exps);
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
@@ -746,8 +775,10 @@ impl Evaluator {
     /// Compute log-probability and its gradient. Results are stored in
     /// `self.total_logp` and `self.grad`. No heap allocations occur on the
     /// graph the evaluator was built for or last rebound to; a graph changed
-    /// since then to add a LogNormal term allocates once for that term's
-    /// `ln(y)` cache (see `ensure_log_observations`).
+    /// since then so that an existing observation node becomes a LogNormal,
+    /// Bernoulli-logit or Poisson-log term allocates once for that term's
+    /// cache (see `ensure_log_observations` and `observation_exps`). Adding
+    /// nodes needs a new evaluator.
     pub fn compute(&mut self, graph: &Graph, params: &[f64]) {
         self.forward(graph, params);
         self.backward(graph, params);
@@ -928,19 +959,34 @@ impl Evaluator {
                             self.scalars[idx] = n * log_norm - 0.5 * sum_sq;
                         }
                         crate::graph::ObsFamily::BernoulliLogit => {
+                            // Moved out and back so the loop can read `self`.
+                            // Construction and every rebind size it for the
+                            // graph they were given, so the resize does
+                            // nothing there; a node changed afterward into
+                            // this term allocates once here.
+                            let mut exps = std::mem::take(&mut self.observation_exps[idx]);
+                            exps.resize(vl.min(obs.len()), 0.0);
                             let mut sum = 0.0f64;
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
+                            for (i, (&y, e)) in obs.iter().zip(exps.iter_mut()).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i);
-                                sum += bernoulli_logit_logp(y, eta);
+                                *e = bernoulli_logit_exp(y, eta);
+                                sum += bernoulli_logit_logp_given(y, eta, *e);
                             }
+                            self.observation_exps[idx] = exps;
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::PoissonLog => {
+                            let mut exps = std::mem::take(&mut self.observation_exps[idx]);
+                            exps.resize(vl.min(obs.len()), 0.0);
                             let mut sum = 0.0f64;
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
+                            for (i, (&y, rate)) in obs.iter().zip(exps.iter_mut()).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i);
-                                sum += crate::count_sampling::log_mass_from_log_rate(y, eta);
+                                *rate = eta.exp();
+                                sum += crate::count_sampling::log_mass_from_log_rate_given_rate(
+                                    y, eta, *rate,
+                                );
                             }
+                            self.observation_exps[idx] = exps;
                             self.scalars[idx] = sum;
                         }
                         crate::graph::ObsFamily::ExponentialLog => {
@@ -1423,9 +1469,10 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
+                            let exps = &self.observation_exps[idx];
+                            for (i, (&y, &e)) in obs.iter().zip(exps).enumerate() {
                                 let eta = self.read_vec(linpred_vec.0, i);
-                                let grad = bernoulli_logit_grad(y, eta);
+                                let grad = bernoulli_logit_grad_given(y, eta, e);
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -1436,9 +1483,9 @@ impl Evaluator {
                                 NodeKind::ComputedVec(o) => Some(o),
                                 _ => None,
                             };
-                            for (i, &y) in obs.iter().take(vl).enumerate() {
-                                let eta = self.read_vec(linpred_vec.0, i);
-                                let grad = y - eta.exp();
+                            let rates = &self.observation_exps[idx];
+                            for (i, (&y, &rate)) in obs.iter().zip(rates).enumerate() {
+                                let grad = y - rate;
                                 if let Some(off) = eta_off {
                                     self.adj_vec_buf[off + i] += a_s * grad;
                                 }
@@ -2187,7 +2234,35 @@ fn poisson_logp_dlam(x: f64, lam: f64) -> f64 {
 ///
 /// `y` outside `{0, 1}` keeps the general expression rather than silently
 /// snapping to a branch; the family rejects such an observation on validation.
+///
+/// The evaluator calls the `_given` form below with the exponential it keeps
+/// for the reverse pass; this form is the reference the tests compare it with.
+#[cfg(test)]
 pub(crate) fn bernoulli_logit_logp(y: f64, eta: f64) -> f64 {
+    bernoulli_logit_logp_given(y, eta, bernoulli_logit_exp(y, eta))
+}
+
+/// The one exponential [`bernoulli_logit_logp`] and [`bernoulli_logit_grad`]
+/// both take, so the evaluator takes it once per observation for both passes.
+///
+/// Each evaluates `softplus` and `stable_sigmoid` at `x = -eta` when `y` is 1
+/// and at `x = eta` otherwise, and every branch of those two exponentiates
+/// `-x` when `x > 0` (or, for the sigmoid, `x >= 0`, which differs only at
+/// zero, where both exponents give 1) and `x` itself otherwise. This takes
+/// the same exponent, so the values are the same to the bit, NaN included.
+fn bernoulli_logit_exp(y: f64, eta: f64) -> f64 {
+    let x = if y == 1.0 { -eta } else { eta };
+    if x > 0.0 {
+        (-x).exp()
+    } else {
+        x.exp()
+    }
+}
+
+/// [`bernoulli_logit_logp`] given `e` from [`bernoulli_logit_exp`].
+fn bernoulli_logit_logp_given(y: f64, eta: f64, e: f64) -> f64 {
+    // `softplus(x)` with `e = exp(-|x|)`.
+    let softplus = |x: f64| if x > 0.0 { x + e.ln_1p() } else { e.ln_1p() };
     if y == 1.0 {
         -softplus(-eta)
     } else if y == 0.0 {
@@ -2206,13 +2281,30 @@ pub(crate) fn bernoulli_logit_logp(y: f64, eta: f64) -> f64 {
 /// instead of a small number -- at `eta = 40 + 1e20 * b` the gradient in `b` is
 /// `0` rather than about `424.8`. `sigmoid(-eta)` is the same value without the
 /// subtraction.
+///
+/// The evaluator calls the `_given` form below with the exponential it keeps
+/// for the reverse pass; this form is the reference the tests compare it with.
+#[cfg(test)]
 pub(crate) fn bernoulli_logit_grad(y: f64, eta: f64) -> f64 {
+    bernoulli_logit_grad_given(y, eta, bernoulli_logit_exp(y, eta))
+}
+
+/// [`bernoulli_logit_grad`] given `e` from [`bernoulli_logit_exp`].
+fn bernoulli_logit_grad_given(y: f64, eta: f64, e: f64) -> f64 {
+    // `stable_sigmoid(x)` with `e = exp(-|x|)`.
+    let sigmoid = |x: f64| {
+        if x >= 0.0 {
+            1.0 / (1.0 + e)
+        } else {
+            e / (1.0 + e)
+        }
+    };
     if y == 1.0 {
-        stable_sigmoid(-eta)
+        sigmoid(-eta)
     } else if y == 0.0 {
-        -stable_sigmoid(eta)
+        -sigmoid(eta)
     } else {
-        y - stable_sigmoid(eta)
+        y - sigmoid(eta)
     }
 }
 
@@ -2684,6 +2776,79 @@ mod tests {
                     "transform {:?}, row {}",
                     transform,
                     i
+                );
+            }
+        }
+    }
+
+    /// The evaluator takes the exponential once and passes it to both passes;
+    /// that must give the same bits as the formulas that take it themselves,
+    /// across signs, zeros, saturation, infinities and NaNs of either sign.
+    #[test]
+    fn bernoulli_logit_given_forms_match_the_reference_bit_for_bit() {
+        let etas = [
+            0.0,
+            -0.0,
+            1e-300,
+            -1e-300,
+            0.5,
+            -0.5,
+            3.0,
+            -3.0,
+            40.0,
+            -40.0,
+            745.0,
+            -745.0,
+            1e308,
+            -1e308,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NAN,
+            -f64::NAN,
+            f64::from_bits(0x7ff8_0000_0000_1234),
+            f64::from_bits(0xfff8_0000_0000_1234),
+        ];
+        for &eta in &etas {
+            for y in [0.0, 1.0, 0.25] {
+                let e = bernoulli_logit_exp(y, eta);
+                // Bits, NaN sign and payload included.
+                let same = |a: f64, b: f64| a.to_bits() == b.to_bits();
+                assert!(
+                    same(
+                        bernoulli_logit_logp_given(y, eta, e),
+                        bernoulli_logit_logp(y, eta)
+                    ),
+                    "logp y={y} eta={eta}"
+                );
+                assert!(
+                    same(
+                        bernoulli_logit_grad_given(y, eta, e),
+                        bernoulli_logit_grad(y, eta)
+                    ),
+                    "grad y={y} eta={eta}"
+                );
+                // And against the formulas before they shared `e`.
+                let old_logp = if y == 1.0 {
+                    -softplus(-eta)
+                } else if y == 0.0 {
+                    -softplus(eta)
+                } else {
+                    y * eta - softplus(eta)
+                };
+                let old_grad = if y == 1.0 {
+                    stable_sigmoid(-eta)
+                } else if y == 0.0 {
+                    -stable_sigmoid(eta)
+                } else {
+                    y - stable_sigmoid(eta)
+                };
+                assert!(
+                    same(bernoulli_logit_logp(y, eta), old_logp),
+                    "old logp y={y} eta={eta}"
+                );
+                assert!(
+                    same(bernoulli_logit_grad(y, eta), old_grad),
+                    "old grad y={y} eta={eta}"
                 );
             }
         }
