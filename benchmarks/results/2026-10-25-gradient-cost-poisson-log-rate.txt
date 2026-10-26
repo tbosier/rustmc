@@ -1,0 +1,128 @@
+# Microseconds per log-density gradient, from rust_core/examples/gradient_cost.rs
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-25; load at start 1.47 2.69 1.78, at end 1.12 1.84 1.62
+# Alternating base, this branch, base, this branch at each row count. The run held a lock
+# that other benchmarks on the machine also take and started below a load of 1.5; builds
+# by other work were not locked out. This branch's figures were taken on a build of
+# abdb406, an earlier unpublished commit that differed from 311d47d only in its tests; the
+# example built from each has identical .text and .rodata sections.
+
+## a4daf61 (perf/normal-likelihood): count * rate.ln() for counts below 16, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.59    3.45    5.39   10.04   18.67
+NormalWithInferredScale         3.05    3.92    6.38   10.90   19.06
+LogNormalWithInferredScale      3.18    3.92    6.21   11.09   19.86
+BernoulliLogit                 10.36   11.13   13.31   17.11   24.97
+PoissonLog                     10.99   12.25   14.62   19.37   28.05
+
+## 311d47d (this branch): count * eta for counts below 16, run 1
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.62    3.46    5.45   10.06   18.65
+NormalWithInferredScale         3.06    3.92    6.38   10.94   20.56
+LogNormalWithInferredScale      3.18    3.91    6.21   11.05   19.46
+BernoulliLogit                 10.33   11.11   13.25   17.11   26.03
+PoissonLog                      7.13    7.86   10.15   15.03   22.43
+
+## a4daf61 (perf/normal-likelihood): count * rate.ln() for counts below 16, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.76    3.41    5.45   10.00   18.58
+NormalWithInferredScale         3.06    3.92    6.42   10.95   20.42
+LogNormalWithInferredScale      3.20    3.92    6.25   11.23   19.80
+BernoulliLogit                 10.40   11.13   13.37   17.26   26.33
+PoissonLog                     11.07   12.21   14.79   19.63   28.63
+
+## 311d47d (this branch): count * eta for counts below 16, run 2
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                          2.62    3.40    5.44   10.20   19.27
+NormalWithInferredScale         3.06    3.93    6.45   10.98   21.20
+LogNormalWithInferredScale      3.18    3.91    6.22   11.23   19.37
+BernoulliLogit                 10.36   11.11   13.30   17.22   26.60
+PoissonLog                      7.09    7.86   10.16   15.06   23.00
+
+## a4daf61 (perf/normal-likelihood): count * rate.ln() for counts below 16, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.57   34.13   56.53  144.03  177.08
+NormalWithInferredScale        30.65   38.15   66.39  107.58  192.44
+LogNormalWithInferredScale     31.40   40.47   63.04  150.70  182.93
+BernoulliLogit                103.83  113.13  137.20  173.02  251.74
+PoissonLog                    109.29  123.27  147.74  234.32  267.14
+
+## 311d47d (this branch): count * eta for counts below 16, run 1
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.87   34.28   56.42  144.49  180.31
+NormalWithInferredScale        30.19   37.47   63.73  108.85  195.73
+LogNormalWithInferredScale     31.43   39.68   62.21  150.39  185.61
+BernoulliLogit                103.12  112.10  134.60  172.03  253.66
+PoissonLog                     71.30   78.24  102.61  189.67  226.92
+
+## a4daf61 (perf/normal-likelihood): count * rate.ln() for counts below 16, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         26.25   34.90   56.12  144.17  179.66
+NormalWithInferredScale        30.17   38.31   63.54  108.02  193.75
+LogNormalWithInferredScale     31.48   39.81   62.34  150.71  187.26
+BernoulliLogit                103.64  112.32  134.95  171.85  256.17
+PoissonLog                    110.61  125.11  147.78  233.78  270.12
+
+## 311d47d (this branch): count * eta for counts below 16, run 2
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32    p=64   p=128
+Normal                         25.62   33.95   56.32  144.37  177.91
+NormalWithInferredScale        30.27   37.47   64.16  108.25  192.89
+LogNormalWithInferredScale     31.45   40.82   62.69  150.66  183.02
+BernoulliLogit                103.14  113.07  134.57  171.87  253.56
+PoissonLog                     70.90   79.34  102.34  190.40  226.30
+
+# Whole Poisson-log fits, median seconds over 5 datasets of 500 rows and 8 coefficients with
+# counts from rng.poisson(exp(0.5 * eta)), 4 chains of 500 warmup and 1000 draws on one
+# thread; load 0.86 at the start. Leapfrog steps are summed over the 5 fits; they differ
+# because seeded Poisson draws change.
+a4daf61 run 1  0.476 s  189791 steps
+311d47d run 1  0.311 s  190507 steps
+a4daf61 run 2  0.482 s  189791 steps
+311d47d run 2  0.310 s  190507 steps
+
+# The Poisson regression of scratch families.py (counts from exp(0.5 * eta)) against nutpie
+# 0.16.6, 5 datasets, 4 chains on one thread, medians; load 0.84. ESS is the mean bulk ESS of
+# the 8 coefficients.
+engine   seconds  leapfrog steps  bulk ESS  us/step  us/ESS
+rustmc   0.315    38174           6392      8.25     49.3
+nutpie   0.399    28721           5419      13.91    73.6
+
+# The inferred Normal scale at 128 columns and 500 rows ran 7.9% and 3.8% slower on this
+# branch in the two runs above, with its code unchanged. Rerun six times per build,
+# alternating, under the same lock; load at start 1.46 2.81 2.07.
+# Microseconds per gradient, base then this branch in each pair:
+pair 1  base 18.14  this branch 18.58
+pair 2  base 19.32  this branch 18.21
+pair 3  base 18.89  this branch 18.43
+pair 4  base 19.95  this branch 17.87
+pair 5  base 18.23  this branch 19.87
+pair 6  base 18.76  this branch 19.40
+# Base 18.14 to 19.95 (median 18.83), this branch 17.87 to 19.87 (median 18.51); this
+# branch was slower in 3 of the 6 pairs, so the earlier slowdown did not repeat.
+
+# Accuracy, benchmarks/poisson_small_count_accuracy.py: error in ulps of the result against
+# 60-digit mpmath over a sample of 13150 values of eta per count, from ln(f64::MIN_POSITIVE)
+# to ln(f64::MAX). These are maxima and means over the sample, not bounds.
+count  1: 13150 etas; max ulps old 1.49 new 1.49; mean old 0.247 new 0.248; old max at eta 2.07944 (rate 8), new at eta 2.07944 (rate 8)
+count  2: 13150 etas; max ulps old 2.38 new 2.38; mean old 0.337 new 0.34; old max at eta 1.3941 (rate 4.031), new at eta 1.3941 (rate 4.031)
+count  3: 13150 etas; max ulps old 3.76 new 3.76; mean old 0.367 new 0.361; old max at eta 1.60944 (rate 5), new at eta 1.60944 (rate 5)
+count  4: 13150 etas; max ulps old 3.4 new 3.4; mean old 0.405 new 0.404; old max at eta 1.55414 (rate 4.731), new at eta 1.55414 (rate 4.731)
+count  5: 13150 etas; max ulps old 6.82 new 6.82; mean old 0.461 new 0.455; old max at eta 1.89172 (rate 6.631), new at eta 1.89172 (rate 6.631)
+count  6: 13150 etas; max ulps old 6.74 new 6.74; mean old 0.47 new 0.462; old max at eta 1.79176 (rate 6), new at eta 1.79176 (rate 6)
+count  7: 13150 etas; max ulps old 9.2 new 9.2; mean old 0.522 new 0.517; old max at eta 2.09177 (rate 8.099), new at eta 2.09177 (rate 8.099)
+count  8: 13150 etas; max ulps old 8.73 new 8.73; mean old 0.487 new 0.484; old max at eta 2.00925 (rate 7.458), new at eta 2.00925 (rate 7.458)
+count  9: 13150 etas; max ulps old 9.22 new 9.22; mean old 0.684 new 0.683; old max at eta 1.94591 (rate 7), new at eta 1.94591 (rate 7)
+count 10: 13150 etas; max ulps old 13.2 new 13.2; mean old 0.987 new 0.987; old max at eta 2.81195 (rate 16.64), new at eta 2.81195 (rate 16.64)
+count 11: 13150 etas; max ulps old 9.27 new 9.27; mean old 0.597 new 0.593; old max at eta 2.92698 (rate 18.67), new at eta 2.92698 (rate 18.67)
+count 12: 13150 etas; max ulps old 18.7 new 18.7; mean old 0.852 new 0.851; old max at eta 2.71443 (rate 15.1), new at eta 2.71443 (rate 15.1)
+count 13: 13150 etas; max ulps old 17.2 new 17.2; mean old 0.779 new 0.778; old max at eta 2.5919 (rate 13.36), new at eta 2.5919 (rate 13.36)
+count 14: 13150 etas; max ulps old 17.4 new 17.4; mean old 0.83 new 0.828; old max at eta 2.69442 (rate 14.8), new at eta 2.69442 (rate 14.8)
+count 15: 13150 etas; max ulps old 19.1 new 19.1; mean old 0.886 new 0.884; old max at eta 2.6194 (rate 13.73), new at eta 2.6194 (rate 13.73)
+overall max old 19.119321638758656 new 19.119321638758656
