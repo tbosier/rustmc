@@ -1,0 +1,101 @@
+# Non-centered varying-intercept model, mu + tau * z[group]: gradient and fit times
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; 2026-10-25
+# Base: c112c2b (perf/wide-matvec). This branch: 541d7c8, except where a section says
+# otherwise; the gradient and fit sections ran f6cb012, whose loops are the same at
+# their shapes (541d7c8 adds the rule that a gather's groups share one kind of
+# transform, which every gather in those sections meets).
+# Every run held /tmp/claude-1000/bench.lock and started at a 1-minute load below 1.5
+# (5-minute load 2.3 to 2.8 during the gradient runs); builds alternate base, branch,
+# base, branch.
+
+## Gradient, rust_core/examples/indexed_gradient_cost.rs, microseconds (median of 9 batches)
+# Each run times the shapes in two orders, A then B. Row i is in group (i * 7919) % groups,
+# so the last two shapes, with more groups than rows, leave groups unused; those gathers
+# run the per-row loop on this branch.
+shape (rows x groups)   base run 1 (A, B)   branch run 1 (A, B)   base run 2 (A, B)   branch run 2 (A, B)
+500 x 20                12.99  13.26        5.09  5.15            13.11  13.02        5.23  5.15
+5000 x 100              130.72 129.27       49.40 49.94           128.87 129.31       50.46 49.68
+100 x 8                 2.69   2.90         1.17  1.24            2.69   2.74         1.23  1.17
+200 x 5000              21.47  21.09        19.72 19.73           20.85  21.24        19.49 19.57
+50 x 1000               4.58   4.59         4.20  4.21            4.52   4.65         4.17  4.19
+# The two orders differ by up to 7.8% on the base (100 x 8, run 1) and 6.0% on the
+# branch (100 x 8), and by at most 2.9% at every other shape.
+#
+# These are whole-model gradients: with more groups than rows the gather itself keeps the
+# per-row loop, and the 6% to 10% gain comes from the model's other nodes.
+#
+# An earlier version of this change transformed every group of every gather, unused ones
+# included. In one session, alternating with the base:
+#   200 x 5000   base 20.83 20.82   earlier version 32.59 31.87   (+53% to +57%)
+#   50 x 1000    base 4.60 4.52     earlier version 6.55 6.48     (+42% to +43%)
+# which is why gathers with more groups than rows now keep the per-row loop.
+
+## Regression gradients on the same builds, rust_core/examples/gradient_cost.rs
+# 500 rows at 8 / 32 / 128 columns, then 5000 rows at 2 / 8 / 32.
+                             base run 1          branch run 1        base run 2          branch run 2
+Normal 500                   2.03 4.03 15.23     1.81 3.90 14.50     1.90 3.97 14.95     1.99 4.02 15.40
+NormalWithInferredScale 500  2.46 4.52 16.79     2.34 4.39 15.31     2.41 4.48 15.32     2.37 4.47 15.35
+LogNormalInferred 500        2.59 4.67 15.89     2.39 4.47 15.82     2.54 4.64 16.02     2.39 4.48 16.68
+BernoulliLogit 500           9.72 11.34 22.59    9.82 11.41 21.96    9.56 11.24 21.42    9.86 11.49 21.81
+PoissonLog 500               10.63 12.80 25.17   11.04 13.06 25.83   10.43 12.68 25.19   11.01 13.13 25.56
+Normal 5000                  21.11 19.11 42.19   20.69 18.32 41.35   21.19 19.11 41.99   20.73 19.09 41.74
+NormalWithInferredScale 5000 25.80 24.59 50.27   25.34 23.05 49.79   25.83 24.45 50.83   25.37 22.98 49.23
+LogNormalInferred 5000       27.26 25.06 51.86   25.36 23.12 49.09   27.28 25.33 51.85   25.39 23.09 49.49
+BernoulliLogit 5000          98.25 96.48 121.96  101.27 98.56 121.67 98.30 96.99 121.90  100.11 98.70 121.40
+PoissonLog 5000              105.33 107.23 136.35 104.85 108.23 136.53 103.84 108.01 136.67 105.42 109.42 137.49
+# Paired changes, branch against base: Normal (both scales) -10.8% to +4.7%, LogNormal
+# -8.8% to +4.1%, Bernoulli-logit -2.8% to +3.1%, Poisson-log -0.5% to +5.6%. The
+# Bernoulli and Poisson code is unchanged.
+
+## Whole fits, 4 chains of 1000 warmup and 1000 draws on one thread, 3 datasets, median
+# mu ~ Normal(0, 5), tau ~ HalfNormal(1), z ~ Normal(0, 1) per group, sigma ~ HalfNormal(1).
+# Both rustmc builds give the same draws, so the steps and ESS are the same.
+engine          shape      seconds (3 datasets)    median  leapfrog steps  us/step  min bulk ESS  s per 1000 min-ESS
+rustmc base     500x20     3.176 2.438 3.305       3.176   236733          13.41    1316          2.372
+rustmc branch   500x20     1.387 1.070 1.450       1.387   236733          5.86     1316          1.036
+rustmc base     500x20     3.185 2.447 3.305       3.185   236733          13.45    1316          2.379
+rustmc branch   500x20     1.395 1.071 1.440       1.395   236733          5.89     1316          1.042
+nutpie 0.16.6   500x20     0.289 0.208 0.226       0.226   80686           2.80     503           0.575
+rustmc base     5000x100   28.047 25.004 28.836    28.047  217985          128.66   228           109.673
+rustmc branch   5000x100   11.435 10.245 11.749    11.435  217985          52.46    228           44.937
+rustmc base     5000x100   28.106 25.299 28.794    28.106  217985          128.94   228           110.963
+rustmc branch   5000x100   11.301 10.121 11.625    11.301  217985          51.84    228           44.391
+nutpie 0.16.6   5000x100   1.080 0.998 1.065       1.065   83457           12.76    153           6.512
+# Fit time falls 56.2% to 56.3% at 500x20 and 59.2% to 59.8% at 5000x100. Against nutpie:
+# 14.1 and 26.4 times its fit time before, 6.1 to 6.2 and 10.6 to 10.7 times after; per
+# leapfrog step 4.8 and 10.1 times before, 2.1 and 4.1 times after.
+#
+# An earlier session, on the earlier version above, whose loops are the same at these
+# shapes, gave nutpie 0.219 s (2.72 µs/step) and 0.952 s (11.41 µs/step), the base 3.17
+# to 3.23 s and 28.0 s, and the branch 1.37 s and 11.0 to 11.2 s: 14.5 to 14.8 and 29.4
+# times nutpie before, 6.3 and 11.5 to 11.8 times after.
+
+## Sampler, one dataset, 4 chains of 1000 warmup and 1000 draws (not timed)
+engine   shape      step size  mean tree depth  depth counts                    mean accept
+rustmc   500x20     0.151      4.90             d4 403, d5 3593, d6 4           0.931
+nutpie   500x20     0.471      3.08             d2 35, d3 3609, d4 348, d5 8    0.809
+rustmc   5000x100   0.184      4.31             d4 2911, d5 928, d6 154, d7 7   0.917
+nutpie   5000x100   0.425      3.21             d3 3158, d4 842                 0.807
+# rustmc ends warmup with a step a third to under half of nutpie's and accepts at 0.92
+# to 0.93 against a target of 0.8, so its trees run one to two levels deeper: 2.9 and
+# 2.6 times the leapfrog steps per fit. That gap is in adaptation, not in the gradient,
+# and this change does not touch it.
+
+## Gathers whose rows all select group 0 (indexed_gradient_cost.rs rows:groups:transforms)
+# Identity or Exp on every group, or identity on group 0 and Exp on the rest. Builds:
+# base c112c2b; "previous", e1dad6a, which transformed every group whenever there were no
+# more groups than rows; and 541d7c8, which also needs one kind of transform across the
+# span. Microseconds per gradient, two alternating runs; 1-minute load below 1.5 at each
+# start, 5-minute load 3.3 to 3.6.
+shape                   base           previous       541d7c8
+1024 x 1024 identity    25.31 25.42    12.50 12.50    12.13 12.52
+1024 x 1024 exp         30.14 30.83    18.90 18.88    18.32 18.67
+1024 x 1024 mixed       25.30 25.37    18.86 18.82    16.75 16.71
+1024 x 16 mixed         25.02 25.01    9.65 9.67      16.40 16.37
+500 x 20 (model)        12.78 12.78    6.77 5.29      4.98 5.09
+# With mixed kinds the previous version paid for 1,023 unused exponentials and their
+# derivatives, 2.1 µs more than the per-row loop on 541d7c8. With one kind, transforming
+# each group takes no more transforms than the rows would. A mixed span with few groups,
+# 1024 x 16, would have been cheaper per group (9.7 against 16.4) but now runs per row;
+# it is still faster than the base. The Python builder gives every element of a vector
+# parameter one transform, so mixed spans come only from graphs built or changed by hand.
