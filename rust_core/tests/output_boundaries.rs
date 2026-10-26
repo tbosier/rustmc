@@ -402,6 +402,63 @@ fn evaluator_passes_do_not_allocate() {
     assert_eq!(allocations, 0);
 }
 
+/// A varying-intercept graph, whose gather transforms each group once into a
+/// scratch buffer, must not allocate either, including after a same-shape
+/// rebind of a graph whose gather was widened from one group to all of them.
+#[test]
+fn indexed_evaluator_passes_do_not_allocate_after_a_widening_rebind() {
+    use rustmc_core::graph::{ElementwiseOp, Op};
+    let groups = 1024;
+    let rows = 1100;
+    let mut graph = Graph::new();
+    let mu = graph.add_param("mu");
+    let tau = graph.add_param("tau");
+    let start = graph.add_vector_params("z", groups);
+    graph.vector_normal_logp(start, groups, 0.0, 1.0);
+    let index: Vec<f64> = (0..rows).map(|i| (i % groups) as f64).collect();
+    let group = graph.add_data("group", vec![0.0; rows]);
+    let gathered = graph.gather(start, 1, group);
+    let scaled = graph.elementwise(ElementwiseOp::Mul, tau, Some(gathered));
+    let mean = graph.scalar_broadcast_add(mu, scaled);
+    let one = graph.add_constant(1.0);
+    let y: Vec<f64> = (0..rows).map(|i| (i as f64 * 0.11).cos()).collect();
+    let obs = graph.add_obs_data(y);
+    graph.obs_logp_normal(mean, one, obs);
+    let mut evaluator = Evaluator::new(&graph);
+    let position: Vec<f64> = (0..graph.param_count)
+        .map(|k| 0.01 * (k % 13) as f64 - 0.05)
+        .collect();
+    evaluator.compute(&graph, &position);
+    let (allocations, ()) = allocation_counter::count(|| {
+        for _ in 0..20 {
+            evaluator.compute(&graph, &position);
+            evaluator.forward(&graph, &position);
+        }
+    });
+    assert_eq!(allocations, 0);
+
+    // Widen the gather to every group, with indices that use them all, and
+    // rebind the same shapes.
+    let Op::Gather { n_params, .. } = &mut graph.nodes[gathered.0].op else {
+        unreachable!()
+    };
+    *n_params = groups;
+    let Op::Data(slot) = graph.nodes[group.0].op else {
+        unreachable!()
+    };
+    graph.data_vectors[slot] = index;
+    evaluator
+        .rebind(&graph, DataBinding::from_graph(&graph).unwrap())
+        .unwrap();
+    let (allocations, ()) = allocation_counter::count(|| {
+        for _ in 0..20 {
+            evaluator.compute(&graph, &position);
+            evaluator.forward(&graph, &position);
+        }
+    });
+    assert_eq!(allocations, 0);
+}
+
 #[test]
 fn nuts_transitions_allocate_only_the_retained_draw() {
     use rand::SeedableRng;
