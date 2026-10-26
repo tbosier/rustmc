@@ -39,6 +39,24 @@ versioning while the public API is stabilized.
   (`benchmarks/results/2026-10-25-gradient-cost-gaussian-residuals.txt`). Seeded draws
   are the same to the bit; only which payload survives when two NaNs meet in one
   adjoint can differ.
+- **The design-matrix loops interleave four rows and cover designs up to 128 columns.**
+  The forward product runs four rows' dot products side by side, sixteen independent
+  accumulator chains in flight where one row at a time had four, sharing each load of
+  the coefficients. The reverse product keeps blocks of up to 32 columns in registers
+  across all rows, or above 64 columns streams four rows at a time, instead of loading
+  and storing the whole target for every row. Every sum takes the same fused products
+  in the same order as before, so designs up to 64 columns keep their bits and their
+  seeded draws, except which payload survives when two NaNs meet. A gradient of a
+  500-row, 8-column normal regression takes about 2 µs, from about 3.4, and one of a
+  5,000-row, 32-column one about 42 µs, from at least 56
+  (`benchmarks/results/2026-10-25-gradient-cost-wide-designs.txt`). On CPUs where the
+  loops run, x86-64 with AVX2 and FMA and aarch64, designs of 65 to 128 columns move
+  from faer to the loops, which are 6% to 22% faster there than faer's fastest runs, so
+  **their seeded draws change**, since the products sum in a different order. At extreme
+  scales the order also decides whether a sum that cancels overflows first, so for those
+  designs a log density can be NaN or -inf where faer's was finite, or finite where it
+  was NaN. Wider designs keep faer. Other CPUs keep faer at every width, and their draws
+  do not change.
 
 ### Tests
 
