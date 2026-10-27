@@ -136,10 +136,20 @@ pub struct Evaluator {
     /// size it for the widest gather of the graph they were given, so
     /// evaluating that graph never grows it.
     group_scratch: Vec<f64>,
+    /// Normal terms on a grouped linear predictor that run as one forward
+    /// and one reverse loop; see `autodiff_grouped.rs`.
+    grouped: grouped::GroupedPlan,
+    /// The fused reverse loop's copy of a gather's gradients, sized like
+    /// `group_scratch`.
+    grouped_grad: Vec<f64>,
     /// Test-only: send every node through its per-element loop, so tests can
     /// compare the resolved loops with the code they replaced.
     #[cfg(test)]
     per_element: bool,
+    /// Test-only: run every grouped Normal chain as its separate nodes, so
+    /// tests can compare the fused loops with them.
+    #[cfg(test)]
+    unfused_groups: bool,
 }
 
 /// The group count of the widest `Op::Gather` in `graph`, which sizes
@@ -772,12 +782,17 @@ impl Evaluator {
         fill_observation_cache(graph, &binding, &mut observation_cache);
         // Build the Poisson log-factorial table now rather than during a fit.
         crate::count_sampling::small_log_factorials();
+        let grouped = grouped::GroupedPlan::new(graph, &node_kind, &node_lengths, &binding);
         Self {
             log_observations,
             observation_cache,
             group_scratch: Vec::with_capacity(widest_gather(graph)),
+            grouped,
+            grouped_grad: Vec::with_capacity(widest_gather(graph)),
             #[cfg(test)]
             per_element: false,
+            #[cfg(test)]
+            unfused_groups: false,
             binding,
             node_lengths,
             node_kind,
@@ -821,6 +836,8 @@ impl Evaluator {
             fill_observation_cache(graph, &binding, &mut self.observation_cache);
             self.group_scratch.clear();
             self.group_scratch.reserve(widest_gather(graph));
+            self.grouped_grad.clear();
+            self.grouped_grad.reserve(widest_gather(graph));
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
@@ -871,6 +888,16 @@ impl Evaluator {
             return false;
         }
         true
+    }
+
+    /// Whether grouped Normal chains may run fused. The per-element test
+    /// mode turns them off too, since they read operands as resolved slices.
+    fn fusion_enabled(&self) -> bool {
+        #[cfg(test)]
+        if self.unfused_groups {
+            return false;
+        }
+        self.resolved_loops()
     }
 
     /// Whether a gather of `n_params` groups from `param_start` over `vl` rows
@@ -1102,8 +1129,26 @@ impl Evaluator {
     /// For callers that only read forward values (prediction, deterministic
     /// outputs); `self.grad` is left as it was.
     pub fn forward(&mut self, graph: &Graph, params: &[f64]) {
+        self.grouped.begin_call();
+        // Graphs without grouped chains skip the lookups below.
+        let grouped = self.grouped.has_chains();
         for node in &graph.nodes {
             let idx = node.id.0;
+            // A grouped chain decided at its gather runs fused at its term.
+            if grouped {
+                if let Some(chain) = self.grouped.chain_starting_at(idx) {
+                    self.grouped_decide(graph, params, chain);
+                }
+                if self.grouped.skips(idx) {
+                    continue;
+                }
+                if let Some(chain) = self.grouped.chain_ending_at(idx) {
+                    if self.grouped.fused(chain) {
+                        self.grouped_forward(graph, params, chain);
+                        continue;
+                    }
+                }
+            }
             // The one match over `Op` here that keeps its catch-all. Unlike the
             // shape passes above, the default is not a guess that a new variant
             // could silently fall into: a node's own length *is* its length, so
@@ -1600,8 +1645,13 @@ impl Evaluator {
             self.adj_scalars[id.0] += 1.0;
         }
 
+        let grouped = self.grouped.has_chains();
         for node in graph.nodes.iter().rev() {
             let idx = node.id.0;
+            // A grouped chain's term ran its nodes' reverse passes fused.
+            if grouped && self.grouped.skips(idx) {
+                continue;
+            }
             // The one match over `Op` here that keeps its catch-all. Unlike the
             // shape passes above, the default is not a guess that a new variant
             // could silently fall into: a node's own length *is* its length, so
@@ -1624,6 +1674,13 @@ impl Evaluator {
             };
             if !active {
                 continue;
+            }
+            if grouped {
+                if let Some(chain) = self.grouped.chain_ending_at(idx) {
+                    if self.grouped_reverse(graph, params, chain, a_s) {
+                        continue;
+                    }
+                }
             }
 
             match &node.op {
@@ -2140,6 +2197,10 @@ impl Evaluator {
 #[cfg(test)]
 #[path = "autodiff_reference.rs"]
 mod reference;
+
+#[path = "autodiff_grouped.rs"]
+mod grouped;
+pub use grouped::fused_grouped_normal_passes;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
