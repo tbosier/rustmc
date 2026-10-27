@@ -156,12 +156,17 @@ fn main() {
     }
     println!("varying intercept; microseconds per gradient (median of 9 batches)");
     for (rows, groups, transforms) in shapes {
+        let before = rustmc_core::autodiff::fused_grouped_normal_passes();
+        let microseconds = microseconds_per_gradient(rows, groups, transforms.as_deref());
+        let after = rustmc_core::autodiff::fused_grouped_normal_passes();
+        // The evaluator is dropped by now, so its fused passes are counted.
         println!(
-            "{:>6} rows {:>5} groups {:>9} {:>9.2}",
+            "{:>6} rows {:>5} groups {:>9} {:>9.2}   fused reverse passes {}",
             rows,
             groups,
             transforms.as_deref().unwrap_or(""),
-            microseconds_per_gradient(rows, groups, transforms.as_deref())
+            microseconds,
+            after.1 - before.1
         );
     }
 }

@@ -1802,6 +1802,8 @@ def batch_sample(
     metric: Literal["auto", "diag", "dense"] = "auto",
 ) -> list[BatchResult]: ...
 
+def _fused_grouped_normal_passes() -> tuple[int, int]: ...
+
 def sample_prior_predictive(
     model_spec: ModelSpec,
     data: _Data | None = None,
