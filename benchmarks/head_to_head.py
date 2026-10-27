@@ -15,13 +15,14 @@ the fit is then left out of every verdict and aggregate.
 
 Per fit it records three wall times, without compilation, from bound data:
 
-- ``seconds``, to an ArviZ InferenceData holding the same content from both
-  engines, the posterior draws and the post-warmup sample statistics: rustmc's
+- ``seconds``, to an ArviZ InferenceData holding each engine's posterior draws
+  and post-warmup sample statistics: rustmc's
   ``FitResult.to_arviz(include_log_likelihood=False)`` (which also carries a small
   ``observed_data`` group), and nutpie's arrow trace with the warmup rows sliced
   off and then converted as nutpie converts it. With the warmup gone, the
-  conversion's only warmup work is building empty arrays. This is the end point
-  the efficiency ratios use;
+  conversion's only warmup work is building empty arrays. The work is close but
+  not identical: each engine converts its own sample statistics, and nutpie has
+  more of them. This is the end point the efficiency ratios use by default;
 - ``sampling_seconds``, to the end of sampling, before any conversion;
 - ``native_seconds``, sampling plus each engine's own default conversion, timed
   separately: rustmc's ``to_arviz()``, with pointwise log-likelihoods, and nutpie's
@@ -207,8 +208,9 @@ def fit_problems(fit: dict[str, Any]) -> list[str]:
     """Why `fit` cannot enter a verdict; empty when it can.
 
     A fit fails when it did not finish, when its load wait timed out, when any
-    diagnostic is not finite, when R-hat exceeds 1.01, when any post-warmup
-    transition diverged, or when its smallest bulk ESS is under 400."""
+    diagnostic is not finite, when a recorded time is not finite and positive, when
+    R-hat exceeds 1.01, when any post-warmup transition diverged, or when its
+    smallest bulk ESS is under 400."""
     if fit.get("status") != "ok":
         return [f"{fit.get('status')}: {fit.get('reason')}"]
     problems = []
@@ -218,6 +220,9 @@ def fit_problems(fit: dict[str, Any]) -> list[str]:
               *fit["means"].values(), *fit["mcse"].values()]
     if not all(math.isfinite(value) for value in values):
         problems.append("non-finite diagnostic")
+    times = [fit[key] for key in ("seconds", "sampling_seconds", "native_seconds") if key in fit]
+    if not all(math.isfinite(value) and value > 0 for value in times):
+        problems.append("time not finite and positive")
     if fit["max_rhat"] > MAX_RHAT:
         problems.append(f"R-hat {fit['max_rhat']:.3f}")
     if fit["divergences"]:
@@ -261,7 +266,9 @@ def mean_difference_threshold(tests: int) -> float:
 
 
 def sign_test(ratios: list[float]) -> float:
-    """Two-sided exact sign test of the paired ratios against 1."""
+    """Two-sided exact sign test of whether rustmc wins (ratio below 1) more or fewer
+    pairs than it loses (above 1). Ratios of exactly 1 are left out, so with ties it
+    tests the split of the untied pairs, not the median of all of them."""
     below = sum(ratio < 1 for ratio in ratios)
     above = sum(ratio > 1 for ratio in ratios)
     n = below + above
@@ -271,11 +278,22 @@ def sign_test(ratios: list[float]) -> float:
     return min(1.0, 2 * tail)
 
 
+def winner(ratios: list[float]) -> str:
+    """The engine that won more of the paired ratios, ties left out as the sign
+    test leaves them out, so a significant test never names the engine that lost
+    more pairs."""
+    below = sum(ratio < 1 for ratio in ratios)
+    above = sum(ratio > 1 for ratio in ratios)
+    return "rustmc faster" if below > above else "nutpie faster"
+
+
 def median_interval(values: list[float], level: float = 0.95) -> dict[str, float]:
     """The distribution-free interval for a median, between order statistics
     x_(k) and x_(n+1-k), the narrowest whose coverage, 1 - 2 P(Bin(n, 1/2) < k),
-    is at least `level`; when none reaches it, [min, max] with its coverage. It
-    excludes 1 exactly when a sign test with the same coverage would reject.
+    is at least `level`; when none reaches it, [min, max] with its coverage. When no
+    ratio is exactly 1 it excludes 1 exactly when a sign test with the same coverage
+    would reject; ties at 1 can leave 1 inside an interval while the sign test, which
+    drops them, rejects.
     With 6 pairs it is [min, max] at 96.9%; with 3, [min, max] at 75%."""
     x = sorted(values)
     n = len(x)
@@ -290,21 +308,34 @@ def median_interval(values: list[float], level: float = 0.95) -> dict[str, float
     return {"low": x[k - 1], "high": x[n - k], "coverage": coverage(k)}
 
 
+def paired_by_index(rustmc_fits: list[dict[str, Any]],
+                    other_fits: list[dict[str, Any]]) -> list[tuple[dict, dict]]:
+    """The fits of the same dataset, matched by index, in rustmc's order. A repeated
+    index would let one dataset count as several pairs, so it raises."""
+    for fits in (rustmc_fits, other_fits):
+        indices = [fit["index"] for fit in fits]
+        if len(set(indices)) != len(indices):
+            raise ValueError(f"repeated dataset index in {sorted(indices)}")
+    by_index = {fit["index"]: fit for fit in other_fits}
+    return [(a, by_index[a["index"]]) for a in rustmc_fits if a["index"] in by_index]
+
+
 def compare(rustmc: dict[str, Any], other: dict[str, Any], parameters: int,
             time_key: str = "seconds", provenance_ok: bool = True) -> dict[str, Any]:
     """Paired comparison of rustmc with one nutpie run of the same cell.
 
     Efficiency ratios are rustmc over nutpie, per dataset. The verdict uses only
     pairs where both fits pass `fit_problems`. In order: a rustmc extension that
-    differs from the record's gives "inconclusive (provenance)"; a mean-difference
-    test across every parameter of every finished pair that crosses its threshold,
-    or cannot be computed, gives "inconclusive (means differ)"; no passing pair
+    differs from the record's gives "inconclusive (provenance)"; no pair where both
+    fits finished (an engine that failed to compile has none) gives "inconclusive
+    (no finished pairs)"; a mean-difference test across every parameter of every
+    finished pair that crosses its threshold, or cannot be computed, gives
+    "inconclusive (means differ)"; no passing pair
     gives "inconclusive (quality)"; otherwise a two-sided sign test at the 5% level,
     unadjusted for the cell being one of many, names a winner, and a non-significant
     one gives "no clear winner". `time_key` picks the span the per-ESS ratios use:
     "seconds", "sampling_seconds" or "native_seconds"."""
-    by_index = {fit["index"]: fit for fit in other["fits"]}
-    pairs = [(a, by_index[a["index"]]) for a in rustmc["fits"] if a["index"] in by_index]
+    pairs = paired_by_index(rustmc["fits"], other["fits"])
     finished = [(a, b) for a, b in pairs if a.get("status") == "ok" and b.get("status") == "ok"]
     passing = [(a, b) for a, b in finished if not fit_problems(a) and not fit_problems(b)]
 
@@ -314,17 +345,20 @@ def compare(rustmc: dict[str, Any], other: dict[str, Any], parameters: int,
     z = max_propagating_nan([mean_difference_z(a, b) for a, b in finished])
     tests = parameters * max(len(finished), 1)
     threshold = mean_difference_threshold(tests)
-    means_flag = not (z <= threshold)
+    # With no finished pair there are no means to compare, which is not a disagreement.
+    means_flag = bool(finished) and not (z <= threshold)
     ratios = per_ess(passing)
     p_value = sign_test(ratios) if ratios else None
     if not provenance_ok:
         verdict = "inconclusive (provenance)"
+    elif not finished:
+        verdict = "inconclusive (no finished pairs)"
     elif means_flag:
         verdict = "inconclusive (means differ)"
     elif not ratios:
         verdict = "inconclusive (quality)"
     elif p_value < 0.05:
-        verdict = "rustmc faster" if np.median(ratios) < 1 else "nutpie faster"
+        verdict = winner(ratios)
     else:
         verdict = "no clear winner"
     return {
@@ -802,7 +836,7 @@ def number(values: list[float], digits: int = 3) -> str:
 
 
 def print_table(rows: list[dict[str, Any]]) -> None:
-    """`fit s` runs to an InferenceData with matched content; `sampling s` stops when
+    """`fit s` runs to the InferenceData described above; `sampling s` stops when
     sampling does. Values are the median and observed range over datasets. Ratio
     rows are rustmc over nutpie per ESS, over pairs that pass both engines' checks,
     with an unadjusted per-cell sign test."""
