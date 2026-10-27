@@ -608,9 +608,10 @@ impl Evaluator {
     /// the separate gather would transform each group once rather than each
     /// row (see [`Evaluator::gather_by_group`]), which the fused loops always
     /// do. A gather with more groups than rows keeps the per-row loop.
-    // Out of line, as are the fused passes, so the evaluator's node loops
-    // compile as they do without fusion; inlined, they cost a graph that
-    // declines fusion about 7% (200 rows and 5,000 groups).
+    // Out of line, as are the fused passes. Inlined into the evaluator's node
+    // loops, they made a graph that declines fusion (200 rows and 5,000
+    // groups) about 7% slower; out of line it measured within 0.3% of main.
+    // The loops still carry the plan's dispatch, so their code is not main's.
     #[inline(never)]
     pub(super) fn grouped_decide(&mut self, graph: &Graph, params: &[f64], c: usize) {
         let chain = &self.grouped.chains[c];
@@ -834,6 +835,10 @@ mod tests {
         /// The product's scale a constant created between the gather and the
         /// product, as the compiler builds `0.8 * z[group]`.
         constant_scale: bool,
+        /// The product's scale able to be negative or zero: the raw
+        /// parameter itself rather than its exponential, or -0.8 rather than
+        /// 0.8 when it is a constant.
+        signed_scale: bool,
     }
 
     struct Built {
@@ -850,7 +855,11 @@ mod tests {
         let one = g.add_constant(1.0);
         g.normal_logp(mu, zero, five);
         let raw_tau = g.add_param("log_tau");
-        let tau = g.exp(raw_tau);
+        let tau = if shape.signed_scale {
+            raw_tau
+        } else {
+            g.exp(raw_tau)
+        };
         g.log_half_normal_logp(raw_tau, one);
         let transform = if shape.positive_z {
             ParamTransform::Exp
@@ -878,10 +887,10 @@ mod tests {
             let gathered = g.gather(z, shape.groups, group);
             let mut linpred = gathered;
             if shape.scale {
-                let scale = if shape.constant_scale {
-                    g.add_constant(0.8)
-                } else {
-                    tau
+                let scale = match (shape.constant_scale, shape.signed_scale) {
+                    (true, false) => g.add_constant(0.8),
+                    (true, true) => g.add_constant(-0.8),
+                    (false, _) => tau,
                 };
                 linpred = if shape.scale_last {
                     g.elementwise(ElementwiseOp::Mul, linpred, Some(scale))
@@ -967,6 +976,12 @@ mod tests {
                 p[2] = 710.0;
             });
         }
+        if shape.signed_scale && !shape.constant_scale {
+            // A negative, a zero and a negative-zero scale.
+            for tau in [-1.3, 0.0, -0.0] {
+                set(&|p| p[1] = tau);
+            }
+        }
         if shape.weighted {
             // The term's adjoint is 1 + w, since `obs_logp_normal` adds the
             // term to the log density as well: zero, negative, and 1 from a
@@ -994,7 +1009,7 @@ mod tests {
         let mut cases = 0usize;
         for rows in [1usize, 2, 5, 37] {
             for groups in [1usize, 3, 10] {
-                for flags in 0..256u32 {
+                for flags in 0..512u32 {
                     let bit = |k: u32| flags & (1 << k) != 0;
                     let shape = Shape {
                         rows,
@@ -1007,6 +1022,7 @@ mod tests {
                         second_term: bit(5),
                         scale_last: bit(6),
                         constant_scale: bit(7),
+                        signed_scale: bit(8),
                     };
                     let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
                     let g = &built.graph;
@@ -1020,7 +1036,7 @@ mod tests {
                     for point in points(built.params, shape) {
                         let f = everything(&mut fused, g, &point);
                         let label =
-                            format!("{rows} rows, {groups} groups, flags {flags:08b}, {point:?}");
+                            format!("{rows} rows, {groups} groups, flags {flags:09b}, {point:?}");
                         assert_same(&label, &f, &everything(&mut separate, g, &point));
                         assert_same(&label, &f, &everything(&mut per_element, g, &point));
                         nan_values += f.iter().filter(|v| v.is_nan()).count();
@@ -1064,6 +1080,7 @@ mod tests {
             second_term: false,
             scale_last: false,
             constant_scale: false,
+            signed_scale: false,
         };
         let point = [0.25, -0.5, 0.1, 0.9, -0.3, 0.2];
         let tau = (-0.5f64).exp();
@@ -1087,7 +1104,7 @@ mod tests {
     /// nothing of fusion, and against central differences of its log density.
     #[test]
     fn grouped_normal_chains_match_the_reference_gradients() {
-        for flags in 0..256u32 {
+        for flags in 0..512u32 {
             let bit = |k: u32| flags & (1 << k) != 0;
             let shape = Shape {
                 rows: 23,
@@ -1100,6 +1117,7 @@ mod tests {
                 second_term: bit(5),
                 scale_last: bit(6),
                 constant_scale: bit(7),
+                signed_scale: bit(8),
             };
             let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
             let g = &built.graph;
@@ -1113,6 +1131,12 @@ mod tests {
                 *negative.last_mut().unwrap() = -2.5;
                 points.push(negative);
             }
+            if shape.scale && shape.signed_scale && !shape.constant_scale {
+                // A negative product scale.
+                let mut negative = points[0].clone();
+                negative[1] = -1.3;
+                points.push(negative);
+            }
             let mut fused = Evaluator::new(g);
             for point in &points {
                 let before = fused.grouped.reverse_passes;
@@ -1123,9 +1147,9 @@ mod tests {
                 );
                 let (logp, grad) = grad_logp(g, point);
                 let close = |a: f64, b: f64, tol: f64| (a - b).abs() <= tol * b.abs().max(1.0);
-                assert!(close(fused.total_logp, logp, 1e-12), "{flags:08b}");
+                assert!(close(fused.total_logp, logp, 1e-12), "{flags:09b}");
                 for (k, (&a, &b)) in fused.grad.iter().zip(&grad).enumerate() {
-                    assert!(close(a, b, 1e-10), "{flags:08b} param {k}: {a} against {b}");
+                    assert!(close(a, b, 1e-10), "{flags:09b} param {k}: {a} against {b}");
                     let eps = 1e-6;
                     let mut up = point.clone();
                     let mut down = point.clone();
@@ -1134,7 +1158,7 @@ mod tests {
                     let numeric = (eval_logp(g, &up) - eval_logp(g, &down)) / (2.0 * eps);
                     assert!(
                         close(a, numeric, 1e-6),
-                        "{flags:08b} param {k}: {a} against {numeric}"
+                        "{flags:09b} param {k}: {a} against {numeric}"
                     );
                 }
             }
@@ -1265,6 +1289,7 @@ mod tests {
             second_term: false,
             scale_last: false,
             constant_scale: false,
+            signed_scale: false,
         };
         let built = build(shape, |i| 0.3 + (i % 5) as f64 / 4.0);
         let point = (0..built.params)
@@ -1467,6 +1492,41 @@ mod tests {
         }
     }
 
+    /// A gather whose adjoints are all zero must leave its gradients exactly
+    /// as later nodes left them. A matrix product's reverse pass, with an
+    /// entry so small that `-0.5 * entry` underflows in a fused multiply-add,
+    /// leaves the effect's gradient at -0.0; adding the inactive gather's
+    /// zeros would make it +0.0. The separate nodes skip the gather, and so
+    /// must the fused loops.
+    #[test]
+    fn an_inactive_gather_keeps_a_negative_zero_gradient() {
+        let mut g = Graph::new();
+        let one = g.add_constant(1.0);
+        let z = g.add_vector_params("z", 1);
+        let group = g.add_data("group", vec![0.0]);
+        let gathered = g.gather(z, 1, group);
+        let obs = g.add_obs_data(vec![0.0]);
+        g.obs_logp_normal(gathered, one, obs);
+        let matrix = g.store_matrix(vec![f64::from_bits(1)], 1, 1);
+        let eta = g.mat_vec_mul(matrix, z, 1, None);
+        let other_obs = g.add_obs_data(vec![-0.5]);
+        g.obs_logp_normal(eta, one, other_obs);
+        let mut fused = Evaluator::new(&g);
+        let mut separate = Evaluator::new(&g);
+        separate.unfused_groups = true;
+        let point = [0.0];
+        assert_same(
+            "inactive gather",
+            &everything(&mut fused, &g, &point),
+            &everything(&mut separate, &g, &point),
+        );
+        assert_eq!(fused.grouped.reverse_passes, 1);
+        if super::super::has_fused_multiply_add() {
+            // The case the test is for: the gradient is a negative zero.
+            assert_eq!(fused.grad[0].to_bits(), (-0.0f64).to_bits());
+        }
+    }
+
     /// Groups whose effects mix transforms keep the separate gather's per-row
     /// loop, as `gather_by_group` decides, and so the separate nodes; the
     /// results must still match them to the bit.
@@ -1483,6 +1543,7 @@ mod tests {
             second_term: false,
             scale_last: false,
             constant_scale: false,
+            signed_scale: false,
         };
         let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
         let mut g = built.graph;
@@ -1520,6 +1581,7 @@ mod tests {
             second_term: false,
             scale_last: false,
             constant_scale: false,
+            signed_scale: false,
         };
         let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
         let before = fused_grouped_normal_passes();
