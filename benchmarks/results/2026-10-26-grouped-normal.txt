@@ -13,12 +13,12 @@
 #   gradient, 500 rows x 20 groups     base 4.99-5.09 us   fused 2.94-3.01 us   paired cut 39.8-41.7%
 #   gradient, 5000 rows x 100 groups   base 47.9-48.3 us   fused 26.7-27.1 us   paired cut 43.4-44.4%
 #   gradient, 200 rows x 5000 groups   more groups than rows, so both builds run the separate
-#       nodes: base 19.39-19.55 us, this branch 19.40-19.49 us, paired change -0.2% to +0.3%;
+#       nodes: base 19.39-19.55 us, this branch 19.40-19.49 us, paired change -0.3% to +0.2%;
 #       0 fused passes
 #   many grouped terms (20 rows, 5 groups each; per gradient, and per term):
 #       10 terms    base 2.7-2.9 us,      prefix 3.6-3.7 us,        this branch 2.7 us
 #       100 terms   base 27.1-28.8 us,    prefix 121.8-122.0 us,    this branch 25.6-26.4 us
-#       1000 terms  base 290-301 us,      prefix 10,318-10,518 us,  this branch 276-282 us
+#       1000 terms  base 290-301 us,      prefix 10,318-10,518 us,  this branch 275-282 us
 #       per term this branch stays at 0.256-0.282 us from 10 to 1000 terms, and runs one fused
 #       reverse pass per term per gradient; the prefix build grew from 0.36 to 10.5 us per term
 #   many plain terms (mu + x_k on data, no candidate chain):
@@ -30,9 +30,10 @@
 #   and each fused run ran at least one fused reverse pass per step (578,789 and 582,933;
 #   the step-size searches add gradients that are not steps)
 #   plain families (rust_core/examples/gradient_cost.rs, no grouped term): paired changes
-#   from -7.0% to +7.4%, 113 of 120 within 5%; the only shapes that moved the same way in all
-#   four pairs, Normal, Bernoulli-logit and Poisson-log at 500 rows and 32 columns, were 1.2%
-#   to 6.3% faster
+#   from -7.0% to +7.4%, 113 of 120 within 5%. Seven shapes moved the same way in all four
+#   pairs, all faster, by 0.2% to 6.3%: at 500 rows, Bernoulli-logit at 8, 32 and 64 columns,
+#   Normal and Poisson-log at 32; at 5,000 rows, Bernoulli-logit and Normal with an inferred
+#   scale at 8. None was slower in all four
 #
 # Fits: rustmc.ModelBuilder, mu ~ N(0, 5), tau ~ HalfNormal(1), z ~ N(0, 1) per group,
 # sigma ~ HalfNormal(1), y ~ Normal(mu + tau * z["group"], sigma); 4 chains of 1000 warmup
