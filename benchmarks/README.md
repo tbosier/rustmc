@@ -216,3 +216,79 @@ The 2026-10-19 records, from before narrow design matrices were multiplied with 
 loops instead of faer, show rustmc at 3.11 s and 6.81 s for the same fits, with the
 other engines within a few percent of the times above.
 
+## rustmc against nutpie
+
+`benchmarks/head_to_head.py` fits the same models with rustmc and nutpie, at one and
+four threads: Gaussian regressions with known and inferred noise, logistic and Poisson
+regressions at five sizes from 100 rows by 4 columns to 10,000 by 16 and 1,000 by 128, a
+non-centered varying-intercept model at 500 rows in 20 groups and 5,000 in 100, and
+non-centered eight schools. Both engines get the same priors, data, chains, warmup and
+draws, and their own adaptation. The script's docstring describes the timed spans and
+what each fit records; `benchmarks/head_to_head_summary.py` turns a record into
+verdicts: a sign test on the per-ESS time ratio (seconds per smallest bulk ESS, rustmc
+over nutpie) of the datasets where both fits pass the quality gate (R-hat at most 1.01,
+no post-warmup divergence, smallest bulk ESS at least 400), Holm-adjusted within each
+model class.
+
+```bash
+PYTHONPATH=.pybuild python -m benchmarks.head_to_head --datasets 10 --lock /tmp/bench.lock \
+  --output head-to-head.json
+python benchmarks/head_to_head_summary.py head-to-head.json
+```
+
+`benchmarks/results/2026-10-27-head-to-head.json` holds one run of all 46 cells, with 10
+datasets each (eight schools has one dataset, so its 10 fits differ only in the sampler
+seed), 4 chains, 1000 warmup and 1000 draws, on a 24-thread AMD Ryzen 9 5900X, at
+revision e1ec4ac (main at 18ede80); the `.txt` beside it is the run's log and both
+analyses. Every fit finished, each started at a one-minute load below 1.5, and the
+regressions also ran nutpie at its default 300 warmup iterations (`nutpie300`). The
+table's per-ESS ratios run to an InferenceData holding each engine's posterior draws
+and post-warmup sample statistics. That work is close but not identical: rustmc also
+writes a small `observed_data` group, and each engine converts its own set of sample
+statistics, more of them for nutpie. Medians and observed ranges over the 50 passing
+datasets of each class:
+
+| Model class | Threads | vs nutpie | Cells rustmc faster | vs nutpie300 | Cells rustmc faster |
+|---|---|---|---|---|---|
+| Normal, known noise | 1 | 0.41 [0.15, 0.73] | 5 of 5 | 0.60 [0.24, 0.88] | 5 of 5 |
+| Normal, known noise | 4 | 0.40 [0.15, 0.62] | 5 of 5 | 0.52 [0.25, 1.01] | 5 of 5 |
+| Normal, inferred noise | 1 | 0.40 [0.16, 0.54] | 5 of 5 | 0.55 [0.23, 0.77] | 5 of 5 |
+| Normal, inferred noise | 4 | 0.38 [0.14, 0.53] | 5 of 5 | 0.50 [0.20, 0.90] | 5 of 5 |
+| Logistic | 1 | 0.43 [0.19, 0.75] | 5 of 5 | 0.69 [0.27, 1.09] | 3 of 5 |
+| Logistic | 4 | 0.43 [0.19, 0.80] | 5 of 5 | 0.65 [0.27, 1.18] | 4 of 5 |
+| Poisson | 1 | 0.47 [0.16, 0.61] | 5 of 5 | 0.69 [0.25, 0.99] | 5 of 5 |
+| Poisson | 4 | 0.35 [0.18, 0.56] | 5 of 5 | 0.51 [0.27, 0.92] | 5 of 5 |
+
+No regression cell went to nutpie. Timing sampling alone, which leaves both conversions
+out, moves every class median against nutpie by 0.031 or less and keeps all 40 cells
+rustmc's; against `nutpie300` the medians rise by 0.019 to 0.102, and rustmc wins 34 of
+the 40 cells instead of 37. In the table's three logistic cells without a winner
+against `nutpie300` (100 by 4 at one thread, and 1,000 by 64 at both) rustmc was faster
+on 9 of 10 datasets at 100 by 4 and on 8 of 10 at 1,000 by 64, short of significance
+after adjustment. The gap is widest at 128 columns, where the cell medians against
+nutpie are 0.16 to 0.23; at the other sizes they are 0.28 to 0.68. rustmc takes 1.08
+to 1.40 times nutpie's leapfrog steps on these models, and each step costs 0.20 to 0.50
+times nutpie's. nutpie also compiles each model first, 2.4
+to 8.2 s per cell here; rustmc builds its model in under a millisecond, and neither is
+in the ratios.
+
+The varying-intercept model goes the other way. At 500 rows in 20 groups nutpie misses
+the gate on 5 of 10 datasets (R-hat from 1.0103 to 1.0132, or a smallest bulk ESS of
+391), rustmc on none, and on the 5 that pass rustmc takes 1.46 times nutpie's time per
+ESS at one thread and 1.38 at four (1.60 and 1.85 counting sampling alone), which is no
+verdict at 5 pairs. At 5,000 rows in 100 groups both engines miss the gate on every dataset, so there
+is no verdict, but rustmc's sampling takes 5.3 s against nutpie's 0.93 s at one thread.
+The `Where the sampling time goes` table in the record splits the gap: rustmc takes
+2.66 and 2.24 times nutpie's leapfrog steps at the two sizes and spends 1.5 to 1.6 and
+2.3 to 2.6 times as long per step; at 500 by 20 the extra steps return 2.6 times nutpie's
+smallest bulk ESS, and at 5,000 by 100 they return 1.05 times. On eight schools, 5 of
+rustmc's 10 fits and 7 of nutpie's diverge at least once, so only one pair passes;
+rustmc's ratio on all 10 finished pairs is 0.52 to 0.81 at one thread and 0.42 to 0.64
+at four, which is not a verdict either.
+
+`benchmarks/results/2026-10-25-head-to-head.json` is the run before #47 and #48 fused the
+varying-intercept model's gather, scale and Normal term, with 3 datasets per cell. Its
+rustmc sampling took 2.87 s and 22.5 s at the two varying-intercept sizes on one thread,
+against 0.73 s and 5.3 s here. Its InferenceData spans held different groups for the two
+engines; read it with `--endpoint sampling`. One run on one machine is not a stable ranking.
+
