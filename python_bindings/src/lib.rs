@@ -39,6 +39,14 @@ mod trend;
 
 use pyo3::prelude::*;
 
+/// How many fused grouped-Normal forward and reverse passes this process's
+/// graph evaluators have run, counted when each evaluator is dropped. Tests
+/// and benchmarks read it to show that a fit took the fused loops.
+#[pyfunction]
+fn _fused_grouped_normal_passes() -> (u64, u64) {
+    rustmc_core::autodiff::fused_grouped_normal_passes()
+}
+
 #[pymodule]
 fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     dynamic_glm::register(m)?;
@@ -75,5 +83,6 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(sampling::sample, m)?)?;
     m.add_function(wrap_pyfunction!(batch::batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sampling::sample_prior_predictive, m)?)?;
+    m.add_function(wrap_pyfunction!(_fused_grouped_normal_passes, m)?)?;
     Ok(())
 }

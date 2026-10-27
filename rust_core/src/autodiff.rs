@@ -1,5 +1,5 @@
 use crate::data::DataBinding;
-use crate::graph::{Graph, GraphShapeError, NodeId, ObsFamily, Op, ParamTransform};
+use crate::graph::{ElementwiseOp, Graph, GraphShapeError, NodeId, ObsFamily, Op, ParamTransform};
 
 use crate::graph::{
     bounded_sigmoid, bounded_sigmoid_adjoint, stable_sigmoid, stable_sigmoid_derivative,
@@ -23,6 +23,64 @@ enum NodeKind {
     DataRef(usize),
     /// Computed vector stored at byte offset `off` in the flat vec_buf.
     ComputedVec(usize),
+}
+
+/// One operand of an elementwise node, resolved once per node: a vector
+/// read by element, or a scalar every element shares.
+#[derive(Clone, Copy)]
+enum Operand<'a> {
+    Vector(&'a [f64]),
+    Scalar(f64),
+}
+
+impl Operand<'_> {
+    #[inline(always)]
+    fn at(self, i: usize) -> f64 {
+        match self {
+            Operand::Vector(values) => values[i],
+            Operand::Scalar(value) => value,
+        }
+    }
+}
+
+/// `node` read by element, resolved once: `binding`'s data for a data node,
+/// its slot of `vec_buf` for a computed vector, or its scalar value for every
+/// element. The same values `Evaluator::read_vec` reads, without matching on
+/// the node per element. Locals like this one are what keep a loop that
+/// stores into another buffer from reloading them on every element.
+#[inline(always)]
+fn operand<'a>(
+    node_kind: &[NodeKind],
+    scalars: &[f64],
+    binding: &'a DataBinding,
+    vec_buf: &'a [f64],
+    node: NodeId,
+) -> Operand<'a> {
+    match node_kind[node.0] {
+        NodeKind::Scalar => Operand::Scalar(scalars[node.0]),
+        NodeKind::DataRef(di) => Operand::Vector(&binding.vectors[di]),
+        NodeKind::ComputedVec(off) => Operand::Vector(&vec_buf[off..]),
+    }
+}
+
+/// Where an elementwise node's reverse pass sends one operand's adjoint: a
+/// scalar's running sum, which the caller writes back, a computed vector's
+/// slots from an offset, or nowhere for data.
+enum AdjointTarget {
+    Scalar(f64),
+    Vector(usize),
+    None,
+}
+
+impl AdjointTarget {
+    #[inline(always)]
+    fn add(&mut self, adjoints: &mut [f64], i: usize, value: f64) {
+        match self {
+            AdjointTarget::Scalar(sum) => *sum += value,
+            AdjointTarget::Vector(off) => adjoints[*off + i] += value,
+            AdjointTarget::None => {}
+        }
+    }
 }
 
 /// Pre-allocated evaluator that computes log-probability and its gradient
@@ -73,6 +131,39 @@ pub struct Evaluator {
     /// on the same parameters, reads them instead of computing them again.
     /// Empty for every other node.
     observation_cache: Vec<Vec<f64>>,
+    /// Per-group values or derivatives for the `Op::Gather` being evaluated,
+    /// reused across nodes and calls. Construction and a same-shape rebind
+    /// size it for the widest gather of the graph they were given, so
+    /// evaluating that graph never grows it.
+    group_scratch: Vec<f64>,
+    /// Normal terms on a grouped linear predictor that run as one forward
+    /// and one reverse loop; see `autodiff_grouped.rs`.
+    grouped: grouped::GroupedPlan,
+    /// The fused reverse loop's copy of a gather's gradients, sized like
+    /// `group_scratch`.
+    grouped_grad: Vec<f64>,
+    /// Test-only: send every node through its per-element loop, so tests can
+    /// compare the resolved loops with the code they replaced.
+    #[cfg(test)]
+    per_element: bool,
+    /// Test-only: run every grouped Normal chain as its separate nodes, so
+    /// tests can compare the fused loops with them.
+    #[cfg(test)]
+    unfused_groups: bool,
+}
+
+/// The group count of the widest `Op::Gather` in `graph`, which sizes
+/// `Evaluator::group_scratch` so that evaluating `graph` never grows it.
+fn widest_gather(graph: &Graph) -> usize {
+    graph
+        .nodes
+        .iter()
+        .map(|node| match node.op {
+            Op::Gather { n_params, .. } => n_params,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Fill `out` with the `ln(y)` cache described on `Evaluator::log_observations`,
@@ -691,9 +782,17 @@ impl Evaluator {
         fill_observation_cache(graph, &binding, &mut observation_cache);
         // Build the Poisson log-factorial table now rather than during a fit.
         crate::count_sampling::small_log_factorials();
+        let grouped = grouped::GroupedPlan::new(graph, &node_kind, &node_lengths, &binding);
         Self {
             log_observations,
             observation_cache,
+            group_scratch: Vec::with_capacity(widest_gather(graph)),
+            grouped,
+            grouped_grad: Vec::with_capacity(widest_gather(graph)),
+            #[cfg(test)]
+            per_element: false,
+            #[cfg(test)]
+            unfused_groups: false,
             binding,
             node_lengths,
             node_kind,
@@ -735,6 +834,10 @@ impl Evaluator {
         if node_lengths == self.node_lengths {
             fill_log_observations(graph, &binding, &mut self.log_observations);
             fill_observation_cache(graph, &binding, &mut self.observation_cache);
+            self.group_scratch.clear();
+            self.group_scratch.reserve(widest_gather(graph));
+            self.grouped_grad.clear();
+            self.grouped_grad.reserve(widest_gather(graph));
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
@@ -774,6 +877,192 @@ impl Evaluator {
             mu_adjoints,
             sigma_adjoint,
         );
+    }
+
+    /// Whether loops may read operands resolved once per node; false only in
+    /// tests that ask for the per-element loops.
+    #[inline(always)]
+    fn resolved_loops(&self) -> bool {
+        #[cfg(test)]
+        if self.per_element {
+            return false;
+        }
+        true
+    }
+
+    /// Whether grouped Normal chains may run fused. The per-element test
+    /// mode turns them off too, since they read operands as resolved slices.
+    fn fusion_enabled(&self) -> bool {
+        #[cfg(test)]
+        if self.unfused_groups {
+            return false;
+        }
+        self.resolved_loops()
+    }
+
+    /// Whether a gather of `n_params` groups from `param_start` over `vl` rows
+    /// transforms each group once instead of each row. Only when its indices
+    /// are data, the span is not empty and lies inside the parameters and
+    /// their transforms, there are no more groups than rows, and every group
+    /// has the same kind of transform. Then the groups take at most as many
+    /// transforms, of the one kind the rows would have taken, as the per-row
+    /// loop would; with mixed kinds, rows that all select a cheap group would
+    /// otherwise pay for the dear ones they never read. Every other gather runs
+    /// the per-row loop, which reads only the parameters its rows select,
+    /// exactly as before.
+    fn gather_by_group(
+        &self,
+        graph: &Graph,
+        params: &[f64],
+        (param_start, n_params, indices): (usize, usize, NodeId),
+        vl: usize,
+    ) -> bool {
+        let span_fits = param_start
+            .checked_add(n_params)
+            .is_some_and(|end| end <= params.len() && end <= graph.param_transforms.len());
+        if !(matches!(self.node_kind[indices.0], NodeKind::DataRef(_))
+            && span_fits
+            && n_params > 0
+            && n_params <= vl
+            && self.resolved_loops())
+        {
+            return false;
+        }
+        let transforms = &graph.param_transforms[param_start..param_start + n_params];
+        let kind = std::mem::discriminant(&transforms[0]);
+        transforms
+            .iter()
+            .all(|transform| std::mem::discriminant(transform) == kind)
+    }
+
+    /// The forward pass of an elementwise node with a vector output, with
+    /// each operand resolved once instead of once per element and the operator
+    /// chosen outside the loop. Every element takes the same operations, on
+    /// the same operands, as in the per-element loop. Returns false, having
+    /// written nothing, when the node has
+    /// no vector output or an operand sits at or after the output in
+    /// `vec_buf`, which only a graph changed after construction can arrange;
+    /// the caller then runs the per-element loop.
+    fn elementwise_vector_forward(
+        &mut self,
+        idx: usize,
+        vl: usize,
+        operator: ElementwiseOp,
+        a: NodeId,
+        b: Option<NodeId>,
+    ) -> bool {
+        let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+            return false;
+        };
+        if vl == 0 || !self.resolved_loops() {
+            return false;
+        }
+        let (inputs, outputs) = self.vec_buf.split_at_mut(off);
+        let operand = |node: NodeId| match self.node_kind[node.0] {
+            NodeKind::Scalar => Some(Operand::Scalar(self.scalars[node.0])),
+            NodeKind::DataRef(di) => Some(Operand::Vector(&self.binding.vectors[di])),
+            NodeKind::ComputedVec(o) if o + vl <= off => Some(Operand::Vector(&inputs[o..])),
+            NodeKind::ComputedVec(_) => None,
+        };
+        let Some(av) = operand(a) else {
+            return false;
+        };
+        let bv = match b {
+            Some(b) => match operand(b) {
+                Some(bv) => bv,
+                None => return false,
+            },
+            None => Operand::Scalar(0.0),
+        };
+        let out = &mut outputs[..vl];
+        macro_rules! fill {
+            ($($op:ident),*) => {
+                match operator {
+                    $(ElementwiseOp::$op => {
+                        for (i, value) in out.iter_mut().enumerate() {
+                            *value = ElementwiseOp::$op.value(av.at(i), bv.at(i));
+                        }
+                    })*
+                }
+            };
+        }
+        fill!(Add, Sub, Mul, Div, Pow, Neg, Exp, Log, Sigmoid, Sqrt, Tanh, Softplus, Sin, Cos);
+        true
+    }
+
+    /// The reverse pass of an elementwise node with a vector output, resolved
+    /// and dispatched as in [`Self::elementwise_vector_forward`]. Each element
+    /// skips a zero upstream adjoint and otherwise adds the same adjoints in
+    /// the same order as the per-element loop: a scalar operand's adjoint
+    /// takes them one element at a time, in element order. Returns false,
+    /// having changed nothing, when the per-element loop must run instead:
+    /// no vector output, both operands the same node, or an operand's adjoint
+    /// at or after the output's in `adj_vec_buf`.
+    fn elementwise_vector_backward(
+        &mut self,
+        idx: usize,
+        vl: usize,
+        operator: ElementwiseOp,
+        a: NodeId,
+        b: Option<NodeId>,
+    ) -> bool {
+        let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
+            return false;
+        };
+        if vl == 0 || b == Some(a) || !self.resolved_loops() {
+            return false;
+        }
+        let below_output = |node: NodeId| match self.node_kind[node.0] {
+            NodeKind::ComputedVec(o) => o + vl <= off,
+            _ => true,
+        };
+        if !below_output(a) || !b.is_none_or(below_output) {
+            return false;
+        }
+        let operand = |node: NodeId| match self.node_kind[node.0] {
+            NodeKind::Scalar => Operand::Scalar(self.scalars[node.0]),
+            NodeKind::DataRef(di) => Operand::Vector(&self.binding.vectors[di]),
+            NodeKind::ComputedVec(o) => Operand::Vector(&self.vec_buf[o..]),
+        };
+        let av = operand(a);
+        let bv = b.map_or(Operand::Scalar(0.0), operand);
+        let outs = &self.vec_buf[off..off + vl];
+        let (lower, upper) = self.adj_vec_buf.split_at_mut(off);
+        let upstreams = &upper[..vl];
+        let target = |node: NodeId| match self.node_kind[node.0] {
+            NodeKind::Scalar => AdjointTarget::Scalar(self.adj_scalars[node.0]),
+            NodeKind::ComputedVec(o) => AdjointTarget::Vector(o),
+            NodeKind::DataRef(_) => AdjointTarget::None,
+        };
+        let mut a_target = target(a);
+        let mut b_target = b.map_or(AdjointTarget::None, target);
+        macro_rules! propagate {
+            ($($op:ident),*) => {
+                match operator {
+                    $(ElementwiseOp::$op => {
+                        for (i, (&upstream, &out)) in upstreams.iter().zip(outs).enumerate() {
+                            if upstream == 0.0 {
+                                continue;
+                            }
+                            let (da, db) = ElementwiseOp::$op
+                                .adjoints_with_value(upstream, av.at(i), bv.at(i), out);
+                            a_target.add(lower, i, da);
+                            if b.is_some() {
+                                b_target.add(lower, i, db);
+                            }
+                        }
+                    })*
+                }
+            };
+        }
+        propagate!(Add, Sub, Mul, Div, Pow, Neg, Exp, Log, Sigmoid, Sqrt, Tanh, Softplus, Sin, Cos);
+        if let AdjointTarget::Scalar(sum) = a_target {
+            self.adj_scalars[a.0] = sum;
+        }
+        if let (Some(b), AdjointTarget::Scalar(sum)) = (b, b_target) {
+            self.adj_scalars[b.0] = sum;
+        }
+        true
     }
 
     /// Read a vector element from either a Data node (graph reference) or
@@ -840,8 +1129,26 @@ impl Evaluator {
     /// For callers that only read forward values (prediction, deterministic
     /// outputs); `self.grad` is left as it was.
     pub fn forward(&mut self, graph: &Graph, params: &[f64]) {
+        self.grouped.begin_call();
+        // Graphs without grouped chains skip the lookups below.
+        let grouped = self.grouped.has_chains();
         for node in &graph.nodes {
             let idx = node.id.0;
+            // A grouped chain decided at its gather runs fused at its term.
+            if grouped {
+                if let Some(chain) = self.grouped.chain_starting_at(idx) {
+                    self.grouped_decide(graph, params, chain);
+                }
+                if self.grouped.skips(idx) {
+                    continue;
+                }
+                if let Some(chain) = self.grouped.chain_ending_at(idx) {
+                    if self.grouped.fused(chain) {
+                        self.grouped_forward(graph, params, chain);
+                        continue;
+                    }
+                }
+            }
             // The one match over `Op` here that keeps its catch-all. Unlike the
             // shape passes above, the default is not a guess that a new variant
             // could silently fall into: a node's own length *is* its length, so
@@ -855,6 +1162,9 @@ impl Evaluator {
             };
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
+                    if self.elementwise_vector_forward(idx, vl, *operator, *a, *b) {
+                        continue;
+                    }
                     for i in 0..vl.max(1) {
                         let av = self.read_vec(a.0, i);
                         let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
@@ -867,15 +1177,43 @@ impl Evaluator {
                 }
                 Op::Gather {
                     param_start,
+                    n_params,
                     indices,
-                    ..
                 } => {
                     let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
                         unreachable!()
                     };
-                    for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i) as usize;
-                        self.vec_buf[off + i] = graph.param_transforms[k].apply(params[k]);
+                    if self.gather_by_group(graph, params, (*param_start, *n_params, *indices), vl)
+                    {
+                        let NodeKind::DataRef(di) = self.node_kind[indices.0] else {
+                            unreachable!()
+                        };
+                        // Each group's value, transformed once rather than once
+                        // per row that selects it.
+                        let mut values = std::mem::take(&mut self.group_scratch);
+                        values.clear();
+                        values.extend((0..*n_params).map(|g| {
+                            let k = *param_start + g;
+                            graph.param_transforms[k].apply(params[k])
+                        }));
+                        let groups = &self.binding.vectors[di][..vl];
+                        let out = &mut self.vec_buf[off..off + vl];
+                        for (value, &group) in out.iter_mut().zip(groups) {
+                            let group = group as usize;
+                            *value = match values.get(group) {
+                                Some(&value) => value,
+                                None => {
+                                    let k = *param_start + group;
+                                    graph.param_transforms[k].apply(params[k])
+                                }
+                            };
+                        }
+                        self.group_scratch = values;
+                    } else {
+                        for i in 0..vl {
+                            let k = *param_start + self.read_vec(indices.0, i) as usize;
+                            self.vec_buf[off + i] = graph.param_transforms[k].apply(params[k]);
+                        }
                     }
                 }
                 Op::Sum(a) => {
@@ -927,9 +1265,23 @@ impl Evaluator {
                         NodeKind::ComputedVec(o) => o,
                         _ => unreachable!(),
                     };
-                    for i in 0..vl {
-                        let v = self.read_vec(vec.0, i);
-                        self.vec_buf[out_off + i] = s + v;
+                    let resolved = self.resolved_loops();
+                    let (inputs, outputs) = self.vec_buf.split_at_mut(out_off);
+                    let values = match self.node_kind[vec.0] {
+                        _ if !resolved => None,
+                        NodeKind::DataRef(di) => Some(&self.binding.vectors[di][..vl]),
+                        NodeKind::ComputedVec(o) if o + vl <= out_off => Some(&inputs[o..o + vl]),
+                        _ => None,
+                    };
+                    if let Some(values) = values {
+                        for (out, &v) in outputs[..vl].iter_mut().zip(values) {
+                            *out = s + v;
+                        }
+                    } else {
+                        for i in 0..vl {
+                            let v = self.read_vec(vec.0, i);
+                            self.vec_buf[out_off + i] = s + v;
+                        }
                     }
                 }
                 Op::ScalarBroadcast(scalar) => {
@@ -1004,8 +1356,20 @@ impl Evaluator {
                             let mut residuals = std::mem::take(&mut self.observation_cache[idx]);
                             residuals.resize(vl.min(obs.len()), 0.0);
                             let mut sum_sq = 0.0f64;
+                            let resolved = self.resolved_loops();
+                            let means = operand(
+                                &self.node_kind,
+                                &self.scalars,
+                                &self.binding,
+                                &self.vec_buf,
+                                *linpred_vec,
+                            );
                             for (i, (&y, d)) in obs.iter().zip(residuals.iter_mut()).enumerate() {
-                                let m = self.read_vec(linpred_vec.0, i);
+                                let m = if resolved {
+                                    means.at(i)
+                                } else {
+                                    self.read_vec(linpred_vec.0, i)
+                                };
                                 *d = (y - m) / sv;
                                 sum_sq += *d * *d;
                             }
@@ -1065,10 +1429,22 @@ impl Evaluator {
                             let mut residuals = std::mem::take(&mut self.observation_cache[idx]);
                             residuals.resize(vl.min(log_obs.len()), 0.0);
                             let mut sum = 0.0f64;
+                            let resolved = self.resolved_loops();
+                            let means = operand(
+                                &self.node_kind,
+                                &self.scalars,
+                                &self.binding,
+                                &self.vec_buf,
+                                *linpred_vec,
+                            );
                             for (i, (&ly, d)) in
                                 log_obs.iter().zip(residuals.iter_mut()).enumerate()
                             {
-                                let m = self.read_vec(linpred_vec.0, i);
+                                let m = if resolved {
+                                    means.at(i)
+                                } else {
+                                    self.read_vec(linpred_vec.0, i)
+                                };
                                 *d = (ly - m) / sv;
                                 sum += log_norm - ly - 0.5 * *d * *d;
                             }
@@ -1269,8 +1645,13 @@ impl Evaluator {
             self.adj_scalars[id.0] += 1.0;
         }
 
+        let grouped = self.grouped.has_chains();
         for node in graph.nodes.iter().rev() {
             let idx = node.id.0;
+            // A grouped chain's term ran its nodes' reverse passes fused.
+            if grouped && self.grouped.skips(idx) {
+                continue;
+            }
             // The one match over `Op` here that keeps its catch-all. Unlike the
             // shape passes above, the default is not a guess that a new variant
             // could silently fall into: a node's own length *is* its length, so
@@ -1294,9 +1675,19 @@ impl Evaluator {
             if !active {
                 continue;
             }
+            if grouped {
+                if let Some(chain) = self.grouped.chain_ending_at(idx) {
+                    if self.grouped_reverse(graph, params, chain, a_s) {
+                        continue;
+                    }
+                }
+            }
 
             match &node.op {
                 Op::Elementwise { operator, a, b } => {
+                    if self.elementwise_vector_backward(idx, vl, *operator, *a, *b) {
+                        continue;
+                    }
                     for i in 0..vl.max(1) {
                         let av = self.read_vec(a.0, i);
                         let bv = b.map_or(0.0, |b| self.read_vec(b.0, i));
@@ -1322,16 +1713,45 @@ impl Evaluator {
                 }
                 Op::Gather {
                     param_start,
+                    n_params,
                     indices,
-                    ..
                 } => {
                     let NodeKind::ComputedVec(off) = self.node_kind[idx] else {
                         unreachable!()
                     };
-                    for i in 0..vl {
-                        let k = *param_start + self.read_vec(indices.0, i) as usize;
-                        self.grad[k] += self.adj_vec_buf[off + i]
-                            * graph.param_transforms[k].derivative(params[k]);
+                    if self.gather_by_group(graph, params, (*param_start, *n_params, *indices), vl)
+                    {
+                        let NodeKind::DataRef(di) = self.node_kind[indices.0] else {
+                            unreachable!()
+                        };
+                        // Each group's derivative, taken once rather than once
+                        // per row; every row still adds its own product in row
+                        // order.
+                        let mut derivatives = std::mem::take(&mut self.group_scratch);
+                        derivatives.clear();
+                        derivatives.extend((0..*n_params).map(|g| {
+                            let k = *param_start + g;
+                            graph.param_transforms[k].derivative(params[k])
+                        }));
+                        let groups = &self.binding.vectors[di][..vl];
+                        let adjoints = &self.adj_vec_buf[off..off + vl];
+                        let grad = &mut self.grad[..];
+                        for (&group, &adjoint) in groups.iter().zip(adjoints) {
+                            let group = group as usize;
+                            let k = *param_start + group;
+                            let derivative = match derivatives.get(group) {
+                                Some(&derivative) => derivative,
+                                None => graph.param_transforms[k].derivative(params[k]),
+                            };
+                            grad[k] += adjoint * derivative;
+                        }
+                        self.group_scratch = derivatives;
+                    } else {
+                        for i in 0..vl {
+                            let k = *param_start + self.read_vec(indices.0, i) as usize;
+                            self.grad[k] += self.adj_vec_buf[off + i]
+                                * graph.param_transforms[k].derivative(params[k]);
+                        }
                     }
                 }
                 Op::Sum(a) => {
@@ -1411,11 +1831,31 @@ impl Evaluator {
                         _ => unreachable!(),
                     };
                     let mut ds = 0.0f64;
-                    for i in 0..vl {
-                        let upstream = self.adj_vec_buf[out_off + i];
-                        ds += upstream;
-                        if let NodeKind::ComputedVec(v_off) = self.node_kind[vec.0] {
-                            self.adj_vec_buf[v_off + i] += upstream;
+                    let resolved = self.resolved_loops();
+                    let (lower, upper) = self.adj_vec_buf.split_at_mut(out_off);
+                    let upstreams = &upper[..vl];
+                    match self.node_kind[vec.0] {
+                        NodeKind::ComputedVec(v_off) if resolved && v_off + vl <= out_off => {
+                            for (adjoint, &upstream) in
+                                lower[v_off..v_off + vl].iter_mut().zip(upstreams)
+                            {
+                                ds += upstream;
+                                *adjoint += upstream;
+                            }
+                        }
+                        NodeKind::ComputedVec(_) => {
+                            for i in 0..vl {
+                                let upstream = self.adj_vec_buf[out_off + i];
+                                ds += upstream;
+                                if let NodeKind::ComputedVec(v_off) = self.node_kind[vec.0] {
+                                    self.adj_vec_buf[v_off + i] += upstream;
+                                }
+                            }
+                        }
+                        _ => {
+                            for &upstream in upstreams {
+                                ds += upstream;
+                            }
                         }
                     }
                     self.adj_scalars[scalar.0] += ds;
@@ -1757,6 +2197,10 @@ impl Evaluator {
 #[cfg(test)]
 #[path = "autodiff_reference.rs"]
 mod reference;
+
+#[path = "autodiff_grouped.rs"]
+mod grouped;
+pub use grouped::fused_grouped_normal_passes;
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 
@@ -3791,6 +4235,198 @@ mod tests {
         // Of the 384 cases, so the scale's sums are checked on finite values
         // and not only on a NaN that every sum carries.
         assert_eq!(finite_scale_adjoints, 128);
+    }
+
+    /// A non-centered varying-intercept graph, `mu + e(a, b)` with
+    /// `e = (op(a, b)) * w`, observed through a Normal term with an inferred
+    /// scale and a LogNormal term with a constant one. `a` and `b` are a
+    /// gathered vector, a scalar parameter, data, or a second gathered vector
+    /// over other groups, in every pairing, so two distinct computed vectors
+    /// meet in one node; `w` has
+    /// zeros, so some of the elementwise node's upstream adjoints are zero and
+    /// take the skip. The gathered parameters have an identity or an `Exp`
+    /// transform, and `tau` has a prior of its own.
+    fn indexed_graph(
+        op: ElementwiseOp,
+        kinds: (usize, Option<usize>),
+        transform: ParamTransform,
+    ) -> Graph {
+        let mut g = Graph::new();
+        let mu = g.add_param("mu");
+        let tau = g.add_param("tau");
+        let z = g.add_vector_params_with_transform("z", 3, transform.clone());
+        let log_sigma = g.add_param("log_sigma");
+        let second = g.add_vector_params_with_transform("v", 3, transform);
+        let group = g.add_data("group", vec![0.0, 2.0, 1.0, 1.0, 0.0, 2.0]);
+        let gathered = g.gather(z, 3, group);
+        let other_group = g.add_data("other_group", vec![2.0, 2.0, 0.0, 1.0, 1.0, 0.0]);
+        let other = g.gather(second, 3, other_group);
+        let x = g.add_data("x", vec![0.0, -1.0, 2.5, 1e-300, 3.0, 0.5]);
+        let w = g.add_data("w", vec![1.0, 0.0, -2.0, 1.0, 0.0, 0.5]);
+        let pick = |kind: usize| [gathered, tau, x, other][kind];
+        let e = g.elementwise(op, pick(kinds.0), kinds.1.map(pick));
+        let weighted = g.elementwise(ElementwiseOp::Mul, e, Some(w));
+        let mean = g.scalar_broadcast_add(mu, weighted);
+        let sigma = g.exp(log_sigma);
+        let levels = g.add_obs_data(vec![0.3, -1.2, 2.0, 0.0, 1.1, -0.4]);
+        g.obs_logp_normal(mean, sigma, levels);
+        let half = g.add_constant(0.5);
+        let sizes = g.add_obs_data(vec![1.5, 0.2, 3.0, 1.0, 0.7, 2.2]);
+        g.obs_logp_lognormal(mean, half, sizes);
+        // Added last, so the reverse pass reaches it first and `tau` already
+        // holds an adjoint when the elementwise node adds its own.
+        let zero = g.add_constant(0.0);
+        let three = g.add_constant(3.0);
+        g.normal_logp(tau, zero, three);
+        g
+    }
+
+    /// The loops that read operands resolved once per node, and the gathers
+    /// that transform each group once, must give the per-element loops' bits:
+    /// the log density, every gradient component and every node's own values,
+    /// for every elementwise operator, every pairing of two gathered vectors,
+    /// a scalar and data, both transforms, and parameters that send some values
+    /// to zero, infinity or NaN. NaNs are compared by their bits too. Rust
+    /// guarantees neither the sign nor the payload of a NaN, nor the same
+    /// results from functions like `exp` and `powf` on every platform, so a
+    /// match here is a fact about the build and platform that ran it.
+    #[test]
+    fn resolved_loops_match_the_per_element_loops_bit_for_bit() {
+        use ElementwiseOp::*;
+        let binary = [Add, Sub, Mul, Div, Pow];
+        let unary = [Neg, Exp, Log, Sigmoid, Sqrt, Tanh, Softplus, Sin, Cos];
+        let mut cases = Vec::new();
+        for op in binary {
+            for a in 0..4 {
+                for b in 0..4 {
+                    // Two scalars give a scalar node, which has no vector loop.
+                    if (a, b) != (1, 1) {
+                        cases.push((op, (a, Some(b))));
+                    }
+                }
+            }
+        }
+        for op in unary {
+            for a in [0, 2, 3] {
+                cases.push((op, (a, None)));
+            }
+        }
+        // mu, tau, z[0..3], log_sigma, v[0..3].
+        let points: [[f64; 9]; 5] = [
+            [0.4, 1.3, -0.2, 0.7, 1.9, -0.1, 0.6, -1.1, 0.05],
+            [-1.0, 0.0, 0.0, -0.5, 2.0, 0.3, -0.0, 1.5, -2.0],
+            [0.0, -2.5, 3.0, -1e-3, 0.25, 1.0, 0.0, 2.5, -0.25],
+            [2.0, 1e300, -1e300, 40.0, -40.0, -0.7, 1e300, -3.0, 40.0],
+            [0.1, -0.0, 800.0, -800.0, 1e-310, 0.0, -800.0, 1e-310, 0.5],
+        ];
+        let mut finite_gradients = 0;
+        let mut compared = 0;
+        for transform in [ParamTransform::Identity, ParamTransform::Exp] {
+            for &(op, kinds) in &cases {
+                let g = indexed_graph(op, kinds, transform.clone());
+                let mut resolved = Evaluator::new(&g);
+                let mut per_element = Evaluator::new(&g);
+                per_element.per_element = true;
+                for point in &points {
+                    resolved.compute(&g, point);
+                    per_element.compute(&g, point);
+                    let label = format!("{op:?} {kinds:?} {transform:?} {point:?}");
+                    assert_eq!(
+                        resolved.total_logp.to_bits(),
+                        per_element.total_logp.to_bits(),
+                        "{label}"
+                    );
+                    for (k, (&l, &r)) in resolved.grad.iter().zip(&per_element.grad).enumerate() {
+                        assert_eq!(
+                            l.to_bits(),
+                            r.to_bits(),
+                            "{label}, gradient {k}: {l:e} {r:e}"
+                        );
+                        finite_gradients += l.is_finite() as usize;
+                        compared += 1;
+                    }
+                    // Every node's own values too, which a later node can hide:
+                    // a sign of zero erased by an addition, say.
+                    for node in &g.nodes {
+                        let length = per_element.node_len(node.id);
+                        let values = |e: &Evaluator| -> Vec<u64> {
+                            if length == 0 {
+                                vec![e.scalar_at(node.id).to_bits()]
+                            } else {
+                                (0..length)
+                                    .map(|i| e.vec_elem(node.id, i).to_bits())
+                                    .collect()
+                            }
+                        };
+                        assert_eq!(
+                            values(&resolved),
+                            values(&per_element),
+                            "{label}, node {:?}",
+                            node.id
+                        );
+                    }
+                }
+            }
+        }
+        // Most components are ordinary finite numbers, so the comparison is
+        // not carried by NaNs that every path would share.
+        assert!(
+            finite_gradients * 2 > compared,
+            "{finite_gradients} of {compared}"
+        );
+    }
+
+    /// The resolved loops against the reference evaluator and finite
+    /// differences, on varying-intercept graphs with each transform.
+    #[test]
+    fn indexed_graphs_match_the_reference_gradients() {
+        for transform in [ParamTransform::Identity, ParamTransform::Exp] {
+            for (op, kinds) in [
+                (ElementwiseOp::Mul, (1, Some(0))),
+                (ElementwiseOp::Mul, (0, Some(1))),
+                (ElementwiseOp::Add, (0, Some(2))),
+                (ElementwiseOp::Div, (0, Some(1))),
+                (ElementwiseOp::Tanh, (0, None)),
+                (ElementwiseOp::Mul, (0, Some(3))),
+                (ElementwiseOp::Sub, (3, Some(0))),
+                (ElementwiseOp::Div, (0, Some(3))),
+            ] {
+                let g = indexed_graph(op, kinds, transform.clone());
+                full_finite_diff_check(&g, &[0.4, 1.3, -0.2, 0.7, 0.3, -0.1, 0.6, -1.1, 0.8], 2e-5);
+            }
+        }
+    }
+
+    /// A gather whose span a graph change moved past the parameters, as no
+    /// fresh graph can have, still runs the per-row loop, which reads only
+    /// the parameters its rows select, and gives what it gave before.
+    #[test]
+    fn a_gather_moved_past_the_parameters_still_reads_only_its_rows() {
+        let mut g = Graph::new();
+        let z = g.add_vector_params("z", 2);
+        let rows = g.add_data("group", vec![0.0, 0.0]);
+        let gathered = g.gather(z, 2, rows);
+        let one = g.add_constant(1.0);
+        let obs = g.add_obs_data(vec![0.5, -0.5]);
+        g.obs_logp_normal(gathered, one, obs);
+        let mut resolved = Evaluator::new(&g);
+        let mut per_element = Evaluator::new(&g);
+        per_element.per_element = true;
+        let Op::Gather { param_start, .. } = &mut g.nodes[gathered.0].op else {
+            unreachable!()
+        };
+        // Rows select group 0, now parameter 1; the span runs to parameter 2.
+        *param_start = 1;
+        resolved.compute(&g, &[0.3, -0.7]);
+        per_element.compute(&g, &[0.3, -0.7]);
+        assert_eq!(
+            resolved.total_logp.to_bits(),
+            per_element.total_logp.to_bits()
+        );
+        assert_eq!(resolved.vec_elem(gathered, 0), -0.7);
+        let bits = |e: &Evaluator| e.grad.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+        assert_eq!(bits(&resolved), bits(&per_element));
+        assert_eq!(resolved.grad[0], 0.0);
     }
 
     /// Normal and LogNormal terms on a design matrix, with an inferred and a
