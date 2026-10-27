@@ -1,0 +1,943 @@
+# rustmc against nutpie, benchmarks/head_to_head.py, 2026-10-27
+# Revision e1ec4ac (main at 18ede80, with #41 to #48, plus this study), clean; rustmc 0.15.0,
+# nutpie 0.16.6, PyMC 5.28.0, ArviZ 0.23.4; AMD Ryzen 9 5900X 12-Core Processor, Linux.
+# 4 chains, 1000 warmup and 1000 draws for both engines (nutpie300: nutpie's default 300
+# warmup), 10 datasets per cell (eight schools has one dataset, so its 10 fits differ only
+# in the sampler seed), 46 cells, 2.4 hours. Every fit started under a shared lock at a
+# 1-minute load below 1.5 (1.04 to 1.50 over 1,320 fits; no load wait timed out), and
+# every fit finished.
+# Fit s runs from bound data to an ArviZ InferenceData with each engine's posterior draws
+# and post-warmup sample statistics (no warmup, no pointwise log-likelihood). rustmc also
+# writes a small observed_data group, and each engine converts its own set of sample
+# statistics, more of them for nutpie, so the two conversions are close but not identical
+# work. Sampling s stops when sampling does and includes neither. Ratio rows are rustmc
+# over nutpie, paired by dataset: median [low, high].
+# A fit enters a verdict only with R-hat at most 1.01, no post-warmup divergence and a
+# smallest bulk ESS of at least 400.
+# Command: python -m benchmarks.head_to_head --datasets 10 --lock /tmp/claude-1000/bench.lock
+#   --cache-dir /tmp/claude-1000/h2h-cache-final --output benchmarks/results/2026-10-27-head-to-head.json
+
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 100x4 threads=1               rustmc    0.0339 [0.0318, 0.0361]    0.0299 [0.0282, 0.0312]    0.00761 [0.00736, 0.00828] 4382 [3980, 4807]           0.00      0
+normal 100x4 threads=1               nutpie    0.0689 [0.0668, 0.0728]    0.0518 [0.0503, 0.0553]    0.0126 [0.0109, 0.0149]    5539 [4811, 6149]           8.15      0
+normal 100x4 threads=1               nutpie300 0.0513 [0.0487, 0.0549]    0.0346 [0.0324, 0.0375]    0.0103 [0.00875, 0.0143]   5036 [3854, 5887]           3.28      0
+                                     r/n       per ESS 0.598 [0.527, 0.734] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.1 (threshold 4.3)
+                                     r/n300    per ESS 0.756 [0.541, 0.86] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.2 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 100x4 threads=4               rustmc    0.0128 [0.0117, 0.0192]    0.00894 [0.00805, 0.0136]  0.003 [0.0027, 0.004]      4382 [3980, 4807]           0.00      0
+normal 100x4 threads=4               nutpie    0.0335 [0.0321, 0.0371]    0.0167 [0.0157, 0.0172]    0.00627 [0.00529, 0.00734] 5539 [4811, 6149]           3.20      0
+normal 100x4 threads=4               nutpie300 0.0291 [0.0277, 0.0337]    0.012 [0.0111, 0.0138]     0.0059 [0.00513, 0.0076]   5036 [3854, 5887]           3.20      0
+                                     r/n       per ESS 0.49 [0.446, 0.623] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.1 (threshold 4.3)
+                                     r/n300    per ESS 0.53 [0.404, 0.652] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.2 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x16 threads=1             rustmc    0.346 [0.342, 0.352]       0.338 [0.334, 0.343]       0.0413 [0.0389, 0.0453]    8301 [7609, 8970]           0.00      0
+normal 1000x16 threads=1             nutpie    0.671 [0.662, 0.695]       0.652 [0.645, 0.678]       0.102 [0.0963, 0.11]       6500 [6048, 7069]           4.14      0
+normal 1000x16 threads=1             nutpie300 0.462 [0.457, 0.467]       0.445 [0.437, 0.451]       0.0664 [0.0606, 0.0719]    7028 [6347, 7704]           3.27      0
+                                     r/n       per ESS 0.411 [0.354, 0.453] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.0 (threshold 4.5)
+                                     r/n300    per ESS 0.632 [0.554, 0.733] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x16 threads=4             rustmc    0.101 [0.0986, 0.106]      0.0933 [0.0913, 0.0986]    0.012 [0.0112, 0.0139]     8301 [7609, 8970]           0.00      0
+normal 1000x16 threads=4             nutpie    0.202 [0.201, 0.209]       0.185 [0.183, 0.192]       0.031 [0.0286, 0.0344]     6500 [6048, 7069]           3.17      0
+normal 1000x16 threads=4             nutpie300 0.141 [0.138, 0.146]       0.124 [0.122, 0.128]       0.0205 [0.0182, 0.0218]    7028 [6347, 7704]           3.26      0
+                                     r/n       per ESS 0.395 [0.327, 0.456] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.0 (threshold 4.5)
+                                     r/n300    per ESS 0.602 [0.522, 0.713] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 10000x16 threads=1            rustmc    3.44 [3.42, 3.48]          3.43 [3.41, 3.47]          0.415 [0.384, 0.441]       8289 [7764, 8917]           0.00      0
+normal 10000x16 threads=1            nutpie    8.49 [8.36, 8.56]          8.47 [8.34, 8.54]          1.28 [1.18, 1.32]          6625 [6411, 7170]           3.21      0
+normal 10000x16 threads=1            nutpie300 5.77 [5.66, 5.94]          5.75 [5.65, 5.93]          0.834 [0.8, 0.87]          6878 [6579, 7297]           3.27      0
+                                     r/n       per ESS 0.325 [0.297, 0.351] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.488 [0.442, 0.528] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 10000x16 threads=4            rustmc    0.892 [0.887, 0.904]       0.884 [0.879, 0.895]       0.108 [0.1, 0.115]         8289 [7764, 8917]           0.00      0
+normal 10000x16 threads=4            nutpie    2.38 [2.35, 2.41]          2.36 [2.33, 2.39]          0.359 [0.331, 0.373]       6625 [6411, 7170]           3.24      0
+normal 10000x16 threads=4            nutpie300 1.62 [1.58, 1.65]          1.6 [1.57, 1.63]           0.232 [0.225, 0.245]       6878 [6579, 7297]           3.27      0
+                                     r/n       per ESS 0.302 [0.278, 0.327] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.451 [0.408, 0.504] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x64 threads=1             rustmc    1.42 [1.33, 1.55]          1.4 [1.31, 1.53]           0.349 [0.323, 0.414]       4114 [3681, 4403]           0.00      0
+normal 1000x64 threads=1             nutpie    4.45 [4.39, 4.53]          4.43 [4.38, 4.51]          0.739 [0.683, 0.803]       6016 [5602, 6434]           4.17      0
+normal 1000x64 threads=1             nutpie300 2.99 [2.96, 3.03]          2.97 [2.94, 3.01]          0.521 [0.468, 0.558]       5769 [5338, 6316]           3.28      0
+                                     r/n       per ESS 0.481 [0.427, 0.56] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.2 (threshold 4.8)
+                                     r/n300    per ESS 0.679 [0.596, 0.884] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.0 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x64 threads=4             rustmc    0.415 [0.391, 0.507]       0.393 [0.369, 0.486]       0.106 [0.0911, 0.128]      4114 [3681, 4403]           0.00      0
+normal 1000x64 threads=4             nutpie    1.33 [1.28, 1.36]          1.31 [1.27, 1.33]          0.217 [0.203, 0.239]       6016 [5602, 6434]           3.27      0
+normal 1000x64 threads=4             nutpie300 0.797 [0.779, 0.826]       0.779 [0.762, 0.808]       0.137 [0.127, 0.15]        5769 [5338, 6316]           3.30      0
+                                     r/n       per ESS 0.491 [0.398, 0.58] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.2 (threshold 4.8)
+                                     r/n300    per ESS 0.771 [0.642, 1.01] over 10/10 passing pairs, unadjusted sign test p 0.021: rustmc faster; max mean-difference z 3.0 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x128 threads=1            rustmc    3.82 [3.59, 3.99]          3.78 [3.55, 3.94]          0.63 [0.57, 0.74]          6099 [4852, 6742]           0.00      0
+normal 1000x128 threads=1            nutpie    14.7 [14, 15.9]            14.7 [13.9, 15.9]          3.81 [3.35, 4.2]           3963 [3450, 4174]           5.51      0
+normal 1000x128 threads=1            nutpie300 9.63 [9.08, 10.3]          9.61 [9.06, 10.2]          2.31 [2.21, 2.53]          4175 [3625, 4513]           3.30      0
+                                     r/n       per ESS 0.164 [0.147, 0.188] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.9)
+                                     r/n300    per ESS 0.258 [0.244, 0.32] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal 1000x128 threads=4            rustmc    1.02 [0.975, 1.16]         0.972 [0.935, 1.12]        0.169 [0.149, 0.207]       6099 [4852, 6742]           0.00      0
+normal 1000x128 threads=4            nutpie    3.77 [3.69, 3.99]          3.75 [3.67, 3.96]          0.956 [0.899, 1.16]        3963 [3450, 4174]           3.39      0
+normal 1000x128 threads=4            nutpie300 2.53 [2.27, 2.8]           2.52 [2.25, 2.78]          0.621 [0.557, 0.649]       4175 [3625, 4513]           3.33      0
+                                     r/n       per ESS 0.175 [0.155, 0.21] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.9)
+                                     r/n300    per ESS 0.271 [0.246, 0.343] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 100x4 threads=1         rustmc    0.0434 [0.0412, 0.0469]    0.0389 [0.0373, 0.042]     0.00925 [0.00832, 0.0102]  4742 [4183, 5058]           0.00      0
+normal_sigma 100x4 threads=1         nutpie    0.0944 [0.0905, 0.103]     0.076 [0.0723, 0.0794]     0.02 [0.0175, 0.0211]      4721 [4530, 5203]           6.88      0
+normal_sigma 100x4 threads=1         nutpie300 0.0731 [0.0698, 0.0785]    0.0537 [0.0502, 0.0599]    0.0174 [0.0136, 0.0196]    4268 [3750, 5471]           4.98      0
+                                     r/n       per ESS 0.463 [0.406, 0.542] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.3 (threshold 4.3)
+                                     r/n300    per ESS 0.532 [0.425, 0.721] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.1 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 100x4 threads=4         rustmc    0.0164 [0.0158, 0.0202]    0.012 [0.0109, 0.0155]     0.00358 [0.00314, 0.00405] 4742 [4183, 5058]           0.00      0
+normal_sigma 100x4 threads=4         nutpie    0.0432 [0.0398, 0.0455]    0.0235 [0.0219, 0.0249]    0.00896 [0.00836, 0.0095]  4721 [4530, 5203]           3.53      0
+normal_sigma 100x4 threads=4         nutpie300 0.0368 [0.0337, 0.0401]    0.0172 [0.0163, 0.0182]    0.00866 [0.00692, 0.00984] 4268 [3750, 5471]           3.60      0
+                                     r/n       per ESS 0.401 [0.345, 0.485] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.3 (threshold 4.3)
+                                     r/n300    per ESS 0.418 [0.361, 0.505] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.1 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x16 threads=1       rustmc    0.403 [0.398, 0.414]       0.395 [0.39, 0.405]        0.0493 [0.0439, 0.0525]    8186 [7750, 9070]           0.00      0
+normal_sigma 1000x16 threads=1       nutpie    0.798 [0.77, 0.832]        0.778 [0.751, 0.814]       0.116 [0.108, 0.131]       6880 [6347, 7273]           5.08      0
+normal_sigma 1000x16 threads=1       nutpie300 0.533 [0.52, 0.677]        0.511 [0.501, 0.537]       0.0757 [0.0707, 0.0992]    7035 [6392, 7512]           3.65      0
+                                     r/n       per ESS 0.432 [0.334, 0.48] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.9 (threshold 4.5)
+                                     r/n300    per ESS 0.649 [0.47, 0.732] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x16 threads=4       rustmc    0.119 [0.115, 0.123]       0.111 [0.108, 0.115]       0.0148 [0.0131, 0.0159]    8186 [7750, 9070]           0.00      0
+normal_sigma 1000x16 threads=4       nutpie    0.235 [0.226, 0.256]       0.216 [0.207, 0.233]       0.0341 [0.0318, 0.0378]    6880 [6347, 7273]           4.97      0
+normal_sigma 1000x16 threads=4       nutpie300 0.172 [0.166, 0.328]       0.151 [0.147, 0.156]       0.0247 [0.0222, 0.048]     7035 [6392, 7512]           3.62      0
+                                     r/n       per ESS 0.443 [0.349, 0.469] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.9 (threshold 4.5)
+                                     r/n300    per ESS 0.608 [0.276, 0.694] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 10000x16 threads=1      rustmc    3.93 [3.91, 3.98]          3.93 [3.9, 3.97]           0.461 [0.436, 0.496]       8480 [7915, 8957]           0.00      0
+normal_sigma 10000x16 threads=1      nutpie    9.47 [9.38, 9.6]           9.45 [9.36, 9.58]          1.4 [1.27, 1.47]           6742 [6422, 7385]           3.69      0
+normal_sigma 10000x16 threads=1      nutpie300 6.34 [6.21, 6.56]          6.32 [6.19, 6.54]          0.881 [0.832, 0.966]       7301 [6427, 7695]           3.64      0
+                                     r/n       per ESS 0.336 [0.297, 0.377] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.524 [0.464, 0.581] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 10000x16 threads=4      rustmc    1.07 [1.04, 1.09]          1.06 [1.03, 1.08]          0.124 [0.119, 0.137]       8480 [7915, 8957]           0.00      0
+normal_sigma 10000x16 threads=4      nutpie    2.61 [2.58, 2.65]          2.59 [2.56, 2.63]          0.386 [0.352, 0.413]       6742 [6422, 7385]           3.56      0
+normal_sigma 10000x16 threads=4      nutpie300 1.74 [1.72, 1.78]          1.72 [1.7, 1.76]           0.243 [0.23, 0.27]         7301 [6427, 7695]           3.71      0
+                                     r/n       per ESS 0.328 [0.3, 0.38] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.512 [0.456, 0.59] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x64 threads=1       rustmc    1.54 [1.4, 1.67]           1.52 [1.38, 1.65]          0.381 [0.32, 0.414]        4138 [3788, 4399]           0.00      0
+normal_sigma 1000x64 threads=1       nutpie    5.04 [4.93, 5.15]          5.02 [4.91, 5.14]          0.902 [0.848, 1]           5567 [5069, 6013]           5.18      0
+normal_sigma 1000x64 threads=1       nutpie300 3.16 [3.04, 3.23]          3.14 [3.02, 3.21]          0.554 [0.509, 0.632]       5732 [5062, 5967]           4.99      0
+                                     r/n       per ESS 0.42 [0.348, 0.467] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.8)
+                                     r/n300    per ESS 0.66 [0.582, 0.769] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x64 threads=4       rustmc    0.498 [0.397, 0.547]       0.477 [0.374, 0.522]       0.122 [0.0905, 0.134]      4138 [3788, 4399]           0.00      0
+normal_sigma 1000x64 threads=4       nutpie    1.36 [1.34, 1.57]          1.34 [1.32, 1.39]          0.248 [0.224, 0.277]       5567 [5069, 6013]           3.59      0
+normal_sigma 1000x64 threads=4       nutpie300 0.891 [0.856, 1.06]        0.871 [0.837, 0.896]       0.158 [0.148, 0.183]       5732 [5062, 5967]           3.68      0
+                                     r/n       per ESS 0.502 [0.37, 0.533] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.8)
+                                     r/n300    per ESS 0.75 [0.579, 0.899] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x128 threads=1      rustmc    4.27 [4.02, 4.39]          4.23 [3.97, 4.35]          0.76 [0.646, 0.839]        5609 [4820, 6641]           0.00      0
+normal_sigma 1000x128 threads=1      nutpie    15.2 [14.5, 16]            15.1 [14.5, 15.9]          4.06 [3.78, 4.48]          3682 [3367, 3971]           5.07      0
+normal_sigma 1000x128 threads=1      nutpie300 10.1 [9.62, 10.7]          10.1 [9.6, 10.6]           2.57 [2.3, 2.86]           3982 [3371, 4606]           4.92      0
+                                     r/n       per ESS 0.187 [0.156, 0.205] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.9)
+                                     r/n300    per ESS 0.297 [0.226, 0.332] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+normal_sigma 1000x128 threads=4      rustmc    1.1 [1.08, 1.17]           1.06 [1.04, 1.13]          0.195 [0.168, 0.242]       5609 [4820, 6641]           0.00      0
+normal_sigma 1000x128 threads=4      nutpie    4.19 [4.02, 4.42]          4.17 [4, 4.4]              1.13 [1.04, 1.3]           3682 [3367, 3971]           3.61      0
+normal_sigma 1000x128 threads=4      nutpie300 2.88 [2.63, 3.09]          2.81 [2.61, 3.07]          0.741 [0.641, 0.847]       3982 [3371, 4606]           3.71      0
+                                     r/n       per ESS 0.174 [0.145, 0.189] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.9)
+                                     r/n300    per ESS 0.28 [0.198, 0.32] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 100x4 threads=1             rustmc    0.105 [0.0995, 0.108]      0.101 [0.0945, 0.104]      0.0246 [0.0229, 0.0266]    4195 [3870, 4614]           0.00      0
+logistic 100x4 threads=1             nutpie    0.196 [0.181, 0.208]       0.176 [0.165, 0.19]        0.0436 [0.0347, 0.0612]    4570 [3409, 5279]           5.21      0
+logistic 100x4 threads=1             nutpie300 0.137 [0.132, 0.142]       0.118 [0.115, 0.125]       0.032 [0.0262, 0.0361]     4457 [3802, 5134]           3.50      0
+                                     r/n       per ESS 0.565 [0.427, 0.75] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.9 (threshold 4.3)
+                                     r/n300    per ESS 0.797 [0.668, 1.02] over 10/10 passing pairs, unadjusted sign test p 0.021: rustmc faster; max mean-difference z 2.3 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 100x4 threads=4             rustmc    0.0324 [0.0314, 0.0417]    0.0282 [0.0271, 0.0365]    0.00772 [0.00711, 0.00981] 4195 [3870, 4614]           0.00      0
+logistic 100x4 threads=4             nutpie    0.0685 [0.0658, 0.0803]    0.0517 [0.0488, 0.0638]    0.0149 [0.0125, 0.0235]    4570 [3409, 5279]           3.32      0
+logistic 100x4 threads=4             nutpie300 0.0524 [0.0505, 0.0563]    0.0346 [0.0331, 0.0376]    0.0119 [0.0102, 0.0142]    4457 [3802, 5134]           3.40      0
+                                     r/n       per ESS 0.516 [0.333, 0.663] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.9 (threshold 4.3)
+                                     r/n300    per ESS 0.659 [0.534, 0.812] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.3 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x16 threads=1           rustmc    1.31 [1.26, 1.33]          1.3 [1.25, 1.33]           0.166 [0.146, 0.203]       7792 [6532, 8949]           0.00      0
+logistic 1000x16 threads=1           nutpie    2.6 [2.56, 2.64]           2.58 [2.54, 2.62]          0.397 [0.347, 0.428]       6503 [6102, 7372]           4.45      0
+logistic 1000x16 threads=1           nutpie300 1.75 [1.72, 1.76]          1.73 [1.7, 1.74]           0.264 [0.247, 0.293]       6618 [5869, 7108]           3.46      0
+                                     r/n       per ESS 0.425 [0.381, 0.553] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.613 [0.557, 0.822] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x16 threads=4           rustmc    0.352 [0.333, 0.359]       0.344 [0.325, 0.35]        0.0445 [0.0392, 0.0538]    7792 [6532, 8949]           0.00      0
+logistic 1000x16 threads=4           nutpie    0.701 [0.683, 0.708]       0.683 [0.667, 0.691]       0.108 [0.0951, 0.116]      6503 [6102, 7372]           3.39      0
+logistic 1000x16 threads=4           nutpie300 0.472 [0.465, 0.486]       0.455 [0.446, 0.468]       0.0718 [0.0656, 0.0794]    6618 [5869, 7108]           3.41      0
+                                     r/n       per ESS 0.419 [0.386, 0.552] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.8 (threshold 4.5)
+                                     r/n300    per ESS 0.606 [0.541, 0.821] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.3 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 10000x16 threads=1          rustmc    15.5 [15.2, 15.7]          15.5 [15.2, 15.7]          1.8 [1.61, 2.01]           8628 [7674, 9781]           0.00      0
+logistic 10000x16 threads=1          nutpie    28 [27.5, 35.8]            27.9 [27.5, 35.6]          4.29 [3.9, 5.15]           6557 [6263, 7332]           3.38      0
+logistic 10000x16 threads=1          nutpie300 18.7 [18.3, 19.2]          18.7 [18.3, 19.2]          2.74 [2.38, 3.17]          6801 [5891, 7857]           3.44      0
+                                     r/n       per ESS 0.419 [0.39, 0.462] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.5)
+                                     r/n300    per ESS 0.678 [0.563, 0.763] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 10000x16 threads=4          rustmc    4.06 [3.96, 4.13]          4.05 [3.95, 4.12]          0.472 [0.411, 0.531]       8628 [7674, 9781]           0.00      0
+logistic 10000x16 threads=4          nutpie    7.3 [7.25, 7.63]           7.28 [7.22, 7.6]           1.12 [1, 1.16]             6557 [6263, 7332]           3.30      0
+logistic 10000x16 threads=4          nutpie300 4.93 [4.81, 5.01]          4.91 [4.8, 4.99]           0.715 [0.627, 0.823]       6801 [5891, 7857]           3.34      0
+                                     r/n       per ESS 0.422 [0.401, 0.502] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.5)
+                                     r/n300    per ESS 0.671 [0.561, 0.758] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x64 threads=1           rustmc    2.97 [2.68, 3.24]          2.95 [2.66, 3.22]          0.752 [0.618, 0.917]       3880 [3237, 4586]           0.00      0
+logistic 1000x64 threads=1           nutpie    7.22 [7.13, 7.31]          7.2 [7.11, 7.29]           1.33 [1.18, 1.53]          5453 [4709, 6096]           4.34      0
+logistic 1000x64 threads=1           nutpie300 4.52 [4.5, 4.6]            4.5 [4.48, 4.58]           0.857 [0.799, 0.919]       5284 [4924, 5647]           3.37      0
+                                     r/n       per ESS 0.575 [0.455, 0.704] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.8)
+                                     r/n300    per ESS 0.849 [0.736, 1.09] over 10/10 passing pairs, unadjusted sign test p 0.109: no clear winner; max mean-difference z 2.9 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x64 threads=4           rustmc    0.923 [0.738, 0.99]        0.9 [0.717, 0.969]         0.234 [0.173, 0.273]       3880 [3237, 4586]           0.00      0
+logistic 1000x64 threads=4           nutpie    1.89 [1.88, 1.92]          1.87 [1.86, 1.9]           0.345 [0.309, 0.401]       5453 [4709, 6096]           3.33      0
+logistic 1000x64 threads=4           nutpie300 1.28 [1.27, 1.39]          1.26 [1.25, 1.36]          0.243 [0.231, 0.258]       5284 [4924, 5647]           3.36      0
+                                     r/n       per ESS 0.679 [0.472, 0.802] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.1 (threshold 4.8)
+                                     r/n300    per ESS 0.941 [0.715, 1.18] over 10/10 passing pairs, unadjusted sign test p 0.109: no clear winner; max mean-difference z 2.9 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x128 threads=1          rustmc    5.87 [5.42, 6.01]          5.82 [5.38, 5.97]          1.01 [0.839, 1.24]         5748 [4748, 6968]           0.00      0
+logistic 1000x128 threads=1          nutpie    18 [17.5, 18.9]            17.9 [17.5, 18.8]          4.37 [4.2, 4.49]           4166 [4021, 4272]           4.35      0
+logistic 1000x128 threads=1          nutpie300 12.7 [11.7, 13.9]          12.7 [11.7, 13.8]          2.98 [2.76, 3.46]          4301 [3826, 4496]           3.39      0
+                                     r/n       per ESS 0.231 [0.192, 0.282] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 4.1 (threshold 4.9)
+                                     r/n300    per ESS 0.334 [0.268, 0.406] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.2 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+logistic 1000x128 threads=4          rustmc    1.6 [1.57, 1.65]           1.56 [1.53, 1.6]           0.275 [0.231, 0.343]       5748 [4748, 6968]           0.00      0
+logistic 1000x128 threads=4          nutpie    5.13 [5.01, 5.32]          5.11 [5, 5.3]              1.25 [1.19, 1.27]          4166 [4021, 4272]           3.31      0
+logistic 1000x128 threads=4          nutpie300 3.56 [3.21, 3.89]          3.55 [3.19, 3.87]          0.84 [0.804, 0.877]        4301 [3826, 4496]           3.35      0
+                                     r/n       per ESS 0.221 [0.185, 0.275] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 4.1 (threshold 4.9)
+                                     r/n300    per ESS 0.328 [0.265, 0.427] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.2 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 100x4 threads=1              rustmc    0.0837 [0.0776, 0.101]     0.0788 [0.0724, 0.0971]    0.0216 [0.0181, 0.0346]    3769 [2840, 4449]           0.00      0
+poisson 100x4 threads=1              nutpie    0.164 [0.147, 0.205]       0.147 [0.129, 0.188]       0.0511 [0.0334, 0.0745]    3372 [2305, 4497]           4.84      0
+poisson 100x4 threads=1              nutpie300 0.117 [0.107, 0.139]       0.101 [0.0886, 0.122]      0.038 [0.0238, 0.0517]     3179 [2360, 4510]           3.31      0
+                                     r/n       per ESS 0.459 [0.337, 0.61] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.3)
+                                     r/n300    per ESS 0.629 [0.538, 0.797] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.0 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 100x4 threads=4              rustmc    0.0279 [0.0251, 0.034]     0.0237 [0.0211, 0.0292]    0.00745 [0.00577, 0.0106]  3769 [2840, 4449]           0.00      0
+poisson 100x4 threads=4              nutpie    0.0861 [0.0803, 0.111]     0.0683 [0.0603, 0.0932]    0.0271 [0.0179, 0.0383]    3372 [2305, 4497]           3.27      0
+poisson 100x4 threads=4              nutpie300 0.0673 [0.061, 0.0703]     0.0491 [0.0439, 0.0535]    0.0214 [0.0143, 0.0298]    3179 [2360, 4510]           3.30      0
+                                     r/n       per ESS 0.281 [0.234, 0.439] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.3)
+                                     r/n300    per ESS 0.366 [0.329, 0.498] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.0 (threshold 4.3)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x16 threads=1            rustmc    0.974 [0.901, 1.04]        0.966 [0.893, 1.03]        0.152 [0.129, 0.19]        6430 [4894, 7552]           0.00      0
+poisson 1000x16 threads=1            nutpie    1.87 [1.81, 1.9]           1.86 [1.79, 1.88]          0.289 [0.27, 0.378]        6416 [4969, 6943]           4.44      0
+poisson 1000x16 threads=1            nutpie300 1.26 [1.23, 1.28]          1.24 [1.21, 1.26]          0.19 [0.164, 0.207]        6681 [6164, 7576]           3.32      0
+                                     r/n       per ESS 0.529 [0.429, 0.603] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.0 (threshold 4.5)
+                                     r/n300    per ESS 0.819 [0.67, 0.995] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.5 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x16 threads=4            rustmc    0.26 [0.246, 0.269]        0.253 [0.239, 0.262]       0.0399 [0.0338, 0.0532]    6430 [4894, 7552]           0.00      0
+poisson 1000x16 threads=4            nutpie    0.724 [0.713, 0.748]       0.706 [0.697, 0.731]       0.112 [0.104, 0.146]       6416 [4969, 6943]           3.29      0
+poisson 1000x16 threads=4            nutpie300 0.493 [0.483, 0.525]       0.476 [0.467, 0.507]       0.0734 [0.0639, 0.0851]    6681 [6164, 7576]           3.30      0
+                                     r/n       per ESS 0.362 [0.291, 0.43] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.0 (threshold 4.5)
+                                     r/n300    per ESS 0.561 [0.443, 0.698] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.5 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 10000x16 threads=1           rustmc    10.5 [10.3, 10.6]          10.5 [10.3, 10.6]          1.55 [1.36, 2.05]          6796 [5176, 7627]           0.00      0
+poisson 10000x16 threads=1           nutpie    21.2 [21, 21.8]            21.2 [21, 21.8]            3.24 [2.96, 3.78]          6587 [5746, 7171]           3.25      0
+poisson 10000x16 threads=1           nutpie300 14.3 [14.2, 14.6]          14.2 [14.2, 14.6]          2.16 [1.83, 2.3]           6649 [6334, 7783]           3.36      0
+                                     r/n       per ESS 0.486 [0.428, 0.607] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.5)
+                                     r/n300    per ESS 0.746 [0.646, 0.913] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 10000x16 threads=4           rustmc    2.73 [2.68, 2.76]          2.72 [2.67, 2.75]          0.404 [0.355, 0.526]       6796 [5176, 7627]           0.00      0
+poisson 10000x16 threads=4           nutpie    7.34 [7.24, 7.49]          7.33 [7.22, 7.47]          1.12 [1.03, 1.3]           6587 [5746, 7171]           3.24      0
+poisson 10000x16 threads=4           nutpie300 4.89 [4.8, 4.98]           4.87 [4.78, 4.96]          0.737 [0.634, 0.786]       6649 [6334, 7783]           3.42      0
+                                     r/n       per ESS 0.367 [0.321, 0.455] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.6 (threshold 4.5)
+                                     r/n300    per ESS 0.568 [0.493, 0.7] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 2.7 (threshold 4.5)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x64 threads=1            rustmc    2.31 [2.07, 2.63]          2.29 [2.05, 2.61]          0.574 [0.516, 0.699]       3962 [3301, 4548]           0.00      0
+poisson 1000x64 threads=1            nutpie    6.26 [6.17, 6.36]          6.24 [6.16, 6.35]          1.22 [1.07, 1.45]          5183 [4375, 5793]           4.43      0
+poisson 1000x64 threads=1            nutpie300 4.01 [3.94, 4.09]          3.99 [3.92, 4.07]          0.866 [0.739, 0.962]       4651 [4173, 5329]           3.33      0
+                                     r/n       per ESS 0.485 [0.392, 0.526] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.7 (threshold 4.8)
+                                     r/n300    per ESS 0.717 [0.572, 0.838] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.4 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x64 threads=4            rustmc    0.666 [0.593, 0.805]       0.646 [0.571, 0.785]       0.167 [0.148, 0.221]       3962 [3301, 4548]           0.00      0
+poisson 1000x64 threads=4            nutpie    1.84 [1.79, 1.91]          1.82 [1.77, 1.89]          0.362 [0.312, 0.437]       5183 [4375, 5793]           3.32      0
+poisson 1000x64 threads=4            nutpie300 1.16 [1.15, 1.23]          1.15 [1.13, 1.21]          0.255 [0.216, 0.282]       4651 [4173, 5329]           3.36      0
+                                     r/n       per ESS 0.469 [0.375, 0.563] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.7 (threshold 4.8)
+                                     r/n300    per ESS 0.732 [0.539, 0.917] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.4 (threshold 4.8)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x128 threads=1           rustmc    5.08 [4.91, 5.2]           5.04 [4.87, 5.16]          0.804 [0.744, 0.944]       6278 [5433, 6658]           0.00      0
+poisson 1000x128 threads=1           nutpie    18.5 [17.5, 20.2]          18.5 [17.5, 20.2]          4.16 [3.82, 4.7]           4459 [4300, 4848]           4.48      0
+poisson 1000x128 threads=1           nutpie300 13.3 [13, 13.9]            13.3 [13, 13.9]            2.95 [2.73, 3.04]          4537 [4314, 4909]           3.32      0
+                                     r/n       per ESS 0.2 [0.159, 0.221] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.5 (threshold 4.9)
+                                     r/n300    per ESS 0.277 [0.247, 0.346] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.7 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+poisson 1000x128 threads=4           rustmc    1.37 [1.35, 1.44]          1.33 [1.31, 1.4]           0.223 [0.203, 0.257]       6278 [5433, 6658]           0.00      0
+poisson 1000x128 threads=4           nutpie    4.92 [4.78, 5.17]          4.9 [4.76, 5.16]           1.09 [1.06, 1.15]          4459 [4300, 4848]           3.28      0
+poisson 1000x128 threads=4           nutpie300 3.39 [3.3, 3.5]            3.37 [3.29, 3.49]          0.746 [0.694, 0.784]       4537 [4314, 4909]           3.33      0
+                                     r/n       per ESS 0.206 [0.177, 0.224] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.5 (threshold 4.9)
+                                     r/n300    per ESS 0.297 [0.269, 0.36] over 10/10 passing pairs, unadjusted sign test p 0.002: rustmc faster; max mean-difference z 3.7 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+varying_intercept 500x20 threads=1   rustmc    0.739 [0.508, 0.875]       0.73 [0.497, 0.867]        0.543 [0.409, 0.614]       1342 [1189, 1509]           0.00      0
+varying_intercept 500x20 threads=1   nutpie    0.205 [0.189, 0.217]       0.184 [0.167, 0.198]       0.388 [0.281, 0.555]       533 [391.2, 700.3]          5.72      5
+                                     r/n       per ESS 1.46 [1.31, 1.86] over 5/10 passing pairs, unadjusted sign test p 0.062: no clear winner; max mean-difference z 2.9 (threshold 4.6)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+varying_intercept 500x20 threads=4   rustmc    0.222 [0.161, 0.243]       0.212 [0.15, 0.232]        0.16 [0.13, 0.183]         1342 [1189, 1509]           0.00      0
+varying_intercept 500x20 threads=4   nutpie    0.071 [0.0656, 0.0809]     0.0501 [0.0436, 0.0604]    0.134 [0.0937, 0.202]      533 [391.2, 700.3]          4.35      5
+                                     r/n       per ESS 1.38 [1.14, 1.64] over 5/10 passing pairs, unadjusted sign test p 0.062: no clear winner; max mean-difference z 2.9 (threshold 4.6)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+varying_intercept 5000x100 threads=1 rustmc    5.35 [4.87, 5.72]          5.32 [4.84, 5.69]          27.1 [15.2, 35.9]          198.4 [159.3, 320.1]        0.00     10
+varying_intercept 5000x100 threads=1 nutpie    0.951 [0.899, 1]           0.927 [0.878, 0.98]        5 [3.6, 5.66]              186.5 [169.2, 263.4]        4.51     10
+                                     r/n       per ESS - over 0/10 passing pairs, unadjusted sign test p -: inconclusive (quality); max mean-difference z 2.9 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+varying_intercept 5000x100 threads=4 rustmc    1.47 [1.29, 1.72]          1.44 [1.26, 1.69]          7.57 [4.09, 10.8]          198.4 [159.3, 320.1]        0.00     10
+varying_intercept 5000x100 threads=4 nutpie    0.288 [0.269, 0.333]       0.264 [0.248, 0.311]       1.53 [1.1, 1.82]           186.5 [169.2, 263.4]        3.44     10
+                                     r/n       per ESS - over 0/10 passing pairs, unadjusted sign test p -: inconclusive (quality); max mean-difference z 2.9 (threshold 4.9)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+eight_schools 8x8 threads=1          rustmc    0.0492 [0.0475, 0.0522]    0.0436 [0.0409, 0.0469]    0.0232 [0.0189, 0.0264]    2149 [1892, 2546]           0.00      5
+eight_schools 8x8 threads=1          nutpie    0.0709 [0.0689, 0.0756]    0.0531 [0.0508, 0.0563]    0.0332 [0.0292, 0.0436]    2208 [1621, 2368]           3.43      7
+                                     r/n       per ESS 0.635 [0.635, 0.635] over 1/10 passing pairs, unadjusted sign test p 1.000: no clear winner; max mean-difference z 3.3 (threshold 4.4)
+cell                                 engine    fit s                      sampling s                 s per min ESS (ms)         min ESS                compile s failed
+eight_schools 8x8 threads=4          rustmc    0.02 [0.0185, 0.0229]      0.0141 [0.0129, 0.0178]    0.00952 [0.00818, 0.0105]  2149 [1892, 2546]           0.00      5
+eight_schools 8x8 threads=4          nutpie    0.0349 [0.0339, 0.0405]    0.0162 [0.0158, 0.0179]    0.0175 [0.0145, 0.0215]    2208 [1621, 2368]           2.42      7
+                                     r/n       per ESS 0.493 [0.493, 0.493] over 1/10 passing pairs, unadjusted sign test p 1.000: no clear winner; max mean-difference z 3.3 (threshold 4.4)
+
+# Analysis: python benchmarks/head_to_head_summary.py benchmarks/results/2026-10-27-head-to-head.json
+# (the InferenceData span, the default)
+
+revision {'commit': 'e1ec4ac97259706c7422719e303b208de2e78cf4', 'dirty': False}, schema 2, versions {'rustmc': '0.15.0', 'nutpie': '0.16.6', 'pymc': '5.28.0', 'arviz': '0.23.4'}
+extension sha256 897f5004c62fda6c09a1ac94020bbcba887653bdbe301aa1b3d361730f888606
+compile cache directory at start: {'directory_existed': True, 'files_at_start': 0}
+per-ESS ratios use seconds
+cells run: 46
+  normal 100x4 threads=1: nutpie compile 8.15 s, empty cache directory
+  normal 100x4 threads=1: nutpie_default_tune compile 3.28 s, non-empty cache, 55 files
+  normal 100x4 threads=4: nutpie compile 3.20 s, non-empty cache, 55 files
+  normal 100x4 threads=4: nutpie_default_tune compile 3.20 s, non-empty cache, 55 files
+  normal 1000x16 threads=1: nutpie compile 4.14 s, non-empty cache, 55 files
+  normal 1000x16 threads=1: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 1000x16 threads=4: nutpie compile 3.17 s, non-empty cache, 57 files
+  normal 1000x16 threads=4: nutpie_default_tune compile 3.26 s, non-empty cache, 57 files
+  normal 10000x16 threads=1: nutpie compile 3.21 s, non-empty cache, 57 files
+  normal 10000x16 threads=1: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 10000x16 threads=4: nutpie compile 3.24 s, non-empty cache, 57 files
+  normal 10000x16 threads=4: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 1000x64 threads=1: nutpie compile 4.17 s, non-empty cache, 57 files
+  normal 1000x64 threads=1: nutpie_default_tune compile 3.28 s, non-empty cache, 59 files
+  normal 1000x64 threads=4: nutpie compile 3.27 s, non-empty cache, 59 files
+  normal 1000x64 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 59 files
+  normal 1000x128 threads=1: nutpie compile 5.51 s, non-empty cache, 59 files
+  normal 1000x128 threads=1: nutpie_default_tune compile 3.30 s, non-empty cache, 62 files
+  normal 1000x128 threads=4: nutpie compile 3.39 s, non-empty cache, 62 files
+  normal 1000x128 threads=4: nutpie_default_tune compile 3.33 s, non-empty cache, 62 files
+  normal_sigma 100x4 threads=1: nutpie compile 6.88 s, non-empty cache, 62 files
+  normal_sigma 100x4 threads=1: nutpie_default_tune compile 4.98 s, non-empty cache, 113 files
+  normal_sigma 100x4 threads=4: nutpie compile 3.53 s, non-empty cache, 115 files
+  normal_sigma 100x4 threads=4: nutpie_default_tune compile 3.60 s, non-empty cache, 115 files
+  normal_sigma 1000x16 threads=1: nutpie compile 5.08 s, non-empty cache, 115 files
+  normal_sigma 1000x16 threads=1: nutpie_default_tune compile 3.65 s, non-empty cache, 119 files
+  normal_sigma 1000x16 threads=4: nutpie compile 4.97 s, non-empty cache, 119 files
+  normal_sigma 1000x16 threads=4: nutpie_default_tune compile 3.62 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=1: nutpie compile 3.69 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=1: nutpie_default_tune compile 3.64 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=4: nutpie compile 3.56 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=4: nutpie_default_tune compile 3.71 s, non-empty cache, 121 files
+  normal_sigma 1000x64 threads=1: nutpie compile 5.18 s, non-empty cache, 121 files
+  normal_sigma 1000x64 threads=1: nutpie_default_tune compile 4.99 s, non-empty cache, 125 files
+  normal_sigma 1000x64 threads=4: nutpie compile 3.59 s, non-empty cache, 127 files
+  normal_sigma 1000x64 threads=4: nutpie_default_tune compile 3.68 s, non-empty cache, 127 files
+  normal_sigma 1000x128 threads=1: nutpie compile 5.07 s, non-empty cache, 127 files
+  normal_sigma 1000x128 threads=1: nutpie_default_tune compile 4.92 s, non-empty cache, 131 files
+  normal_sigma 1000x128 threads=4: nutpie compile 3.61 s, non-empty cache, 133 files
+  normal_sigma 1000x128 threads=4: nutpie_default_tune compile 3.71 s, non-empty cache, 133 files
+  logistic 100x4 threads=1: nutpie compile 5.21 s, non-empty cache, 133 files
+  logistic 100x4 threads=1: nutpie_default_tune compile 3.50 s, non-empty cache, 161 files
+  logistic 100x4 threads=4: nutpie compile 3.32 s, non-empty cache, 161 files
+  logistic 100x4 threads=4: nutpie_default_tune compile 3.40 s, non-empty cache, 161 files
+  logistic 1000x16 threads=1: nutpie compile 4.45 s, non-empty cache, 161 files
+  logistic 1000x16 threads=1: nutpie_default_tune compile 3.46 s, non-empty cache, 163 files
+  logistic 1000x16 threads=4: nutpie compile 3.39 s, non-empty cache, 163 files
+  logistic 1000x16 threads=4: nutpie_default_tune compile 3.41 s, non-empty cache, 163 files
+  logistic 10000x16 threads=1: nutpie compile 3.38 s, non-empty cache, 163 files
+  logistic 10000x16 threads=1: nutpie_default_tune compile 3.44 s, non-empty cache, 163 files
+  logistic 10000x16 threads=4: nutpie compile 3.30 s, non-empty cache, 163 files
+  logistic 10000x16 threads=4: nutpie_default_tune compile 3.34 s, non-empty cache, 163 files
+  logistic 1000x64 threads=1: nutpie compile 4.34 s, non-empty cache, 163 files
+  logistic 1000x64 threads=1: nutpie_default_tune compile 3.37 s, non-empty cache, 165 files
+  logistic 1000x64 threads=4: nutpie compile 3.33 s, non-empty cache, 165 files
+  logistic 1000x64 threads=4: nutpie_default_tune compile 3.36 s, non-empty cache, 165 files
+  logistic 1000x128 threads=1: nutpie compile 4.35 s, non-empty cache, 165 files
+  logistic 1000x128 threads=1: nutpie_default_tune compile 3.39 s, non-empty cache, 167 files
+  logistic 1000x128 threads=4: nutpie compile 3.31 s, non-empty cache, 167 files
+  logistic 1000x128 threads=4: nutpie_default_tune compile 3.35 s, non-empty cache, 167 files
+  poisson 100x4 threads=1: nutpie compile 4.84 s, non-empty cache, 167 files
+  poisson 100x4 threads=1: nutpie_default_tune compile 3.31 s, non-empty cache, 186 files
+  poisson 100x4 threads=4: nutpie compile 3.27 s, non-empty cache, 186 files
+  poisson 100x4 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 186 files
+  poisson 1000x16 threads=1: nutpie compile 4.44 s, non-empty cache, 186 files
+  poisson 1000x16 threads=1: nutpie_default_tune compile 3.32 s, non-empty cache, 188 files
+  poisson 1000x16 threads=4: nutpie compile 3.29 s, non-empty cache, 188 files
+  poisson 1000x16 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 188 files
+  poisson 10000x16 threads=1: nutpie compile 3.25 s, non-empty cache, 188 files
+  poisson 10000x16 threads=1: nutpie_default_tune compile 3.36 s, non-empty cache, 188 files
+  poisson 10000x16 threads=4: nutpie compile 3.24 s, non-empty cache, 188 files
+  poisson 10000x16 threads=4: nutpie_default_tune compile 3.42 s, non-empty cache, 188 files
+  poisson 1000x64 threads=1: nutpie compile 4.43 s, non-empty cache, 188 files
+  poisson 1000x64 threads=1: nutpie_default_tune compile 3.33 s, non-empty cache, 190 files
+  poisson 1000x64 threads=4: nutpie compile 3.32 s, non-empty cache, 190 files
+  poisson 1000x64 threads=4: nutpie_default_tune compile 3.36 s, non-empty cache, 190 files
+  poisson 1000x128 threads=1: nutpie compile 4.48 s, non-empty cache, 190 files
+  poisson 1000x128 threads=1: nutpie_default_tune compile 3.32 s, non-empty cache, 192 files
+  poisson 1000x128 threads=4: nutpie compile 3.28 s, non-empty cache, 192 files
+  poisson 1000x128 threads=4: nutpie_default_tune compile 3.33 s, non-empty cache, 192 files
+  varying_intercept 500x20 threads=1: nutpie compile 5.72 s, non-empty cache, 192 files
+  varying_intercept 500x20 threads=4: nutpie compile 4.35 s, non-empty cache, 212 files
+  varying_intercept 5000x100 threads=1: nutpie compile 4.51 s, non-empty cache, 214 files
+  varying_intercept 5000x100 threads=4: nutpie compile 3.44 s, non-empty cache, 218 files
+  eight_schools 8x8 threads=1: nutpie compile 3.43 s, non-empty cache, 218 files
+  eight_schools 8x8 threads=4: nutpie compile 2.42 s, non-empty cache, 229 files
+
+cell                                 vs         pass per-ESS ratio, passing pairs order-stat interval (coverage)    sign p  Holm p unadjusted               Holm-adjusted            max z / thr  all finished pairs
+normal 100x4 threads=1               nutpie    10/10 0.60 [0.53, 0.73]            [0.55, 0.68] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.60 0.60 0.53 0.66 0.59 0.64 0.55 0.68 0.73 0.55
+normal 100x4 threads=1               nutpie300 10/10 0.76 [0.54, 0.86]            [0.67, 0.85] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.2/4.3    0.75 0.74 0.54 0.76 0.82 0.79 0.85 0.67 0.86 0.72
+normal 100x4 threads=4               nutpie    10/10 0.49 [0.45, 0.62]            [0.45, 0.56] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.62 0.45 0.48 0.49 0.47 0.49 0.45 0.52 0.56 0.55
+normal 100x4 threads=4               nutpie300 10/10 0.53 [0.40, 0.65]            [0.43, 0.64] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.2/4.3    0.65 0.48 0.40 0.51 0.55 0.49 0.58 0.43 0.55 0.64
+normal 1000x16 threads=1             nutpie    10/10 0.41 [0.35, 0.45]            [0.39, 0.43] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.41 0.42 0.40 0.39 0.43 0.45 0.35 0.42 0.42 0.39
+normal 1000x16 threads=1             nutpie300 10/10 0.63 [0.55, 0.73]            [0.56, 0.71] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.61 0.65 0.64 0.57 0.65 0.71 0.55 0.73 0.62 0.56
+normal 1000x16 threads=4             nutpie    10/10 0.40 [0.33, 0.46]            [0.37, 0.43] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.39 0.40 0.39 0.38 0.41 0.46 0.33 0.40 0.43 0.37
+normal 1000x16 threads=4             nutpie300 10/10 0.60 [0.52, 0.71]            [0.53, 0.70] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.56 0.62 0.62 0.55 0.62 0.71 0.52 0.70 0.59 0.53
+normal 10000x16 threads=1            nutpie    10/10 0.33 [0.30, 0.35]            [0.30, 0.34] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.33 0.32 0.33 0.35 0.32 0.31 0.30 0.30 0.34 0.34
+normal 10000x16 threads=1            nutpie300 10/10 0.49 [0.44, 0.53]            [0.47, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.48 0.44 0.51 0.53 0.49 0.50 0.47 0.48 0.53 0.48
+normal 10000x16 threads=4            nutpie    10/10 0.30 [0.28, 0.33]            [0.28, 0.32] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.31 0.30 0.30 0.33 0.30 0.29 0.28 0.28 0.31 0.32
+normal 10000x16 threads=4            nutpie300 10/10 0.45 [0.41, 0.50]            [0.44, 0.50] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.45 0.41 0.48 0.50 0.46 0.46 0.44 0.45 0.50 0.45
+normal 1000x64 threads=1             nutpie    10/10 0.48 [0.43, 0.56]            [0.43, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.8    0.46 0.53 0.56 0.47 0.43 0.49 0.48 0.43 0.49 0.52
+normal 1000x64 threads=1             nutpie300 10/10 0.68 [0.60, 0.88]            [0.63, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.8    0.69 0.74 0.88 0.67 0.63 0.67 0.65 0.60 0.69 0.68
+normal 1000x64 threads=4             nutpie    10/10 0.49 [0.40, 0.58]            [0.44, 0.54] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.8    0.47 0.51 0.58 0.45 0.40 0.54 0.49 0.44 0.49 0.53
+normal 1000x64 threads=4             nutpie300 10/10 0.77 [0.64, 1.01]            [0.68, 0.84] (97.9%)               0.021   0.021 rustmc faster            rustmc faster            3.0/4.8    0.82 0.83 1.01 0.70 0.64 0.84 0.73 0.68 0.75 0.79
+normal 1000x128 threads=1            nutpie    10/10 0.16 [0.15, 0.19]            [0.15, 0.18] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.16 0.19 0.16 0.17 0.15 0.16 0.18 0.15 0.17 0.18
+normal 1000x128 threads=1            nutpie300 10/10 0.26 [0.24, 0.32]            [0.25, 0.30] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.9    0.30 0.30 0.25 0.26 0.24 0.25 0.32 0.25 0.25 0.30
+normal 1000x128 threads=4            nutpie    10/10 0.18 [0.15, 0.21]            [0.16, 0.20] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.17 0.21 0.15 0.17 0.16 0.18 0.20 0.16 0.18 0.18
+normal 1000x128 threads=4            nutpie300 10/10 0.27 [0.25, 0.34]            [0.25, 0.32] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.9    0.31 0.32 0.25 0.25 0.25 0.27 0.34 0.26 0.27 0.30
+normal_sigma 100x4 threads=1         nutpie    10/10 0.46 [0.41, 0.54]            [0.44, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.3/4.3    0.46 0.53 0.46 0.41 0.54 0.45 0.51 0.44 0.50 0.46
+normal_sigma 100x4 threads=1         nutpie300 10/10 0.53 [0.42, 0.72]            [0.48, 0.67] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.67 0.52 0.53 0.42 0.59 0.59 0.72 0.48 0.53 0.53
+normal_sigma 100x4 threads=4         nutpie    10/10 0.40 [0.35, 0.48]            [0.37, 0.43] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.3/4.3    0.40 0.42 0.38 0.35 0.43 0.37 0.43 0.41 0.48 0.38
+normal_sigma 100x4 threads=4         nutpie300 10/10 0.42 [0.36, 0.51]            [0.38, 0.50] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.51 0.38 0.41 0.36 0.43 0.46 0.48 0.39 0.50 0.39
+normal_sigma 1000x16 threads=1       nutpie    10/10 0.43 [0.33, 0.48]            [0.39, 0.45] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.5    0.39 0.42 0.45 0.45 0.42 0.43 0.44 0.48 0.43 0.33
+normal_sigma 1000x16 threads=1       nutpie300 10/10 0.65 [0.47, 0.73]            [0.54, 0.72] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.8/4.5    0.47 0.63 0.66 0.72 0.61 0.73 0.69 0.72 0.64 0.54
+normal_sigma 1000x16 threads=4       nutpie    10/10 0.44 [0.35, 0.47]            [0.35, 0.47] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.5    0.35 0.44 0.45 0.47 0.40 0.43 0.45 0.47 0.44 0.35
+normal_sigma 1000x16 threads=4       nutpie300 10/10 0.61 [0.28, 0.69]            [0.50, 0.67] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.8/4.5    0.28 0.62 0.59 0.69 0.56 0.67 0.61 0.63 0.60 0.50
+normal_sigma 10000x16 threads=1      nutpie    10/10 0.34 [0.30, 0.38]            [0.32, 0.35] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.32 0.33 0.32 0.32 0.30 0.35 0.34 0.35 0.38 0.35
+normal_sigma 10000x16 threads=1      nutpie300 10/10 0.52 [0.46, 0.58]            [0.49, 0.57] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.53 0.57 0.56 0.46 0.49 0.54 0.50 0.51 0.58 0.49
+normal_sigma 10000x16 threads=4      nutpie    10/10 0.33 [0.30, 0.38]            [0.31, 0.35] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.32 0.32 0.31 0.31 0.30 0.35 0.34 0.34 0.38 0.34
+normal_sigma 10000x16 threads=4      nutpie300 10/10 0.51 [0.46, 0.59]            [0.48, 0.56] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.52 0.56 0.54 0.46 0.50 0.52 0.49 0.50 0.59 0.48
+normal_sigma 1000x64 threads=1       nutpie    10/10 0.42 [0.35, 0.47]            [0.35, 0.45] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.8    0.47 0.35 0.44 0.40 0.36 0.35 0.42 0.42 0.44 0.45
+normal_sigma 1000x64 threads=1       nutpie300 10/10 0.66 [0.58, 0.77]            [0.60, 0.75] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.8    0.72 0.62 0.72 0.62 0.58 0.65 0.60 0.75 0.77 0.67
+normal_sigma 1000x64 threads=4       nutpie    10/10 0.50 [0.37, 0.53]            [0.42, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.8    0.49 0.42 0.51 0.52 0.37 0.43 0.49 0.53 0.53 0.53
+normal_sigma 1000x64 threads=4       nutpie300 10/10 0.75 [0.58, 0.90]            [0.69, 0.84] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.8    0.72 0.69 0.83 0.78 0.58 0.79 0.71 0.90 0.84 0.71
+normal_sigma 1000x128 threads=1      nutpie    10/10 0.19 [0.16, 0.20]            [0.16, 0.19] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.9    0.19 0.19 0.16 0.20 0.18 0.16 0.19 0.19 0.19 0.19
+normal_sigma 1000x128 threads=1      nutpie300 10/10 0.30 [0.23, 0.33]            [0.25, 0.33] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.32 0.25 0.23 0.31 0.30 0.28 0.33 0.33 0.29 0.29
+normal_sigma 1000x128 threads=4      nutpie    10/10 0.17 [0.14, 0.19]            [0.15, 0.19] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.9    0.19 0.17 0.15 0.17 0.17 0.14 0.19 0.19 0.18 0.17
+normal_sigma 1000x128 threads=4      nutpie300 10/10 0.28 [0.20, 0.32]            [0.23, 0.31] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.32 0.24 0.20 0.26 0.30 0.23 0.31 0.29 0.28 0.28
+logistic 100x4 threads=1             nutpie    10/10 0.56 [0.43, 0.75]            [0.44, 0.66] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.3    0.63 0.57 0.56 0.43 0.75 0.66 0.44 0.49 0.63 0.52
+logistic 100x4 threads=1             nutpie300 10/10 0.80 [0.67, 1.02]            [0.69, 0.88] (97.9%)               0.021   0.064 rustmc faster            no clear winner          2.3/4.3    0.88 0.77 0.83 0.73 1.02 0.85 0.67 0.71 0.87 0.69
+logistic 100x4 threads=4             nutpie    10/10 0.52 [0.33, 0.66]            [0.39, 0.57] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.3    0.52 0.51 0.51 0.33 0.66 0.57 0.39 0.54 0.57 0.43
+logistic 100x4 threads=4             nutpie300 10/10 0.66 [0.53, 0.81]            [0.54, 0.77] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.3/4.3    0.65 0.62 0.68 0.59 0.81 0.67 0.54 0.77 0.73 0.53
+logistic 1000x16 threads=1           nutpie    10/10 0.42 [0.38, 0.55]            [0.40, 0.47] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.38 0.47 0.42 0.42 0.43 0.55 0.42 0.44 0.40 0.42
+logistic 1000x16 threads=1           nutpie300 10/10 0.61 [0.56, 0.82]            [0.58, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.5    0.61 0.74 0.56 0.58 0.61 0.82 0.58 0.70 0.61 0.63
+logistic 1000x16 threads=4           nutpie    10/10 0.42 [0.39, 0.55]            [0.40, 0.46] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.39 0.46 0.41 0.42 0.44 0.55 0.41 0.44 0.40 0.42
+logistic 1000x16 threads=4           nutpie300 10/10 0.61 [0.54, 0.82]            [0.56, 0.72] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.5    0.60 0.72 0.54 0.59 0.62 0.82 0.56 0.70 0.60 0.61
+logistic 10000x16 threads=1          nutpie    10/10 0.42 [0.39, 0.46]            [0.40, 0.44] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.5    0.43 0.41 0.39 0.41 0.40 0.43 0.43 0.44 0.40 0.46
+logistic 10000x16 threads=1          nutpie300 10/10 0.68 [0.56, 0.76]            [0.58, 0.73] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.62 0.58 0.68 0.68 0.69 0.76 0.56 0.72 0.64 0.73
+logistic 10000x16 threads=4          nutpie    10/10 0.42 [0.40, 0.50]            [0.40, 0.46] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.5    0.43 0.41 0.50 0.40 0.40 0.41 0.43 0.44 0.40 0.46
+logistic 10000x16 threads=4          nutpie300 10/10 0.67 [0.56, 0.76]            [0.57, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.61 0.56 0.68 0.66 0.70 0.76 0.57 0.74 0.64 0.73
+logistic 1000x64 threads=1           nutpie    10/10 0.58 [0.45, 0.70]            [0.47, 0.70] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.8    0.48 0.45 0.57 0.66 0.48 0.70 0.61 0.70 0.47 0.58
+logistic 1000x64 threads=1           nutpie300 10/10 0.85 [0.74, 1.09]            [0.76, 1.02] (97.9%)               0.109   0.219 no clear winner          no clear winner          2.9/4.8    0.77 0.74 0.86 1.02 0.76 1.09 0.95 0.93 0.84 0.84
+logistic 1000x64 threads=4           nutpie    10/10 0.68 [0.47, 0.80]            [0.52, 0.80] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.8    0.60 0.47 0.67 0.73 0.60 0.80 0.69 0.80 0.52 0.71
+logistic 1000x64 threads=4           nutpie300 10/10 0.94 [0.71, 1.18]            [0.83, 1.07] (97.9%)               0.109   0.219 no clear winner          no clear winner          2.9/4.8    0.83 0.71 0.95 1.07 0.89 1.18 1.00 1.00 0.86 0.93
+logistic 1000x128 threads=1          nutpie    10/10 0.23 [0.19, 0.28]            [0.21, 0.26] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            4.1/4.9    0.28 0.21 0.21 0.24 0.23 0.24 0.23 0.26 0.22 0.19
+logistic 1000x128 threads=1          nutpie300 10/10 0.33 [0.27, 0.41]            [0.28, 0.40] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.9    0.41 0.28 0.27 0.36 0.32 0.40 0.35 0.37 0.32 0.29
+logistic 1000x128 threads=4          nutpie    10/10 0.22 [0.19, 0.28]            [0.20, 0.26] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            4.1/4.9    0.28 0.20 0.20 0.22 0.22 0.23 0.22 0.26 0.22 0.19
+logistic 1000x128 threads=4          nutpie300 10/10 0.33 [0.27, 0.43]            [0.28, 0.38] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.9    0.43 0.28 0.29 0.35 0.34 0.36 0.32 0.38 0.30 0.27
+poisson 100x4 threads=1              nutpie    10/10 0.46 [0.34, 0.61]            [0.40, 0.51] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.3    0.61 0.45 0.34 0.40 0.47 0.45 0.44 0.49 0.51 0.47
+poisson 100x4 threads=1              nutpie300 10/10 0.63 [0.54, 0.80]            [0.56, 0.76] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.0/4.3    0.56 0.65 0.56 0.54 0.70 0.60 0.60 0.80 0.76 0.68
+poisson 100x4 threads=4              nutpie    10/10 0.28 [0.23, 0.44]            [0.24, 0.36] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.3    0.44 0.28 0.23 0.24 0.28 0.28 0.28 0.28 0.28 0.36
+poisson 100x4 threads=4              nutpie300 10/10 0.37 [0.33, 0.50]            [0.34, 0.48] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.0/4.3    0.35 0.37 0.36 0.33 0.40 0.35 0.34 0.50 0.41 0.48
+poisson 1000x16 threads=1            nutpie    10/10 0.53 [0.43, 0.60]            [0.44, 0.56] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.55 0.53 0.53 0.44 0.52 0.53 0.60 0.56 0.43 0.46
+poisson 1000x16 threads=1            nutpie300 10/10 0.82 [0.67, 0.99]            [0.73, 0.97] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.5/4.5    0.82 0.76 0.82 0.67 0.81 0.85 0.97 0.99 0.83 0.73
+poisson 1000x16 threads=4            nutpie    10/10 0.36 [0.29, 0.43]            [0.30, 0.39] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.36 0.38 0.36 0.29 0.38 0.36 0.43 0.39 0.30 0.30
+poisson 1000x16 threads=4            nutpie300 10/10 0.56 [0.44, 0.70]            [0.45, 0.69] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.5/4.5    0.51 0.55 0.56 0.45 0.56 0.56 0.70 0.69 0.59 0.44
+poisson 10000x16 threads=1           nutpie    10/10 0.49 [0.43, 0.61]            [0.44, 0.54] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.5    0.49 0.47 0.54 0.46 0.44 0.43 0.52 0.48 0.61 0.50
+poisson 10000x16 threads=1           nutpie300 10/10 0.75 [0.65, 0.91]            [0.66, 0.89] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.71 0.78 0.81 0.77 0.69 0.66 0.91 0.65 0.89 0.72
+poisson 10000x16 threads=4           nutpie    10/10 0.37 [0.32, 0.45]            [0.33, 0.40] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.5    0.37 0.34 0.40 0.34 0.33 0.32 0.39 0.36 0.45 0.39
+poisson 10000x16 threads=4           nutpie300 10/10 0.57 [0.49, 0.70]            [0.51, 0.67] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.55 0.58 0.61 0.59 0.52 0.51 0.70 0.49 0.67 0.55
+poisson 1000x64 threads=1            nutpie    10/10 0.49 [0.39, 0.53]            [0.44, 0.52] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.8    0.44 0.50 0.39 0.49 0.53 0.49 0.48 0.44 0.47 0.52
+poisson 1000x64 threads=1            nutpie300 10/10 0.72 [0.57, 0.84]            [0.59, 0.79] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.4/4.8    0.59 0.72 0.57 0.60 0.84 0.77 0.79 0.62 0.76 0.71
+poisson 1000x64 threads=4            nutpie    10/10 0.47 [0.37, 0.56]            [0.42, 0.54] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.8    0.42 0.52 0.37 0.53 0.56 0.50 0.44 0.43 0.44 0.54
+poisson 1000x64 threads=4            nutpie300 10/10 0.73 [0.54, 0.92]            [0.58, 0.77] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.4/4.8    0.58 0.75 0.54 0.64 0.92 0.77 0.74 0.59 0.73 0.76
+poisson 1000x128 threads=1           nutpie    10/10 0.20 [0.16, 0.22]            [0.19, 0.21] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.5/4.9    0.21 0.19 0.22 0.21 0.16 0.20 0.20 0.20 0.20 0.19
+poisson 1000x128 threads=1           nutpie300 10/10 0.28 [0.25, 0.35]            [0.25, 0.31] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.9    0.35 0.28 0.31 0.28 0.25 0.27 0.27 0.28 0.28 0.25
+poisson 1000x128 threads=4           nutpie    10/10 0.21 [0.18, 0.22]            [0.19, 0.22] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.5/4.9    0.22 0.20 0.22 0.20 0.18 0.20 0.22 0.21 0.21 0.19
+poisson 1000x128 threads=4           nutpie300 10/10 0.30 [0.27, 0.36]            [0.27, 0.33] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.9    0.36 0.32 0.33 0.30 0.27 0.29 0.29 0.29 0.31 0.27
+varying_intercept 500x20 threads=1   nutpie     5/10 1.46 [1.31, 1.86]            [1.31, 1.86] (93.8%)               0.062   0.250 no clear winner          no clear winner          2.9/4.6    1.06 1.10 1.43 1.02 1.46 1.31 1.41 1.61 1.45 1.86
+varying_intercept 500x20 threads=4   nutpie     5/10 1.38 [1.14, 1.64]            [1.14, 1.64] (93.8%)               0.062   0.250 no clear winner          no clear winner          2.9/4.6    0.87 0.86 1.24 0.77 1.38 1.14 1.28 1.38 1.25 1.64
+varying_intercept 5000x100 threads=1 nutpie     0/10 -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.9    3.70 6.72 6.42 6.82 4.49 4.29 3.72 9.17 5.42 5.96
+varying_intercept 5000x100 threads=4 nutpie     0/10 -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.9    3.24 6.68 5.42 6.60 3.97 4.13 3.17 7.96 5.30 5.25
+eight_schools 8x8 threads=1          nutpie     1/10 0.63 [0.63, 0.63]            [0.63, 0.63] (0.0%)                1.000   1.000 no clear winner          no clear winner          3.3/4.4    0.71 0.69 0.81 0.52 0.58 0.78 0.59 0.63 0.72 0.73
+eight_schools 8x8 threads=4          nutpie     1/10 0.49 [0.49, 0.49]            [0.49, 0.49] (0.0%)                1.000   1.000 no clear winner          no clear winner          3.3/4.4    0.57 0.64 0.54 0.42 0.56 0.62 0.55 0.49 0.60 0.56
+
+Problems (74):
+  varying_intercept 500x20 threads=1: nutpie dataset 0: R-hat 1.012
+  varying_intercept 500x20 threads=1: nutpie dataset 1: min bulk ESS 391
+  varying_intercept 500x20 threads=1: nutpie dataset 2: R-hat 1.013
+  varying_intercept 500x20 threads=1: nutpie dataset 3: R-hat 1.010, min bulk ESS 400
+  varying_intercept 500x20 threads=1: nutpie dataset 8: R-hat 1.012
+  varying_intercept 500x20 threads=4: nutpie dataset 0: R-hat 1.012
+  varying_intercept 500x20 threads=4: nutpie dataset 1: min bulk ESS 391
+  varying_intercept 500x20 threads=4: nutpie dataset 2: R-hat 1.013
+  varying_intercept 500x20 threads=4: nutpie dataset 3: R-hat 1.010, min bulk ESS 400
+  varying_intercept 500x20 threads=4: nutpie dataset 8: R-hat 1.012
+  varying_intercept 5000x100 threads=1: rustmc dataset 0: min bulk ESS 320
+  varying_intercept 5000x100 threads=1: rustmc dataset 1: R-hat 1.033, min bulk ESS 206
+  varying_intercept 5000x100 threads=1: rustmc dataset 2: R-hat 1.028, min bulk ESS 164
+  varying_intercept 5000x100 threads=1: rustmc dataset 3: R-hat 1.033, min bulk ESS 160
+  varying_intercept 5000x100 threads=1: rustmc dataset 4: R-hat 1.013, min bulk ESS 215
+  varying_intercept 5000x100 threads=1: rustmc dataset 5: R-hat 1.025, min bulk ESS 232
+  varying_intercept 5000x100 threads=1: rustmc dataset 6: R-hat 1.014, min bulk ESS 276
+  varying_intercept 5000x100 threads=1: rustmc dataset 7: R-hat 1.023, min bulk ESS 159
+  varying_intercept 5000x100 threads=1: rustmc dataset 8: R-hat 1.016, min bulk ESS 191
+  varying_intercept 5000x100 threads=1: rustmc dataset 9: R-hat 1.041, min bulk ESS 184
+  varying_intercept 5000x100 threads=1: nutpie dataset 0: R-hat 1.012, min bulk ESS 228
+  varying_intercept 5000x100 threads=1: nutpie dataset 1: R-hat 1.011, min bulk ESS 263
+  varying_intercept 5000x100 threads=1: nutpie dataset 2: R-hat 1.033, min bulk ESS 183
+  varying_intercept 5000x100 threads=1: nutpie dataset 3: R-hat 1.019, min bulk ESS 222
+  varying_intercept 5000x100 threads=1: nutpie dataset 4: R-hat 1.019, min bulk ESS 173
+  varying_intercept 5000x100 threads=1: nutpie dataset 5: R-hat 1.019, min bulk ESS 177
+  varying_intercept 5000x100 threads=1: nutpie dataset 6: R-hat 1.024, min bulk ESS 174
+  varying_intercept 5000x100 threads=1: nutpie dataset 7: R-hat 1.019, min bulk ESS 245
+  varying_intercept 5000x100 threads=1: nutpie dataset 8: R-hat 1.015, min bulk ESS 169
+  varying_intercept 5000x100 threads=1: nutpie dataset 9: R-hat 1.020, min bulk ESS 189
+  varying_intercept 5000x100 threads=4: rustmc dataset 0: min bulk ESS 320
+  varying_intercept 5000x100 threads=4: rustmc dataset 1: R-hat 1.033, min bulk ESS 206
+  varying_intercept 5000x100 threads=4: rustmc dataset 2: R-hat 1.028, min bulk ESS 164
+  varying_intercept 5000x100 threads=4: rustmc dataset 3: R-hat 1.033, min bulk ESS 160
+  varying_intercept 5000x100 threads=4: rustmc dataset 4: R-hat 1.013, min bulk ESS 215
+  varying_intercept 5000x100 threads=4: rustmc dataset 5: R-hat 1.025, min bulk ESS 232
+  varying_intercept 5000x100 threads=4: rustmc dataset 6: R-hat 1.014, min bulk ESS 276
+  varying_intercept 5000x100 threads=4: rustmc dataset 7: R-hat 1.023, min bulk ESS 159
+  varying_intercept 5000x100 threads=4: rustmc dataset 8: R-hat 1.016, min bulk ESS 191
+  varying_intercept 5000x100 threads=4: rustmc dataset 9: R-hat 1.041, min bulk ESS 184
+  varying_intercept 5000x100 threads=4: nutpie dataset 0: R-hat 1.012, min bulk ESS 228
+  varying_intercept 5000x100 threads=4: nutpie dataset 1: R-hat 1.011, min bulk ESS 263
+  varying_intercept 5000x100 threads=4: nutpie dataset 2: R-hat 1.033, min bulk ESS 183
+  varying_intercept 5000x100 threads=4: nutpie dataset 3: R-hat 1.019, min bulk ESS 222
+  varying_intercept 5000x100 threads=4: nutpie dataset 4: R-hat 1.019, min bulk ESS 173
+  varying_intercept 5000x100 threads=4: nutpie dataset 5: R-hat 1.019, min bulk ESS 177
+  varying_intercept 5000x100 threads=4: nutpie dataset 6: R-hat 1.024, min bulk ESS 174
+  varying_intercept 5000x100 threads=4: nutpie dataset 7: R-hat 1.019, min bulk ESS 245
+  varying_intercept 5000x100 threads=4: nutpie dataset 8: R-hat 1.015, min bulk ESS 169
+  varying_intercept 5000x100 threads=4: nutpie dataset 9: R-hat 1.020, min bulk ESS 189
+  eight_schools 8x8 threads=1: rustmc dataset 1: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 3: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 4: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 5: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 9: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 0: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 2: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 3: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 5: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 6: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 8: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 9: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 1: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 3: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 4: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 5: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 9: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 0: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 2: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 3: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 5: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 6: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 8: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 9: 1 divergences
+
+By model class: per-ESS ratios of every passing pair in the class, median and observed range (n values; a cell's two thread settings share draws), and verdict counts over cells, Holm-adjusted within the class.
+  vs nutpie               normal             threads=1: per ESS 0.41 [0.15, 0.73] (n=50); cells: rustmc faster 5
+  vs nutpie               normal             threads=4: per ESS 0.40 [0.15, 0.62] (n=50); cells: rustmc faster 5
+  vs nutpie               normal_sigma       threads=1: per ESS 0.40 [0.16, 0.54] (n=50); cells: rustmc faster 5
+  vs nutpie               normal_sigma       threads=4: per ESS 0.38 [0.14, 0.53] (n=50); cells: rustmc faster 5
+  vs nutpie               logistic           threads=1: per ESS 0.43 [0.19, 0.75] (n=50); cells: rustmc faster 5
+  vs nutpie               logistic           threads=4: per ESS 0.43 [0.19, 0.80] (n=50); cells: rustmc faster 5
+  vs nutpie               poisson            threads=1: per ESS 0.47 [0.16, 0.61] (n=50); cells: rustmc faster 5
+  vs nutpie               poisson            threads=4: per ESS 0.35 [0.18, 0.56] (n=50); cells: rustmc faster 5
+  vs nutpie               varying_intercept  threads=1: per ESS 1.46 [1.31, 1.86] (n=5); cells: no clear winner 1, inconclusive (quality) 1
+  vs nutpie               varying_intercept  threads=4: per ESS 1.38 [1.14, 1.64] (n=5); cells: no clear winner 1, inconclusive (quality) 1
+  vs nutpie               eight_schools      threads=1: per ESS 0.63 [0.63, 0.63] (n=1); cells: no clear winner 1
+  vs nutpie               eight_schools      threads=4: per ESS 0.49 [0.49, 0.49] (n=1); cells: no clear winner 1
+  vs nutpie_default_tune  normal             threads=1: per ESS 0.60 [0.24, 0.88] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  normal             threads=4: per ESS 0.52 [0.25, 1.01] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  normal_sigma       threads=1: per ESS 0.55 [0.23, 0.77] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  normal_sigma       threads=4: per ESS 0.50 [0.20, 0.90] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  logistic           threads=1: per ESS 0.69 [0.27, 1.09] (n=50); cells: no clear winner 2, rustmc faster 3
+  vs nutpie_default_tune  logistic           threads=4: per ESS 0.65 [0.27, 1.18] (n=50); cells: rustmc faster 4, no clear winner 1
+  vs nutpie_default_tune  poisson            threads=1: per ESS 0.69 [0.25, 0.99] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  poisson            threads=4: per ESS 0.51 [0.27, 0.92] (n=50); cells: rustmc faster 5
+
+Where the sampling time goes, rustmc over nutpie at matched warmup, every finished pair: median ratios of leapfrog steps, of sampling seconds per step, and of smallest bulk ESS, with each engine's median microseconds per step (amortized: at 4 threads it divides concurrent chains' wall time by their total steps).
+  cell                                 pairs  steps per step  min ESS  rustmc us  nutpie us
+  normal 100x4 threads=1                  10   1.40     0.40     0.80       0.70       1.72
+  normal 100x4 threads=4                  10   1.40     0.38     0.80       0.21       0.55
+  normal 1000x16 threads=1                10   1.10     0.47     1.25       6.04      12.82
+  normal 1000x16 threads=4                10   1.10     0.46     1.25       1.67       3.65
+  normal 10000x16 threads=1               10   1.11     0.37     1.24      62.22     169.30
+  normal 10000x16 threads=4               10   1.11     0.34     1.24      16.02      47.18
+  normal 1000x64 threads=1                10   1.12     0.28     0.67      20.43      72.85
+  normal 1000x64 threads=4                10   1.12     0.27     0.67       5.77      21.61
+  normal 1000x128 threads=1               10   1.26     0.20     1.58      35.37     173.51
+  normal 1000x128 threads=4               10   1.26     0.21     1.58       9.20      44.41
+  normal_sigma 100x4 threads=1            10   1.37     0.38     0.98       0.83       2.19
+  normal_sigma 100x4 threads=4            10   1.37     0.37     0.98       0.25       0.68
+  normal_sigma 1000x16 threads=1          10   1.10     0.47     1.17       6.99      15.00
+  normal_sigma 1000x16 threads=4          10   1.10     0.47     1.17       1.96       4.16
+  normal_sigma 10000x16 threads=1         10   1.10     0.38     1.25      70.52     185.69
+  normal_sigma 10000x16 threads=4         10   1.10     0.37     1.25      19.00      50.95
+  normal_sigma 1000x64 threads=1          10   1.22     0.25     0.75      20.43      81.59
+  normal_sigma 1000x64 threads=4          10   1.22     0.29     0.75       6.31      21.92
+  normal_sigma 1000x128 threads=1         10   1.21     0.23     1.49      38.76     166.89
+  normal_sigma 1000x128 threads=4         10   1.21     0.21     1.49       9.72      46.63
+  logistic 100x4 threads=1                10   1.37     0.42     0.94       2.28       5.47
+  logistic 100x4 threads=4                10   1.37     0.40     0.94       0.64       1.62
+  logistic 1000x16 threads=1              10   1.10     0.46     1.19      23.14      50.72
+  logistic 1000x16 threads=4              10   1.10     0.46     1.19       6.11      13.38
+  logistic 10000x16 threads=1             10   1.11     0.50     1.30     278.70     554.96
+  logistic 10000x16 threads=4             10   1.11     0.50     1.30      72.80     144.59
+  logistic 1000x64 threads=1              10   1.21     0.34     0.76      39.44     117.45
+  logistic 1000x64 threads=4              10   1.21     0.38     0.76      11.70      30.52
+  logistic 1000x128 threads=1             10   1.17     0.28     1.40      53.70     193.35
+  logistic 1000x128 threads=4             10   1.17     0.26     1.40      14.33      55.13
+  poisson 100x4 threads=1                 10   1.27     0.42     1.11       1.64       3.90
+  poisson 100x4 threads=4                 10   1.27     0.26     1.11       0.47       1.84
+  poisson 1000x16 threads=1               10   1.08     0.48     0.99      17.04      35.19
+  poisson 1000x16 threads=4               10   1.08     0.33     0.99       4.42      13.44
+  poisson 10000x16 threads=1              10   1.08     0.46     1.01     187.24     411.71
+  poisson 10000x16 threads=4              10   1.08     0.34     1.01      48.71     141.75
+  poisson 1000x64 threads=1               10   1.18     0.30     0.76      30.69     100.91
+  poisson 1000x64 threads=4               10   1.18     0.30     0.76       8.71      29.44
+  poisson 1000x128 threads=1              10   1.13     0.24     1.37      45.89     189.01
+  poisson 1000x128 threads=4              10   1.13     0.24     1.37      12.17      50.59
+  varying_intercept 500x20 threads=1      10   2.66     1.48     2.59       3.57       2.41
+  varying_intercept 500x20 threads=4      10   2.66     1.56     2.59       1.04       0.66
+  varying_intercept 5000x100 threads=1    10   2.24     2.56     1.05      28.16      11.10
+  varying_intercept 5000x100 threads=4    10   2.24     2.35     1.05       7.77       3.20
+  eight_schools 8x8 threads=1             10   1.37     0.59     1.03       0.56       0.94
+  eight_schools 8x8 threads=4             10   1.37     0.61     1.03       0.18       0.29
+
+# Analysis: python benchmarks/head_to_head_summary.py benchmarks/results/2026-10-27-head-to-head.json --endpoint sampling
+# (sampling only)
+
+revision {'commit': 'e1ec4ac97259706c7422719e303b208de2e78cf4', 'dirty': False}, schema 2, versions {'rustmc': '0.15.0', 'nutpie': '0.16.6', 'pymc': '5.28.0', 'arviz': '0.23.4'}
+extension sha256 897f5004c62fda6c09a1ac94020bbcba887653bdbe301aa1b3d361730f888606
+compile cache directory at start: {'directory_existed': True, 'files_at_start': 0}
+per-ESS ratios use sampling_seconds
+cells run: 46
+  normal 100x4 threads=1: nutpie compile 8.15 s, empty cache directory
+  normal 100x4 threads=1: nutpie_default_tune compile 3.28 s, non-empty cache, 55 files
+  normal 100x4 threads=4: nutpie compile 3.20 s, non-empty cache, 55 files
+  normal 100x4 threads=4: nutpie_default_tune compile 3.20 s, non-empty cache, 55 files
+  normal 1000x16 threads=1: nutpie compile 4.14 s, non-empty cache, 55 files
+  normal 1000x16 threads=1: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 1000x16 threads=4: nutpie compile 3.17 s, non-empty cache, 57 files
+  normal 1000x16 threads=4: nutpie_default_tune compile 3.26 s, non-empty cache, 57 files
+  normal 10000x16 threads=1: nutpie compile 3.21 s, non-empty cache, 57 files
+  normal 10000x16 threads=1: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 10000x16 threads=4: nutpie compile 3.24 s, non-empty cache, 57 files
+  normal 10000x16 threads=4: nutpie_default_tune compile 3.27 s, non-empty cache, 57 files
+  normal 1000x64 threads=1: nutpie compile 4.17 s, non-empty cache, 57 files
+  normal 1000x64 threads=1: nutpie_default_tune compile 3.28 s, non-empty cache, 59 files
+  normal 1000x64 threads=4: nutpie compile 3.27 s, non-empty cache, 59 files
+  normal 1000x64 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 59 files
+  normal 1000x128 threads=1: nutpie compile 5.51 s, non-empty cache, 59 files
+  normal 1000x128 threads=1: nutpie_default_tune compile 3.30 s, non-empty cache, 62 files
+  normal 1000x128 threads=4: nutpie compile 3.39 s, non-empty cache, 62 files
+  normal 1000x128 threads=4: nutpie_default_tune compile 3.33 s, non-empty cache, 62 files
+  normal_sigma 100x4 threads=1: nutpie compile 6.88 s, non-empty cache, 62 files
+  normal_sigma 100x4 threads=1: nutpie_default_tune compile 4.98 s, non-empty cache, 113 files
+  normal_sigma 100x4 threads=4: nutpie compile 3.53 s, non-empty cache, 115 files
+  normal_sigma 100x4 threads=4: nutpie_default_tune compile 3.60 s, non-empty cache, 115 files
+  normal_sigma 1000x16 threads=1: nutpie compile 5.08 s, non-empty cache, 115 files
+  normal_sigma 1000x16 threads=1: nutpie_default_tune compile 3.65 s, non-empty cache, 119 files
+  normal_sigma 1000x16 threads=4: nutpie compile 4.97 s, non-empty cache, 119 files
+  normal_sigma 1000x16 threads=4: nutpie_default_tune compile 3.62 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=1: nutpie compile 3.69 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=1: nutpie_default_tune compile 3.64 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=4: nutpie compile 3.56 s, non-empty cache, 121 files
+  normal_sigma 10000x16 threads=4: nutpie_default_tune compile 3.71 s, non-empty cache, 121 files
+  normal_sigma 1000x64 threads=1: nutpie compile 5.18 s, non-empty cache, 121 files
+  normal_sigma 1000x64 threads=1: nutpie_default_tune compile 4.99 s, non-empty cache, 125 files
+  normal_sigma 1000x64 threads=4: nutpie compile 3.59 s, non-empty cache, 127 files
+  normal_sigma 1000x64 threads=4: nutpie_default_tune compile 3.68 s, non-empty cache, 127 files
+  normal_sigma 1000x128 threads=1: nutpie compile 5.07 s, non-empty cache, 127 files
+  normal_sigma 1000x128 threads=1: nutpie_default_tune compile 4.92 s, non-empty cache, 131 files
+  normal_sigma 1000x128 threads=4: nutpie compile 3.61 s, non-empty cache, 133 files
+  normal_sigma 1000x128 threads=4: nutpie_default_tune compile 3.71 s, non-empty cache, 133 files
+  logistic 100x4 threads=1: nutpie compile 5.21 s, non-empty cache, 133 files
+  logistic 100x4 threads=1: nutpie_default_tune compile 3.50 s, non-empty cache, 161 files
+  logistic 100x4 threads=4: nutpie compile 3.32 s, non-empty cache, 161 files
+  logistic 100x4 threads=4: nutpie_default_tune compile 3.40 s, non-empty cache, 161 files
+  logistic 1000x16 threads=1: nutpie compile 4.45 s, non-empty cache, 161 files
+  logistic 1000x16 threads=1: nutpie_default_tune compile 3.46 s, non-empty cache, 163 files
+  logistic 1000x16 threads=4: nutpie compile 3.39 s, non-empty cache, 163 files
+  logistic 1000x16 threads=4: nutpie_default_tune compile 3.41 s, non-empty cache, 163 files
+  logistic 10000x16 threads=1: nutpie compile 3.38 s, non-empty cache, 163 files
+  logistic 10000x16 threads=1: nutpie_default_tune compile 3.44 s, non-empty cache, 163 files
+  logistic 10000x16 threads=4: nutpie compile 3.30 s, non-empty cache, 163 files
+  logistic 10000x16 threads=4: nutpie_default_tune compile 3.34 s, non-empty cache, 163 files
+  logistic 1000x64 threads=1: nutpie compile 4.34 s, non-empty cache, 163 files
+  logistic 1000x64 threads=1: nutpie_default_tune compile 3.37 s, non-empty cache, 165 files
+  logistic 1000x64 threads=4: nutpie compile 3.33 s, non-empty cache, 165 files
+  logistic 1000x64 threads=4: nutpie_default_tune compile 3.36 s, non-empty cache, 165 files
+  logistic 1000x128 threads=1: nutpie compile 4.35 s, non-empty cache, 165 files
+  logistic 1000x128 threads=1: nutpie_default_tune compile 3.39 s, non-empty cache, 167 files
+  logistic 1000x128 threads=4: nutpie compile 3.31 s, non-empty cache, 167 files
+  logistic 1000x128 threads=4: nutpie_default_tune compile 3.35 s, non-empty cache, 167 files
+  poisson 100x4 threads=1: nutpie compile 4.84 s, non-empty cache, 167 files
+  poisson 100x4 threads=1: nutpie_default_tune compile 3.31 s, non-empty cache, 186 files
+  poisson 100x4 threads=4: nutpie compile 3.27 s, non-empty cache, 186 files
+  poisson 100x4 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 186 files
+  poisson 1000x16 threads=1: nutpie compile 4.44 s, non-empty cache, 186 files
+  poisson 1000x16 threads=1: nutpie_default_tune compile 3.32 s, non-empty cache, 188 files
+  poisson 1000x16 threads=4: nutpie compile 3.29 s, non-empty cache, 188 files
+  poisson 1000x16 threads=4: nutpie_default_tune compile 3.30 s, non-empty cache, 188 files
+  poisson 10000x16 threads=1: nutpie compile 3.25 s, non-empty cache, 188 files
+  poisson 10000x16 threads=1: nutpie_default_tune compile 3.36 s, non-empty cache, 188 files
+  poisson 10000x16 threads=4: nutpie compile 3.24 s, non-empty cache, 188 files
+  poisson 10000x16 threads=4: nutpie_default_tune compile 3.42 s, non-empty cache, 188 files
+  poisson 1000x64 threads=1: nutpie compile 4.43 s, non-empty cache, 188 files
+  poisson 1000x64 threads=1: nutpie_default_tune compile 3.33 s, non-empty cache, 190 files
+  poisson 1000x64 threads=4: nutpie compile 3.32 s, non-empty cache, 190 files
+  poisson 1000x64 threads=4: nutpie_default_tune compile 3.36 s, non-empty cache, 190 files
+  poisson 1000x128 threads=1: nutpie compile 4.48 s, non-empty cache, 190 files
+  poisson 1000x128 threads=1: nutpie_default_tune compile 3.32 s, non-empty cache, 192 files
+  poisson 1000x128 threads=4: nutpie compile 3.28 s, non-empty cache, 192 files
+  poisson 1000x128 threads=4: nutpie_default_tune compile 3.33 s, non-empty cache, 192 files
+  varying_intercept 500x20 threads=1: nutpie compile 5.72 s, non-empty cache, 192 files
+  varying_intercept 500x20 threads=4: nutpie compile 4.35 s, non-empty cache, 212 files
+  varying_intercept 5000x100 threads=1: nutpie compile 4.51 s, non-empty cache, 214 files
+  varying_intercept 5000x100 threads=4: nutpie compile 3.44 s, non-empty cache, 218 files
+  eight_schools 8x8 threads=1: nutpie compile 3.43 s, non-empty cache, 218 files
+  eight_schools 8x8 threads=4: nutpie compile 2.42 s, non-empty cache, 229 files
+
+cell                                 vs         pass per-ESS ratio, passing pairs order-stat interval (coverage)    sign p  Holm p unadjusted               Holm-adjusted            max z / thr  all finished pairs
+normal 100x4 threads=1               nutpie    10/10 0.69 [0.61, 0.87]            [0.63, 0.81] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.69 0.70 0.61 0.77 0.68 0.75 0.65 0.81 0.87 0.63
+normal 100x4 threads=1               nutpie300 10/10 0.99 [0.69, 1.15]            [0.90, 1.12] (97.9%)               0.754   0.754 no clear winner          no clear winner          2.2/4.3    0.99 0.98 0.69 0.99 1.03 1.06 1.15 0.90 1.12 0.95
+normal 100x4 threads=4               nutpie    10/10 0.70 [0.61, 0.96]            [0.63, 0.92] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.96 0.63 0.64 0.70 0.67 0.69 0.61 0.74 0.71 0.92
+normal 100x4 threads=4               nutpie300 10/10 0.86 [0.64, 1.25]            [0.78, 1.20] (97.9%)               0.344   0.688 no clear winner          no clear winner          2.2/4.3    1.25 0.81 0.64 0.87 0.95 0.85 1.08 0.78 0.80 1.20
+normal 1000x16 threads=1             nutpie    10/10 0.41 [0.35, 0.46]            [0.39, 0.43] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.41 0.42 0.41 0.39 0.43 0.46 0.35 0.42 0.42 0.39
+normal 1000x16 threads=1             nutpie300 10/10 0.64 [0.56, 0.74]            [0.57, 0.72] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.62 0.67 0.65 0.58 0.66 0.72 0.56 0.74 0.64 0.57
+normal 1000x16 threads=4             nutpie    10/10 0.40 [0.33, 0.46]            [0.37, 0.43] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.40 0.41 0.40 0.39 0.41 0.46 0.33 0.40 0.43 0.37
+normal 1000x16 threads=4             nutpie300 10/10 0.63 [0.56, 0.75]            [0.56, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.60 0.66 0.66 0.58 0.65 0.75 0.56 0.74 0.62 0.56
+normal 10000x16 threads=1            nutpie    10/10 0.33 [0.30, 0.35]            [0.30, 0.34] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.33 0.32 0.33 0.35 0.32 0.31 0.30 0.30 0.34 0.34
+normal 10000x16 threads=1            nutpie300 10/10 0.49 [0.44, 0.53]            [0.47, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.49 0.44 0.52 0.53 0.49 0.50 0.47 0.48 0.53 0.48
+normal 10000x16 threads=4            nutpie    10/10 0.30 [0.28, 0.33]            [0.28, 0.32] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.31 0.30 0.30 0.33 0.30 0.29 0.28 0.28 0.31 0.32
+normal 10000x16 threads=4            nutpie300 10/10 0.45 [0.41, 0.51]            [0.44, 0.50] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.45 0.41 0.48 0.51 0.46 0.46 0.44 0.45 0.50 0.45
+normal 1000x64 threads=1             nutpie    10/10 0.48 [0.42, 0.55]            [0.43, 0.52] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.8    0.45 0.52 0.55 0.46 0.42 0.48 0.47 0.43 0.48 0.51
+normal 1000x64 threads=1             nutpie300 10/10 0.67 [0.59, 0.88]            [0.62, 0.73] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.8    0.69 0.73 0.88 0.67 0.62 0.67 0.64 0.59 0.68 0.68
+normal 1000x64 threads=4             nutpie    10/10 0.47 [0.38, 0.56]            [0.42, 0.52] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.8    0.46 0.49 0.56 0.43 0.38 0.52 0.47 0.42 0.47 0.51
+normal 1000x64 threads=4             nutpie300 10/10 0.75 [0.62, 0.99]            [0.66, 0.82] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.8    0.81 0.81 0.99 0.68 0.62 0.82 0.70 0.66 0.72 0.78
+normal 1000x128 threads=1            nutpie    10/10 0.16 [0.15, 0.19]            [0.15, 0.18] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.16 0.19 0.15 0.17 0.15 0.16 0.18 0.15 0.16 0.18
+normal 1000x128 threads=1            nutpie300 10/10 0.26 [0.24, 0.32]            [0.24, 0.30] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.9    0.30 0.30 0.25 0.26 0.24 0.25 0.32 0.25 0.24 0.29
+normal 1000x128 threads=4            nutpie    10/10 0.17 [0.15, 0.20]            [0.16, 0.19] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.17 0.20 0.15 0.16 0.16 0.17 0.19 0.16 0.16 0.18
+normal 1000x128 threads=4            nutpie300 10/10 0.26 [0.24, 0.33]            [0.24, 0.31] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.9    0.30 0.31 0.24 0.24 0.24 0.26 0.33 0.25 0.25 0.29
+normal_sigma 100x4 threads=1         nutpie    10/10 0.52 [0.46, 0.60]            [0.49, 0.59] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.3/4.3    0.51 0.59 0.52 0.46 0.60 0.51 0.56 0.49 0.56 0.52
+normal_sigma 100x4 threads=1         nutpie300 10/10 0.65 [0.50, 0.88]            [0.59, 0.84] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.84 0.64 0.64 0.50 0.72 0.71 0.88 0.59 0.65 0.65
+normal_sigma 100x4 threads=4         nutpie    10/10 0.52 [0.42, 0.72]            [0.49, 0.59] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.3/4.3    0.49 0.59 0.51 0.42 0.56 0.50 0.53 0.52 0.72 0.51
+normal_sigma 100x4 threads=4         nutpie300 10/10 0.66 [0.51, 0.81]            [0.56, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.1/4.3    0.74 0.61 0.61 0.51 0.70 0.73 0.74 0.56 0.81 0.61
+normal_sigma 1000x16 threads=1       nutpie    10/10 0.43 [0.34, 0.48]            [0.39, 0.45] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.5    0.39 0.43 0.45 0.45 0.42 0.43 0.45 0.48 0.44 0.34
+normal_sigma 1000x16 threads=1       nutpie300 10/10 0.66 [0.55, 0.75]            [0.62, 0.73] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.8/4.5    0.62 0.64 0.67 0.73 0.62 0.75 0.71 0.73 0.65 0.55
+normal_sigma 1000x16 threads=4       nutpie    10/10 0.45 [0.36, 0.48]            [0.36, 0.47] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.5    0.36 0.45 0.46 0.47 0.40 0.43 0.46 0.48 0.45 0.36
+normal_sigma 1000x16 threads=4       nutpie300 10/10 0.64 [0.53, 0.72]            [0.54, 0.70] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.8/4.5    0.54 0.65 0.62 0.72 0.59 0.70 0.66 0.66 0.64 0.53
+normal_sigma 10000x16 threads=1      nutpie    10/10 0.34 [0.30, 0.38]            [0.32, 0.35] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.32 0.33 0.32 0.32 0.30 0.35 0.34 0.35 0.38 0.35
+normal_sigma 10000x16 threads=1      nutpie300 10/10 0.52 [0.46, 0.58]            [0.49, 0.57] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.54 0.57 0.56 0.46 0.49 0.54 0.50 0.51 0.58 0.49
+normal_sigma 10000x16 threads=4      nutpie    10/10 0.33 [0.30, 0.38]            [0.31, 0.35] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.32 0.32 0.31 0.31 0.30 0.35 0.34 0.34 0.38 0.34
+normal_sigma 10000x16 threads=4      nutpie300 10/10 0.51 [0.46, 0.59]            [0.48, 0.56] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.53 0.56 0.54 0.46 0.50 0.52 0.49 0.51 0.59 0.48
+normal_sigma 1000x64 threads=1       nutpie    10/10 0.42 [0.34, 0.46]            [0.35, 0.44] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.8    0.46 0.35 0.44 0.40 0.36 0.34 0.42 0.41 0.44 0.44
+normal_sigma 1000x64 threads=1       nutpie300 10/10 0.65 [0.58, 0.76]            [0.60, 0.75] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.8    0.72 0.61 0.71 0.62 0.58 0.64 0.60 0.75 0.76 0.66
+normal_sigma 1000x64 threads=4       nutpie    10/10 0.50 [0.35, 0.53]            [0.41, 0.52] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.8    0.53 0.41 0.50 0.51 0.35 0.41 0.47 0.52 0.52 0.51
+normal_sigma 1000x64 threads=4       nutpie300 10/10 0.77 [0.56, 0.88]            [0.67, 0.83] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.8    0.82 0.67 0.81 0.76 0.56 0.77 0.69 0.88 0.83 0.69
+normal_sigma 1000x128 threads=1      nutpie    10/10 0.19 [0.15, 0.20]            [0.16, 0.19] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.9    0.18 0.18 0.16 0.20 0.18 0.15 0.19 0.19 0.19 0.19
+normal_sigma 1000x128 threads=1      nutpie300 10/10 0.30 [0.22, 0.33]            [0.25, 0.33] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.31 0.25 0.22 0.31 0.30 0.28 0.33 0.33 0.29 0.29
+normal_sigma 1000x128 threads=4      nutpie    10/10 0.17 [0.14, 0.19]            [0.14, 0.18] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.9    0.19 0.16 0.14 0.17 0.16 0.14 0.18 0.18 0.18 0.17
+normal_sigma 1000x128 threads=4      nutpie300 10/10 0.27 [0.19, 0.33]            [0.23, 0.30] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.9    0.33 0.23 0.19 0.25 0.29 0.23 0.30 0.28 0.27 0.27
+logistic 100x4 threads=1             nutpie    10/10 0.59 [0.45, 0.79]            [0.45, 0.70] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.3    0.68 0.60 0.59 0.45 0.79 0.70 0.45 0.51 0.67 0.55
+logistic 100x4 threads=1             nutpie300 10/10 0.87 [0.73, 1.12]            [0.76, 0.99] (97.9%)               0.021   0.086 rustmc faster            no clear winner          2.3/4.3    0.98 0.84 0.90 0.80 1.12 0.94 0.73 0.78 0.99 0.76
+logistic 100x4 threads=4             nutpie    10/10 0.60 [0.37, 0.76]            [0.44, 0.67] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.9/4.3    0.61 0.60 0.57 0.37 0.76 0.67 0.44 0.62 0.66 0.48
+logistic 100x4 threads=4             nutpie300 10/10 0.89 [0.71, 1.04]            [0.71, 1.01] (97.9%)               0.109   0.328 no clear winner          no clear winner          2.3/4.3    0.90 0.80 0.88 0.77 1.04 0.91 0.71 1.01 0.98 0.71
+logistic 1000x16 threads=1           nutpie    10/10 0.43 [0.38, 0.55]            [0.40, 0.47] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.38 0.47 0.42 0.42 0.43 0.55 0.42 0.44 0.40 0.43
+logistic 1000x16 threads=1           nutpie300 10/10 0.62 [0.56, 0.83]            [0.58, 0.75] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.5    0.61 0.75 0.56 0.59 0.62 0.83 0.58 0.70 0.61 0.63
+logistic 1000x16 threads=4           nutpie    10/10 0.42 [0.39, 0.55]            [0.40, 0.46] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.8/4.5    0.39 0.46 0.41 0.42 0.44 0.55 0.41 0.44 0.40 0.42
+logistic 1000x16 threads=4           nutpie300 10/10 0.62 [0.55, 0.83]            [0.57, 0.73] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.3/4.5    0.62 0.73 0.55 0.60 0.63 0.83 0.57 0.71 0.61 0.62
+logistic 10000x16 threads=1          nutpie    10/10 0.42 [0.39, 0.46]            [0.40, 0.44] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.5    0.43 0.41 0.39 0.41 0.40 0.43 0.43 0.44 0.40 0.46
+logistic 10000x16 threads=1          nutpie300 10/10 0.68 [0.56, 0.76]            [0.58, 0.73] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.62 0.58 0.68 0.68 0.69 0.76 0.56 0.73 0.64 0.73
+logistic 10000x16 threads=4          nutpie    10/10 0.42 [0.40, 0.50]            [0.40, 0.46] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.5    0.43 0.41 0.50 0.40 0.40 0.41 0.43 0.44 0.40 0.46
+logistic 10000x16 threads=4          nutpie300 10/10 0.67 [0.56, 0.76]            [0.57, 0.74] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.62 0.56 0.68 0.67 0.70 0.76 0.57 0.74 0.64 0.73
+logistic 1000x64 threads=1           nutpie    10/10 0.57 [0.45, 0.70]            [0.47, 0.69] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.8    0.48 0.45 0.57 0.65 0.48 0.70 0.61 0.69 0.47 0.58
+logistic 1000x64 threads=1           nutpie300 10/10 0.85 [0.73, 1.09]            [0.76, 1.01] (97.9%)               0.109   0.328 no clear winner          no clear winner          2.9/4.8    0.77 0.73 0.85 1.01 0.76 1.09 0.95 0.93 0.83 0.84
+logistic 1000x64 threads=4           nutpie    10/10 0.67 [0.46, 0.79]            [0.51, 0.79] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.1/4.8    0.60 0.46 0.66 0.72 0.59 0.79 0.68 0.79 0.51 0.70
+logistic 1000x64 threads=4           nutpie300 10/10 0.93 [0.70, 1.17]            [0.82, 1.05] (97.9%)               0.109   0.328 no clear winner          no clear winner          2.9/4.8    0.82 0.70 0.94 1.05 0.88 1.17 0.99 0.99 0.84 0.92
+logistic 1000x128 threads=1          nutpie    10/10 0.23 [0.19, 0.28]            [0.21, 0.26] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            4.1/4.9    0.28 0.21 0.21 0.24 0.23 0.24 0.23 0.26 0.21 0.19
+logistic 1000x128 threads=1          nutpie300 10/10 0.33 [0.27, 0.40]            [0.28, 0.40] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.9    0.40 0.28 0.27 0.36 0.32 0.40 0.34 0.37 0.32 0.29
+logistic 1000x128 threads=4          nutpie    10/10 0.22 [0.18, 0.27]            [0.19, 0.26] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            4.1/4.9    0.27 0.19 0.19 0.22 0.22 0.23 0.22 0.26 0.20 0.18
+logistic 1000x128 threads=4          nutpie300 10/10 0.32 [0.26, 0.42]            [0.28, 0.37] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.2/4.9    0.42 0.28 0.29 0.34 0.33 0.36 0.31 0.37 0.28 0.26
+poisson 100x4 threads=1              nutpie    10/10 0.49 [0.35, 0.66]            [0.42, 0.55] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.3    0.66 0.48 0.35 0.42 0.50 0.48 0.46 0.52 0.55 0.50
+poisson 100x4 threads=1              nutpie300 10/10 0.70 [0.59, 0.87]            [0.62, 0.87] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.0/4.3    0.64 0.73 0.62 0.59 0.78 0.67 0.66 0.87 0.87 0.76
+poisson 100x4 threads=4              nutpie    10/10 0.30 [0.24, 0.47]            [0.25, 0.39] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.3    0.47 0.30 0.25 0.24 0.29 0.30 0.30 0.29 0.29 0.39
+poisson 100x4 threads=4              nutpie300 10/10 0.42 [0.38, 0.59]            [0.38, 0.55] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.0/4.3    0.42 0.42 0.41 0.38 0.46 0.40 0.38 0.59 0.47 0.55
+poisson 1000x16 threads=1            nutpie    10/10 0.53 [0.43, 0.60]            [0.44, 0.56] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.55 0.53 0.53 0.44 0.52 0.54 0.60 0.56 0.43 0.46
+poisson 1000x16 threads=1            nutpie300 10/10 0.82 [0.67, 1.00]            [0.74, 0.98] (97.9%)               0.021   0.021 rustmc faster            rustmc faster            2.5/4.5    0.83 0.77 0.82 0.67 0.81 0.86 0.98 1.00 0.84 0.74
+poisson 1000x16 threads=4            nutpie    10/10 0.36 [0.29, 0.43]            [0.30, 0.39] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.0/4.5    0.36 0.38 0.36 0.29 0.38 0.36 0.43 0.39 0.30 0.30
+poisson 1000x16 threads=4            nutpie300 10/10 0.56 [0.44, 0.70]            [0.45, 0.69] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.5/4.5    0.52 0.56 0.57 0.45 0.57 0.56 0.70 0.69 0.59 0.44
+poisson 10000x16 threads=1           nutpie    10/10 0.49 [0.43, 0.61]            [0.44, 0.54] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.5    0.49 0.47 0.54 0.46 0.44 0.43 0.52 0.48 0.61 0.50
+poisson 10000x16 threads=1           nutpie300 10/10 0.75 [0.65, 0.91]            [0.66, 0.89] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.71 0.78 0.81 0.77 0.69 0.66 0.91 0.65 0.89 0.72
+poisson 10000x16 threads=4           nutpie    10/10 0.37 [0.32, 0.45]            [0.33, 0.40] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.6/4.5    0.37 0.34 0.40 0.34 0.33 0.32 0.39 0.36 0.45 0.39
+poisson 10000x16 threads=4           nutpie300 10/10 0.57 [0.49, 0.70]            [0.51, 0.67] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            2.7/4.5    0.55 0.58 0.61 0.59 0.52 0.51 0.70 0.49 0.67 0.55
+poisson 1000x64 threads=1            nutpie    10/10 0.48 [0.39, 0.52]            [0.43, 0.51] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.8    0.43 0.50 0.39 0.49 0.52 0.49 0.48 0.44 0.47 0.51
+poisson 1000x64 threads=1            nutpie300 10/10 0.71 [0.57, 0.83]            [0.59, 0.78] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.4/4.8    0.59 0.72 0.57 0.60 0.83 0.77 0.78 0.62 0.76 0.71
+poisson 1000x64 threads=4            nutpie    10/10 0.46 [0.36, 0.55]            [0.41, 0.53] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.8    0.41 0.51 0.36 0.52 0.55 0.49 0.43 0.42 0.43 0.53
+poisson 1000x64 threads=4            nutpie300 10/10 0.72 [0.53, 0.90]            [0.56, 0.76] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.4/4.8    0.56 0.74 0.53 0.64 0.90 0.76 0.72 0.58 0.71 0.75
+poisson 1000x128 threads=1           nutpie    10/10 0.20 [0.16, 0.22]            [0.19, 0.21] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.5/4.9    0.21 0.19 0.22 0.21 0.16 0.20 0.20 0.20 0.20 0.19
+poisson 1000x128 threads=1           nutpie300 10/10 0.27 [0.25, 0.34]            [0.25, 0.31] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.9    0.34 0.28 0.31 0.28 0.25 0.27 0.27 0.28 0.27 0.25
+poisson 1000x128 threads=4           nutpie    10/10 0.20 [0.17, 0.22]            [0.19, 0.21] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.5/4.9    0.21 0.19 0.22 0.20 0.17 0.19 0.21 0.20 0.20 0.19
+poisson 1000x128 threads=4           nutpie300 10/10 0.29 [0.26, 0.35]            [0.27, 0.32] (97.9%)               0.002   0.020 rustmc faster            rustmc faster            3.7/4.9    0.35 0.31 0.32 0.29 0.27 0.28 0.29 0.28 0.29 0.26
+varying_intercept 500x20 threads=1   nutpie     5/10 1.60 [1.44, 2.04]            [1.44, 2.04] (93.8%)               0.062   0.250 no clear winner          no clear winner          2.9/4.6    1.17 1.20 1.58 1.11 1.60 1.44 1.56 1.77 1.59 2.04
+varying_intercept 500x20 threads=4   nutpie     5/10 1.85 [1.53, 2.21]            [1.53, 2.21] (93.8%)               0.062   0.250 no clear winner          no clear winner          2.9/4.6    1.20 1.13 1.68 0.99 1.95 1.53 1.74 1.85 1.69 2.21
+varying_intercept 5000x100 threads=1 nutpie     0/10 -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.9    3.77 6.86 6.54 6.93 4.56 4.37 3.79 9.32 5.52 6.06
+varying_intercept 5000x100 threads=4 nutpie     0/10 -                            -                                      -       - inconclusive (quality)   inconclusive (quality)   2.9/4.9    3.47 7.07 5.76 7.00 4.19 4.39 3.34 8.35 5.65 5.55
+eight_schools 8x8 threads=1          nutpie     1/10 0.76 [0.76, 0.76]            [0.76, 0.76] (0.0%)                1.000   1.000 no clear winner          no clear winner          3.3/4.4    0.84 0.83 0.97 0.64 0.68 0.96 0.70 0.76 0.87 0.88
+eight_schools 8x8 threads=4          nutpie     1/10 0.77 [0.77, 0.77]            [0.77, 0.77] (0.0%)                1.000   1.000 no clear winner          no clear winner          3.3/4.4    0.88 1.08 0.84 0.65 0.91 0.93 0.83 0.77 0.92 0.88
+
+Problems (74):
+  varying_intercept 500x20 threads=1: nutpie dataset 0: R-hat 1.012
+  varying_intercept 500x20 threads=1: nutpie dataset 1: min bulk ESS 391
+  varying_intercept 500x20 threads=1: nutpie dataset 2: R-hat 1.013
+  varying_intercept 500x20 threads=1: nutpie dataset 3: R-hat 1.010, min bulk ESS 400
+  varying_intercept 500x20 threads=1: nutpie dataset 8: R-hat 1.012
+  varying_intercept 500x20 threads=4: nutpie dataset 0: R-hat 1.012
+  varying_intercept 500x20 threads=4: nutpie dataset 1: min bulk ESS 391
+  varying_intercept 500x20 threads=4: nutpie dataset 2: R-hat 1.013
+  varying_intercept 500x20 threads=4: nutpie dataset 3: R-hat 1.010, min bulk ESS 400
+  varying_intercept 500x20 threads=4: nutpie dataset 8: R-hat 1.012
+  varying_intercept 5000x100 threads=1: rustmc dataset 0: min bulk ESS 320
+  varying_intercept 5000x100 threads=1: rustmc dataset 1: R-hat 1.033, min bulk ESS 206
+  varying_intercept 5000x100 threads=1: rustmc dataset 2: R-hat 1.028, min bulk ESS 164
+  varying_intercept 5000x100 threads=1: rustmc dataset 3: R-hat 1.033, min bulk ESS 160
+  varying_intercept 5000x100 threads=1: rustmc dataset 4: R-hat 1.013, min bulk ESS 215
+  varying_intercept 5000x100 threads=1: rustmc dataset 5: R-hat 1.025, min bulk ESS 232
+  varying_intercept 5000x100 threads=1: rustmc dataset 6: R-hat 1.014, min bulk ESS 276
+  varying_intercept 5000x100 threads=1: rustmc dataset 7: R-hat 1.023, min bulk ESS 159
+  varying_intercept 5000x100 threads=1: rustmc dataset 8: R-hat 1.016, min bulk ESS 191
+  varying_intercept 5000x100 threads=1: rustmc dataset 9: R-hat 1.041, min bulk ESS 184
+  varying_intercept 5000x100 threads=1: nutpie dataset 0: R-hat 1.012, min bulk ESS 228
+  varying_intercept 5000x100 threads=1: nutpie dataset 1: R-hat 1.011, min bulk ESS 263
+  varying_intercept 5000x100 threads=1: nutpie dataset 2: R-hat 1.033, min bulk ESS 183
+  varying_intercept 5000x100 threads=1: nutpie dataset 3: R-hat 1.019, min bulk ESS 222
+  varying_intercept 5000x100 threads=1: nutpie dataset 4: R-hat 1.019, min bulk ESS 173
+  varying_intercept 5000x100 threads=1: nutpie dataset 5: R-hat 1.019, min bulk ESS 177
+  varying_intercept 5000x100 threads=1: nutpie dataset 6: R-hat 1.024, min bulk ESS 174
+  varying_intercept 5000x100 threads=1: nutpie dataset 7: R-hat 1.019, min bulk ESS 245
+  varying_intercept 5000x100 threads=1: nutpie dataset 8: R-hat 1.015, min bulk ESS 169
+  varying_intercept 5000x100 threads=1: nutpie dataset 9: R-hat 1.020, min bulk ESS 189
+  varying_intercept 5000x100 threads=4: rustmc dataset 0: min bulk ESS 320
+  varying_intercept 5000x100 threads=4: rustmc dataset 1: R-hat 1.033, min bulk ESS 206
+  varying_intercept 5000x100 threads=4: rustmc dataset 2: R-hat 1.028, min bulk ESS 164
+  varying_intercept 5000x100 threads=4: rustmc dataset 3: R-hat 1.033, min bulk ESS 160
+  varying_intercept 5000x100 threads=4: rustmc dataset 4: R-hat 1.013, min bulk ESS 215
+  varying_intercept 5000x100 threads=4: rustmc dataset 5: R-hat 1.025, min bulk ESS 232
+  varying_intercept 5000x100 threads=4: rustmc dataset 6: R-hat 1.014, min bulk ESS 276
+  varying_intercept 5000x100 threads=4: rustmc dataset 7: R-hat 1.023, min bulk ESS 159
+  varying_intercept 5000x100 threads=4: rustmc dataset 8: R-hat 1.016, min bulk ESS 191
+  varying_intercept 5000x100 threads=4: rustmc dataset 9: R-hat 1.041, min bulk ESS 184
+  varying_intercept 5000x100 threads=4: nutpie dataset 0: R-hat 1.012, min bulk ESS 228
+  varying_intercept 5000x100 threads=4: nutpie dataset 1: R-hat 1.011, min bulk ESS 263
+  varying_intercept 5000x100 threads=4: nutpie dataset 2: R-hat 1.033, min bulk ESS 183
+  varying_intercept 5000x100 threads=4: nutpie dataset 3: R-hat 1.019, min bulk ESS 222
+  varying_intercept 5000x100 threads=4: nutpie dataset 4: R-hat 1.019, min bulk ESS 173
+  varying_intercept 5000x100 threads=4: nutpie dataset 5: R-hat 1.019, min bulk ESS 177
+  varying_intercept 5000x100 threads=4: nutpie dataset 6: R-hat 1.024, min bulk ESS 174
+  varying_intercept 5000x100 threads=4: nutpie dataset 7: R-hat 1.019, min bulk ESS 245
+  varying_intercept 5000x100 threads=4: nutpie dataset 8: R-hat 1.015, min bulk ESS 169
+  varying_intercept 5000x100 threads=4: nutpie dataset 9: R-hat 1.020, min bulk ESS 189
+  eight_schools 8x8 threads=1: rustmc dataset 1: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 3: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 4: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 5: 1 divergences
+  eight_schools 8x8 threads=1: rustmc dataset 9: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 0: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 2: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 3: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 5: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 6: 1 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 8: 2 divergences
+  eight_schools 8x8 threads=1: nutpie dataset 9: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 1: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 3: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 4: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 5: 1 divergences
+  eight_schools 8x8 threads=4: rustmc dataset 9: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 0: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 2: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 3: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 5: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 6: 1 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 8: 2 divergences
+  eight_schools 8x8 threads=4: nutpie dataset 9: 1 divergences
+
+By model class: per-ESS ratios of every passing pair in the class, median and observed range (n values; a cell's two thread settings share draws), and verdict counts over cells, Holm-adjusted within the class.
+  vs nutpie               normal             threads=1: per ESS 0.41 [0.15, 0.87] (n=50); cells: rustmc faster 5
+  vs nutpie               normal             threads=4: per ESS 0.40 [0.15, 0.96] (n=50); cells: rustmc faster 5
+  vs nutpie               normal_sigma       threads=1: per ESS 0.40 [0.15, 0.60] (n=50); cells: rustmc faster 5
+  vs nutpie               normal_sigma       threads=4: per ESS 0.41 [0.14, 0.72] (n=50); cells: rustmc faster 5
+  vs nutpie               logistic           threads=1: per ESS 0.44 [0.19, 0.79] (n=50); cells: rustmc faster 5
+  vs nutpie               logistic           threads=4: per ESS 0.44 [0.18, 0.79] (n=50); cells: rustmc faster 5
+  vs nutpie               poisson            threads=1: per ESS 0.48 [0.16, 0.66] (n=50); cells: rustmc faster 5
+  vs nutpie               poisson            threads=4: per ESS 0.35 [0.17, 0.55] (n=50); cells: rustmc faster 5
+  vs nutpie               varying_intercept  threads=1: per ESS 1.60 [1.44, 2.04] (n=5); cells: no clear winner 1, inconclusive (quality) 1
+  vs nutpie               varying_intercept  threads=4: per ESS 1.85 [1.53, 2.21] (n=5); cells: no clear winner 1, inconclusive (quality) 1
+  vs nutpie               eight_schools      threads=1: per ESS 0.76 [0.76, 0.76] (n=1); cells: no clear winner 1
+  vs nutpie               eight_schools      threads=4: per ESS 0.77 [0.77, 0.77] (n=1); cells: no clear winner 1
+  vs nutpie_default_tune  normal             threads=1: per ESS 0.62 [0.24, 1.15] (n=50); cells: no clear winner 1, rustmc faster 4
+  vs nutpie_default_tune  normal             threads=4: per ESS 0.62 [0.24, 1.25] (n=50); cells: no clear winner 1, rustmc faster 4
+  vs nutpie_default_tune  normal_sigma       threads=1: per ESS 0.61 [0.22, 0.88] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  normal_sigma       threads=4: per ESS 0.59 [0.19, 0.88] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  logistic           threads=1: per ESS 0.71 [0.27, 1.12] (n=50); cells: no clear winner 2, rustmc faster 3
+  vs nutpie_default_tune  logistic           threads=4: per ESS 0.71 [0.26, 1.17] (n=50); cells: no clear winner 2, rustmc faster 3
+  vs nutpie_default_tune  poisson            threads=1: per ESS 0.72 [0.25, 1.00] (n=50); cells: rustmc faster 5
+  vs nutpie_default_tune  poisson            threads=4: per ESS 0.54 [0.26, 0.90] (n=50); cells: rustmc faster 5
+
+Where the sampling time goes, rustmc over nutpie at matched warmup, every finished pair: median ratios of leapfrog steps, of sampling seconds per step, and of smallest bulk ESS, with each engine's median microseconds per step (amortized: at 4 threads it divides concurrent chains' wall time by their total steps).
+  cell                                 pairs  steps per step  min ESS  rustmc us  nutpie us
+  normal 100x4 threads=1                  10   1.40     0.40     0.80       0.70       1.72
+  normal 100x4 threads=4                  10   1.40     0.38     0.80       0.21       0.55
+  normal 1000x16 threads=1                10   1.10     0.47     1.25       6.04      12.82
+  normal 1000x16 threads=4                10   1.10     0.46     1.25       1.67       3.65
+  normal 10000x16 threads=1               10   1.11     0.37     1.24      62.22     169.30
+  normal 10000x16 threads=4               10   1.11     0.34     1.24      16.02      47.18
+  normal 1000x64 threads=1                10   1.12     0.28     0.67      20.43      72.85
+  normal 1000x64 threads=4                10   1.12     0.27     0.67       5.77      21.61
+  normal 1000x128 threads=1               10   1.26     0.20     1.58      35.37     173.51
+  normal 1000x128 threads=4               10   1.26     0.21     1.58       9.20      44.41
+  normal_sigma 100x4 threads=1            10   1.37     0.38     0.98       0.83       2.19
+  normal_sigma 100x4 threads=4            10   1.37     0.37     0.98       0.25       0.68
+  normal_sigma 1000x16 threads=1          10   1.10     0.47     1.17       6.99      15.00
+  normal_sigma 1000x16 threads=4          10   1.10     0.47     1.17       1.96       4.16
+  normal_sigma 10000x16 threads=1         10   1.10     0.38     1.25      70.52     185.69
+  normal_sigma 10000x16 threads=4         10   1.10     0.37     1.25      19.00      50.95
+  normal_sigma 1000x64 threads=1          10   1.22     0.25     0.75      20.43      81.59
+  normal_sigma 1000x64 threads=4          10   1.22     0.29     0.75       6.31      21.92
+  normal_sigma 1000x128 threads=1         10   1.21     0.23     1.49      38.76     166.89
+  normal_sigma 1000x128 threads=4         10   1.21     0.21     1.49       9.72      46.63
+  logistic 100x4 threads=1                10   1.37     0.42     0.94       2.28       5.47
+  logistic 100x4 threads=4                10   1.37     0.40     0.94       0.64       1.62
+  logistic 1000x16 threads=1              10   1.10     0.46     1.19      23.14      50.72
+  logistic 1000x16 threads=4              10   1.10     0.46     1.19       6.11      13.38
+  logistic 10000x16 threads=1             10   1.11     0.50     1.30     278.70     554.96
+  logistic 10000x16 threads=4             10   1.11     0.50     1.30      72.80     144.59
+  logistic 1000x64 threads=1              10   1.21     0.34     0.76      39.44     117.45
+  logistic 1000x64 threads=4              10   1.21     0.38     0.76      11.70      30.52
+  logistic 1000x128 threads=1             10   1.17     0.28     1.40      53.70     193.35
+  logistic 1000x128 threads=4             10   1.17     0.26     1.40      14.33      55.13
+  poisson 100x4 threads=1                 10   1.27     0.42     1.11       1.64       3.90
+  poisson 100x4 threads=4                 10   1.27     0.26     1.11       0.47       1.84
+  poisson 1000x16 threads=1               10   1.08     0.48     0.99      17.04      35.19
+  poisson 1000x16 threads=4               10   1.08     0.33     0.99       4.42      13.44
+  poisson 10000x16 threads=1              10   1.08     0.46     1.01     187.24     411.71
+  poisson 10000x16 threads=4              10   1.08     0.34     1.01      48.71     141.75
+  poisson 1000x64 threads=1               10   1.18     0.30     0.76      30.69     100.91
+  poisson 1000x64 threads=4               10   1.18     0.30     0.76       8.71      29.44
+  poisson 1000x128 threads=1              10   1.13     0.24     1.37      45.89     189.01
+  poisson 1000x128 threads=4              10   1.13     0.24     1.37      12.17      50.59
+  varying_intercept 500x20 threads=1      10   2.66     1.48     2.59       3.57       2.41
+  varying_intercept 500x20 threads=4      10   2.66     1.56     2.59       1.04       0.66
+  varying_intercept 5000x100 threads=1    10   2.24     2.56     1.05      28.16      11.10
+  varying_intercept 5000x100 threads=4    10   2.24     2.35     1.05       7.77       3.20
+  eight_schools 8x8 threads=1             10   1.37     0.59     1.03       0.56       0.94
+  eight_schools 8x8 threads=4             10   1.37     0.61     1.03       0.18       0.29
