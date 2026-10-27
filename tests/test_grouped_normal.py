@@ -92,14 +92,17 @@ def test_known_scales_posterior_matches_the_exact_gaussian(rustmc):
     draws = np.column_stack(
         [np.ravel(samples["mu"])] + [np.ravel(samples[f"z[{g}]"]) for g in range(groups)]
     )
-    idata = fit.to_arviz()
-    import arviz as az
-
-    ess = az.ess(idata, method="mean")
-    effective = np.array([float(ess["mu"])] + [float(ess[f"z[{g}]"]) for g in range(groups)])
-    assert effective.min() > 400
+    names = ["mu"] + [f"z[{g}]" for g in range(groups)]
+    diagnostics = {row["name"]: row for row in fit.diagnostics()}
+    # Bulk ESS, from rank-normalized draws, gates that each chain set is long
+    # enough. The z-scores need the standard error of the plain mean of the
+    # draws, sd / sqrt(ESS) with the ESS of the draws themselves rather than of
+    # their ranks; rustmc reports exactly that as mcse_mean.
+    assert min(diagnostics[name]["ess_bulk"] for name in names) > 400
+    mcse = np.array([diagnostics[name]["mcse_mean"] for name in names])
+    assert np.isfinite(mcse).all() and (mcse > 0).all()
     sd = np.sqrt(np.diag(covariance))
-    z_scores = (draws.mean(axis=0) - mean) / (sd / np.sqrt(effective))
+    z_scores = (draws.mean(axis=0) - mean) / mcse
     # Five means: a family-wise two-sided 0.001 bound.
     assert np.abs(z_scores).max() < 4.0, z_scores
     np.testing.assert_allclose(draws.std(axis=0), sd, rtol=0.1)
