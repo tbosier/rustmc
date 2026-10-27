@@ -87,6 +87,27 @@ versioning while the public API is stabilized.
   faster, from about 14 and 26 to 29 times before: rustmc's warmup ends on a step a
   third to under half of nutpie's, so a fit takes 2.6 to 2.9 times the leapfrog steps,
   and each step still costs 2.1 to 4.5 times nutpie's.
+- **A Normal term on a grouped mean runs as one forward and one reverse loop.** For
+  `y ~ Normal(mu + tau * z["group"], sigma)`, with the mean, the scale (either side of
+  the product, a parameter or a constant) or both optional, the evaluator now finds the
+  gather, product, sum and term when it is built and runs them as one loop per pass
+  instead of four passes that each stored a vector for the next to load. Its gradient at
+  500 rows and 20 groups takes 2.9 to 3.0 µs, from about 5.0, and at 5,000 rows and 100
+  groups 26.7 to 27.1 µs, from about 48, and a 4-chain fit 34% to 43% less time; a
+  thousand such terms cost about the same per term as ten
+  (`benchmarks/results/2026-10-26-grouped-normal.txt`). The fused loops take the same
+  expressions in the same order and still write the vectors, so results and seeded draws
+  are the same to the bit; when two NaNs meet, which payload survives is the compiler's
+  choice in either path. Chains with any node between their own other than a constant
+  or data, a vector read twice, computed indices, a gather the separate gather would run
+  per row (more groups than rows, or a mix of transforms across groups), or another
+  likelihood run as before. So does a chain whose graph changed after the evaluator was
+  built in anything the fused loops read: the gather's span or indices, the product's
+  operator or operands, the mean, the term's family, scale or observations, the nodes
+  between, or who reads the chain's vectors. A changed parameter transform is read on
+  every call by both paths, and its chain stays fused.
+  `rustmc._rustmc._fused_grouped_normal_passes()` counts the fused passes, for tests and
+  benchmarks.
 
 ### Tests
 
