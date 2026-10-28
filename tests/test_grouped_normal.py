@@ -180,7 +180,12 @@ def test_every_reader_matches_the_unfused_path(rustmc):
     assert fused.keys() == separate.keys()
     for name in fused:
         assert fused[name].size > 0, name
-        np.testing.assert_array_equal(fused[name], separate[name], err_msg=name)
+        # Bits, not values: equal values would let +0.0 stand for -0.0.
+        np.testing.assert_array_equal(
+            np.ascontiguousarray(fused[name], dtype=np.float64).view(np.uint64),
+            np.ascontiguousarray(separate[name], dtype=np.float64).view(np.uint64),
+            err_msg=name,
+        )
 
     samples = fit.get_samples_2d()
     z = np.stack([samples[f"z[{g}]"] for g in range(groups)], axis=-1)

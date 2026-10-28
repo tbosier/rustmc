@@ -39,14 +39,17 @@
 //!
 //! The exponent range. Each per-row quantity is formed as the separate
 //! nodes formed it for one row, the term's adjoint applied first, and only
-//! then multiplied by the group's row count. A call runs the separate nodes
+//! then multiplied by the group's row count. A group's row adjoint is of its
+//! mean residual, not of each row's: when the rows' residuals cancel to an
+//! exact zero, the group's adjoint is zero, the exact value, even where the
+//! rows' own adjoints were subnormal and their rounded sum was not zero. A call runs the separate nodes
 //! instead when the noise scale lies outside `2^-128` to `2^128`, the mean,
 //! the product scale or an effect exceeds `2^128`, a bounded transform is
 //! wider than `2^128`, or a group's residual is not zero but its
 //! standardized residual or row adjoint is below `2^-969`; so does every
 //! call of a chain whose observations exceed `2^128`. Inside those limits
 //! nothing the forward pass forms can overflow (see `SAFE_MAGNITUDE`) and no
-//! row adjoint is subnormal; a chain whose group mean's low half comes out
+//! nonzero group row adjoint is subnormal; a chain whose group mean's low half comes out
 //! subnormal never runs fused. Three differences remain. The reverse pass
 //! multiplies by the term's adjoint and the transforms' derivatives, which
 //! the limits do not bound, as the separate nodes do. It adds each group's
@@ -1457,8 +1460,14 @@ mod tests {
         let mut kinds = 0;
         for (k, ((&a, &b), &t)) in fused.iter().zip(separate).zip(tol).enumerate() {
             if a.is_finite() && b.is_finite() {
+                // A zero tolerance asks for the same bits, so a zero must
+                // also keep its sign.
                 assert!(
-                    (a - b).abs() <= t,
+                    if t == 0.0 {
+                        a.to_bits() == b.to_bits()
+                    } else {
+                        (a - b).abs() <= t
+                    },
                     "{label}: value {k}: fused {a:e}, separate {b:e}, difference {:e} > {t:e}",
                     (a - b).abs()
                 );
@@ -1473,8 +1482,10 @@ mod tests {
                         "{label}: value {k}: fused {a:e}, separate {b:e}"
                     );
                 } else if !same(a, b) {
+                    // Only a NaN against an infinity: opposite infinities are
+                    // a different answer, not a different overflow.
                     assert!(
-                        degenerate,
+                        degenerate && (a.is_nan() != b.is_nan()),
                         "{label}: value {k}: fused {a:e}, separate {b:e}"
                     );
                     kinds += 1;
@@ -1773,10 +1784,21 @@ mod tests {
                 }
                 let mean = (s + c) / n as f64;
                 let scale = members.iter().map(|v| v.abs()).sum::<f64>() / n as f64;
-                let error = (stats.mean_hi[slot] - mean) + stats.mean_lo[slot];
+                // The reference mean as two doubles too, so the check can see
+                // the low half: the quotient, then the exact remainder of the
+                // division (one rounding in the fused multiply-add) and the
+                // compensation, over n.
+                let quotient = (s + c) / n as f64;
+                let remainder = (-quotient).mul_add(n as f64, s) + c;
+                let low = remainder / n as f64;
+                let error = (stats.mean_hi[slot] - quotient) + (stats.mean_lo[slot] - low);
+                // Both sums carry about n u^2 of the magnitudes' sum, so the
+                // means differ by about n u^2 times the mean magnitude; a mean
+                // that lost its low half is off by about u times it.
                 assert!(
-                    error.abs() <= 4.0 * U * scale,
-                    "case {case} group {g}: {error:e}"
+                    error.abs() <= 16.0 * n as f64 * U * U * scale + f64::MIN_POSITIVE,
+                    "case {case} group {g}: {error:e} against {:e}",
+                    16.0 * n as f64 * U * U * scale
                 );
                 let spread = members
                     .iter()
