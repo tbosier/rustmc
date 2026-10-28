@@ -269,6 +269,130 @@ impl PyCompiledModel {
         Ok(FitResult::new(fit))
     }
 
+    /// Experimental and private, for `benchmarks/adaptation_attribution.py`;
+    /// not a supported API and free to change or vanish.
+    ///
+    /// NUTS as `sample` runs it, also returning each chain's final inverse
+    /// metric and per-transition telemetry (warmup included). With
+    /// `inverse_metrics` and `step_sizes`, one of each per chain, chain `c`
+    /// uses that metric and step size for every transition and adapts
+    /// neither; a metric of `d` values is a diagonal inverse metric (position
+    /// variances) and one of `d * d` a dense, row-major position covariance.
+    #[pyo3(signature = (data, chains=4, draws=1000, warmup=1000, seed=42, threads=1, target_accept=0.8, max_tree_depth=10, metric="auto", init=None, inverse_metrics=None, step_sizes=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn _experimental_nuts<'py>(
+        &self,
+        py: Python<'py>,
+        data: &Bound<'_, PyAny>,
+        chains: usize,
+        draws: usize,
+        warmup: usize,
+        seed: u64,
+        threads: usize,
+        target_accept: f64,
+        max_tree_depth: usize,
+        metric: &str,
+        init: Option<Vec<Vec<f64>>>,
+        inverse_metrics: Option<Vec<Vec<f64>>>,
+        step_sizes: Option<Vec<f64>>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        use rustmc_core::nuts::FrozenAdaptation;
+        let config = SamplerOptions {
+            chains,
+            draws,
+            warmup,
+            seed,
+            step_size: 0.0,
+            target_accept,
+            sampler: "nuts",
+            max_tree_depth,
+            num_leapfrog_steps: 15,
+            show_progress: false,
+            metric,
+        }
+        .single(threads)?;
+        let dim = self.structure().param_count;
+        let frozen = match (inverse_metrics, step_sizes) {
+            (None, None) => None,
+            (Some(metrics), Some(steps)) if metrics.len() == steps.len() => Some(
+                metrics
+                    .iter()
+                    .zip(steps)
+                    .map(|(values, step)| {
+                        if values.len() == dim {
+                            FrozenAdaptation::diagonal(values, step)
+                        } else {
+                            FrozenAdaptation::dense(values, dim, step)
+                        }
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+                    .map_err(PyValueError::new_err)?,
+            ),
+            _ => {
+                return Err(PyValueError::new_err(
+                    "inverse_metrics and step_sizes go together, one of each per chain",
+                ))
+            }
+        };
+        let binding = self.bind_any(data, "0".to_string())?;
+        let structure = Arc::clone(self.structure());
+        let fit = py
+            .allow_threads(|| {
+                rustmc_core::sampler::sample_nuts_experimental(
+                    structure,
+                    binding.clone(),
+                    config,
+                    init,
+                    frozen,
+                )
+            })
+            .map_err(PyValueError::new_err)?;
+        let per_chain = pyo3::types::PyList::empty(py);
+        for (chain, blocks) in fit.inverse_metrics.iter().enumerate() {
+            let entry = PyDict::new(py);
+            let metric = pyo3::types::PyList::empty(py);
+            for block in blocks {
+                let item = PyDict::new(py);
+                item.set_item("start", block.start)?;
+                item.set_item("len", block.len)?;
+                item.set_item("dense", block.dense)?;
+                item.set_item("values", block.values.clone().into_pyarray(py))?;
+                metric.append(item)?;
+            }
+            entry.set_item("inverse_metric", metric)?;
+            entry.set_item("step_size", fit.result.step_sizes[chain])?;
+            let transitions = &fit.result.transitions[chain];
+            let column = |f: &dyn Fn(&rustmc_core::hmc::TransitionStats) -> f64| {
+                transitions.iter().map(f).collect::<Vec<f64>>()
+            };
+            entry.set_item(
+                "n_leapfrog",
+                column(&|t| t.num_leapfrog_steps as f64).into_pyarray(py),
+            )?;
+            entry.set_item(
+                "tree_depth",
+                column(&|t| t.tree_depth.map_or(f64::NAN, |d| d as f64)).into_pyarray(py),
+            )?;
+            entry.set_item("accept_prob", column(&|t| t.accept_prob).into_pyarray(py))?;
+            entry.set_item(
+                "divergent",
+                column(&|t| f64::from(u8::from(t.divergent))).into_pyarray(py),
+            )?;
+            entry.set_item(
+                "is_warmup",
+                column(&|t| f64::from(u8::from(t.is_warmup))).into_pyarray(py),
+            )?;
+            entry.set_item("step_size_used", column(&|t| t.step_size).into_pyarray(py))?;
+            per_chain.append(entry)?;
+        }
+        let model_fit = rustmc_core::model::ModelFit::new(self.model.clone(), binding, fit.result)
+            .map_err(model_error)?;
+        let out = PyDict::new(py);
+        out.set_item("fit", FitResult::new(model_fit).into_pyobject(py)?)?;
+        out.set_item("chains", per_chain)?;
+        Ok(out)
+    }
+
     /// Lazily fit stable-ID datasets; the Python stream bounds chunk retention.
     #[pyo3(signature = (datasets, **options))]
     fn sample_iter<'py>(

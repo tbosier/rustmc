@@ -5,6 +5,7 @@ use crate::forecast_common::{checked_value_count, MAX_MATERIALIZED_VALUES};
 use crate::graph::{Graph, Op, ParamTransform};
 use crate::hmc::{self, ChainResult, HmcConfig, TransitionStats};
 pub use crate::mass_matrix::MetricKind;
+use crate::mass_matrix::{InverseMetricBlock, MassMatrix};
 use crate::nuts::{self, NutsConfig};
 use crate::progress::{ProgressGuard, ProgressState};
 use crate::seeding::{chain_seed, SAMPLER_FIT_SEED_DOMAIN, SAMPLER_INIT_SEED_DOMAIN};
@@ -822,6 +823,88 @@ fn checked_initial(
         }
     }
     Ok(initial)
+}
+
+/// What [`sample_nuts_experimental`] returns. Experimental, for
+/// `benchmarks/adaptation_attribution.py`; not a supported API.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct ExperimentalNutsFit {
+    pub result: SampleResult,
+    /// Per chain, the inverse metric its draws were sampled with.
+    pub inverse_metrics: Vec<Vec<InverseMetricBlock>>,
+}
+
+/// Experimental, for `benchmarks/adaptation_attribution.py`; not a supported
+/// API. NUTS as [`sample_bound_with_init`] runs it, without a progress bar,
+/// also reporting each chain's final inverse metric. With `frozen`, chain `c`
+/// uses `frozen[c]`'s metric and step size for every transition, warmup
+/// included, and adapts neither; `config.step_size` and `config.metric` are
+/// then ignored.
+///
+/// # Errors
+///
+/// As [`sample_bound_with_init`], and when the sampler is not NUTS or
+/// `frozen` does not hold one metric of the model's dimension per chain.
+#[doc(hidden)]
+pub fn sample_nuts_experimental(
+    graph: Arc<Graph>,
+    binding: DataBinding,
+    config: SamplerConfig,
+    initial: Option<Vec<Vec<f64>>>,
+    frozen: Option<Vec<nuts::FrozenAdaptation>>,
+) -> Result<ExperimentalNutsFit, String> {
+    config.validate()?;
+    if config.sampler != SamplerType::Nuts {
+        return Err("the experimental entry point runs NUTS only".into());
+    }
+    if let Some(frozen) = &frozen {
+        if frozen.len() != config.num_chains || frozen.iter().any(|f| f.dim() != graph.param_count)
+        {
+            return Err(format!(
+                "frozen adaptation needs one metric of dimension {} per chain ({})",
+                graph.param_count, config.num_chains
+            ));
+        }
+    }
+    let initial = checked_initial(&graph, &binding, &config, initial)?;
+    let nuts_config = config.nuts_config();
+    with_thread_pool(config.num_threads, || {
+        let chains: Vec<(ChainResult, MassMatrix)> = (0..config.num_chains)
+            .into_par_iter()
+            .map(|chain| {
+                let position = match &initial {
+                    Some(positions) => positions[chain].clone(),
+                    None => random_graph_initial_position(&graph, &binding, config.seed, chain)?,
+                };
+                let mut rng = chain_rng(config.seed, chain);
+                let mut evaluator = Evaluator::try_with_binding(&graph, binding.clone())
+                    .map_err(|error| error.to_string())?;
+                Ok(nuts::run_chain_reporting_metric(
+                    &graph,
+                    &nuts_config,
+                    &mut rng,
+                    position,
+                    None,
+                    &mut evaluator,
+                    frozen.as_ref().map(|frozen| &frozen[chain]),
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        let (chains, metrics): (Vec<_>, Vec<_>) = chains.into_iter().unzip();
+        let mut result = SampleResult::from_chains(chains, graph.param_names.clone(), &config);
+        let (samples, unconstrained_samples) =
+            constrain_chains(&graph, std::mem::take(&mut result.samples))?;
+        result.samples = samples;
+        result.unconstrained_samples = unconstrained_samples;
+        Ok(ExperimentalNutsFit {
+            result,
+            inverse_metrics: metrics
+                .iter()
+                .map(MassMatrix::inverse_metric_blocks)
+                .collect(),
+        })
+    })?
 }
 
 /// For the progress bar only: the leapfrog count is approximate for NUTS.
