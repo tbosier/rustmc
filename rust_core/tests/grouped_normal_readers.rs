@@ -233,16 +233,15 @@ fn every_reader_matches_the_unfused_path_to_the_bit() {
     for chain in 0..2 {
         for draw in 0..30 {
             let p = &samples.samples[chain][draw];
-            for i in 0..rows {
+            for (i, (&y, &group)) in training["y"].iter().zip(&training["group"]).enumerate() {
                 let flat = (chain * 30 + draw) * rows + i;
-                let g = training["group"][i] as usize;
-                let expected = p[mu] + p[tau] * p[z[g]];
+                let expected = p[mu] + p[tau] * p[z[group as usize]];
                 assert!(
                     (eta[flat] - expected).abs() <= 4.0 * f64::EPSILON * expected.abs().max(1.0),
                     "deterministic {flat}: {} against {expected}",
                     eta[flat]
                 );
-                let d = (training["y"][i] - expected) / p[sigma];
+                let d = (y - expected) / p[sigma];
                 let density = -0.5 * std::f64::consts::TAU.ln() - p[sigma].ln() - 0.5 * d * d;
                 assert!(
                     (log_likelihood[flat] - density).abs() <= 1e-12 * density.abs().max(1.0),
