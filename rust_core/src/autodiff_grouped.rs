@@ -1,34 +1,72 @@
-//! One forward and one reverse loop for a Normal observation term on a
-//! grouped linear predictor, `y ~ Normal(mu + tau * z[group], sigma)`, in
-//! place of the four row-length passes of its gather, product, broadcast sum
-//! and likelihood nodes.
+//! A Normal observation term on a grouped linear predictor,
+//! `y ~ Normal(mu + tau * z[group], sigma)`, evaluated from per-group
+//! statistics of its observations instead of row by row.
 //!
-//! The fused loops compute every value the separate nodes computed, with the
-//! same expressions and the same order of every sum, and they still write the
-//! nodes' vectors, which predictions and deterministics read. So log
-//! densities, gradients, those vectors and seeded draws keep their bits. What
-//! the fusion saves is the round trip of each row through three vectors in
-//! each pass, and the evaluator's dispatch between them.
+//! Within a group every row has the same mean `m_g = mu + tau * z_g`, so the
+//! term's sum of squares splits exactly into a part that depends only on the
+//! data and a part that depends on the parameters only through `m_g`:
+//!
+//! ```text
+//! sum over rows i of g of (y_i - m_g)^2 = S_g^2 + n_g * (ybar_g - m_g)^2
+//! ```
+//!
+//! with `n_g` the group's rows, `ybar_g` their mean and `S_g` the Euclidean
+//! norm of their deviations from it. The evaluator computes those three per
+//! group once, when it is built or its data are rebound: it sorts the rows by
+//! group (a stable counting sort) and reduces each group's contiguous segment.
+//! Every gradient then makes one pass over the groups that have rows, not over
+//! the rows, computing the term's log density and the adjoints of `mu`, `tau`,
+//! each `z_g` and `sigma` from their closed forms. A group with no rows takes
+//! no part, and the group effects are transformed once per group that has
+//! rows, so a gather with more groups than rows costs no more than its rows.
+//!
+//! Accuracy. The mean is kept as an unevaluated sum of two doubles, so
+//! `ybar_g - m_g` carries a few units of roundoff relative to itself, as one
+//! row's `y_i - m_g` did, even when the data sit far from zero; `S_g` is a
+//! scaled, compensated sum. The pass over the groups sums in four
+//! interleaved lanes. Each sum the term takes has at most as many rounded
+//! additions as groups that have rows, where the row loops had one per row,
+//! and each of its summands is at most the sum of the magnitudes of the row
+//! summands it replaces, so the usual bound on a recursive sum (`(k - 1) u`
+//! times the sum of magnitudes, for `k` summands and unit roundoff `u`) is no
+//! larger than the row loops'. That is a bound, not a promise for every
+//! input; the tests measure both against a double-double reference. The
+//! results are not the separate nodes' bits: sums are taken in another order.
+//!
+//! Groups whose effects mix transforms run fused too, each transformed once
+//! with its own transform.
+//!
+//! The gather, product and sum vectors of a fused chain are not written. The
+//! evaluator keeps each group's transformed effect from the last forward
+//! pass, and [`Evaluator::vec_elem`], which is how predictions, posterior and
+//! prior predictive draws, pointwise log-likelihoods and deterministics read
+//! node values, computes a row's value of any of those three nodes on demand
+//! from it, with the same expressions the separate nodes use, so those reads
+//! give the separate nodes' bits.
 //!
 //! A chain is fused only when nothing else can observe the difference: the
 //! only nodes between its own are constants and data, which take no part in
 //! the reverse pass, each vector in it feeds only the next node, the group
 //! indices are data, and the scale of the product is not also the chain's
-//! mean or scale, whose adjoints the separate nodes would have added to it
-//! first. The chain is decided at its gather and runs at its term, once any
-//! constant between has its value. Every call checks that the graph still
-//! holds the chain the evaluator found, and runs the separate nodes otherwise.
+//! mean or scale. The chain is decided at its gather and runs at its term,
+//! once any constant between has its value. Every call checks that the graph
+//! still holds the chain the evaluator found, and runs the separate nodes
+//! otherwise.
 
 use super::{scale_is_valid, Evaluator, NodeKind};
-use crate::data::DataBinding;
-use crate::graph::{ElementwiseOp, Graph, NodeId, ObsFamily, Op};
-use std::sync::atomic::{AtomicU64, Ordering};
+use crate::data::{is_group_index, DataBinding};
+use crate::graph::{ElementwiseOp, Graph, NodeId, ObsFamily, Op, ParamTransform};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Fused forward and reverse passes run by every evaluator dropped so far,
 /// in this process. Each evaluator counts its own and adds them here when it
 /// is dropped, so sampling threads don't share a counter per gradient.
 static FUSED_FORWARD_PASSES: AtomicU64 = AtomicU64::new(0);
 static FUSED_REVERSE_PASSES: AtomicU64 = AtomicU64::new(0);
+
+/// Set to run every grouped Normal chain as its separate nodes, in every
+/// evaluator of the process; see [`set_grouped_normal_fusion`].
+static FUSION_DISABLED: AtomicBool = AtomicBool::new(false);
 
 /// How many fused grouped-Normal forward and reverse passes the evaluators
 /// dropped so far in this process have run. Tests and benchmarks read it to
@@ -41,11 +79,161 @@ pub fn fused_grouped_normal_passes() -> (u64, u64) {
     )
 }
 
+/// Allow or forbid fused grouped-Normal chains in every evaluator of this
+/// process, from its next call on, and return whether they were allowed.
+/// For tests that compare an output computed through the fused chains with
+/// the same output computed through the separate nodes; it is process-wide,
+/// so a test that turns fusion off must not run beside one that counts
+/// fused passes.
+#[doc(hidden)]
+pub fn set_grouped_normal_fusion(enabled: bool) -> bool {
+    !FUSION_DISABLED.swap(!enabled, Ordering::Relaxed)
+}
+
+/// Whether [`set_grouped_normal_fusion`] allows fused chains.
+pub(super) fn fusion_allowed() -> bool {
+    !FUSION_DISABLED.load(Ordering::Relaxed)
+}
+
+/// No slot: a group of the gather that no row selects.
+const NO_SLOT: u32 = u32::MAX;
+
+/// What the fused pass needs of a chain's observations, per group that has
+/// rows (a slot), in increasing group order.
+#[derive(Debug, Default)]
+struct GroupStats {
+    /// Whether the statistics describe the current binding and are all
+    /// finite. A chain without usable statistics runs as separate nodes.
+    usable: bool,
+    /// The group of each slot.
+    groups: Vec<usize>,
+    /// The slot of each group of the gather, or [`NO_SLOT`].
+    slot_of_group: Vec<u32>,
+    /// Rows per slot.
+    counts: Vec<f64>,
+    /// Each slot's mean as an unevaluated sum `mean_hi + mean_lo`.
+    mean_hi: Vec<f64>,
+    mean_lo: Vec<f64>,
+    /// The Euclidean norm of each slot's deviations from its mean.
+    spread: Vec<f64>,
+}
+
+/// `a + b` and its rounding error, exactly (Knuth's two-sum).
+#[inline]
+fn two_sum(a: f64, b: f64) -> (f64, f64) {
+    let s = a + b;
+    let b_virtual = s - a;
+    let a_virtual = s - b_virtual;
+    (s, (a - a_virtual) + (b - b_virtual))
+}
+
+/// The mean of `values`, `n` of them, as an unevaluated sum of two doubles
+/// whose error is of order `u^2` times the mean of their absolute values.
+fn double_mean(values: impl Iterator<Item = f64>, n: f64) -> (f64, f64) {
+    let (mut hi, mut lo) = (0.0f64, 0.0f64);
+    for value in values {
+        let (sum, error) = two_sum(hi, value);
+        hi = sum;
+        lo += error;
+    }
+    let (hi, lo) = two_sum(hi, lo);
+    let mean_hi = hi / n;
+    // The remainder of a correctly rounded division is representable, and a
+    // fused multiply-add computes it with one rounding, so exactly.
+    let remainder = (-mean_hi).mul_add(n, hi);
+    (mean_hi, (remainder + lo) / n)
+}
+
+/// `sqrt(sum of squares)` of `values`, scaled by their largest magnitude so
+/// that no square overflows or underflows first, with the squares summed by
+/// Neumaier's compensated sum.
+fn norm(values: impl Iterator<Item = f64> + Clone) -> f64 {
+    let scale = values.clone().fold(0.0f64, |max, v| max.max(v.abs()));
+    if scale == 0.0 || !scale.is_finite() {
+        return scale;
+    }
+    let (mut sum, mut compensation) = (0.0f64, 0.0f64);
+    for value in values {
+        let x = value / scale;
+        let square = x * x;
+        let t = sum + square;
+        compensation += if sum >= square {
+            (sum - t) + square
+        } else {
+            (square - t) + sum
+        };
+        sum = t;
+    }
+    scale * (sum + compensation).sqrt()
+}
+
+impl GroupStats {
+    /// Compute the statistics of `obs` grouped by `groups`, for a gather of
+    /// `n_groups` groups, reusing the allocations. Not usable when the two
+    /// lengths differ from `len`, an index is not a group, or a statistic is
+    /// not finite.
+    fn build(&mut self, groups: &[f64], obs: &[f64], n_groups: usize, len: usize) {
+        self.usable = false;
+        self.groups.clear();
+        self.slot_of_group.clear();
+        self.counts.clear();
+        self.mean_hi.clear();
+        self.mean_lo.clear();
+        self.spread.clear();
+        if groups.len() != len
+            || obs.len() != len
+            || u32::try_from(len).is_err()
+            || !groups.iter().all(|&g| is_group_index(g, n_groups))
+        {
+            return;
+        }
+        // A stable counting sort of the rows by group: `order` lists the rows
+        // of group 0, then of group 1, and so on, each in row order.
+        let mut starts = vec![0usize; n_groups + 1];
+        for &group in groups {
+            starts[group as usize + 1] += 1;
+        }
+        for g in 0..n_groups {
+            starts[g + 1] += starts[g];
+        }
+        let mut next = starts[..n_groups].to_vec();
+        let mut order = vec![0u32; len];
+        for (row, &group) in groups.iter().enumerate() {
+            let group = group as usize;
+            order[next[group]] = row as u32;
+            next[group] += 1;
+        }
+        self.slot_of_group.resize(n_groups, NO_SLOT);
+        for g in 0..n_groups {
+            let segment = &order[starts[g]..starts[g + 1]];
+            if segment.is_empty() {
+                continue;
+            }
+            self.slot_of_group[g] = self.groups.len() as u32;
+            self.groups.push(g);
+            let n = segment.len() as f64;
+            let rows = segment.iter().map(|&row| obs[row as usize]);
+            let (mean_hi, mean_lo) = double_mean(rows.clone(), n);
+            self.counts.push(n);
+            self.mean_hi.push(mean_hi);
+            self.mean_lo.push(mean_lo);
+            self.spread
+                .push(norm(rows.map(|y| (y - mean_hi) - mean_lo)));
+        }
+        self.usable = self
+            .mean_hi
+            .iter()
+            .chain(&self.mean_lo)
+            .chain(&self.spread)
+            .all(|v| v.is_finite());
+    }
+}
+
 /// A fused chain, by node index: `gather`, then optionally `product =
 /// tau * gather` or `gather * tau`, then optionally `sum = mu + (product or
 /// gather)`, then the Normal term `obs` on the last of them. Any other node
 /// between them is a constant or data.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(super) struct GroupedNormal {
     gather: usize,
     product: Option<(usize, usize)>,
@@ -58,11 +246,23 @@ pub(super) struct GroupedNormal {
     param_start: usize,
     n_params: usize,
     /// The gather's index node, and the data slot it read when the
-    /// evaluator was built, which the fused loops read.
+    /// evaluator was built, which the fused pass reads.
     indices_node: usize,
     indices: usize,
     obs_data_idx: usize,
     len: usize,
+    stats: GroupStats,
+    /// Per slot, the group's transformed effect from the last forward pass,
+    /// which [`Evaluator::grouped_value`] reads.
+    values: Vec<f64>,
+    /// Per slot, the sum of the group's standardized residuals,
+    /// `n_g * (ybar_g - m_g) / sigma`, from the last forward pass.
+    residual_sums: Vec<f64>,
+    /// The term's sum of squared standardized residuals, the sum of
+    /// `residual_sums`, and that sum weighted by each group's effect.
+    sum_sq: f64,
+    residual_total: f64,
+    weighted_total: f64,
 }
 
 /// The fused chains of an evaluator and where they start and end.
@@ -75,8 +275,9 @@ pub(super) struct GroupedPlan {
     ends: Vec<Option<usize>>,
     /// Per node, the chain whose gather, product or sum it is.
     members: Vec<Option<usize>>,
-    /// Per chain, whether this call's forward pass found the chain still in
-    /// the graph and ran it fused, so the reverse pass may too.
+    /// Per chain, whether the last forward pass found the chain still in
+    /// the graph and ran it fused, so the reverse pass may too, and reads of
+    /// its vectors compute them.
     fused_this_call: Vec<bool>,
     /// Every node's readers in the graph of the current call, counted in one
     /// pass when the first chain of the call needs them, so a call costs one
@@ -181,7 +382,7 @@ fn for_each_input(op: &Op, mut f: impl FnMut(NodeId)) {
 
 impl GroupedNormal {
     /// The chain ending at the Normal term `obs`, if `graph` holds one the
-    /// fused loops reproduce exactly. `consumers` counts each node's readers.
+    /// fused pass can evaluate. `consumers` counts each node's readers.
     fn find(
         graph: &Graph,
         obs: usize,
@@ -248,11 +449,11 @@ impl GroupedNormal {
                     && matches!(node_kind[node], NodeKind::ComputedVec(_))
             })
             && binding.vectors[indices_data].len() == len;
-        // The product's scale takes its adjoint after the term's scale and
-        // the chain's mean took theirs, so it must not be either.
+        // The fused pass adds each scalar's adjoint once, so the product's
+        // scale must not also be the term's scale or the chain's mean.
         let tau_ok =
             product.is_none_or(|(_, tau)| tau != sigma.0 && sum.is_none_or(|(_, mu)| tau != mu));
-        let found = Self {
+        let mut found = Self {
             gather: next,
             product,
             scale_first,
@@ -265,8 +466,34 @@ impl GroupedNormal {
             indices: indices_data,
             obs_data_idx,
             len,
+            stats: GroupStats::default(),
+            values: Vec::new(),
+            residual_sums: Vec::new(),
+            sum_sq: 0.0,
+            residual_total: 0.0,
+            weighted_total: 0.0,
         };
-        (chain_ok && tau_ok && found.in_order_with_only_constants_between(graph)).then_some(found)
+        if !(chain_ok && tau_ok && found.in_order_with_only_constants_between(graph)) {
+            return None;
+        }
+        found.rebuild(binding);
+        Some(found)
+    }
+
+    /// Recompute the statistics from `binding`, and size the per-call
+    /// buffers for them.
+    fn rebuild(&mut self, binding: &DataBinding) {
+        let groups = binding.vectors.get(self.indices).map_or(&[][..], |v| v);
+        let obs = binding
+            .observations
+            .get(self.obs_data_idx)
+            .map_or(&[][..], |v| v);
+        self.stats.build(groups, obs, self.n_params, self.len);
+        let slots = self.stats.groups.len();
+        self.values.clear();
+        self.values.reserve(slots);
+        self.residual_sums.clear();
+        self.residual_sums.resize(slots, 0.0);
     }
 
     /// The chain's gather, product and sum, those it has.
@@ -280,7 +507,7 @@ impl GroupedNormal {
 
     /// Whether the chain's nodes come in order and every other node between
     /// its gather and its term is a constant or data, whose reverse passes
-    /// add nothing, so running the chain at its term reorders no sum.
+    /// add nothing, so running the chain at its term changes no other node.
     fn in_order_with_only_constants_between(&self, graph: &Graph) -> bool {
         let order = self.vectors().into_iter().flatten().chain([self.obs]);
         let increasing = order
@@ -389,6 +616,16 @@ impl GroupedPlan {
         plan
     }
 
+    /// Recompute every chain's statistics for a binding of the same shape;
+    /// until the next forward pass, reads of the chains' vectors read the
+    /// buffers, as for a chain that ran as separate nodes.
+    pub(super) fn rebind(&mut self, binding: &DataBinding) {
+        for chain in &mut self.chains {
+            chain.rebuild(binding);
+        }
+        self.fused_this_call.fill(false);
+    }
+
     /// Readers per node, or `None` when a node reads one past the end.
     fn consumers(graph: &Graph) -> Option<Vec<usize>> {
         let mut consumers = vec![0usize; graph.nodes.len()];
@@ -457,265 +694,200 @@ impl GroupedPlan {
     }
 }
 
-/// Split `buf` into the `len` rows at each offset, in increasing order, as
-/// disjoint slices; an absent offset gives an empty slice.
-fn disjoint_rows(buf: &mut [f64], offsets: [Option<usize>; 3], len: usize) -> [&mut [f64]; 3] {
-    let mut out: [&mut [f64]; 3] = [&mut [], &mut [], &mut []];
-    let mut rest = buf;
-    let mut base = 0;
-    for (slot, offset) in out.iter_mut().zip(offsets) {
-        if let Some(offset) = offset {
-            let (_, tail) = std::mem::take(&mut rest).split_at_mut(offset - base);
-            let (rows, tail) = tail.split_at_mut(len);
-            *slot = rows;
-            rest = tail;
-            base = offset + len;
-        }
-    }
-    out
-}
-
-/// The forward rows of a fused chain, as slices the loop cannot alias.
-struct ForwardRows<'a> {
-    groups: &'a [f64],
-    obs: &'a [f64],
+/// The fused pass over a chain's groups: each group's mean from its effect,
+/// in the separate nodes' expressions, its standardized mean residual, and
+/// the term's sums. Four interleaved lanes, so the sums vectorize.
+struct GroupPass<'a, const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool> {
     values: &'a [f64],
-    fallback: &'a dyn Fn(usize) -> f64,
+    counts: &'a [f64],
+    mean_hi: &'a [f64],
+    mean_lo: &'a [f64],
+    spread: &'a [f64],
     tau: f64,
     mu: f64,
     sv: f64,
-    gather_out: &'a mut [f64],
-    product_out: &'a mut [f64],
-    sum_out: &'a mut [f64],
-    residuals: &'a mut [f64],
+    residual_sums: &'a mut [f64],
 }
 
-impl ForwardRows<'_> {
-    /// The forward pass of each node, row by row: the gather, the product in
-    /// its node's operand order, `ScalarBroadcastAdd`'s `mu + v`, and the
-    /// Normal term's residual and sum of squares, which it returns.
-    fn run<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool, const VALID: bool>(
-        self,
-    ) -> f64 {
-        let len = self.gather_out.len();
-        let mut sum_sq = 0.0f64;
-        for i in 0..len {
-            let group = self.groups[i] as usize;
-            let mut m = match self.values.get(group) {
-                Some(&value) => value,
-                None => (self.fallback)(group),
-            };
-            self.gather_out[i] = m;
-            if PRODUCT {
-                m = if SCALE_FIRST {
-                    ElementwiseOp::Mul.value(self.tau, m)
-                } else {
-                    ElementwiseOp::Mul.value(m, self.tau)
-                };
-                self.product_out[i] = m;
-            }
-            if SUM {
-                let total = self.mu + m;
-                m = total;
-                self.sum_out[i] = m;
-            }
-            if VALID {
-                let d = (self.obs[i] - m) / self.sv;
-                self.residuals[i] = d;
-                sum_sq += d * d;
-            }
-        }
-        sum_sq
-    }
-}
-
-/// The reverse rows of a fused chain.
-struct ReverseRows<'a> {
-    residuals: &'a [f64],
-    groups: &'a [f64],
-    gathered: &'a [f64],
-    derivatives: &'a [f64],
-    grad: &'a mut [f64],
-    a_s: f64,
-    sv: f64,
+/// One group's sum of standardized residuals, its share of the sum of
+/// squares, and the residual sum times the group's effect.
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn group_terms<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool>(
+    z: f64,
+    n: f64,
+    mean_hi: f64,
+    mean_lo: f64,
+    spread: f64,
     tau: f64,
-    /// The product scale's adjoint before the product's reverse pass.
-    dtau: f64,
+    mu: f64,
+    sv: f64,
+) -> (f64, f64, f64) {
+    let mut m = z;
+    if PRODUCT {
+        m = if SCALE_FIRST {
+            ElementwiseOp::Mul.value(tau, m)
+        } else {
+            ElementwiseOp::Mul.value(m, tau)
+        };
+    }
+    if SUM {
+        // `ScalarBroadcastAdd`'s `mu + v`; addition commutes exactly.
+        m += mu;
+    }
+    let e = ((mean_hi - m) + mean_lo) / sv;
+    let s = spread / sv;
+    let r = n * e;
+    (r, s * s + r * e, r * z)
 }
 
-/// What the fused reverse rows add, and which nodes would have run.
-struct ReverseSums {
-    dsigma: f64,
-    dmu: f64,
-    dtau: f64,
-    any_sum: bool,
-    any_product: bool,
-    any_gather: bool,
-}
+impl<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool> pulp::WithSimd
+    for GroupPass<'_, PRODUCT, SCALE_FIRST, SUM>
+{
+    type Output = [f64; 3];
 
-impl ReverseRows<'_> {
-    /// Each node's reverse pass, row by row, in the separate passes' order;
-    /// `None` when a group index falls past the gather's parameters.
-    fn run<const PRODUCT: bool, const SUM: bool, const SIGMA: bool>(self) -> Option<ReverseSums> {
-        let (mut dsigma, mut dmu, mut dtau) = (0.0f64, 0.0f64, self.dtau);
-        let (mut any_sum, mut any_product, mut any_gather) = (false, false, false);
-        for (i, &d) in self.residuals.iter().enumerate() {
-            // The term's adjoint of its mean, into a zeroed buffer.
-            let mut adjoint = 0.0 + self.a_s * (d / self.sv);
-            if SIGMA {
-                dsigma += (d * d - 1.0) / self.sv;
-            }
-            if SUM {
-                any_sum |= adjoint != 0.0;
-                dmu += adjoint;
-                // Into the product's zeroed adjoint buffer.
-                let product_adjoint = 0.0 + adjoint;
-                adjoint = product_adjoint;
-            }
-            if PRODUCT {
-                any_product |= adjoint != 0.0;
-                adjoint = if adjoint == 0.0 {
-                    0.0
-                } else {
-                    // `Mul`'s adjoints, `(upstream * b, upstream * a)`: in
-                    // either operand order the scale takes `upstream * z`
-                    // and the gather `upstream * tau`.
-                    dtau += adjoint * self.gathered[i];
-                    0.0 + adjoint * self.tau
-                };
-            }
-            any_gather |= adjoint != 0.0;
-            let group = self.groups[i] as usize;
-            match (self.grad.get_mut(group), self.derivatives.get(group)) {
-                (Some(slot), Some(&derivative)) => *slot += adjoint * derivative,
-                _ => return None,
+    #[inline(always)]
+    fn with_simd<S: pulp::Simd>(self, _simd: S) -> [f64; 3] {
+        let n = self.values.len();
+        let (values, counts) = (&self.values[..n], &self.counts[..n]);
+        let (mean_hi, mean_lo) = (&self.mean_hi[..n], &self.mean_lo[..n]);
+        let spread = &self.spread[..n];
+        let out = &mut self.residual_sums[..n];
+        let mut lanes = [[0.0f64; 4]; 3];
+        let whole = n - n % 4;
+        let term = |j: usize| {
+            group_terms::<PRODUCT, SCALE_FIRST, SUM>(
+                values[j], counts[j], mean_hi[j], mean_lo[j], spread[j], self.tau, self.mu, self.sv,
+            )
+        };
+        for start in (0..whole).step_by(4) {
+            for lane in 0..4 {
+                let (r, q, rz) = term(start + lane);
+                out[start + lane] = r;
+                lanes[0][lane] += q;
+                lanes[1][lane] += r;
+                lanes[2][lane] += rz;
             }
         }
-        Some(ReverseSums {
-            dsigma,
-            dmu,
-            dtau,
-            any_sum,
-            any_product,
-            any_gather,
+        let mut tails = [0.0f64; 3];
+        for (j, slot) in out.iter_mut().enumerate().skip(whole) {
+            let (r, q, rz) = term(j);
+            *slot = r;
+            tails[0] += q;
+            tails[1] += r;
+            tails[2] += rz;
+        }
+        std::array::from_fn(|k| {
+            let l = lanes[k];
+            (l[0] + l[1]) + (l[2] + l[3]) + tails[k]
         })
     }
 }
 
 impl Evaluator {
     /// Decide, at chain `c`'s gather, whether this call runs it fused: the
-    /// graph still holds it, its vectors' only readers are its own nodes, and
-    /// the separate gather would transform each group once rather than each
-    /// row (see [`Evaluator::gather_by_group`]), which the fused loops always
-    /// do. A gather with more groups than rows keeps the per-row loop.
+    /// chain has usable statistics, its span lies inside the parameters and
+    /// their transforms, the graph still holds it, and its vectors' only
+    /// readers are its own nodes.
     // Out of line, as are the fused passes. Inlined into the evaluator's node
-    // loops, they made a graph that declines fusion (200 rows and 5,000
-    // groups) about 7% slower; out of line it measured within 0.3% of main.
-    // The loops still carry the plan's dispatch, so their code is not main's.
+    // loops, the earlier fused loops made a graph that declined fusion about
+    // 7% slower.
     #[inline(never)]
     pub(super) fn grouped_decide(&mut self, graph: &Graph, params: &[f64], c: usize) {
         let chain = &self.grouped.chains[c];
-        let span = (
-            chain.param_start,
-            chain.n_params,
-            NodeId(chain.indices_node),
-        );
+        let span_fits = chain
+            .param_start
+            .checked_add(chain.n_params)
+            .is_some_and(|end| end <= params.len() && end <= graph.param_transforms.len());
         // The cheaper checks first; the reader count scans the graph, once
         // per call.
         let fused = self.fusion_enabled()
-            && self.gather_by_group(graph, params, span, chain.len)
+            && chain.stats.usable
+            && span_fits
             && chain.still_in(graph)
             && self.grouped.read_once(graph, c);
         self.grouped.fused_this_call[c] = fused;
     }
 
     /// Run chain `c` of the grouped plan forward, at its term, after any
-    /// constant between its nodes has its value. Only for a chain
+    /// constant between its nodes has its value: transform each group's
+    /// effect, and take the term's log density and the sums its reverse pass
+    /// reads in one pass over the groups. Only for a chain
     /// [`Self::grouped_decide`] chose to fuse in this call.
     #[inline(never)]
     pub(super) fn grouped_forward(&mut self, graph: &Graph, params: &[f64], c: usize) {
-        let chain = self.grouped.chains[c].clone();
-        // As `Op::Gather`: each group transformed once, and a group past the
-        // parameters it was given transformed from the row.
-        let mut values = std::mem::take(&mut self.group_scratch);
+        let tau = self.grouped.chains[c]
+            .product
+            .map(|(_, tau)| self.scalars[tau]);
+        let mu = self.grouped.chains[c].sum.map(|(_, mu)| self.scalars[mu]);
+        let sv = self.scalars[self.grouped.chains[c].sigma];
+        let GroupedNormal {
+            stats,
+            values,
+            residual_sums,
+            param_start,
+            scale_first,
+            obs,
+            len,
+            ..
+        } = &mut self.grouped.chains[c];
         values.clear();
-        values.extend((0..chain.n_params).map(|g| {
-            let k = chain.param_start + g;
+        values.extend(stats.groups.iter().map(|&g| {
+            let k = *param_start + g;
             graph.param_transforms[k].apply(params[k])
         }));
-        let tau = chain.product.map(|(_, tau)| self.scalars[tau]);
-        let mu = chain.sum.map(|(_, mu)| self.scalars[mu]);
-        let sv = self.scalars[chain.sigma];
-        let valid = scale_is_valid(sv);
-        let offset = |node: usize| match self.node_kind[node] {
-            NodeKind::ComputedVec(off) => off,
-            _ => unreachable!("checked when the chain was found"),
-        };
-        let gather_off = offset(chain.gather);
-        let product_off = chain.product.map(|(p, _)| offset(p));
-        let sum_off = chain.sum.map(|(s, _)| offset(s));
-        let mut residuals = std::mem::take(&mut self.observation_cache[chain.obs]);
-        if valid {
-            residuals.resize(chain.len, 0.0);
-        }
-        let groups = &self.binding.vectors[chain.indices];
-        let obs = &self.binding.observations[chain.obs_data_idx];
-        let fallback = |group: usize| {
-            let k = chain.param_start + group;
-            graph.param_transforms[k].apply(params[k])
-        };
-        let [gather_out, product_out, sum_out] = disjoint_rows(
-            &mut self.vec_buf,
-            [Some(gather_off), product_off, sum_off],
-            chain.len,
-        );
-        let rows = ForwardRows {
-            groups: &groups[..chain.len],
-            obs: &obs[..chain.len],
-            values: &values,
-            fallback: &fallback,
-            tau: tau.unwrap_or(0.0),
-            mu: mu.unwrap_or(0.0),
-            sv,
-            gather_out,
-            product_out,
-            sum_out,
-            residuals: &mut residuals,
-        };
-        // One loop per shape of chain, so no row branches on the shape.
-        let sum_sq = match (tau.is_some(), chain.scale_first, mu.is_some(), valid) {
-            (false, _, false, false) => rows.run::<false, false, false, false>(),
-            (false, _, false, true) => rows.run::<false, false, false, true>(),
-            (false, _, true, false) => rows.run::<false, false, true, false>(),
-            (false, _, true, true) => rows.run::<false, false, true, true>(),
-            (true, false, false, false) => rows.run::<true, false, false, false>(),
-            (true, false, false, true) => rows.run::<true, false, false, true>(),
-            (true, false, true, false) => rows.run::<true, false, true, false>(),
-            (true, false, true, true) => rows.run::<true, false, true, true>(),
-            (true, true, false, false) => rows.run::<true, true, false, false>(),
-            (true, true, false, true) => rows.run::<true, true, false, true>(),
-            (true, true, true, false) => rows.run::<true, true, true, false>(),
-            (true, true, true, true) => rows.run::<true, true, true, true>(),
-        };
-        self.observation_cache[chain.obs] = residuals;
-        self.group_scratch = values;
-        self.scalars[chain.obs] = if valid {
-            let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
-            obs.len() as f64 * log_norm - 0.5 * sum_sq
-        } else {
-            f64::NEG_INFINITY
-        };
         self.grouped.forward_passes += 1;
+        if !scale_is_valid(sv) {
+            // As the separate term: outside the scale's support the density
+            // is zero, not NaN.
+            self.scalars[*obs] = f64::NEG_INFINITY;
+            return;
+        }
+        macro_rules! pass {
+            ($product:literal, $scale_first:literal, $sum:literal) => {
+                pulp::Arch::new().dispatch(GroupPass::<$product, $scale_first, $sum> {
+                    values,
+                    counts: &stats.counts,
+                    mean_hi: &stats.mean_hi,
+                    mean_lo: &stats.mean_lo,
+                    spread: &stats.spread,
+                    tau: tau.unwrap_or(0.0),
+                    mu: mu.unwrap_or(0.0),
+                    sv,
+                    residual_sums,
+                })
+            };
+        }
+        // One loop per shape of chain, so no group branches on the shape.
+        let [sum_sq, residual_total, weighted_total] =
+            match (tau.is_some(), *scale_first, mu.is_some()) {
+                (false, _, false) => pass!(false, false, false),
+                (false, _, true) => pass!(false, false, true),
+                (true, false, false) => pass!(true, false, false),
+                (true, false, true) => pass!(true, false, true),
+                (true, true, false) => pass!(true, true, false),
+                (true, true, true) => pass!(true, true, true),
+            };
+        let log_norm = -0.5 * std::f64::consts::TAU.ln() - sv.ln();
+        self.scalars[*obs] = *len as f64 * log_norm - 0.5 * sum_sq;
+        let chain = &mut self.grouped.chains[c];
+        chain.sum_sq = sum_sq;
+        chain.residual_total = residual_total;
+        chain.weighted_total = weighted_total;
     }
 
     /// Run chain `c` of the grouped plan in reverse, if this call's forward
     /// pass ran it fused. `a_s`, the term's adjoint, is not zero. Returns
     /// false, having changed nothing, when the separate nodes must run
-    /// instead; the reverse pass then stops skipping them.
+    /// instead.
     ///
-    /// Each node's adjoints are what its own reverse pass would have added,
-    /// in its order, and each is applied only if that pass would have run:
-    /// the separate passes skip a vector node whose adjoints are all zero.
+    /// The term's adjoints in closed form, from the sums of the forward
+    /// pass: `mu` takes `a_s / sigma` times the sum of the standardized
+    /// residuals, `tau` the same weighted by each row's effect, each effect
+    /// its group's residual sum times `a_s * tau / sigma` and its transform's
+    /// derivative, and `sigma` `a_s * (sum_sq - n) / sigma`. An adjoint that
+    /// is zero is not added, as the separate passes skip a vector node whose
+    /// adjoints are all zero, so a gradient later nodes left at -0.0 stays so.
     #[inline(never)]
     pub(super) fn grouped_reverse(
         &mut self,
@@ -727,88 +899,87 @@ impl Evaluator {
         if !self.grouped.fused_this_call[c] {
             return false;
         }
-        let chain = self.grouped.chains[c].clone();
-        let sv = self.scalars[chain.sigma];
         self.grouped.reverse_passes += 1;
+        let chain = &self.grouped.chains[c];
+        let sv = self.scalars[chain.sigma];
         if !scale_is_valid(sv) {
             // The term adds nothing, so every node before it is inactive.
             return true;
         }
         let sigma_adjoint = !(self.constant_at_construction[chain.sigma]
             && matches!(graph.nodes[chain.sigma].op, Op::Constant(_)));
-        let tau = chain.product.map(|(_, tau)| self.scalars[tau]);
-        let mut derivatives = std::mem::take(&mut self.group_scratch);
-        derivatives.clear();
-        derivatives.extend((0..chain.n_params).map(|g| {
-            let k = chain.param_start + g;
-            graph.param_transforms[k].derivative(params[k])
-        }));
-        // The gather's gradients start from what later nodes added.
-        let mut grad = std::mem::take(&mut self.grouped_grad);
-        grad.clear();
-        grad.extend_from_slice(&self.grad[chain.param_start..chain.param_start + chain.n_params]);
-        let gather_off = match self.node_kind[chain.gather] {
-            NodeKind::ComputedVec(off) => off,
-            _ => unreachable!("checked when the chain was found"),
-        };
-        let residuals = &self.observation_cache[chain.obs];
-        let rows = ReverseRows {
-            residuals,
-            groups: &self.binding.vectors[chain.indices][..residuals.len()],
-            gathered: &self.vec_buf[gather_off..gather_off + residuals.len()],
-            derivatives: &derivatives,
-            grad: &mut grad,
-            a_s,
-            sv,
-            tau: tau.unwrap_or(0.0),
-            dtau: chain.product.map_or(0.0, |(_, tau)| self.adj_scalars[tau]),
-        };
-        // One loop per shape of chain, so no row branches on the shape.
-        let sums = match (tau.is_some(), chain.sum.is_some(), sigma_adjoint) {
-            (false, false, false) => rows.run::<false, false, false>(),
-            (false, false, true) => rows.run::<false, false, true>(),
-            (false, true, false) => rows.run::<false, true, false>(),
-            (false, true, true) => rows.run::<false, true, true>(),
-            (true, false, false) => rows.run::<true, false, false>(),
-            (true, false, true) => rows.run::<true, false, true>(),
-            (true, true, false) => rows.run::<true, true, false>(),
-            (true, true, true) => rows.run::<true, true, true>(),
-        };
-        // A group index past the gather's parameters reads a parameter the
-        // separate pass would have written in place; leave those to it.
-        let Some(ReverseSums {
-            dsigma,
-            dmu,
-            dtau,
-            any_sum,
-            any_product,
-            any_gather,
-        }) = sums
-        else {
-            self.group_scratch = derivatives;
-            self.grouped_grad = grad;
-            self.grouped.reverse_passes -= 1;
-            self.grouped.fused_this_call[c] = false;
-            return false;
-        };
-        // In the separate passes' order: the term, its mean, the product.
         if sigma_adjoint {
-            self.adj_scalars[chain.sigma] += a_s * dsigma;
+            self.adj_scalars[chain.sigma] += a_s * ((chain.sum_sq - chain.len as f64) / sv);
         }
-        let sum_ran = chain.sum.is_none() || any_sum;
-        if let (Some((_, mu)), true) = (chain.sum, any_sum) {
-            self.adj_scalars[mu] += dmu;
+        if let Some((_, mu)) = chain.sum {
+            if chain.residual_total != 0.0 {
+                self.adj_scalars[mu] += a_s * (chain.residual_total / sv);
+            }
         }
-        let product_ran = sum_ran && (chain.product.is_none() || any_product);
-        if let (Some((_, tau)), true) = (chain.product, sum_ran && any_product) {
-            self.adj_scalars[tau] = dtau;
+        let tau = match chain.product {
+            Some((_, tau)) => {
+                if chain.weighted_total != 0.0 {
+                    self.adj_scalars[tau] += a_s * (chain.weighted_total / sv);
+                }
+                Some(self.scalars[tau])
+            }
+            None => None,
+        };
+        let grad = &mut self.grad[..];
+        for ((&g, &r), &value) in chain
+            .stats
+            .groups
+            .iter()
+            .zip(&chain.residual_sums)
+            .zip(&chain.values)
+        {
+            let mut adjoint = a_s * (r / sv);
+            if let Some(tau) = tau {
+                adjoint *= tau;
+            }
+            if adjoint == 0.0 {
+                continue;
+            }
+            let k = chain.param_start + g;
+            let derivative = match graph.param_transforms[k] {
+                // The value the forward pass took is this derivative.
+                ParamTransform::Exp => value,
+                ref transform => transform.derivative(params[k]),
+            };
+            grad[k] += adjoint * derivative;
         }
-        if product_ran && any_gather {
-            self.grad[chain.param_start..chain.param_start + chain.n_params].copy_from_slice(&grad);
-        }
-        self.group_scratch = derivatives;
-        self.grouped_grad = grad;
         true
+    }
+
+    /// Row `i` of `node`'s vector, if `node` is the gather, product or sum of
+    /// a chain the last forward pass ran fused, which did not write it:
+    /// computed from the row's group effect with the separate nodes'
+    /// expressions, so it has their bits.
+    #[inline]
+    pub(super) fn grouped_value(&self, node: usize, i: usize) -> Option<f64> {
+        let c = self.grouped.members.get(node).copied().flatten()?;
+        if !self.grouped.fused_this_call[c] {
+            return None;
+        }
+        let chain = &self.grouped.chains[c];
+        let group = self.binding.vectors[chain.indices][i] as usize;
+        let mut value = chain.values[chain.stats.slot_of_group[group] as usize];
+        if node == chain.gather {
+            return Some(value);
+        }
+        if let Some((product, tau)) = chain.product {
+            let tau = self.scalars[tau];
+            value = if chain.scale_first {
+                ElementwiseOp::Mul.value(tau, value)
+            } else {
+                ElementwiseOp::Mul.value(value, tau)
+            };
+            if node == product {
+                return Some(value);
+            }
+        }
+        let (_, mu) = chain.sum.expect("a member past the product is the sum");
+        Some(self.scalars[mu] + value)
     }
 }
 
@@ -816,13 +987,16 @@ impl Evaluator {
 mod tests {
     use super::super::reference::{eval_logp, grad_logp};
     use super::*;
-    use crate::graph::ParamTransform;
+    use rand::{Rng, SeedableRng};
+    use rand_chacha::ChaCha8Rng;
+
+    /// Unit roundoff.
+    const U: f64 = f64::EPSILON / 2.0;
 
     /// One grouped chain or two sharing their scalars, built the way the
     /// model compiler builds `mu + tau * z[group]` under a Normal likelihood.
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     struct Shape {
-        rows: usize,
         groups: usize,
         mean: bool,
         scale: bool,
@@ -841,13 +1015,59 @@ mod tests {
         signed_scale: bool,
     }
 
+    impl Shape {
+        fn from_flags(groups: usize, flags: u32) -> Self {
+            let bit = |k: u32| flags & (1 << k) != 0;
+            Shape {
+                groups,
+                mean: bit(0),
+                scale: bit(1),
+                constant_sigma: bit(2),
+                positive_z: bit(3),
+                weighted: bit(4),
+                second_term: bit(5),
+                scale_last: bit(6),
+                constant_scale: bit(7),
+                signed_scale: bit(8),
+            }
+        }
+
+        fn plain(rows: usize, groups: usize) -> (Self, Vec<usize>) {
+            (
+                Shape::from_flags(groups, 0b11),
+                default_groups(rows, groups),
+            )
+        }
+    }
+
+    /// The row pattern the earlier tests used: every group in turn, not
+    /// sorted.
+    fn default_groups(rows: usize, groups: usize) -> Vec<usize> {
+        (0..rows).map(|i| (i * 7 + i / 3) % groups).collect()
+    }
+
+    struct Term {
+        obs: usize,
+        gather: usize,
+        linpred: usize,
+        group: Vec<usize>,
+        y: Vec<f64>,
+    }
+
     struct Built {
         graph: Graph,
         params: usize,
-        terms: Vec<usize>,
+        terms: Vec<Term>,
+        sigma: NodeId,
+        /// The product's scale node, when there is a product.
+        tau: Option<NodeId>,
+        z_start: usize,
+        sigma_param: Option<usize>,
+        weight_param: Option<usize>,
     }
 
-    fn build(shape: Shape, y: impl Fn(usize) -> f64) -> Built {
+    fn build(shape: Shape, group: &[usize], y: impl Fn(usize) -> f64) -> Built {
+        let rows = group.len();
         let mut g = Graph::new();
         let mu = g.add_param("mu");
         let zero = g.add_constant(0.0);
@@ -868,23 +1088,20 @@ mod tests {
         };
         let z = g.add_vector_params_with_transform("z", shape.groups, transform);
         g.vector_normal_logp(z, shape.groups, 0.0, 1.0);
-        let sigma = if shape.constant_sigma {
-            g.add_constant(0.7)
+        let (sigma, sigma_param) = if shape.constant_sigma {
+            (g.add_constant(0.7), None)
         } else {
             let raw = g.add_param("log_sigma");
             g.log_half_normal_logp(raw, one);
-            g.exp(raw)
+            (g.exp(raw), Some(g.param_count - 1))
         };
         let weight = shape.weighted.then(|| g.add_param("w"));
-        let group = g.add_data(
-            "group",
-            (0..shape.rows)
-                .map(|i| ((i * 7 + i / 3) % shape.groups) as f64)
-                .collect(),
-        );
+        let weight_param = weight.map(|_| g.param_count - 1);
+        let group_node = g.add_data("group", group.iter().map(|&k| k as f64).collect());
         let mut terms = Vec::new();
+        let mut scale_node = None;
         for term in 0..1 + shape.second_term as usize {
-            let gathered = g.gather(z, shape.groups, group);
+            let gathered = g.gather(z, shape.groups, group_node);
             let mut linpred = gathered;
             if shape.scale {
                 let scale = match (shape.constant_scale, shape.signed_scale) {
@@ -892,6 +1109,7 @@ mod tests {
                     (true, true) => g.add_constant(-0.8),
                     (false, _) => tau,
                 };
+                scale_node = Some(scale);
                 linpred = if shape.scale_last {
                     g.elementwise(ElementwiseOp::Mul, linpred, Some(scale))
                 } else {
@@ -901,31 +1119,43 @@ mod tests {
             if shape.mean {
                 linpred = g.scalar_broadcast_add(mu, linpred);
             }
-            let obs = g.add_obs_data((0..shape.rows).map(|i| y(i + 1000 * term)).collect());
+            let values: Vec<f64> = (0..rows).map(|i| y(i + 1000 * term)).collect();
+            let obs = g.add_obs_data(values.clone());
             let node = g.obs_logp_normal(linpred, sigma, obs);
             if let Some(weight) = weight {
                 let weighted = g.mul(node, weight);
                 g.add_logp_term(weighted);
             }
-            terms.push(node.0);
+            terms.push(Term {
+                obs: node.0,
+                gather: gathered.0,
+                linpred: linpred.0,
+                group: group.to_vec(),
+                y: values,
+            });
         }
         let params = g.param_count;
         Built {
             graph: g,
             params,
             terms,
+            sigma,
+            tau: scale_node,
+            z_start: z,
+            sigma_param,
+            weight_param,
         }
     }
 
-    fn same(a: f64, b: f64) -> bool {
-        // Exact bits, NaN payloads included, as this build computes them.
-        a.to_bits() == b.to_bits()
-    }
-
     /// Every node's value, and the log density and gradient, from `evaluator`
-    /// after `compute` at `point`.
+    /// after `compute` at `point`: the log density first, then the gradient,
+    /// then each node in order.
     fn everything(evaluator: &mut Evaluator, g: &Graph, point: &[f64]) -> Vec<f64> {
         evaluator.compute(g, point);
+        read_all(evaluator, g)
+    }
+
+    fn read_all(evaluator: &Evaluator, g: &Graph) -> Vec<f64> {
         let mut out = vec![evaluator.total_logp];
         out.extend_from_slice(&evaluator.grad);
         for node in &g.nodes {
@@ -939,6 +1169,11 @@ mod tests {
         out
     }
 
+    fn same(a: f64, b: f64) -> bool {
+        // Exact bits, NaN payloads aside.
+        a.to_bits() == b.to_bits() || (a.is_nan() && b.is_nan())
+    }
+
     fn assert_same(label: &str, fused: &[f64], other: &[f64]) {
         assert_eq!(fused.len(), other.len(), "{label}");
         for (k, (&a, &b)) in fused.iter().zip(other).enumerate() {
@@ -949,6 +1184,147 @@ mod tests {
                 b.to_bits()
             );
         }
+    }
+
+    /// Which entries of `everything` may differ between the fused and the
+    /// separate passes, and by how much: the log density, the gradient, each
+    /// grouped term and each node that reads one. Every other entry, the
+    /// chain's vectors included, must have the same bits.
+    ///
+    /// The fused pass and the row loops compute the same sums in different
+    /// orders. A recursive sum of `k` terms is within `(k - 1) u` times the
+    /// sum of the terms' magnitudes of the exact one, and each term carries a
+    /// few more roundings of its own; the row loops' sums have `N` terms and
+    /// the fused pass's at most `G`, so the two are within
+    /// `(N + G + 16) u M` of each other, where `M` is the sum of the
+    /// magnitudes of the row summands. The tolerance is four times that.
+    /// `M` adds to each row's standardized residual `4 u (|y| + |m|) /
+    /// sigma`, for the mean kept as two doubles, whose error is of order
+    /// `u^2` times the data.
+    fn tolerances(built: &Built, shape: Shape, separate: &Evaluator, point: &[f64]) -> Vec<f64> {
+        let g = &built.graph;
+        let n_values = 1 + built.params + g.nodes.len() - 1
+            + g.nodes
+                .iter()
+                .map(|node| separate.node_len(node.id).max(1))
+                .sum::<usize>()
+            - (g.nodes.len() - 1);
+        let mut tol = vec![0.0f64; n_values];
+        let mut logp_magnitude = 0.0f64;
+        let mut grad_magnitude = vec![0.0f64; built.params];
+        let rows: usize = built.terms.iter().map(|t| t.y.len()).sum();
+        let factor = 4.0 * (rows + shape.groups + 16) as f64 * U;
+        let sv = separate.scalar_at(built.sigma);
+        let a_t = built.weight_param.map_or(1.0, |w| 1.0 + point[w]);
+        let tau = built.tau.map_or(1.0, |t| separate.scalar_at(t));
+        let mut term_tol = Vec::new();
+        for term in &built.terms {
+            if !scale_is_valid(sv) {
+                term_tol.push(0.0);
+                continue;
+            }
+            let residuals = &separate.observation_cache[term.obs];
+            let mut q = 0.0f64;
+            for (i, (&d, &y)) in residuals.iter().zip(&term.y).enumerate() {
+                let m = separate.vec_elem(NodeId(term.linpred), i);
+                let z = separate.vec_elem(NodeId(term.gather), i);
+                let a = d.abs() + 4.0 * U * (y.abs() + m.abs()) / sv;
+                q += a * a;
+                let row = |grad: &mut [f64], k: usize, v: f64| grad[k] += a_t.abs() * v;
+                if shape.mean {
+                    row(&mut grad_magnitude, 0, a / sv);
+                }
+                if shape.scale && !shape.constant_scale {
+                    let dtau = if shape.signed_scale { 1.0 } else { tau.abs() };
+                    row(&mut grad_magnitude, 1, dtau * a * z.abs() / sv);
+                }
+                let k = built.z_start + term.group[i];
+                let dz = if shape.positive_z {
+                    point[k].exp()
+                } else {
+                    1.0
+                };
+                let scale = if shape.scale { tau.abs() } else { 1.0 };
+                row(&mut grad_magnitude, k, scale * dz * a / sv);
+                if let Some(s) = built.sigma_param {
+                    // d sigma / d raw is sigma.
+                    row(&mut grad_magnitude, s, a * a + 1.0);
+                }
+            }
+            if let Some(w) = built.weight_param {
+                grad_magnitude[w] += 0.5 * q;
+            }
+            logp_magnitude += (1.0 + a_t.abs()) * 0.5 * q;
+            term_tol.push(factor * 0.5 * q);
+        }
+        // The log density and gradient also sum their nodes' contributions,
+        // which round again around a contribution that changed.
+        let terms = g.logp_terms.len() as f64;
+        let logp_sum: f64 = g
+            .logp_terms
+            .iter()
+            .map(|t| separate.scalar_at(*t).abs())
+            .filter(|v| v.is_finite())
+            .sum();
+        tol[0] = factor * logp_magnitude + 4.0 * terms * U * logp_sum;
+        for (k, m) in grad_magnitude.iter().enumerate() {
+            tol[1 + k] = factor * m + 16.0 * U * separate.grad[k].abs();
+        }
+        // The terms' own values, and the weighted copies that read them.
+        let mut offset = 1 + built.params;
+        for node in &g.nodes {
+            let len = separate.node_len(node.id).max(1);
+            if let Some(t) = built.terms.iter().position(|t| t.obs == node.id.0) {
+                tol[offset] = term_tol[t] + 4.0 * U * separate.scalar_at(node.id).abs();
+            }
+            if let Op::Mul(a, _) = node.op {
+                if let Some(t) = built.terms.iter().position(|t| t.obs == a.0) {
+                    tol[offset] = (term_tol[t] + 4.0 * U * separate.scalar_at(a).abs())
+                        * a_t.abs().max(1.0)
+                        + 4.0 * U * separate.scalar_at(node.id).abs();
+                }
+            }
+            offset += len;
+        }
+        tol
+    }
+
+    /// Compare the fused values with the separate ones within `tol`; a pair
+    /// that is not both finite must be both non-finite. Returns how many
+    /// pairs were non-finite on one side as NaN and on the other as an
+    /// infinity, which is a different overflow, not an error, and allowed
+    /// only where the log density itself is not finite.
+    fn assert_close(label: &str, fused: &[f64], separate: &[f64], tol: &[f64]) -> usize {
+        assert_eq!(fused.len(), separate.len(), "{label}");
+        let degenerate = !separate[0].is_finite();
+        let mut kinds = 0;
+        for (k, ((&a, &b), &t)) in fused.iter().zip(separate).zip(tol).enumerate() {
+            if a.is_finite() && b.is_finite() {
+                assert!(
+                    (a - b).abs() <= t,
+                    "{label}: value {k}: fused {a:e}, separate {b:e}, difference {:e} > {t:e}",
+                    (a - b).abs()
+                );
+            } else {
+                assert!(
+                    !a.is_finite() && !b.is_finite(),
+                    "{label}: value {k}: fused {a:e}, separate {b:e}"
+                );
+                if t == 0.0 {
+                    assert!(
+                        same(a, b),
+                        "{label}: value {k}: fused {a:e}, separate {b:e}"
+                    );
+                } else if !same(a, b) {
+                    assert!(
+                        degenerate,
+                        "{label}: value {k}: fused {a:e}, separate {b:e}"
+                    );
+                    kinds += 1;
+                }
+            }
+        }
+        kinds
     }
 
     /// The parameter points each shape is checked at: ordinary values, a
@@ -967,8 +1343,9 @@ mod tests {
         set(&|p| p[1] = 709.0);
         if !shape.constant_sigma {
             let sigma = 2 + shape.groups;
-            set(&|p| p[sigma] = -700.0);
-            set(&|p| p[sigma] = 700.0);
+            for raw in [-700.0, -30.0, 30.0, 700.0] {
+                set(&|p| p[sigma] = raw);
+            }
         }
         if shape.positive_z {
             set(&|p| {
@@ -999,104 +1376,397 @@ mod tests {
         shape.weighted && *point.last().unwrap() == -1.0
     }
 
-    /// The fused loops against the same chain run as its separate nodes, and
-    /// against the per-element loops those replaced: the log density, the
-    /// gradient and every node's value, to the bit, at every point. Each
-    /// variant must also have run fused.
+    /// Check `built` at each point against the same chains run as their
+    /// separate nodes, and check that every call ran fused. Returns the
+    /// overflow pairs `assert_close` counted.
+    fn check_shape(label: &str, built: &Built, shape: Shape, points: &[Vec<f64>]) -> usize {
+        let g = &built.graph;
+        let mut fused = Evaluator::new(g);
+        let mut separate = Evaluator::new(g);
+        separate.unfused_groups = true;
+        let chains = built.terms.len() as u64;
+        assert_eq!(fused.grouped.chains.len() as u64, chains, "{label}");
+        let mut kinds = 0;
+        for point in points {
+            let f = everything(&mut fused, g, point);
+            let s = everything(&mut separate, g, point);
+            let tol = tolerances(built, shape, &separate, point);
+            kinds += assert_close(&format!("{label} at {point:?}"), &f, &s, &tol);
+        }
+        let active = points.iter().filter(|p| !inactive(shape, p)).count() as u64;
+        assert_eq!(
+            fused.grouped.forward_passes,
+            points.len() as u64 * chains,
+            "{label}"
+        );
+        assert_eq!(fused.grouped.reverse_passes, active * chains, "{label}");
+        assert_eq!(separate.grouped.forward_passes, 0, "{label}");
+        kinds
+    }
+
+    /// The fused pass against the same chains run as their separate nodes:
+    /// every shape of chain the compiler builds, at ordinary and extreme
+    /// points, with more groups than rows among them. The log density, the
+    /// gradient and the terms within the summation bound of `tolerances`,
+    /// every other node value, the chains' vectors included, to the bit.
     #[test]
-    fn grouped_normal_chains_match_their_separate_nodes_bit_for_bit() {
-        let mut nan_values = 0usize;
-        let mut cases = 0usize;
+    fn grouped_normal_chains_match_their_separate_nodes() {
+        let mut kinds = 0usize;
         for rows in [1usize, 2, 5, 37] {
             for groups in [1usize, 3, 10] {
                 for flags in 0..512u32 {
-                    let bit = |k: u32| flags & (1 << k) != 0;
-                    let shape = Shape {
-                        rows,
-                        groups,
-                        mean: bit(0),
-                        scale: bit(1),
-                        constant_sigma: bit(2),
-                        positive_z: bit(3),
-                        weighted: bit(4),
-                        second_term: bit(5),
-                        scale_last: bit(6),
-                        constant_scale: bit(7),
-                        signed_scale: bit(8),
-                    };
-                    let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
-                    let g = &built.graph;
-                    let mut fused = Evaluator::new(g);
-                    let mut separate = Evaluator::new(g);
-                    separate.unfused_groups = true;
-                    let mut per_element = Evaluator::new(g);
-                    per_element.per_element = true;
-                    let chains = 1 + shape.second_term as usize;
-                    assert_eq!(fused.grouped.chains.len(), chains);
-                    for point in points(built.params, shape) {
-                        let f = everything(&mut fused, g, &point);
-                        let label =
-                            format!("{rows} rows, {groups} groups, flags {flags:09b}, {point:?}");
-                        assert_same(&label, &f, &everything(&mut separate, g, &point));
-                        assert_same(&label, &f, &everything(&mut per_element, g, &point));
-                        nan_values += f.iter().filter(|v| v.is_nan()).count();
-                        cases += 1;
-                    }
-                    // A gather with more groups than rows keeps the per-row
-                    // loop, so its chain runs as separate nodes.
-                    let all = points(built.params, shape);
-                    let active = all.iter().filter(|p| !inactive(shape, p)).count();
-                    let (runs, reverse_runs) = if groups <= rows {
-                        (
-                            all.len() as u64 * chains as u64,
-                            active as u64 * chains as u64,
-                        )
-                    } else {
-                        (0, 0)
-                    };
-                    assert_eq!(fused.grouped.forward_passes, runs);
-                    assert_eq!(fused.grouped.reverse_passes, reverse_runs);
-                    assert_eq!(separate.grouped.forward_passes, 0);
+                    let shape = Shape::from_flags(groups, flags);
+                    let group = default_groups(rows, groups);
+                    let built = build(shape, &group, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
+                    let label = format!("{rows} rows, {groups} groups, flags {flags:09b}");
+                    kinds += check_shape(&label, &built, shape, &points(built.params, shape));
                 }
             }
         }
-        // The overflowing points must reach the non-finite branches.
-        assert!(nan_values > 0, "{cases} cases");
+        // Overflowing points give NaN on one side and an infinity on the
+        // other in some gradients, where the sums meet infinities in another
+        // order; the log density there is -inf on both.
+        eprintln!("{kinds} pairs non-finite in different ways");
+    }
+
+    /// The same comparison over random shapes: 1 to 3,000 rows, 1 to 300
+    /// groups, indices sorted, unsorted, leaving groups empty or all in one
+    /// group, data near zero or far from it at several scales, random
+    /// points and scales near zero and huge.
+    #[test]
+    fn random_shapes_match_their_separate_nodes_within_the_summation_bound() {
+        let mut rng = ChaCha8Rng::seed_from_u64(20261028);
+        let log_uniform = |rng: &mut ChaCha8Rng, high: f64| -> usize {
+            rng.gen_range(0.0..high.ln()).exp().floor() as usize
+        };
+        for case in 0..400 {
+            let rows = log_uniform(&mut rng, 3001.0).max(1);
+            let groups = log_uniform(&mut rng, 301.0).max(1);
+            let pattern = rng.gen_range(0..5);
+            let mut group: Vec<usize> = match pattern {
+                0 | 1 => (0..rows).map(|_| rng.gen_range(0..groups)).collect(),
+                // Only every third group has rows.
+                2 => (0..rows)
+                    .map(|_| (rng.gen_range(0..groups.div_ceil(3)) * 3).min(groups - 1))
+                    .collect(),
+                3 => vec![rng.gen_range(0..groups); rows],
+                _ => (0..rows).map(|i| i % groups).collect(),
+            };
+            if pattern == 1 {
+                group.sort_unstable();
+            }
+            let offset = [0.0, 1e3, -1e6, 1e8][rng.gen_range(0..4)];
+            let spread = [1e-3, 1.0, 1e3][rng.gen_range(0..3)];
+            let noise: Vec<f64> = (0..2 * rows + 2000)
+                .map(|_| rng.gen_range(-1.0..1.0f64) * spread)
+                .collect();
+            let shape = Shape::from_flags(groups, rng.gen_range(0..512));
+            let built = build(shape, &group, |i| offset + noise[i % noise.len()]);
+            let mut points: Vec<Vec<f64>> = (0..3)
+                .map(|_| {
+                    (0..built.params)
+                        .map(|_| rng.gen_range(-1.5..1.5))
+                        .collect()
+                })
+                .collect();
+            // A mean near the data, where the residuals cancel most.
+            let mut near = points[0].clone();
+            near[0] = offset;
+            points.push(near);
+            if let Some(s) = built.sigma_param {
+                for raw in [-40.0, 40.0] {
+                    let mut p = points[0].clone();
+                    p[s] = raw;
+                    points.push(p);
+                }
+            }
+            if let Some(w) = built.weight_param {
+                for weight in [-1.0, -2.5, 0.0] {
+                    let mut p = points[0].clone();
+                    p[w] = weight;
+                    points.push(p);
+                }
+            }
+            let label = format!("case {case}: {rows} rows, {groups} groups, pattern {pattern}, offset {offset}, {shape:?}");
+            check_shape(&label, &built, shape, &points);
+        }
+    }
+
+    /// Every way a recorded draw reads node values: a forward pass alone,
+    /// then `vec_elem` and `scalar_at` on every node, as predictions,
+    /// posterior and prior predictive draws, pointwise log-likelihoods and
+    /// deterministics do. The chains' vectors, which the fused pass does not
+    /// write, must read as the separate nodes wrote them, to the bit, after a
+    /// forward pass alone, after a gradient, and after a forward pass that
+    /// follows a gradient at another point.
+    #[test]
+    fn reads_after_a_forward_pass_match_the_separate_nodes() {
+        for flags in 0..512u32 {
+            for (rows, groups) in [(23usize, 4usize), (3, 9)] {
+                let shape = Shape::from_flags(groups, flags);
+                let group = default_groups(rows, groups);
+                let built = build(shape, &group, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
+                let g = &built.graph;
+                let mut fused = Evaluator::new(g);
+                let mut separate = Evaluator::new(g);
+                separate.unfused_groups = true;
+                let [a, b] = [0.3, -0.45].map(|shift| {
+                    (0..built.params)
+                        .map(|k| 0.29 * ((k * 3) % 5) as f64 - 0.6 + shift)
+                        .collect::<Vec<_>>()
+                });
+                let vectors = |e: &Evaluator| {
+                    // Every vector node's values: the reads that skip the
+                    // log density's own sums.
+                    let mut out = Vec::new();
+                    for node in &g.nodes {
+                        let len = e.node_len(node.id);
+                        out.extend((0..len).map(|i| e.vec_elem(node.id, i)));
+                    }
+                    out
+                };
+                let label = format!("flags {flags:09b}, {rows} rows");
+                fused.forward(g, &a);
+                separate.forward(g, &a);
+                assert_same(
+                    &format!("{label}, forward"),
+                    &vectors(&fused),
+                    &vectors(&separate),
+                );
+                fused.compute(g, &b);
+                separate.compute(g, &b);
+                assert_same(
+                    &format!("{label}, compute"),
+                    &vectors(&fused),
+                    &vectors(&separate),
+                );
+                let at_b = tolerances(&built, shape, &separate, &b);
+                fused.forward(g, &a);
+                separate.forward(g, &a);
+                assert_same(
+                    &format!("{label}, forward after compute"),
+                    &vectors(&fused),
+                    &vectors(&separate),
+                );
+                // Scalars too, against the separate nodes within the bound;
+                // the gradients are still those of `b`.
+                let mut tol = tolerances(&built, shape, &separate, &a);
+                tol[1..1 + built.params].copy_from_slice(&at_b[1..1 + built.params]);
+                assert_close(&label, &read_all(&fused, g), &read_all(&separate, g), &tol);
+                assert_eq!(fused.grouped.forward_passes, 3 * built.terms.len() as u64);
+            }
+        }
+    }
+
+    /// The statistics against each group's rows found directly: the rows
+    /// per group, the slots in group order with none for an empty group, the
+    /// mean against a compensated sum, and the spread against the norm of
+    /// the deviations from that mean.
+    #[test]
+    fn group_statistics_match_each_groups_rows() {
+        let mut rng = ChaCha8Rng::seed_from_u64(7);
+        for case in 0..300 {
+            let rows = rng.gen_range(1..400);
+            let groups = rng.gen_range(1..60);
+            let used = rng.gen_range(1..=groups);
+            let indices: Vec<f64> = (0..rows).map(|_| rng.gen_range(0..used) as f64).collect();
+            let offset = [0.0, 1e4, -1e8][case % 3];
+            let y: Vec<f64> = (0..rows)
+                .map(|_| offset + rng.gen_range(-1.0..1.0))
+                .collect();
+            let mut stats = GroupStats::default();
+            stats.build(&indices, &y, groups, rows);
+            assert!(stats.usable, "case {case}");
+            let mut slot = 0;
+            for g in 0..groups {
+                let members: Vec<f64> = (0..rows)
+                    .filter(|&i| indices[i] as usize == g)
+                    .map(|i| y[i])
+                    .collect();
+                if members.is_empty() {
+                    assert_eq!(stats.slot_of_group[g], NO_SLOT, "case {case} group {g}");
+                    continue;
+                }
+                assert_eq!(stats.slot_of_group[g], slot as u32, "case {case} group {g}");
+                assert_eq!(stats.groups[slot], g);
+                let n = members.len();
+                assert_eq!(stats.counts[slot], n as f64, "case {case} group {g}");
+                let (mut s, mut c) = (0.0f64, 0.0f64);
+                for &v in &members {
+                    let t = s + v;
+                    c += if s.abs() >= v.abs() {
+                        (s - t) + v
+                    } else {
+                        (v - t) + s
+                    };
+                    s = t;
+                }
+                let mean = (s + c) / n as f64;
+                let scale = members.iter().map(|v| v.abs()).sum::<f64>() / n as f64;
+                let error = (stats.mean_hi[slot] - mean) + stats.mean_lo[slot];
+                assert!(
+                    error.abs() <= 4.0 * U * scale,
+                    "case {case} group {g}: {error:e}"
+                );
+                let spread = members
+                    .iter()
+                    .map(|v| (v - mean) * (v - mean))
+                    .sum::<f64>()
+                    .sqrt();
+                let largest = members.iter().fold(0.0f64, |m, v| m.max(v.abs()));
+                let tol = 8.0 * (n + 4) as f64 * U * spread + 8.0 * (n as f64).sqrt() * U * largest;
+                assert!(
+                    (stats.spread[slot] - spread).abs() <= tol,
+                    "case {case} group {g}: {} against {spread}",
+                    stats.spread[slot]
+                );
+                slot += 1;
+            }
+            assert_eq!(stats.groups.len(), slot);
+        }
+        // An index outside the groups, and lengths that disagree, leave the
+        // statistics unusable, so the chain runs as separate nodes.
+        let mut stats = GroupStats::default();
+        stats.build(&[0.0, 3.0], &[1.0, 2.0], 3, 2);
+        assert!(!stats.usable);
+        stats.build(&[0.0, 1.0], &[1.0], 3, 2);
+        assert!(!stats.usable);
+    }
+
+    /// The group sums against the row sums, both against a reference taken
+    /// in double-double arithmetic from the same rows and means: the sum of
+    /// squared residuals and the sum of residuals, over random shapes with
+    /// data near zero and far from it. With the scale 1, the separate
+    /// nodes' sums are exactly `sum d_i^2` and `sum d_i` of the residuals
+    /// they kept. The fused sums must be within `(G + 16) u` of the reference
+    /// relative to the sum of magnitudes, and no worse than the row sums at
+    /// their worst.
+    #[test]
+    fn group_sums_are_at_least_as_accurate_as_the_row_sums() {
+        // Double-double helpers: `(hi, lo)` with `hi + lo` the value.
+        fn add(a: (f64, f64), b: f64) -> (f64, f64) {
+            let (s, e) = two_sum(a.0, b);
+            two_sum(s, e + a.1)
+        }
+        fn square(h: f64, l: f64) -> (f64, f64) {
+            let p = h * h;
+            let e = h.mul_add(h, -p);
+            two_sum(p, e + 2.0 * h * l)
+        }
+        let mut rng = ChaCha8Rng::seed_from_u64(99);
+        let (mut worst_fused, mut worst_rows) = ([0.0f64; 2], [0.0f64; 2]);
+        let (mut sum_fused, mut sum_rows) = ([0.0f64; 2], [0.0f64; 2]);
+        let cases = 300;
+        for case in 0..cases {
+            let rows = rng.gen_range(1..3000);
+            let groups = rng.gen_range(1..200);
+            let group: Vec<usize> = (0..rows).map(|_| rng.gen_range(0..groups)).collect();
+            let offset = [0.0, 1e4, -3e6, 1e8][case % 4];
+            let spread = [1e-4, 1.0, 1e2][(case / 4) % 3];
+            let y: Vec<f64> = (0..rows + 1000)
+                .map(|_| offset + spread * rng.gen_range(-1.0..1.0))
+                .collect();
+            let mut shape = Shape::from_flags(groups, 0b11);
+            shape.constant_sigma = false;
+            let built = build(shape, &group, |i| y[i]);
+            let g = &built.graph;
+            let mut point: Vec<f64> = (0..built.params)
+                .map(|_| rng.gen_range(-1.0..1.0) * spread.min(1.0))
+                .collect();
+            point[0] = offset;
+            point[built.sigma_param.unwrap()] = 0.0;
+            let mut fused = Evaluator::new(g);
+            let mut separate = Evaluator::new(g);
+            separate.unfused_groups = true;
+            fused.compute(g, &point);
+            separate.compute(g, &point);
+            assert_eq!(separate.scalar_at(built.sigma), 1.0);
+            let term = &built.terms[0];
+            let (mut q_ref, mut r_ref, mut magnitude) = ((0.0, 0.0), (0.0, 0.0), 0.0f64);
+            for (i, &yi) in term.y.iter().enumerate() {
+                let m = separate.vec_elem(NodeId(term.linpred), i);
+                assert_eq!(
+                    m.to_bits(),
+                    fused.vec_elem(NodeId(term.linpred), i).to_bits()
+                );
+                let (h, l) = two_sum(yi, -m);
+                let sq = square(h, l);
+                q_ref = add(add(q_ref, sq.0), sq.1);
+                r_ref = add(add(r_ref, h), l);
+                magnitude += h.abs();
+            }
+            let residuals = &separate.observation_cache[term.obs];
+            let q_rows = residuals.iter().fold(0.0, |s, d| s + d * d);
+            let r_rows = residuals.iter().fold(0.0, |s, d| s + d);
+            let chain = &fused.grouped.chains[0];
+            let q = q_ref.0 + q_ref.1;
+            let r = r_ref.0 + r_ref.1;
+            let errors_fused = [
+                (chain.sum_sq - q).abs() / q,
+                (chain.residual_total - r).abs() / magnitude,
+            ];
+            let errors_rows = [(q_rows - q).abs() / q, (r_rows - r).abs() / magnitude];
+            let bound = (chain.stats.groups.len() + 16) as f64 * U;
+            for k in 0..2 {
+                assert!(
+                    errors_fused[k] <= bound,
+                    "case {case}, sum {k}: {:e} > {bound:e}",
+                    errors_fused[k]
+                );
+                worst_fused[k] = worst_fused[k].max(errors_fused[k]);
+                worst_rows[k] = worst_rows[k].max(errors_rows[k]);
+                sum_fused[k] += errors_fused[k];
+                sum_rows[k] += errors_rows[k];
+            }
+        }
+        eprintln!(
+            "relative errors, sum of squares and sum: worst fused {worst_fused:?}, rows \
+             {worst_rows:?}; mean fused {:?}, rows {:?}",
+            sum_fused.map(|s| s / cases as f64),
+            sum_rows.map(|s| s / cases as f64)
+        );
+        for k in 0..2 {
+            assert!(worst_fused[k] <= worst_rows[k], "{k}");
+            assert!(sum_fused[k] <= sum_rows[k], "{k}");
+        }
     }
 
     /// A grouped model whose responses equal its mean exactly at the checked
-    /// point, so every residual and every adjoint of the chain is zero and
-    /// the separate passes skip their nodes.
+    /// point, so every residual is zero: the fused pass must find each
+    /// group's residual sum exactly zero, add no adjoint to the effects, and
+    /// agree with the separate nodes.
     #[test]
-    fn zero_residuals_match_the_separate_nodes_bit_for_bit() {
-        let shape = Shape {
-            rows: 9,
-            groups: 3,
-            mean: true,
-            scale: true,
-            constant_sigma: false,
-            positive_z: true,
-            weighted: false,
-            second_term: false,
-            scale_last: false,
-            constant_scale: false,
-            signed_scale: false,
-        };
+    fn zero_residuals_give_exactly_zero_residual_sums() {
+        let mut shape = Shape::from_flags(3, 0b1011);
+        shape.constant_sigma = false;
+        let group = default_groups(9, 3);
         let point = [0.25, -0.5, 0.1, 0.9, -0.3, 0.2];
         let tau = (-0.5f64).exp();
         let z = [0.1f64.exp(), 0.9f64.exp(), (-0.3f64).exp()];
-        let built = build(shape, |i| {
-            let group = (i * 7 + i / 3) % 3;
-            0.25 + tau * z[group]
-        });
+        let built = build(shape, &group, |i| 0.25 + tau * z[group[i % 9]]);
         let g = &built.graph;
         let mut fused = Evaluator::new(g);
         let mut separate = Evaluator::new(g);
         separate.unfused_groups = true;
         let f = everything(&mut fused, g, &point);
-        let residuals = &fused.observation_cache[built.terms[0]];
-        assert!(residuals.len() == 9 && residuals.iter().all(|&d| d == 0.0));
-        assert_same("zero residuals", &f, &everything(&mut separate, g, &point));
+        let s = everything(&mut separate, g, &point);
+        assert!(separate.observation_cache[built.terms[0].obs]
+            .iter()
+            .all(|&d| d == 0.0));
+        let chain = &fused.grouped.chains[0];
+        assert!(chain.residual_sums.iter().all(|&r| r == 0.0));
+        assert_eq!(chain.residual_total, 0.0);
+        assert_eq!(chain.sum_sq, 0.0);
+        assert_close(
+            "zero residuals",
+            &f,
+            &s,
+            &tolerances(&built, shape, &separate, &point),
+        );
+        // Only the prior's gradient reaches the effects.
+        for k in 2..5 {
+            assert_eq!(fused.grad[k], separate.grad[k], "effect {k}");
+        }
         assert_eq!(fused.grouped.reverse_passes, 1);
     }
 
@@ -1105,21 +1775,9 @@ mod tests {
     #[test]
     fn grouped_normal_chains_match_the_reference_gradients() {
         for flags in 0..512u32 {
-            let bit = |k: u32| flags & (1 << k) != 0;
-            let shape = Shape {
-                rows: 23,
-                groups: 4,
-                mean: bit(0),
-                scale: bit(1),
-                constant_sigma: bit(2),
-                positive_z: bit(3),
-                weighted: bit(4),
-                second_term: bit(5),
-                scale_last: bit(6),
-                constant_scale: bit(7),
-                signed_scale: bit(8),
-            };
-            let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
+            let shape = Shape::from_flags(4, flags);
+            let group = default_groups(23, 4);
+            let built = build(shape, &group, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
             let g = &built.graph;
             let base = (0..built.params)
                 .map(|k| 0.31 * ((k * 3) % 5) as f64 - 0.6)
@@ -1165,7 +1823,7 @@ mod tests {
         }
     }
 
-    /// Chains the fused loops must not take, each checked against the
+    /// Chains the fused pass must not take, each checked against the
     /// separate nodes: a gather that also feeds a second term, a node between
     /// the gather and its product, the mean also the product's scale, and a
     /// Bernoulli likelihood.
@@ -1278,24 +1936,12 @@ mod tests {
     /// must notice and agree with one built for the changed graph.
     #[test]
     fn a_chain_changed_after_construction_runs_as_separate_nodes() {
-        let shape = Shape {
-            rows: 13,
-            groups: 3,
-            mean: true,
-            scale: true,
-            constant_sigma: false,
-            positive_z: false,
-            weighted: false,
-            second_term: false,
-            scale_last: false,
-            constant_scale: false,
-            signed_scale: false,
-        };
-        let built = build(shape, |i| 0.3 + (i % 5) as f64 / 4.0);
+        let (shape, group) = Shape::plain(13, 3);
+        let built = build(shape, &group, |i| 0.3 + (i % 5) as f64 / 4.0);
         let point = (0..built.params)
             .map(|k| 0.2 * k as f64 - 0.3)
             .collect::<Vec<_>>();
-        let obs = built.terms[0];
+        let obs = built.terms[0].obs;
 
         let mut g = built.graph.clone();
         let mut evaluator = Evaluator::new(&g);
@@ -1313,7 +1959,7 @@ mod tests {
         assert_eq!(evaluator.grouped.forward_passes, 1);
 
         let mut g = built.graph.clone();
-        let spare = g.add_data("spare", vec![0.0; shape.rows]);
+        let spare = g.add_data("spare", vec![0.0; group.len()]);
         let total = g.sum(spare);
         g.add_logp_term(total);
         let mut evaluator = Evaluator::new(&g);
@@ -1332,15 +1978,31 @@ mod tests {
         assert_eq!(fresh.grouped.forward_passes, 0);
     }
 
-    /// Every field of the graph the fused loops read, changed one at a time
+    /// Values from two evaluators of the same graph, one or both of which may
+    /// have run a chain fused: the chains' vectors and every node outside
+    /// them to the bit when both ran the same way, and the log density,
+    /// gradient and terms within `1e-12` of the other's magnitude, far below
+    /// any change to the graph, for a graph of a dozen rows of order-one
+    /// values.
+    fn assert_nearly(label: &str, a: &[f64], b: &[f64]) {
+        assert_eq!(a.len(), b.len(), "{label}");
+        for (k, (&x, &y)) in a.iter().zip(b).enumerate() {
+            assert!(
+                same(x, y) || (x - y).abs() <= 1e-12 * (1.0 + y.abs()),
+                "{label}: value {k}: {x:e} against {y:e}"
+            );
+        }
+    }
+
+    /// Every field of the graph the fused pass reads, changed one at a time
     /// after the evaluator found its chain: the gather's indices and span,
     /// the product's scale, operand order and operator, the mean, the term's
     /// scale, observations and family, and the effects' transform. Each time
-    /// the evaluator must agree, to the bit, with one built for the changed
-    /// graph. A changed transform is read on every call, so that chain still
-    /// runs fused; every other change must send it to the separate nodes.
+    /// the evaluator must agree with one built for the changed graph. A
+    /// changed transform is read on every call, so that chain still runs
+    /// fused; every other change must send it to the separate nodes.
     #[test]
-    fn every_field_the_fused_loops_read_changed_after_construction() {
+    fn every_field_the_fused_pass_reads_changed_after_construction() {
         let rows = 12;
         let mut g = Graph::new();
         let mu = g.add_param("mu");
@@ -1486,7 +2148,10 @@ mod tests {
             change(&mut changed);
             let stale = everything(&mut evaluator, &changed, &point);
             let mut fresh = Evaluator::new(&changed);
-            assert_same(label, &stale, &everything(&mut fresh, &changed, &point));
+            assert_nearly(label, &stale, &everything(&mut fresh, &changed, &point));
+            let mut separate = Evaluator::new(&changed);
+            separate.unfused_groups = true;
+            assert_nearly(label, &stale, &everything(&mut separate, &changed, &point));
             let expected = if *still_fused { 2 } else { 1 };
             assert_eq!(evaluator.grouped.forward_passes, expected, "{label}");
         }
@@ -1497,7 +2162,7 @@ mod tests {
     /// entry so small that `-0.5 * entry` underflows in a fused multiply-add,
     /// leaves the effect's gradient at -0.0; adding the inactive gather's
     /// zeros would make it +0.0. The separate nodes skip the gather, and so
-    /// must the fused loops.
+    /// must the fused pass.
     #[test]
     fn an_inactive_gather_keeps_a_negative_zero_gradient() {
         let mut g = Graph::new();
@@ -1527,74 +2192,93 @@ mod tests {
         }
     }
 
-    /// Groups whose effects mix transforms keep the separate gather's per-row
-    /// loop, as `gather_by_group` decides, and so the separate nodes; the
-    /// results must still match them to the bit.
+    /// Groups whose effects mix transforms, which the separate gather runs
+    /// row by row: each group that has rows is transformed once with its own
+    /// transform, so the chain runs fused and agrees with the separate nodes.
     #[test]
-    fn mixed_transforms_keep_the_separate_nodes() {
-        let shape = Shape {
-            rows: 20,
-            groups: 4,
-            mean: true,
-            scale: true,
-            constant_sigma: false,
-            positive_z: false,
-            weighted: false,
-            second_term: false,
-            scale_last: false,
-            constant_scale: false,
-            signed_scale: false,
-        };
-        let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
+    fn mixed_transforms_run_fused() {
+        let (shape, group) = Shape::plain(20, 4);
+        let built = build(shape, &group, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
         let mut g = built.graph;
-        let mut uniform = Evaluator::new(&g);
         let point = (0..built.params)
             .map(|k| 0.31 * ((k * 3) % 5) as f64 - 0.6)
             .collect::<Vec<_>>();
-        uniform.compute(&g, &point);
-        assert_eq!(uniform.grouped.forward_passes, 1);
         // The first effect, parameter 2, positive; the other three not.
         g.param_transforms[2] = ParamTransform::Exp;
         let mut mixed = Evaluator::new(&g);
         let mut separate = Evaluator::new(&g);
         separate.unfused_groups = true;
-        assert_same(
+        assert_nearly(
             "mixed transforms",
             &everything(&mut mixed, &g, &point),
             &everything(&mut separate, &g, &point),
         );
-        assert_eq!(mixed.grouped.forward_passes, 0);
+        assert_eq!(mixed.grouped.forward_passes, 1);
     }
 
-    /// A seeded NUTS fit of a grouped model runs the fused loops: the
-    /// process-wide count grows by at least one pass per leapfrog step.
+    /// Rebinding data recomputes every chain's statistics: an evaluator
+    /// built for one dataset and rebound to another, of the same shape or
+    /// not, gives the same bits as one built for the second, and agrees with
+    /// the separate nodes on it.
     #[test]
-    fn a_seeded_fit_runs_the_fused_loops() {
-        let shape = Shape {
-            rows: 40,
-            groups: 5,
-            mean: true,
-            scale: true,
-            constant_sigma: false,
-            positive_z: false,
-            weighted: false,
-            second_term: false,
-            scale_last: false,
-            constant_scale: false,
-            signed_scale: false,
+    fn rebinding_recomputes_the_statistics() {
+        let (shape, first_groups) = Shape::plain(30, 4);
+        let first = build(shape, &first_groups, |i| (i % 7) as f64 / 3.0);
+        let point = (0..first.params)
+            .map(|k| 0.21 * k as f64 - 0.4)
+            .collect::<Vec<_>>();
+        let second_groups: Vec<usize> = (0..30).map(|i| (i * i + 1) % 4).collect();
+        let second = build(shape, &second_groups, |i| 4.0 - (i % 5) as f64 / 2.0);
+        let third_groups: Vec<usize> = (0..17).map(|i| (i * 3) % 4).collect();
+        let third = build(shape, &third_groups, |i| (i % 3) as f64 - 1.0);
+        for target in [&second, &third] {
+            let mut rebound = Evaluator::new(&first.graph);
+            rebound.compute(&first.graph, &point);
+            let binding = DataBinding::from_graph(&target.graph).unwrap();
+            rebound.rebind(&first.graph, binding).unwrap();
+            let g = &target.graph;
+            let rows = target.terms[0].y.len();
+            let label = format!("rebound to {rows} rows");
+            let mut fresh = Evaluator::new(g);
+            assert_same(
+                &label,
+                &everything(&mut rebound, g, &point),
+                &everything(&mut fresh, g, &point),
+            );
+            let mut separate = Evaluator::new(g);
+            separate.unfused_groups = true;
+            let s = everything(&mut separate, g, &point);
+            let tol = tolerances(target, shape, &separate, &point);
+            assert_close(&label, &everything(&mut rebound, g, &point), &s, &tol);
+            assert!(rebound.grouped.forward_passes >= 2, "{label}");
+        }
+    }
+
+    /// A seeded NUTS fit of a grouped model runs the fused pass, gives the
+    /// same draws when run again, and the same draws on one thread as on
+    /// four: the process-wide count grows by at least one pass per leapfrog
+    /// step.
+    #[test]
+    fn a_seeded_fit_runs_the_fused_pass_and_repeats_on_any_thread_count() {
+        let (shape, group) = Shape::plain(40, 5);
+        let mut shape = shape;
+        shape.mean = true;
+        shape.constant_sigma = false;
+        let built = build(shape, &group, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
+        let fit = |threads: usize| {
+            let config = crate::sampler::SamplerConfig {
+                num_chains: 4,
+                num_draws: 50,
+                num_warmup: 50,
+                seed: 7,
+                num_threads: threads,
+                show_progress: false,
+                ..Default::default()
+            };
+            crate::sampler::sample(built.graph.clone(), config).expect("the fit runs")
         };
-        let built = build(shape, |i| ((i * 13) % 17) as f64 / 4.0 - 2.0);
         let before = fused_grouped_normal_passes();
-        let config = crate::sampler::SamplerConfig {
-            num_chains: 2,
-            num_draws: 50,
-            num_warmup: 50,
-            seed: 7,
-            num_threads: 1,
-            show_progress: false,
-            ..Default::default()
-        };
-        let result = crate::sampler::sample(built.graph, config).expect("the fit runs");
+        let result = fit(1);
         let steps: usize = result
             .transitions
             .iter()
@@ -1606,5 +2290,15 @@ mod tests {
             after.1 - before.1 >= steps as u64,
             "{before:?} {after:?} {steps}"
         );
+        let bits = |r: &crate::sampler::SampleResult| {
+            r.samples
+                .iter()
+                .flatten()
+                .flatten()
+                .map(|v| v.to_bits())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bits(&result), bits(&fit(1)), "a second run");
+        assert_eq!(bits(&result), bits(&fit(4)), "four threads");
     }
 }

@@ -6,7 +6,9 @@
 //! and `y ~ Normal(mu + tau * z[group], sigma)`. Row `i` belongs to group
 //! `(i * 7919) % groups`, so with more groups than rows some groups are
 //! unused. For each row and group count it prints microseconds per gradient,
-//! the median of several timed batches.
+//! the median of several timed batches, and microseconds to build an
+//! evaluator for the graph and to rebind one to the same data, which is
+//! when the evaluator computes what it keeps of the data.
 //!
 //! A shape with a third field, `rows:groups:identity`, `rows:groups:exp` or
 //! `rows:groups:mixed`, instead times a gather in which every row selects
@@ -19,6 +21,7 @@
 //! ```
 
 use rustmc_core::autodiff::Evaluator;
+use rustmc_core::data::DataBinding;
 use rustmc_core::graph::{ElementwiseOp, Graph, ParamTransform};
 use rustmc_core::model::{compile, HyperParam, LikelihoodFamily, LikelihoodSpec, ModelSpec};
 use rustmc_core::model::{MuExpr, PriorSpec, SigmaSpec};
@@ -103,7 +106,26 @@ fn concentrated(rows: usize, groups: usize, transforms: &str) -> Graph {
     g
 }
 
-fn microseconds_per_gradient(rows: usize, groups: usize, transforms: Option<&str>) -> f64 {
+/// The median over 9 batches of microseconds per call of `f`.
+fn median_microseconds(calls: usize, mut f: impl FnMut()) -> f64 {
+    let mut batches = Vec::new();
+    for _ in 0..9 {
+        let start = Instant::now();
+        for _ in 0..calls {
+            f();
+        }
+        batches.push(start.elapsed().as_secs_f64() * 1e6 / calls as f64);
+    }
+    batches.sort_by(f64::total_cmp);
+    batches[batches.len() / 2]
+}
+
+/// Microseconds per gradient, per evaluator built, and per rebind.
+fn microseconds_per_gradient(
+    rows: usize,
+    groups: usize,
+    transforms: Option<&str>,
+) -> (f64, f64, f64) {
     let graph = match transforms {
         Some(transforms) => concentrated(rows, groups, transforms),
         None => {
@@ -133,7 +155,18 @@ fn microseconds_per_gradient(rows: usize, groups: usize, transforms: Option<&str
         batches.push(start.elapsed().as_secs_f64() * 1e6 / calls as f64);
     }
     batches.sort_by(f64::total_cmp);
-    batches[batches.len() / 2]
+    let gradient = batches[batches.len() / 2];
+    let builds = (20_000 / rows.max(1)).clamp(5, 200);
+    let build = median_microseconds(builds, || {
+        black_box(Evaluator::new(black_box(&graph)));
+    });
+    let binding = DataBinding::from_graph(&graph).expect("the graph's data bind");
+    let rebind = median_microseconds(builds, || {
+        evaluator
+            .rebind(&graph, black_box(binding.clone()))
+            .expect("the same data rebind");
+    });
+    (gradient, build, rebind)
 }
 
 fn main() {
@@ -154,19 +187,25 @@ fn main() {
     if shapes.is_empty() {
         shapes = vec![(500, 20, None), (5000, 100, None)];
     }
-    println!("varying intercept; microseconds per gradient (median of 9 batches)");
+    println!(
+        "varying intercept; microseconds per gradient, per evaluator built and per rebind \
+         (medians of 9 batches)"
+    );
     for (rows, groups, transforms) in shapes {
         let before = rustmc_core::autodiff::fused_grouped_normal_passes();
-        let microseconds = microseconds_per_gradient(rows, groups, transforms.as_deref());
+        let (gradient, build, rebind) =
+            microseconds_per_gradient(rows, groups, transforms.as_deref());
         let after = rustmc_core::autodiff::fused_grouped_normal_passes();
         // The evaluator is dropped by now, so its fused passes are counted.
         println!(
-            "{:>6} rows {:>5} groups {:>9} {:>9.2}   fused reverse passes {}",
+            "{:>6} rows {:>5} groups {:>9} {:>9.2}   fused reverse passes {}   build {:.1}   rebind {:.1}",
             rows,
             groups,
             transforms.as_deref().unwrap_or(""),
-            microseconds,
-            after.1 - before.1
+            gradient,
+            after.1 - before.1,
+            build,
+            rebind
         );
     }
 }

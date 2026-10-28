@@ -41,10 +41,19 @@ use pyo3::prelude::*;
 
 /// How many fused grouped-Normal forward and reverse passes this process's
 /// graph evaluators have run, counted when each evaluator is dropped. Tests
-/// and benchmarks read it to show that a fit took the fused loops.
+/// and benchmarks read it to show that a fit took the fused pass.
 #[pyfunction]
 fn _fused_grouped_normal_passes() -> (u64, u64) {
     rustmc_core::autodiff::fused_grouped_normal_passes()
+}
+
+/// Allow or forbid fused grouped-Normal chains in every graph evaluator of
+/// this process, and return whether they were allowed. Tests use it to
+/// compare an output computed through the fused chains with the same output
+/// computed through the separate nodes.
+#[pyfunction]
+fn _set_grouped_normal_fusion(enabled: bool) -> bool {
+    rustmc_core::autodiff::set_grouped_normal_fusion(enabled)
 }
 
 #[pymodule]
@@ -84,5 +93,6 @@ fn _rustmc(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(batch::batch_sample, m)?)?;
     m.add_function(wrap_pyfunction!(sampling::sample_prior_predictive, m)?)?;
     m.add_function(wrap_pyfunction!(_fused_grouped_normal_passes, m)?)?;
+    m.add_function(wrap_pyfunction!(_set_grouped_normal_fusion, m)?)?;
     Ok(())
 }

@@ -1,12 +1,15 @@
-"""Normal likelihoods on a grouped mean, ``mu + tau * z["group"]``, run as one
-fused forward and one fused reverse loop in the graph evaluator. These tests
-go through the real builder, compiler, evaluator and sampler, show that the
-fused loops ran, and check them against oracles that know nothing of fusion:
-finite differences of the log density, and the exact posterior of a model
-whose scales are known, where the posterior is Gaussian in closed form.
+"""Normal likelihoods on a grouped mean, ``mu + tau * z["group"]``, which the
+graph evaluator runs as one pass over per-group statistics of the data. These
+tests go through the real builder, compiler, evaluator and sampler, show that
+the fused pass ran, and check it against oracles that know nothing of fusion:
+finite differences of the log density, the exact posterior of a model whose
+scales are known, where the posterior is Gaussian in closed form, and every
+output that reads node values computed again with fusion turned off.
 """
 
 from __future__ import annotations
+
+from statistics import NormalDist
 
 import numpy as np
 import pytest
@@ -59,15 +62,18 @@ def test_grouped_gradient_matches_finite_differences(rustmc):
     assert after[1] - before[1] >= 4
 
 
-def test_known_scales_posterior_matches_the_exact_gaussian(rustmc):
+@pytest.mark.parametrize("rows,groups", [(80, 4), (7, 10)])
+def test_known_scales_posterior_matches_the_exact_gaussian(rustmc, rows, groups):
     """With tau and sigma fixed, (mu, z) has a Gaussian posterior.
 
     y = mu + tau * z[group] + e, e ~ N(0, sigma^2), mu ~ N(0, 5^2),
     z ~ N(0, 1): the posterior precision is A'A / sigma^2 + diag(1/25, 1, ..., 1)
-    with A the rows' design for (mu, z), and its mean solves that system.
+    with A the rows' design for (mu, z), and its mean solves that system. The
+    second case has more groups than rows, so at least three groups have no
+    rows and keep their prior.
     """
-    groups, tau, sigma = 4, 0.8, 0.6
-    data = _data(rows=80, groups=groups, seed=5)
+    tau, sigma = 0.8, 0.6
+    data = _data(rows=rows, groups=groups, seed=5)
     builder = rustmc.ModelBuilder()
     mu = builder.normal_prior("mu", 0.0, 5.0)
     z = builder.vector_normal_prior("z", n=groups, mu=0.0, sigma=1.0)
@@ -103,9 +109,97 @@ def test_known_scales_posterior_matches_the_exact_gaussian(rustmc):
     assert np.isfinite(mcse).all() and (mcse > 0).all()
     sd = np.sqrt(np.diag(covariance))
     z_scores = (draws.mean(axis=0) - mean) / mcse
-    # Five means: a family-wise two-sided 0.001 bound.
-    assert np.abs(z_scores).max() < 4.0, z_scores
+    # A family-wise two-sided 0.001 bound over the means.
+    bound = NormalDist().inv_cdf(1 - 0.0005 / len(names))
+    assert np.abs(z_scores).max() < bound, z_scores
     np.testing.assert_allclose(draws.std(axis=0), sd, rtol=0.1)
     correlation = np.corrcoef(draws.T)
     exact = covariance / np.outer(sd, sd)
     np.testing.assert_allclose(correlation, exact, atol=0.08)
+
+
+def _grouped_builder(rustmc, groups):
+    builder = rustmc.ModelBuilder()
+    mu = builder.normal_prior("mu", 0.0, 5.0)
+    tau = builder.half_normal_prior("tau", 1.0)
+    z = builder.vector_normal_prior("z", n=groups, mu=0.0, sigma=1.0)
+    sigma = builder.half_normal_prior("sigma", 1.0)
+    mean = mu + tau * z["group"]
+    builder.normal_likelihood("obs", mean, sigma, "y")
+    builder.deterministic("eta", mean)
+    return builder
+
+
+def _readers(rustmc, fit, model, data, future):
+    """Every output of a fit or model that reads node values, by name."""
+    out = {}
+    for expected in (False, True):
+        out[f"predict {expected}"] = fit.predict(seed=5, expected=expected)["obs"]
+        out[f"predict new {expected}"] = fit.predict(future, seed=6, expected=expected)["obs"]
+        out[f"posterior predictive {expected}"] = fit.posterior_predictive(
+            n_samples=17, seed=7, expected=expected
+        )["obs"]
+    out["log likelihood"] = fit.log_likelihood()["obs"]
+    out["deterministics"] = fit.deterministics()["eta"]
+    out["deterministics new"] = fit.deterministics(future)["eta"]
+    prior = rustmc.sample_prior_predictive(model, data, n_samples=13, seed=8)
+    out["prior predictive"] = prior["obs"]
+    out["prior deterministics"] = prior["eta"]
+    return out
+
+
+def test_every_reader_matches_the_unfused_path(rustmc):
+    """The fused pass does not write the rows' means; outputs that read them
+    get them computed on demand. With fusion turned off, the same fit gives
+    the same outputs to the bit, and the deterministic equals mu + tau * z
+    computed from the draws."""
+    from rustmc import _rustmc
+
+    groups = 6
+    data = _data(rows=50, groups=groups - 1, seed=9)
+    future = {"group": np.array([5.0, 0.0, 3.0, 3.0])}
+    builder = _grouped_builder(rustmc, groups)
+    model = builder.build()
+    fit = builder.compile().sample(
+        data, chains=2, warmup=100, draws=40, seed=4, show_progress=False
+    )
+    assert _rustmc._set_grouped_normal_fusion(True)
+    try:
+        before = _passes(rustmc)
+        fused = _readers(rustmc, fit, model, data, future)
+        middle = _passes(rustmc)
+        assert _rustmc._set_grouped_normal_fusion(False)
+        separate = _readers(rustmc, fit, model, data, future)
+        after = _passes(rustmc)
+    finally:
+        _rustmc._set_grouped_normal_fusion(True)
+    # One fused forward pass per draw at least, for the log-likelihood alone.
+    assert middle[0] - before[0] >= 80
+    assert after == middle
+    assert fused.keys() == separate.keys()
+    for name in fused:
+        assert fused[name].size > 0, name
+        np.testing.assert_array_equal(fused[name], separate[name], err_msg=name)
+
+    samples = fit.get_samples_2d()
+    z = np.stack([samples[f"z[{g}]"] for g in range(groups)], axis=-1)
+    index = data["group"].astype(int)
+    expected = samples["mu"][..., None] + samples["tau"][..., None] * z[..., index]
+    np.testing.assert_allclose(fused["deterministics"], expected, rtol=1e-14, atol=1e-14)
+
+
+def test_seeded_draws_repeat_and_do_not_depend_on_threads(rustmc):
+    data = _data(rows=200, groups=8, seed=12)
+    compiled = _grouped_builder(rustmc, 8).compile()
+
+    def draws(threads):
+        fit = compiled.sample(
+            data, chains=4, warmup=150, draws=100, seed=21, threads=threads, show_progress=False
+        )
+        return fit.get_samples()
+
+    first = draws(1)
+    for name, other in (("again", draws(1)), ("four threads", draws(4))):
+        assert first.keys() == other.keys()
+        for key in first:
+            np.testing.assert_array_equal(first[key], other[key], err_msg=f"{name}: {key}")
