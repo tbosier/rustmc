@@ -43,11 +43,15 @@ For each dataset it runs:
 It also runs rustmc's adaptation with ``metric="diag"``, since under the
 default ``"auto"`` a vector parameter can get a dense block.
 
-The draws gap splits exactly along two paths at matched acceptance. Path A:
-rustmc's adapted run over ``R@0.8`` (where its step adaptation lands relative
-to its own target), ``R@0.8`` over ``N@0.8`` (the metric), and ``N@0.8`` over
-nutpie's draws (the kernel: tree building, mainly the U-turn test, and
-nutpie's step jitter). Path B swaps the order of metric and step. The crossed
+The draws gap splits exactly along three paths. Path C is the one that
+isolates the kernel: rustmc's adapted run over ``R@0.8`` (where its step
+adaptation lands relative to its own target), ``R@0.8`` over ``N/N`` (the
+metric), and ``N/N`` over nutpie's draws (the kernel: the same metric and
+per-chain steps, so tree building, mainly the U-turn test, and nutpie's step
+jitter). Path A ends in ``R@0.8`` over ``N@0.8`` and ``N@0.8`` over nutpie
+instead, and path B swaps the order of metric and step. Their last term, the
+"rest", is not the kernel: it also replaces nutpie's per-chain steps with one
+calibrated step shared by the chains, and on 5000x100 that flips its sign. The crossed
 runs ``R/N`` and ``N/R`` are kept as data, but a metric run at a step it cannot
 sustain diverges, so they do not split the gap. Warmup steps are reported
 separately, by iteration bin, since the study's ratio counts them.
@@ -307,7 +311,8 @@ def preconditioned_spectrum(posterior: np.ndarray, metric: np.ndarray) -> dict[s
     """Extreme eigenvalues of the posterior covariance preconditioned by the
     inverse metric (the eigenvalues of `metric^-1 posterior`) and their ratio.
     For a Gaussian target, leapfrog is stable only for steps below
-    2 sqrt(lambda_min), and a U-turn takes about pi sqrt(lambda_max) / step."""
+    2 sqrt(lambda_min). The extremes do not predict trajectory length: the
+    U-turn criterion acts on the whole trajectory, not on its slowest direction."""
     from scipy.linalg import eigh
 
     dim = posterior.shape[0]
@@ -408,7 +413,8 @@ def log_ratio(a: float, b: float) -> float:
 
 def attribution(record: dict[str, Any]) -> dict[str, float]:
     """Log ratios of post-warmup steps per draw; every run but nutpie's own uses
-    rustmc's kernel. The two "path" groups each sum exactly to the draws gap."""
+    rustmc's kernel. The three "path" groups each sum exactly to the draws gap;
+    only path C's last term is the kernel alone (see the module docstring)."""
     s = {label: run["steps_per_draw"] for label, run in record["runs"].items()}
     r, n = record["runs"]["rustmc adapted"], record["runs"]["nutpie"]
     return {
@@ -418,10 +424,10 @@ def attribution(record: dict[str, Any]) -> dict[str, float]:
         "draws: steps per draw": log_ratio(s["rustmc adapted"], s["nutpie"]),
         "path A step: adapted over R@0.8": log_ratio(s["rustmc adapted"], s["R@0.8"]),
         "path A metric: R@0.8 over N@0.8": log_ratio(s["R@0.8"], s["N@0.8"]),
-        "path A kernel: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
+        "path A rest: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
         "path B metric: adapted over N@a": log_ratio(s["rustmc adapted"], s["N@a"]),
         "path B step: N@a over N@0.8": log_ratio(s["N@a"], s["N@0.8"]),
-        "path B kernel: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
+        "path B rest: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
         "path C step: adapted over R@0.8": log_ratio(s["rustmc adapted"], s["R@0.8"]),
         "path C metric: R@0.8 over N/N": log_ratio(s["R@0.8"], s["N/N"]),
         "path C kernel: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),

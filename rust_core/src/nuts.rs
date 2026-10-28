@@ -1537,8 +1537,8 @@ mod tests {
         // On N(0, I), inverse metric v I at step e is the unit metric at step
         // e sqrt(v): with p = p' / sqrt(v), each leapfrog moves q by
         // e sqrt(v) p' and p' by e sqrt(v) grad. With v = 4 the two runs must
-        // match exactly, so a hook that integrated with any step other than
-        // the one requested, diagonal or dense, fails here.
+        // match exactly. Both runs go through the hook, so this pins the step
+        // relative to the metric; the next test pins it absolutely.
         let start = [0.3, -1.1];
         let reference = frozen_chain(
             scaled_normals([1.0, 1.0]),
@@ -1563,6 +1563,67 @@ mod tests {
             start.to_vec(),
         );
         assert_ne!(leapfrog_counts(&other), leapfrog_counts(&reference));
+    }
+
+    #[test]
+    fn a_frozen_unit_metric_takes_the_first_transition_production_takes() {
+        // Production NUTS with a requested step and no adaptation yet runs its
+        // first transition at exactly that step, on the unit metric, without
+        // drawing a random number first. A frozen unit metric at the same step
+        // must reproduce that transition chain by chain: the same tree, the
+        // same continuous acceptance statistic and energy. This anchors the
+        // frozen step to production's, so a hook that integrated at any other
+        // step, even one that it reported correctly, fails here.
+        let graph = scaled_normals([3.0, 0.5]);
+        let binding = DataBinding::from_graph(&graph).unwrap();
+        let graph = std::sync::Arc::new(graph.structure_only());
+        let step = 0.4;
+        let chains = 8;
+        let initial: Vec<Vec<f64>> = (0..chains)
+            .map(|c| vec![0.5 - 0.15 * c as f64, 0.1 * c as f64 - 0.3])
+            .collect();
+        let config = crate::sampler::SamplerConfig {
+            num_chains: chains,
+            num_warmup: 1,
+            num_draws: 1,
+            seed: 11,
+            num_threads: 1,
+            step_size: step,
+            show_progress: false,
+            ..Default::default()
+        };
+        let production = crate::sampler::sample_bound_with_init(
+            std::sync::Arc::clone(&graph),
+            binding.clone(),
+            config.clone(),
+            Some(initial.clone()),
+        )
+        .unwrap();
+        let frozen = crate::sampler::sample_nuts_experimental(
+            graph,
+            binding,
+            crate::sampler::SamplerConfig {
+                step_size: 0.0,
+                ..config
+            },
+            Some(initial),
+            Some(vec![
+                FrozenAdaptation::diagonal(&[1.0, 1.0], step).unwrap();
+                chains
+            ]),
+        )
+        .unwrap();
+        for c in 0..chains {
+            let (a, b) = (
+                &frozen.result.transitions[c][0],
+                &production.transitions[c][0],
+            );
+            assert_eq!(b.step_size, step);
+            assert_eq!(a.num_leapfrog_steps, b.num_leapfrog_steps, "chain {c}");
+            assert_eq!(a.tree_depth, b.tree_depth, "chain {c}");
+            assert_eq!(a.accept_prob, b.accept_prob, "chain {c}");
+            assert_eq!(a.energy, b.energy, "chain {c}");
+        }
     }
 
     #[test]
@@ -1592,6 +1653,10 @@ mod tests {
         assert!(FrozenAdaptation::dense(&[1.0, 2.0, 2.0, 1.0], 2, 0.5).is_err());
         assert!(FrozenAdaptation::dense(&[1.0, 0.5, 0.0, 1.0], 2, 0.5).is_err());
         assert!(FrozenAdaptation::dense(&[1.0, 0.0, 0.0], 2, 0.5).is_err());
+        // A dimension whose square overflows is refused, not wrapped to a
+        // length that passes the check.
+        assert!(FrozenAdaptation::dense(&[], usize::MAX, 0.5).is_err());
+        assert!(FrozenAdaptation::dense(&[], 1 << (usize::BITS / 2), 0.5).is_err());
         // A metric of the wrong dimension for the model.
         let graph = scaled_normals([1.0, 1.0]);
         let binding = DataBinding::from_graph(&graph).unwrap();

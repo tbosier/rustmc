@@ -1,21 +1,25 @@
 Adaptation attribution study, raw output. Run on 2026-10-27, 9:30 to 9:42 p.m. CDT, at the clean
-revision printed below, under flock /tmp/claude-1000/bench.lock, started once the one-minute load
-was below 1.5 (it was 1.39); the script also waits before each dataset, and no wait timed out.
-Step counts do not depend on load, and no wall time is reported. Exact invocation, from the
-worktree root, with the extension built from this revision by scripts/dev_pytest.sh into .pybuild/:
+revision printed below, under flock /tmp/claude-1000/bench.lock. The one-minute load was 3.70 when
+the script started, as the machine line below records; the script waits for it to fall below 1.5
+before each dataset, each dataset started at 1.27 to 1.49, and no wait timed out. Step counts do
+not depend on load, and no wall time is reported. Invocation, from the worktree root, with the
+extension built from this revision by scripts/dev_pytest.sh into .pybuild/ (the run wrote its JSON
+to /tmp/claude-1000/attrib-full3.json, as the command line below records, and it was copied here):
 
   MPLCONFIGDIR=/tmp/claude-1000 XDG_CACHE_HOME=/tmp/claude-1000/cache \
   PYTENSOR_FLAGS=base_compiledir=/tmp/claude-1000/pytensor NUMBA_CACHE_DIR=/tmp/claude-1000/numba \
   OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=.pybuild \
   flock /tmp/claude-1000/bench.lock .venv/bin/python -m benchmarks.adaptation_attribution \
-    --output benchmarks/results/2026-10-28-adaptation-attribution.json
+    --output /tmp/claude-1000/attrib-full3.json
 
 Seeds: every engine and variant of dataset i uses seed 20261025 + i (the head-to-head study's
-seeds), the bisection's short runs included. One sampler seed per dataset, so differences in ESS
-per step under about 30% are within the run-to-run spread seen here (R/R against the adapted run
-differs by -22% to +27% in min bulk ESS on 5000x100 at the same steps). The JSON next to this file
-holds every number below. Earlier full runs at 27b9538 and 8c5383e gave identical values for every
-run they share with this one (135 runs compared, no difference).
+seeds), the bisection's short runs included. One sampler seed per dataset, and no repeated seeds,
+so the ESS figures have no measured uncertainty. The one like-for-like comparison here, R/R
+against the adapted run on 5000x100 at the same steps, differs by -22% to +27% in min bulk ESS
+over the three datasets, and all six of those runs fail the quality checks; read ESS differences
+of that size as noise, not findings. The JSON next to this file holds every number below. Earlier
+full runs at 27b9538 and 8c5383e gave identical values for every run they share with this one (135
+runs compared, no difference).
 
 revision: {"commit": "a92d9a0202b3e6cdd5aba21ee17fbf7b72e5edd1", "dirty": false}
 command: ~/projects/rustmc/.claude/worktrees/attrib/benchmarks/adaptation_attribution.py --output /tmp/claude-1000/attrib-full3.json
@@ -125,10 +129,10 @@ Attribution: log ratios of post-warmup steps per draw (positive means rustmc's s
   draws: steps per draw                    +1.163 +1.098 +1.020   factor 2.998
   path A step: adapted over R@0.8          +0.633 +0.425 +0.479   factor 1.615
   path A metric: R@0.8 over N@0.8          +0.658 +0.835 +0.682   factor 1.978
-  path A kernel: N@0.8 over nutpie         -0.128 -0.162 -0.142   factor 0.868
+  path A rest: N@0.8 over nutpie           -0.128 -0.162 -0.142   factor 0.868
   path B metric: adapted over N@a          +0.645 +0.694 +0.503   factor 1.907
   path B step: N@a over N@0.8              +0.646 +0.566 +0.658   factor 1.907
-  path B kernel: N@0.8 over nutpie         -0.128 -0.162 -0.142   factor 0.868
+  path B rest: N@0.8 over nutpie           -0.128 -0.162 -0.142   factor 0.868
   path C step: adapted over R@0.8          +0.633 +0.425 +0.479   factor 1.615
   path C metric: R@0.8 over N/N            +0.644 +0.782 +0.634   factor 1.904
   path C kernel: N/N over nutpie           -0.114 -0.109 -0.094   factor 0.897
@@ -311,10 +315,10 @@ Attribution: log ratios of post-warmup steps per draw (positive means rustmc's s
   draws: steps per draw                    +0.513 +0.477 +0.543   factor 1.670
   path A step: adapted over R@0.8          +0.048 +0.047 +0.041   factor 1.048
   path A metric: R@0.8 over N@0.8          +0.475 +0.492 +0.554   factor 1.636
-  path A kernel: N@0.8 over nutpie         -0.010 -0.062 -0.053   factor 0.949
+  path A rest: N@0.8 over nutpie           -0.010 -0.062 -0.053   factor 0.949
   path B metric: adapted over N@a          +0.048 +0.047 +0.042   factor 1.048
   path B step: N@a over N@0.8              +0.475 +0.493 +0.553   factor 1.636
-  path B kernel: N@0.8 over nutpie         -0.010 -0.062 -0.053   factor 0.949
+  path B rest: N@0.8 over nutpie           -0.010 -0.062 -0.053   factor 0.949
   path C step: adapted over R@0.8          +0.048 +0.047 +0.041   factor 1.048
   path C metric: R@0.8 over N/N            +0.415 +0.362 +0.472   factor 1.515
   path C kernel: N/N over nutpie           +0.050 +0.067 +0.029   factor 1.051
@@ -482,10 +486,10 @@ Attribution: log ratios of post-warmup steps per draw (positive means rustmc's s
   draws: steps per draw                    +0.068 +0.075 +0.071   factor 1.074
   path A step: adapted over R@0.8          +0.071 +0.091 +0.095   factor 1.095
   path A metric: R@0.8 over N@0.8          +0.005 -0.004 -0.016   factor 0.996
-  path A kernel: N@0.8 over nutpie         -0.009 -0.012 -0.008   factor 0.991
+  path A rest: N@0.8 over nutpie           -0.009 -0.012 -0.008   factor 0.991
   path B metric: adapted over N@a          -0.005 -0.002 +0.000   factor 0.998
   path B step: N@a over N@0.8              +0.081 +0.089 +0.078   factor 1.084
-  path B kernel: N@0.8 over nutpie         -0.009 -0.012 -0.008   factor 0.991
+  path B rest: N@0.8 over nutpie           -0.009 -0.012 -0.008   factor 0.991
   path C step: adapted over R@0.8          +0.071 +0.091 +0.095   factor 1.095
   path C metric: R@0.8 over N/N            -0.004 -0.029 -0.028   factor 0.973
   path C kernel: N/N over nutpie           +0.000 +0.013 +0.004   factor 1.004

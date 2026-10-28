@@ -299,7 +299,10 @@ impl MassMatrix {
     /// that the adapted metrics keep in separate blocks. The covariance must
     /// be symmetric and positive definite; it is factored without jitter.
     pub(crate) fn from_inverse_dense(covariance: &[f64], dim: usize) -> Result<Self, String> {
-        if dim == 0 || covariance.len() != dim * dim || covariance.iter().any(|v| !v.is_finite()) {
+        if dim == 0
+            || dim.checked_mul(dim) != Some(covariance.len())
+            || covariance.iter().any(|v| !v.is_finite())
+        {
             return Err(format!(
                 "a dense inverse metric needs {dim} x {dim} finite values"
             ));
@@ -332,6 +335,7 @@ impl MassMatrix {
 
     /// Experimental, for `benchmarks/adaptation_attribution.py`: the inverse
     /// metric block by block, a dense block as its covariance `L L^T`.
+    #[doc(hidden)]
     pub fn inverse_metric_blocks(&self) -> Vec<InverseMetricBlock> {
         self.blocks
             .iter()
