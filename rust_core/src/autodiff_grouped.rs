@@ -46,12 +46,17 @@
 //! standardized residual or row adjoint is below `2^-969`; so does every
 //! call of a chain whose observations exceed `2^128`. Inside those limits
 //! nothing the forward pass forms can overflow (see `SAFE_MAGNITUDE`) and no
-//! row adjoint is subnormal. Two differences remain. The reverse pass
+//! row adjoint is subnormal; a chain whose group mean's low half comes out
+//! subnormal never runs fused. Three differences remain. The reverse pass
 //! multiplies by the term's adjoint and the transforms' derivatives, which
-//! the limits do not bound, as the separate nodes do. And it adds each
-//! group's total to a gradient once, where the rows added theirs one by
-//! one, so a group total that overflows does so even where another term's
-//! gradient, added earlier, would have cancelled the rows' partial sums.
+//! the limits do not bound, as the separate nodes do. It adds each group's
+//! total to a gradient once, where the rows added theirs one by one, so a
+//! group total that overflows does so even where another term's gradient,
+//! added earlier, would have cancelled the rows' partial sums. And a row
+//! adjoint's products with an effect or the product scale can still fall
+//! into the subnormal range, where the group's one product can round to
+//! zero while one row's survives; the limits check the row adjoint, not its
+//! products. Each of these needs values far outside a model's usual scale.
 //! The results are not the separate nodes' bits: sums are taken in another
 //! order.
 //!
@@ -267,11 +272,18 @@ impl GroupStats {
         }
         // The mean's low half must not be subnormal, or it loses the digits
         // that make `ybar_g - m_g` accurate: refuse observations within
-        // `2^-960` of zero, other than zero itself.
+        // `2^-960` of zero, other than zero itself, and any group whose low
+        // half came out subnormal anyway, as a large group's division by its
+        // row count can make it.
         let tiny = obs.iter().any(|&y| y != 0.0 && y.abs() < TINY_OBSERVATION);
         let huge = obs.iter().any(|&y| y.abs() > SAFE_MAGNITUDE);
+        let subnormal = self
+            .mean_lo
+            .iter()
+            .any(|&lo| lo != 0.0 && lo.abs() < f64::MIN_POSITIVE);
         self.usable = !tiny
             && !huge
+            && !subnormal
             && self
                 .mean_hi
                 .iter()
@@ -1788,6 +1800,16 @@ mod tests {
         stats.build(&[0.0, 3.0], &[1.0, 2.0], 3, 2);
         assert!(!stats.usable);
         stats.build(&[0.0, 1.0], &[1.0], 3, 2);
+        assert!(!stats.usable);
+        // A million rows at the observation cutoff, one of them a step
+        // above it: the mean's low half, the step over the row count, is
+        // subnormal, so the statistics are refused too.
+        let rows = 1_000_000;
+        let cutoff = TINY_OBSERVATION;
+        let mut y = vec![cutoff; rows];
+        y[rows - 1] = f64::from_bits(cutoff.to_bits() + 1);
+        stats.build(&vec![0.0; rows], &y, 1, rows);
+        assert!(stats.mean_lo[0] != 0.0 && stats.mean_lo[0].abs() < f64::MIN_POSITIVE);
         assert!(!stats.usable);
     }
 

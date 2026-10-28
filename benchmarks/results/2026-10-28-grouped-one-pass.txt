@@ -46,7 +46,8 @@
 #       inferred scale at 2 (0.1% to 0.4%) and Normal with an inferred scale at 512 (1.4% to
 #       2.1%). Twelve were faster in all four, by 0.5% to 10.8%. Normal with an inferred scale at
 #       500 rows and 128 columns was also slower in all four pairs of an earlier round on
-#       15ac728 (6.3% to 9.7%). On a graph without a grouped chain this branch runs the same
+#       15ac728 (6.3% to 9.7%; that round's raw output is this file as committed in 193320b,
+#       not repeated below). On a graph without a grouped chain this branch runs the same
 #       operations as base apart from a branch on whether there are chains, which points to code
 #       layout, but this data cannot rule out a real cost of a few percent on those shapes.
 #   fit, 500 x 20 (median of 3 datasets)     base 0.679-0.699 s  this branch 0.159-0.161 s  cut 76.3-77.1%
@@ -56,7 +57,8 @@
 #   fused reverse pass per step (522,486 and 607,785). Wall time per leapfrog step at 5000 x 100
 #   is 27.5-29.0 us on base and 1.92-2.05 us on this branch, including the sampler's own work;
 #   the 2026-10-27 head-to-head study measured nutpie at 11.10 us per step on this model
-#   (sampling seconds per step, its own harness, not rerun here). ESS was not measured in
+#   (sampling seconds per step, its own harness, not rerun here; see "Where the sampling time
+#   goes" in benchmarks/results/2026-10-27-head-to-head.txt, not repeated below). ESS was not measured in
 #   these fits.
 #
 # Fits: rustmc.ModelBuilder, mu ~ N(0, 5), tau ~ HalfNormal(1), z ~ N(0, 1) per group,

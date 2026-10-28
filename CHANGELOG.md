@@ -119,7 +119,8 @@ versioning while the public API is stabilized.
   rows and 20 groups 0.47 to 0.54 µs, from about 3.0, and a 4-chain fit of the larger
   model 0.40 to 0.42 s, from 5.3 to 5.5; at that size a fit spends 1.9 to 2.1 µs per
   leapfrog step, where the 2026-10-27 study measured nutpie at 11.1 (but rustmc took
-  about twice nutpie's steps there, and nutpie was not rerun). Building or rebinding an
+  about twice nutpie's steps there, and nutpie was not rerun;
+  `benchmarks/results/2026-10-27-head-to-head.txt`). Building or rebinding an
   evaluator costs more, 52 to 58 µs more at 5,000 rows
   (`benchmarks/results/2026-10-28-grouped-one-pass.txt`). The gather, product and sum
   vectors are no longer written; predictions, predictive draws, pointwise
@@ -131,10 +132,11 @@ versioning while the public API is stabilized.
   groups a gradient is about 4% cheaper. A call whose noise scale lies outside 2^-128 to
   2^128, whose mean, product scale or an effect exceeds 2^128, whose bounded transform is
   wider than 2^128, or whose standardized group residual or row adjoint falls below
-  2^-969, and a chain whose observations exceed 2^128 or come within 2^-960 of zero, run
-  the separate nodes, where the per-group sums could overflow or lose precision that the
+  2^-969, and a chain whose observations exceed 2^128 or come within 2^-960 of zero, or
+  whose group mean's low half is subnormal, run the separate nodes, where the per-group sums could overflow or lose precision that the
   rows keep. Inside those limits the tests hold the results within a summation error
-  bound of the separate nodes'. Eleven of 50 plain-family gradient shapes, which have no
+  bound of the separate nodes'; the module doc of `autodiff_grouped.rs` lists the edge
+  cases far outside a model's usual scale that the limits still let through. Eleven of 50 plain-family gradient shapes, which have no
   grouped term, were slower in all four timing pairs, by up to 11%, and twelve faster.
   `rustmc._rustmc._set_grouped_normal_fusion()` turns fusion off for the whole process,
   for tests that compare the two paths.
