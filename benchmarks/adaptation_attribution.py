@@ -29,17 +29,26 @@ For each dataset it runs:
   - ``R/N``: rustmc's metric at nutpie's step; ``N/R``: nutpie's metric at
     rustmc's step;
   - ``N0/N0``: the final metric and step of the unjittered nutpie run;
-  - ``N/cal`` and ``dense/cal``: nutpie's metric, and a dense metric equal to the
-    posterior covariance of the pooled unconstrained draws of both engines'
-    adapted runs, each at the one step size (shared by the chains) whose mean
-    acceptance statistic matches what rustmc's adapted draws achieved, found
-    by bisection on short frozen runs.
+  - ``X@0.8`` and ``X@a``: metric X at the one step size (shared by the
+    chains) whose mean acceptance statistic is 0.8, the target both engines
+    adapt to, or is what rustmc's adapted draws actually achieved, found by
+    bisection on short frozen runs. X is ``R`` (rustmc's metric), ``Rdiag``
+    (the metric of rustmc adapting with ``metric="diag"``), ``N`` (nutpie's), or
+    ``dense``, the posterior covariance of the pooled unconstrained draws of
+    both engines' adapted runs, which no adapted metric of either engine can
+    represent.
 
-Comparing rustmc's kernel at nutpie's metric and step (``N/N``) with nutpie's own
-draws isolates the kernel (tree building, mainly the U-turn test); ``R/R``
-against ``N/N`` isolates adaptation, and the two crossed runs split adaptation
-into metric and step size. Warmup steps are reported separately, since the
-study's ratio counts them.
+It also runs rustmc's adaptation with ``metric="diag"``, since under the
+default ``"auto"`` a vector parameter can get a dense block.
+
+The draws gap splits exactly along two paths at matched acceptance. Path A:
+rustmc's adapted run over ``R@0.8`` (where its step adaptation lands relative
+to its own target), ``R@0.8`` over ``N@0.8`` (the metric), and ``N@0.8`` over
+nutpie's draws (the kernel: tree building, mainly the U-turn test, and
+nutpie's step jitter). Path B swaps the order of metric and step. The crossed
+runs ``R/N`` and ``N/R`` are kept as data, but a metric run at a step it cannot
+sustain diverges, so they do not split the gap. Warmup steps are reported
+separately, by iteration bin, since the study's ratio counts them.
 
     python -m benchmarks.adaptation_attribution --output results.json
 
@@ -132,14 +141,33 @@ def histogram(values: np.ndarray) -> dict[str, int]:
     return {str(k): int(c) for k, c in zip(keys, counts)}
 
 
+# Iteration bins for warmup work: rustmc's initial buffer, its five metric
+# windows and its terminal buffer at 1000 warmup iterations. nutpie's phases
+# differ; the same bins show where each engine's warmup steps go.
+WARMUP_BINS = (0, 75, 100, 150, 250, 450, 950, 1000)
+TERMINAL = 50
+
+
 def summarize(cell: Cell, draws: dict[str, np.ndarray], diverging: np.ndarray,
               steps: np.ndarray, warmup_steps: np.ndarray, depth: np.ndarray,
-              accept: np.ndarray, step_sizes: list[float]) -> dict[str, Any]:
+              accept: np.ndarray, step_sizes: list[float], warmup_accept: np.ndarray,
+              warmup_step_used: np.ndarray) -> dict[str, Any]:
     """`steps`, `depth`, `accept`, `diverging`: (chains, draws), post-warmup;
-    `warmup_steps`: (chains, warmup)."""
+    `warmup_steps`, `warmup_accept`, `warmup_step_used`: (chains, warmup)."""
     stats = draw_statistics(draws, diverging)
     total = int(steps.sum())
+    warmup = warmup_steps.shape[1]
+    edges = [e for e in WARMUP_BINS if e < warmup] + [warmup]
+    phases = {f"{a}-{b}": int(warmup_steps[:, a:b].sum()) for a, b in zip(edges, edges[1:])}
+    terminal = slice(max(warmup - TERMINAL, 0), warmup)
     return {
+        "warmup_phase_steps": phases,
+        # The last 50 warmup transitions: mean acceptance, and the final step
+        # over the median step they used, chain by chain.
+        "terminal_accept": float(np.mean(warmup_accept[:, terminal])) if warmup else math.nan,
+        "final_over_terminal_step": ([float(s / np.median(u[terminal]))
+                                      for s, u in zip(step_sizes, warmup_step_used)]
+                                     if warmup else []),
         "steps_per_draw": float(steps.mean()),
         "steps_per_draw_by_chain": steps.mean(axis=1).tolist(),
         "warmup_steps": int(warmup_steps.sum()),
@@ -184,7 +212,8 @@ def run_nutpie(cell: Cell, compiled, data: dict, seed: int, jitter: bool) -> dic
                 draws[f"{name}[{k}]"] = values[:, :, k]
     summary = summarize(cell, draws, stats["diverging"].values, stats["n_steps"].values,
                         warm["n_steps"].values, stats["depth"].values,
-                        stats["mean_tree_accept"].values, list(step_bar[:, -1]))
+                        stats["mean_tree_accept"].values, list(step_bar[:, -1]),
+                        warm["mean_tree_accept"].values, warm["step_size"].values)
     summary["mean_accept_sym"] = float(stats["mean_tree_accept_sym"].values.mean())
     summary["used_step_spread"] = [float(stats["step_size"].values.min()),
                                    float(stats["step_size"].values.max())]
@@ -217,10 +246,10 @@ def metric_diagonal(metric: np.ndarray, dim: int) -> np.ndarray:
 
 
 def run_rustmc(cell: Cell, compiled, data: dict, seed: int, *, warmup: int, draws: int,
-               metrics=None, steps=None, init=None) -> dict[str, Any]:
+               metrics=None, steps=None, init=None, metric: str = "auto") -> dict[str, Any]:
     out = compiled._experimental_nuts(
         rustmc_data(cell, data), chains=cell.chains, draws=draws, warmup=warmup, seed=seed,
-        threads=1, init=None if init is None else [list(map(float, q)) for q in init],
+        threads=1, metric=metric, init=None if init is None else [list(map(float, q)) for q in init],
         inverse_metrics=None if metrics is None else [list(map(float, m)) for m in metrics],
         step_sizes=None if steps is None else [float(s) for s in steps])
     fit, chains = out["fit"], out["chains"]
@@ -230,10 +259,13 @@ def run_rustmc(cell: Cell, compiled, data: dict, seed: int, *, warmup: int, draw
 
     samples = fit.get_samples_2d()
     sample_draws = {name: np.asarray(samples[name], dtype=float) for name in scalar_names(cell)}
-    warm = np.stack([c["n_leapfrog"][c["is_warmup"] == 1] for c in chains])
+    def warm(key):
+        return np.stack([c[key][c["is_warmup"] == 1] for c in chains])
+
     summary = summarize(cell, sample_draws, post("divergent").astype(bool), post("n_leapfrog"),
-                        warm, post("tree_depth"), post("accept_prob"),
-                        [c["step_size"] for c in chains])
+                        warm("n_leapfrog"), post("tree_depth"), post("accept_prob"),
+                        [c["step_size"] for c in chains], warm("accept_prob"),
+                        warm("step_size_used"))
     dim = len(unconstrained_names(cell))
     metric_list = [metric_vector(c["inverse_metric"], dim) for c in chains]
     return {"summary": summary, "fit": fit,
@@ -264,15 +296,18 @@ def calibrate(cell: Cell, compiled, data: dict, seed: int, metrics, init, target
     return {"step": math.exp(0.5 * (low + high)), "history": history}
 
 
-def condition_number(posterior: np.ndarray, metric: np.ndarray) -> float:
-    """lambda_max / lambda_min of the posterior covariance preconditioned by the
-    inverse metric: the eigenvalues of `metric^-1 posterior`."""
+def preconditioned_spectrum(posterior: np.ndarray, metric: np.ndarray) -> dict[str, float]:
+    """Extreme eigenvalues of the posterior covariance preconditioned by the
+    inverse metric (the eigenvalues of `metric^-1 posterior`) and their ratio.
+    For a Gaussian target, leapfrog is stable only for steps below
+    2 sqrt(lambda_min), and a U-turn takes about pi sqrt(lambda_max) / step."""
     from scipy.linalg import eigh
 
     dim = posterior.shape[0]
     matrix = np.diag(metric) if metric.size == dim else metric.reshape(dim, dim)
     values = eigh(posterior, matrix, eigvals_only=True)
-    return float(values.max() / values.min())
+    return {"min": float(values.min()), "max": float(values.max()),
+            "condition": float(values.max() / values.min())}
 
 
 def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
@@ -286,6 +321,8 @@ def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
     nutpie = run_nutpie(cell, compiled_nutpie, data, seed, jitter=True)
     nutpie0 = run_nutpie(cell, compiled_nutpie, data, seed, jitter=False)
     adapted = run_rustmc(cell, compiled_rustmc, data, seed, warmup=cell.warmup, draws=cell.draws)
+    diagonal = run_rustmc(cell, compiled_rustmc, data, seed, warmup=cell.warmup,
+                          draws=cell.draws, metric="diag")
     if index == 0:
         # The hook's adapted run is the production one: same seed, same steps.
         production = compiled_rustmc.sample(rustmc_data(cell, data), chains=cell.chains,
@@ -306,7 +343,7 @@ def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
                           metrics=metrics, steps=steps, init=init)
 
     runs = {"nutpie": nutpie["summary"], "nutpie no jitter": nutpie0["summary"],
-            "rustmc adapted": adapted["summary"]}
+            "rustmc adapted": adapted["summary"], "rustmc diag adapted": diagonal["summary"]}
     runs["R/R"] = frozen(r_metric, r_step)["summary"]
     runs["N/N"] = frozen(n_metric, n_step)["summary"]
     runs["R/N"] = frozen(r_metric, n_step)["summary"]
@@ -318,9 +355,16 @@ def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
     posterior = np.cov(pooled, rowvar=False)
     posterior = 0.5 * (posterior + posterior.T)
     calibrations = {}
-    for label, metrics in (("N/cal", n_metric), ("dense/cal", [posterior.ravel()] * cell.chains)):
-        found = calibrate(cell, compiled_rustmc, data, seed, metrics, init, target,
+    dense = [posterior.ravel()] * cell.chains
+    d_metric = diagonal["inverse_metric"]
+    # "@a" runs match the acceptance rustmc's adapted draws achieved; "@0.8"
+    # runs match the 0.8 both engines target.
+    for label, metrics, goal in (("N@a", n_metric, target), ("dense@a", dense, target),
+                                 ("R@0.8", r_metric, 0.8), ("Rdiag@0.8", d_metric, 0.8),
+                                 ("N@0.8", n_metric, 0.8), ("dense@0.8", dense, 0.8)):
+        found = calibrate(cell, compiled_rustmc, data, seed, metrics, init, goal,
                           float(np.median(n_step)))
+        found["target"] = goal
         calibrations[label] = found
         runs[label] = frozen(metrics, [found["step"]] * cell.chains)["summary"]
     record["runs"] = runs
@@ -328,15 +372,18 @@ def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
     record["calibration_target_accept"] = target
     record["metrics"] = {
         "rustmc": [metric_diagonal(m, dim).tolist() for m in r_metric],
+        "rustmc_full": [m.tolist() for m in r_metric],
         "rustmc_blocks": adapted["metric_blocks"],
+        "rustmc_diag": [metric_diagonal(m, dim).tolist() for m in d_metric],
         "nutpie": n_metric.tolist(),
         "nutpie_no_jitter": nutpie0["inverse_metric"].tolist(),
         "posterior_variance": np.diag(posterior).tolist(),
     }
-    record["condition_numbers"] = {
-        "rustmc": [condition_number(posterior, m) for m in r_metric],
-        "nutpie": [condition_number(posterior, m) for m in n_metric],
-        "unit": condition_number(posterior, np.ones(dim)),
+    record["spectra"] = {
+        "rustmc": [preconditioned_spectrum(posterior, m) for m in r_metric],
+        "rustmc diag": [preconditioned_spectrum(posterior, m) for m in d_metric],
+        "nutpie": [preconditioned_spectrum(posterior, m) for m in n_metric],
+        "unit": [preconditioned_spectrum(posterior, np.ones(dim))],
     }
     corr = np.corrcoef(pooled, rowvar=False)
     record["posterior_correlation"] = corr.tolist()
@@ -351,30 +398,30 @@ def log_ratio(a: float, b: float) -> float:
 
 
 def attribution(record: dict[str, Any]) -> dict[str, float]:
-    """Log ratios of post-warmup steps per draw, rustmc's kernel unless named."""
+    """Log ratios of post-warmup steps per draw; every run but nutpie's own uses
+    rustmc's kernel. The two "path" groups each sum exactly to the draws gap."""
     s = {label: run["steps_per_draw"] for label, run in record["runs"].items()}
     r, n = record["runs"]["rustmc adapted"], record["runs"]["nutpie"]
-    total = log_ratio(r["warmup_steps"] + r["draw_steps"], n["warmup_steps"] + n["draw_steps"])
-    metric_at_r_step = log_ratio(s["R/R"], s["N/R"])
-    metric_at_n_step = log_ratio(s["R/N"], s["N/N"])
-    step_at_r_metric = log_ratio(s["R/R"], s["R/N"])
-    step_at_n_metric = log_ratio(s["N/R"], s["N/N"])
     return {
-        "total with warmup": total,
-        "warmup only": log_ratio(r["warmup_steps"], n["warmup_steps"]),
-        "draws": log_ratio(s["rustmc adapted"], s["nutpie"]),
-        "hook check R/R over adapted": log_ratio(s["R/R"], s["rustmc adapted"]),
-        "adaptation R/R over N/N": log_ratio(s["R/R"], s["N/N"]),
-        "metric, Shapley": 0.5 * (metric_at_r_step + metric_at_n_step),
-        "metric at rustmc step": metric_at_r_step,
-        "metric at nutpie step": metric_at_n_step,
-        "step, Shapley": 0.5 * (step_at_r_metric + step_at_n_metric),
-        "step at rustmc metric": step_at_r_metric,
-        "step at nutpie metric": step_at_n_metric,
-        "kernel N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
-        "kernel N0/N0 over nutpie unjittered": log_ratio(s["N0/N0"], s["nutpie no jitter"]),
-        "jitter, nutpie over nutpie unjittered": log_ratio(s["nutpie"], s["nutpie no jitter"]),
-        "diagonal N/cal over dense/cal": log_ratio(s["N/cal"], s["dense/cal"]),
+        "total steps with warmup": log_ratio(r["warmup_steps"] + r["draw_steps"],
+                                             n["warmup_steps"] + n["draw_steps"]),
+        "warmup steps": log_ratio(r["warmup_steps"], n["warmup_steps"]),
+        "draws: steps per draw": log_ratio(s["rustmc adapted"], s["nutpie"]),
+        "path A step: adapted over R@0.8": log_ratio(s["rustmc adapted"], s["R@0.8"]),
+        "path A metric: R@0.8 over N@0.8": log_ratio(s["R@0.8"], s["N@0.8"]),
+        "path A kernel: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
+        "path B metric: adapted over N@a": log_ratio(s["rustmc adapted"], s["N@a"]),
+        "path B step: N@a over N@0.8": log_ratio(s["N@a"], s["N@0.8"]),
+        "path B kernel: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
+        "hook: R/R over adapted": log_ratio(s["R/R"], s["rustmc adapted"]),
+        "kernel at nutpie's step: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
+        "kernel unjittered: N0/N0 over nutpie no jitter": log_ratio(s["N0/N0"],
+                                                                     s["nutpie no jitter"]),
+        "jitter: nutpie over nutpie no jitter": log_ratio(s["nutpie"], s["nutpie no jitter"]),
+        "auto vs diag metric: R@0.8 over Rdiag@0.8": log_ratio(s["R@0.8"], s["Rdiag@0.8"]),
+        "diag adaptation: rustmc diag adapted over adapted": log_ratio(s["rustmc diag adapted"],
+                                                                        s["rustmc adapted"]),
+        "correlation: N@0.8 over dense@0.8": log_ratio(s["N@0.8"], s["dense@0.8"]),
     }
 
 
@@ -415,8 +462,21 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
                     f"{run['divergences']:4d} {run['min_bulk_ess']:7.0f} "
                     f"{1000 * run['ess_per_step']:7.2f}   step {fmt(run['step_sizes'])}")
             for label, found in record["calibrations"].items():
-                out(f"    {label} bisection to accept {record['calibration_target_accept']:.3f}: "
+                out(f"    {label} bisection to accept {found['target']:.3f}: "
                     + ", ".join(f"{s:.4g}->{a:.3f}" for s, a in found["history"]))
+        out("")
+        out("R/N is rustmc's metric at nutpie's step; where it diverges its step counts are "
+            "cut short by divergences and say nothing about efficiency.")
+        out("")
+        out("Warmup steps by iteration bin (all chains), and the last 50 warmup transitions: "
+            "mean acceptance and final step over the median step they used, by chain.")
+        for record in entry["datasets"]:
+            for label in ("rustmc adapted", "rustmc diag adapted", "nutpie"):
+                run = record["runs"][label]
+                phases = " ".join(f"{k}:{v}" for k, v in run["warmup_phase_steps"].items())
+                out(f"  dataset {record['index']} {label:<20} {phases}; terminal accept "
+                    f"{run['terminal_accept']:.3f}; final/terminal step "
+                    f"{fmt(run['final_over_terminal_step'])}")
         out("")
         out("Warmup and total steps (all chains): warmup steps rustmc / nutpie; total ratio.")
         for record in entry["datasets"]:
@@ -437,7 +497,8 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
         out("Tree depth, post-warmup, all datasets pooled (each engine's own convention: rustmc "
             "counts a final subtree that turned and was discarded, nuts-rs does not), and the "
             "doubling class floor(log2(steps)), comparable across engines.")
-        for label in ("rustmc adapted", "nutpie", "N/N", "nutpie no jitter", "N0/N0", "dense/cal"):
+        for label in ("rustmc adapted", "rustmc diag adapted", "nutpie", "N/N", "R@0.8",
+                      "N@0.8", "dense@0.8"):
             for key in ("depth_histogram", "doubling_histogram"):
                 pooled: dict[str, int] = {}
                 for record in entry["datasets"]:
@@ -480,12 +541,14 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
                 out(f"    {group:<10} {label:<7} {np.median(ratios):.3f} "
                     f"[{min(ratios):.3f}, {max(ratios):.3f}]")
         out("")
-        out("Condition number of the posterior covariance preconditioned by each metric "
-            "(median over chains), by dataset: rustmc, nutpie, unit metric.")
+        out("Posterior covariance preconditioned by each metric (median over chains): smallest "
+            "eigenvalue, largest, and their ratio, by dataset.")
         for rec in entry["datasets"]:
-            c = rec["condition_numbers"]
-            out(f"  dataset {rec['index']}: {np.median(c['rustmc']):.1f} "
-                f"{np.median(c['nutpie']):.1f} {c['unit']:.1f}")
+            parts = []
+            for label, spectra in rec["spectra"].items():
+                parts.append(f"{label} " + " ".join(
+                    f"{np.median([x[k] for x in spectra]):.3g}" for k in ("min", "max", "condition")))
+            out(f"  dataset {rec['index']}: " + "; ".join(parts))
         if cell.model == "varying_intercept":
             out("")
             out("Posterior correlations, pooled draws, by dataset: log tau with each z (median "
