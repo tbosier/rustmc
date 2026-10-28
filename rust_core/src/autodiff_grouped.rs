@@ -37,9 +37,13 @@
 //! small constant. That is a bound, not a promise for every input; the tests
 //! measure both paths against a double-double reference. Each per-row
 //! quantity is formed as the separate term formed it for one row and only
-//! then multiplied by the group's row count, so no intermediate overflows
-//! where the rows' did not. The results are not the separate nodes' bits:
-//! sums are taken in another order.
+//! then multiplied by the group's row count. A call whose scale, mean,
+//! product scale or effects lie outside `2^±128`, or a chain whose
+//! observations exceed `2^128`, runs the separate nodes, and inside that
+//! range nothing the pass forms can overflow (see `SAFE_MAGNITUDE`). Where
+//! a row's adjoint falls in the subnormal range, both paths lose precision,
+//! and they lose it differently. The results are not the separate nodes'
+//! bits: sums are taken in another order.
 //!
 //! Groups whose effects mix transforms run fused too, each transformed once
 //! with its own transform.
@@ -111,6 +115,15 @@ const NO_SLOT: u32 = u32::MAX;
 /// `2^-960`. A chain whose observations come closer to zero than this,
 /// other than zero itself, runs as separate nodes; see [`GroupStats::build`].
 const TINY_OBSERVATION: f64 = f64::MIN_POSITIVE * (1u64 << 62) as f64;
+
+/// `2^128`. The fused pass runs only while the observations, the mean, the
+/// product scale and every effect it reads are at most this in magnitude
+/// and the term's scale lies between its reciprocal and it; any other call
+/// runs the separate nodes. Inside that range no quantity the pass forms
+/// can overflow: with at most `2^32` rows, a mean is at most `2^257`, a
+/// standardized residual `2^386`, a row's adjoint of its mean `2^514`, that
+/// times an effect `2^642`, and any sum over the groups below `2^710`.
+const SAFE_MAGNITUDE: f64 = f64::from_bits((1023 + 128) << 52);
 
 /// What the fused pass needs of a chain's observations, per group that has
 /// rows (a slot), in increasing group order.
@@ -238,7 +251,9 @@ impl GroupStats {
         // that make `ybar_g - m_g` accurate: refuse observations within
         // `2^-960` of zero, other than zero itself.
         let tiny = obs.iter().any(|&y| y != 0.0 && y.abs() < TINY_OBSERVATION);
+        let huge = obs.iter().any(|&y| y.abs() > SAFE_MAGNITUDE);
         self.usable = !tiny
+            && !huge
             && self
                 .mean_hi
                 .iter()
@@ -308,6 +323,9 @@ pub(super) struct GroupedPlan {
     /// [`fusion_allowed`] as the current call found it when it began.
     allowed: bool,
     forward_passes: u64,
+    /// Calls that found a chain fusable but its values outside
+    /// [`SAFE_MAGNITUDE`], and ran its separate nodes.
+    fallbacks: u64,
     reverse_passes: u64,
 }
 
@@ -614,6 +632,7 @@ impl GroupedPlan {
             readers_counted: false,
             allowed: true,
             forward_passes: 0,
+            fallbacks: 0,
             reverse_passes: 0,
         };
         let Some(consumers) = Self::consumers(graph) else {
@@ -845,36 +864,52 @@ impl Evaluator {
     /// Run chain `c` of the grouped plan forward, at its term, after any
     /// constant between its nodes has its value: transform each group's
     /// effect, and take the term's log density and the sums its reverse pass
-    /// reads in one pass over the groups. Only for a chain
+    /// reads in one loop over the groups. Only for a chain
     /// [`Self::grouped_decide`] chose to fuse in this call.
+    ///
+    /// When a value the pass reads lies outside [`SAFE_MAGNITUDE`], it
+    /// writes the chain's vectors instead, marks the chain unfused for this
+    /// call and returns false, and the caller runs the separate term; the
+    /// reverse pass then runs the separate nodes too.
     #[inline(never)]
-    pub(super) fn grouped_forward(&mut self, graph: &Graph, params: &[f64], c: usize) {
+    pub(super) fn grouped_forward(&mut self, graph: &Graph, params: &[f64], c: usize) -> bool {
         let tau = self.grouped.chains[c]
             .product
             .map(|(_, tau)| self.scalars[tau]);
         let mu = self.grouped.chains[c].sum.map(|(_, mu)| self.scalars[mu]);
         let sv = self.scalars[self.grouped.chains[c].sigma];
+        let chain = &mut self.grouped.chains[c];
+        chain.values.clear();
+        chain.values.extend(chain.stats.groups.iter().map(|&g| {
+            let k = chain.param_start + g;
+            graph.param_transforms[k].apply(params[k])
+        }));
+        let small = |v: f64| v.abs() <= SAFE_MAGNITUDE;
+        let in_range = chain.values.iter().all(|&v| small(v))
+            && tau.is_none_or(small)
+            && mu.is_none_or(small)
+            && (!scale_is_valid(sv) || (small(sv) && small(1.0 / sv)));
+        if !in_range {
+            self.grouped.fused_this_call[c] = false;
+            self.grouped.fallbacks += 1;
+            self.write_grouped_vectors(c);
+            return false;
+        }
+        self.grouped.forward_passes += 1;
         let GroupedNormal {
             stats,
             values,
             row_adjoints,
-            param_start,
             scale_first,
             obs,
             len,
             ..
         } = &mut self.grouped.chains[c];
-        values.clear();
-        values.extend(stats.groups.iter().map(|&g| {
-            let k = *param_start + g;
-            graph.param_transforms[k].apply(params[k])
-        }));
-        self.grouped.forward_passes += 1;
         if !scale_is_valid(sv) {
             // As the separate term: outside the scale's support the density
             // is zero, not NaN.
             self.scalars[*obs] = f64::NEG_INFINITY;
-            return;
+            return true;
         }
         macro_rules! pass {
             ($product:literal, $scale_first:literal, $sum:literal) => {
@@ -907,6 +942,40 @@ impl Evaluator {
         chain.sum_sq = sum_sq;
         chain.mean_adjoint = mean_adjoint;
         chain.scale_adjoint = scale_adjoint;
+        true
+    }
+
+    /// Write chain `c`'s gather, product and sum vectors from the effects
+    /// its forward pass just took, as the separate nodes would have, for a
+    /// call that runs its separate term after all.
+    #[cold]
+    fn write_grouped_vectors(&mut self, c: usize) {
+        let chain = &self.grouped.chains[c];
+        let offset = |node: usize| match self.node_kind[node] {
+            NodeKind::ComputedVec(off) => off,
+            _ => unreachable!("checked when the chain was found"),
+        };
+        let groups = &self.binding.vectors[chain.indices][..chain.len];
+        let tau = chain.product.map(|(_, tau)| self.scalars[tau]);
+        let mu = chain.sum.map(|(_, mu)| self.scalars[mu]);
+        let gather = offset(chain.gather);
+        let product = chain.product.map(|(p, _)| offset(p));
+        let sum = chain.sum.map(|(s, _)| offset(s));
+        for (i, &group) in groups.iter().enumerate() {
+            let mut value = chain.values[chain.stats.slot_of_group[group as usize] as usize];
+            self.vec_buf[gather + i] = value;
+            if let (Some(off), Some(tau)) = (product, tau) {
+                value = if chain.scale_first {
+                    ElementwiseOp::Mul.value(tau, value)
+                } else {
+                    ElementwiseOp::Mul.value(value, tau)
+                };
+                self.vec_buf[off + i] = value;
+            }
+            if let (Some(off), Some(mu)) = (sum, mu) {
+                self.vec_buf[off + i] = mu + value;
+            }
+        }
     }
 
     /// Run chain `c` of the grouped plan in reverse, if this call's forward
@@ -1423,19 +1492,32 @@ mod tests {
         let chains = built.terms.len() as u64;
         assert_eq!(fused.grouped.chains.len() as u64, chains, "{label}");
         let mut kinds = 0;
-        for point in points {
+        for (k, point) in points.iter().enumerate() {
+            let plan = &fused.grouped;
+            let before = (plan.forward_passes, plan.reverse_passes, plan.fallbacks);
             let f = everything(&mut fused, g, point);
             let s = everything(&mut separate, g, point);
-            let tol = tolerances(built, shape, &separate, point);
-            kinds += assert_close(&format!("{label} at {point:?}"), &f, &s, &tol);
+            let plan = &fused.grouped;
+            let ran = plan.forward_passes - before.0;
+            let fell_back = plan.fallbacks - before.2;
+            // Every chain either ran fused or, outside the fused pass's
+            // range, fell back; the first, ordinary point always runs fused.
+            assert_eq!(ran + fell_back, chains, "{label} at {point:?}");
+            assert!(k > 0 || ran == chains, "{label} at {point:?}");
+            let reversed = if inactive(shape, point) { 0 } else { ran };
+            assert_eq!(
+                plan.reverse_passes - before.1,
+                reversed,
+                "{label} at {point:?}"
+            );
+            if fell_back > 0 {
+                // The separate nodes ran: their bits exactly.
+                assert_same(&format!("{label} at {point:?}, fallen back"), &f, &s);
+            } else {
+                let tol = tolerances(built, shape, &separate, point);
+                kinds += assert_close(&format!("{label} at {point:?}"), &f, &s, &tol);
+            }
         }
-        let active = points.iter().filter(|p| !inactive(shape, p)).count() as u64;
-        assert_eq!(
-            fused.grouped.forward_passes,
-            points.len() as u64 * chains,
-            "{label}"
-        );
-        assert_eq!(fused.grouped.reverse_passes, active * chains, "{label}");
         assert_eq!(separate.grouped.forward_passes, 0, "{label}");
         kinds
     }
@@ -2194,62 +2276,97 @@ mod tests {
         }
     }
 
-    /// Inputs at the edge of the exponent range that the fused pass must
-    /// handle as the rows did: tiny scales whose per-row adjoints are finite
-    /// though their quotient by the scale alone is not, a huge effect whose
-    /// product with a residual sum would overflow before the division, and
-    /// subnormal observations, whose group mean two doubles cannot hold, which
-    /// must send the chain to the separate nodes.
+    /// Inputs at the edges of the exponent range. Each of these a fused pass
+    /// would have got wrong where the rows did not: per-row adjoints near
+    /// overflow that the rows cancel in order, an effect gradient whose row
+    /// adjoint is subnormal before a huge product scale multiplies it, and
+    /// observations too close to zero or too large for the group statistics.
+    /// Each must run the separate nodes and give their bits. A point just
+    /// inside the fused pass's range must run fused and agree with them.
     #[test]
-    fn exponent_range_edges_match_the_separate_nodes() {
-        let compare = |label: &str, g: &Graph, point: &[f64], fused_expected: u64| {
+    fn exponent_range_edges_run_the_separate_nodes() {
+        assert_eq!(SAFE_MAGNITUDE, 2f64.powi(128));
+        assert_eq!(TINY_OBSERVATION, 2f64.powi(-960));
+        let run = |g: &Graph, point: &[f64]| {
             let mut fused = Evaluator::new(g);
             let mut separate = Evaluator::new(g);
             separate.unfused_groups = true;
             let f = everything(&mut fused, g, point);
             let s = everything(&mut separate, g, point);
-            assert!(s.iter().all(|v| v.is_finite()), "{label}: {s:?}");
-            assert_nearly(label, &f, &s);
-            assert_eq!(fused.grouped.forward_passes, fused_expected, "{label}");
+            assert!(s.iter().all(|v| v.is_finite()), "{s:?}");
+            (f, s, fused.grouped.forward_passes, fused.grouped.fallbacks)
         };
-        // Twenty rows at 1e-280 about a zero effect, scale and product scale
-        // 1e-294: each row's adjoint of its mean is 1e308, finite, and of
-        // the effect 1e14; their sum over the rows divided by the scale
-        // alone would overflow.
-        let mut g = Graph::new();
-        let z = g.add_vector_params("z", 1);
-        let group = g.add_data("group", vec![0.0; 20]);
-        let gathered = g.gather(z, 1, group);
-        let tiny = g.add_constant(1e-294);
-        let product = g.elementwise(ElementwiseOp::Mul, tiny, Some(gathered));
-        let sigma = g.add_constant(1e-294);
-        let obs = g.add_obs_data(vec![1e-280; 20]);
-        g.obs_logp_normal(product, sigma, obs);
-        compare("tiny scales", &g, &[0.0], 1);
-
-        // Two zero rows about an effect of 1e308 with scale 1e308: each row's
-        // adjoint of the product scale is -1.
-        let mut g = Graph::new();
-        let tau = g.add_param("tau");
-        let z = g.add_vector_params("z", 1);
-        let group = g.add_data("group", vec![0.0; 2]);
-        let gathered = g.gather(z, 1, group);
-        let product = g.elementwise(ElementwiseOp::Mul, tau, Some(gathered));
-        let sigma = g.add_constant(1e308);
-        let obs = g.add_obs_data(vec![0.0; 2]);
-        g.obs_logp_normal(product, sigma, obs);
-        compare("huge effect", &g, &[1.0, 1e308], 1);
-
-        // Observations 0 and the smallest subnormal, about a subnormal effect.
-        let mut g = Graph::new();
-        let z = g.add_vector_params("z", 1);
-        let group = g.add_data("group", vec![0.0; 2]);
-        let gathered = g.gather(z, 1, group);
-        let sigma = g.add_constant(1e-162);
-        let obs = g.add_obs_data(vec![0.0, f64::from_bits(1)]);
-        g.obs_logp_normal(gathered, sigma, obs);
-        compare("subnormal observations", &g, &[0.0], 0);
-        compare("subnormal effect", &g, &[f64::from_bits(1)], 0);
+        let separate_only = |label: &str, g: &Graph, point: &[f64], fallbacks: u64| {
+            let (f, s, passes, fell_back) = run(g, point);
+            assert_same(label, &f, &s);
+            assert_eq!((passes, fell_back), (0, fallbacks), "{label}");
+        };
+        // `mu + scale * z[group]` with a constant scale and noise scale, one
+        // or two groups, rows `y`.
+        let model = |groups: usize, group: Vec<f64>, y: Vec<f64>, scale: f64, sigma: f64| {
+            let mut g = Graph::new();
+            let mu = g.add_param("mu");
+            let z = g.add_vector_params("z", groups);
+            let group = g.add_data("group", group);
+            let gathered = g.gather(z, groups, group);
+            let scale = g.add_constant(scale);
+            let product = g.elementwise(ElementwiseOp::Mul, scale, Some(gathered));
+            let mean = g.scalar_broadcast_add(mu, product);
+            let sigma = g.add_constant(sigma);
+            let obs = g.add_obs_data(y);
+            g.obs_logp_normal(mean, sigma, obs);
+            g
+        };
+        // Rows' adjoints of the mean of about +-1e308, which the separate
+        // nodes add in row order and cancel, and which a group's row count
+        // would multiply past the largest double.
+        let alternating = model(
+            2,
+            vec![0.0, 1.0, 0.0, 1.0],
+            vec![1e-280, -1e-280, 1e-280, -1e-280],
+            1e-294,
+            1e-294,
+        );
+        separate_only("adjoints near overflow", &alternating, &[0.0, 0.0, 0.0], 1);
+        // A row adjoint of the effect in the subnormal range, multiplied by
+        // a product scale of 1e308.
+        for y in [[0.03, 0.0], [0.05, 0.0]] {
+            let subnormal = model(1, vec![0.0; 2], y.to_vec(), 1e308, 1e161);
+            separate_only("subnormal adjoint", &subnormal, &[0.0, 0.0], 1);
+        }
+        // An effect, a mean or a noise scale outside 2^128.
+        let ordinary = model(1, vec![0.0; 3], vec![0.5, -0.2, 0.1], 0.8, 0.7);
+        separate_only("huge effect", &ordinary, &[0.0, 1e39], 1);
+        separate_only("huge mean", &ordinary, &[-1e39, 0.0], 1);
+        let tiny_sigma = model(1, vec![0.0; 3], vec![0.5, -0.2, 0.1], 0.8, 1e-39);
+        separate_only("tiny noise scale", &tiny_sigma, &[0.0, 0.0], 1);
+        // Observations next to zero, or beyond 2^128: the statistics are not
+        // usable, so the chain never runs fused.
+        let subnormal_data = model(1, vec![0.0; 2], vec![0.0, f64::from_bits(1)], 1.0, 1e-162);
+        separate_only("subnormal observations", &subnormal_data, &[0.0, 0.0], 0);
+        let huge_data = model(1, vec![0.0; 2], vec![1e39, 0.0], 1.0, 1e39);
+        separate_only("huge observations", &huge_data, &[0.0, 0.0], 0);
+        // Just inside the range: a noise scale of 1e-30 and effects of 1e30.
+        // Group 1's residuals cancel, so its effect's gradient is zero up to
+        // the rounding of residuals of 2.5e30 divided twice by the scale:
+        // within the summation bound, `64 u` times the rows' magnitudes,
+        // `sum (|y| + |m|) / sigma^2`, about 1e91.
+        let inside = model(2, vec![0.0, 1.0, 1.0], vec![1e30, -2e30, 3e30], 0.5, 1e-30);
+        let (f, s, passes, fell_back) = run(&inside, &[1e30, 2e30, -1e30]);
+        let bound = 64.0 * U * (6e30 + 3e30) / (1e-30 * 1e-30);
+        for k in 1..4 {
+            assert!(
+                (f[k] - s[k]).abs() <= bound,
+                "gradient {k}: {} against {}",
+                f[k],
+                s[k]
+            );
+        }
+        let mut rest = (f.clone(), s.clone());
+        rest.0.drain(1..4);
+        rest.1.drain(1..4);
+        assert_nearly("inside the range", &rest.0, &rest.1);
+        assert_eq!((passes, fell_back), (1, 0));
     }
 
     /// A gather whose adjoints are all zero must leave its gradients exactly

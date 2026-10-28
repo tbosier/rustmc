@@ -1148,8 +1148,9 @@ impl Evaluator {
                     continue;
                 }
                 if let Some(chain) = self.grouped.chain_ending_at(idx) {
-                    if self.grouped.fused(chain) {
-                        self.grouped_forward(graph, params, chain);
+                    // A chain outside the fused pass's range writes its
+                    // vectors and falls through to the separate term.
+                    if self.grouped.fused(chain) && self.grouped_forward(graph, params, chain) {
                         continue;
                     }
                 }

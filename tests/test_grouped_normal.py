@@ -1,10 +1,11 @@
 """Normal likelihoods on a grouped mean, ``mu + tau * z["group"]``, which the
-graph evaluator runs as one pass over per-group statistics of the data. These
-tests go through the real builder, compiler, evaluator and sampler, show that
-the fused pass ran, and check it against oracles that know nothing of fusion:
-finite differences of the log density, the exact posterior of a model whose
-scales are known, where the posterior is Gaussian in closed form, and every
-output that reads node values computed again with fusion turned off.
+graph evaluator runs from per-group statistics of the data, with no pass over
+the rows per gradient. These tests go through the real builder, compiler,
+evaluator and sampler, show that the fused pass ran, and check it against
+oracles that know nothing of fusion: finite differences of the log density,
+the exact posterior of a model whose scales are known, where the posterior is
+Gaussian in closed form, and every output that reads node values computed
+again with fusion turned off.
 """
 
 from __future__ import annotations
