@@ -33,10 +33,12 @@ For each dataset it runs:
     chains) whose mean acceptance statistic is 0.8, the target both engines
     adapt to, or is what rustmc's adapted draws actually achieved, found by
     bisection on short frozen runs. X is ``R`` (rustmc's metric), ``Rdiag``
-    (the metric of rustmc adapting with ``metric="diag"``), ``N`` (nutpie's), or
-    ``dense``, the posterior covariance of the pooled unconstrained draws of
-    both engines' adapted runs, which no adapted metric of either engine can
-    represent.
+    (the metric of rustmc adapting with ``metric="diag"``), ``N`` (nutpie's),
+    ``dense``, the sample covariance of the 8000 pooled post-warmup
+    unconstrained draws of both engines' adapted runs (an oracle no warmup has,
+    correlating parameters no adapted metric of either engine can), or
+    ``pooled-diag``, the diagonal of that same covariance, so that ``dense``
+    against ``pooled-diag`` changes only the correlations.
 
 It also runs rustmc's adaptation with ``metric="diag"``, since under the
 default ``"auto"`` a vector parameter can get a dense block.
@@ -165,7 +167,7 @@ def summarize(cell: Cell, draws: dict[str, np.ndarray], diverging: np.ndarray,
         # The last 50 warmup transitions: mean acceptance, and the final step
         # over the median step they used, chain by chain.
         "terminal_accept": float(np.mean(warmup_accept[:, terminal])) if warmup else math.nan,
-        "final_over_terminal_step": ([float(s / np.median(u[terminal]))
+        "final_over_terminal_step": ([float(s / np.nanmedian(u[terminal]))
                                       for s, u in zip(step_sizes, warmup_step_used)]
                                      if warmup else []),
         "steps_per_draw": float(steps.mean()),
@@ -178,6 +180,7 @@ def summarize(cell: Cell, draws: dict[str, np.ndarray], diverging: np.ndarray,
         "min_tail_ess": stats["min_tail_ess"],
         "max_rhat": stats["max_rhat"],
         "ess_per_step": stats["min_bulk_ess"] / total,
+        "tail_ess_per_step": stats["min_tail_ess"] / total,
         "depth_histogram": histogram(depth),
         # floor(log2(steps)): the doubling a trajectory reached, free of how
         # each engine counts a final subtree that turned and was discarded.
@@ -210,13 +213,17 @@ def run_nutpie(cell: Cell, compiled, data: dict, seed: int, jitter: bool) -> dic
         else:
             for k in range(length):
                 draws[f"{name}[{k}]"] = values[:, :, k]
+    # nuts-rs records its statistics after adapting (chain.rs, `draw`), so a
+    # row's `step_size` is the step of the next transition: shift by one.
+    warm_steps = warm["step_size"].values
+    used = np.concatenate([np.full((warm_steps.shape[0], 1), np.nan), warm_steps[:, :-1]], axis=1)
     summary = summarize(cell, draws, stats["diverging"].values, stats["n_steps"].values,
                         warm["n_steps"].values, stats["depth"].values,
                         stats["mean_tree_accept"].values, list(step_bar[:, -1]),
-                        warm["mean_tree_accept"].values, warm["step_size"].values)
+                        warm["mean_tree_accept"].values, used)
     summary["mean_accept_sym"] = float(stats["mean_tree_accept_sym"].values.mean())
-    summary["used_step_spread"] = [float(stats["step_size"].values.min()),
-                                   float(stats["step_size"].values.max())]
+    drawn = np.concatenate([warm_steps[:, -1:], stats["step_size"].values[:, :-1]], axis=1)
+    summary["used_step_spread"] = [float(drawn.min()), float(drawn.max())]
     return {"summary": summary,
             "inverse_metric": inverse[:, -1, :],
             "step_size": step_bar[:, -1],
@@ -361,7 +368,9 @@ def run_dataset(cell: Cell, index: int, compiled_rustmc, compiled_nutpie,
     # runs match the 0.8 both engines target.
     for label, metrics, goal in (("N@a", n_metric, target), ("dense@a", dense, target),
                                  ("R@0.8", r_metric, 0.8), ("Rdiag@0.8", d_metric, 0.8),
-                                 ("N@0.8", n_metric, 0.8), ("dense@0.8", dense, 0.8)):
+                                 ("N@0.8", n_metric, 0.8), ("dense@0.8", dense, 0.8),
+                                 ("pooled-diag@0.8", [np.diag(posterior).copy()] * cell.chains,
+                                  0.8)):
         found = calibrate(cell, compiled_rustmc, data, seed, metrics, init, goal,
                           float(np.median(n_step)))
         found["target"] = goal
@@ -413,6 +422,9 @@ def attribution(record: dict[str, Any]) -> dict[str, float]:
         "path B metric: adapted over N@a": log_ratio(s["rustmc adapted"], s["N@a"]),
         "path B step: N@a over N@0.8": log_ratio(s["N@a"], s["N@0.8"]),
         "path B kernel: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
+        "path C step: adapted over R@0.8": log_ratio(s["rustmc adapted"], s["R@0.8"]),
+        "path C metric: R@0.8 over N/N": log_ratio(s["R@0.8"], s["N/N"]),
+        "path C kernel: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
         "hook: R/R over adapted": log_ratio(s["R/R"], s["rustmc adapted"]),
         "kernel at nutpie's step: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
         "kernel unjittered: N0/N0 over nutpie no jitter": log_ratio(s["N0/N0"],
@@ -421,7 +433,10 @@ def attribution(record: dict[str, Any]) -> dict[str, float]:
         "auto vs diag metric: R@0.8 over Rdiag@0.8": log_ratio(s["R@0.8"], s["Rdiag@0.8"]),
         "diag adaptation: rustmc diag adapted over adapted": log_ratio(s["rustmc diag adapted"],
                                                                         s["rustmc adapted"]),
-        "correlation: N@0.8 over dense@0.8": log_ratio(s["N@0.8"], s["dense@0.8"]),
+        "correlation: pooled-diag@0.8 over dense@0.8": log_ratio(s["pooled-diag@0.8"],
+                                                                  s["dense@0.8"]),
+        "diagonal shape: N@0.8 over pooled-diag@0.8": log_ratio(s["N@0.8"],
+                                                                 s["pooled-diag@0.8"]),
     }
 
 
@@ -450,17 +465,22 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
             f"{fmt(first['runs']['rustmc adapted']['step_sizes'], 6)}")
         out("")
         out("Post-warmup runs, per dataset: steps per draw, mean acceptance (each engine's own "
-            "statistic), divergences, min bulk ESS, min bulk ESS per post-warmup leapfrog step "
-            "(x1000), step sizes by chain.")
+            "statistic), divergences, min bulk ESS, min bulk and min tail ESS per post-warmup "
+            "leapfrog step (x1000), max R-hat, step sizes by chain. A run with R-hat above 1.01, "
+            "bulk ESS under 400 or any divergence fails the head-to-head study's quality checks "
+            "(flag !); its ESS figures are not reliable, its step counts still measure work.")
         labels = list(entry["datasets"][0]["runs"])
         for record in entry["datasets"]:
             out(f"  dataset {record['index']} (seed {record['seed']}, load "
                 f"{record['load_at_start']:.2f} to {record['load_at_end']:.2f})")
             for label in labels:
                 run = record["runs"][label]
-                out(f"    {label:<20} {run['steps_per_draw']:7.2f} {run['mean_accept']:6.3f} "
+                flag = "!" if (run["max_rhat"] > 1.01 or run["min_bulk_ess"] < 400
+                               or run["divergences"]) else " "
+                out(f"    {label:<20}{flag}{run['steps_per_draw']:7.2f} {run['mean_accept']:6.3f} "
                     f"{run['divergences']:4d} {run['min_bulk_ess']:7.0f} "
-                    f"{1000 * run['ess_per_step']:7.2f}   step {fmt(run['step_sizes'])}")
+                    f"{1000 * run['ess_per_step']:7.2f} {1000 * run['tail_ess_per_step']:7.2f} "
+                    f"{run['max_rhat']:6.3f}   step {fmt(run['step_sizes'])}")
             for label, found in record["calibrations"].items():
                 out(f"    {label} bisection to accept {found['target']:.3f}: "
                     + ", ".join(f"{s:.4g}->{a:.3f}" for s, a in found["history"]))
@@ -487,7 +507,9 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
                 f"{(r['warmup_steps'] + r['draw_steps']) / (n['warmup_steps'] + n['draw_steps']):.2f}")
         out("")
         out("Attribution: log ratios of post-warmup steps per draw (positive means rustmc's "
-            "side takes more), per dataset, then as factors exp(median).")
+            "side takes more), per dataset, then as factors exp(median). Within a dataset each "
+            "path's three terms sum to the draws gap; medians of the terms need not multiply to "
+            "the median gap.")
         parts = [attribution(record) for record in entry["datasets"]]
         for key in parts[0]:
             values = [p[key] for p in parts]
@@ -498,7 +520,7 @@ def report(cell_records: list[dict[str, Any]]) -> list[str]:
             "counts a final subtree that turned and was discarded, nuts-rs does not), and the "
             "doubling class floor(log2(steps)), comparable across engines.")
         for label in ("rustmc adapted", "rustmc diag adapted", "nutpie", "N/N", "R@0.8",
-                      "N@0.8", "dense@0.8"):
+                      "N@0.8", "pooled-diag@0.8", "dense@0.8"):
             for key in ("depth_histogram", "doubling_histogram"):
                 pooled: dict[str, int] = {}
                 for record in entry["datasets"]:

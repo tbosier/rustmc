@@ -1533,6 +1533,39 @@ mod tests {
     }
 
     #[test]
+    fn a_frozen_step_size_is_the_step_every_transition_takes() {
+        // On N(0, I), inverse metric v I at step e is the unit metric at step
+        // e sqrt(v): with p = p' / sqrt(v), each leapfrog moves q by
+        // e sqrt(v) p' and p' by e sqrt(v) grad. With v = 4 the two runs must
+        // match exactly, so a hook that integrated with any step other than
+        // the one requested, diagonal or dense, fails here.
+        let start = [0.3, -1.1];
+        let reference = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[1.0, 1.0], 0.9).unwrap()),
+            start.to_vec(),
+        );
+        for frozen in [
+            FrozenAdaptation::diagonal(&[4.0, 4.0], 0.45).unwrap(),
+            FrozenAdaptation::dense(&[4.0, 0.0, 0.0, 4.0], 2, 0.45).unwrap(),
+        ] {
+            let scaled = frozen_chain(scaled_normals([1.0, 1.0]), Some(frozen), start.to_vec());
+            assert_eq!(leapfrog_counts(&scaled), leapfrog_counts(&reference));
+            assert_eq!(scaled.result.samples, reference.result.samples);
+            assert!(scaled.result.transitions[0]
+                .iter()
+                .all(|t| t.step_size == 0.45));
+        }
+        // And a different step does change the trajectories.
+        let other = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[4.0, 4.0], 0.3).unwrap()),
+            start.to_vec(),
+        );
+        assert_ne!(leapfrog_counts(&other), leapfrog_counts(&reference));
+    }
+
+    #[test]
     fn without_frozen_adaptation_the_experimental_entry_point_adapts() {
         // The same entry point without a frozen metric adapts both, and
         // reports the metric it adapted: on x1 ~ N(0, 8) its variance
