@@ -429,18 +429,10 @@ def file_sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def prepare_rustmc(cell: Cell) -> tuple[dict[str, Any], Callable[[int, dict], dict]]:
+def build_rustmc_model(cell: Cell):
+    """The cell's model compiled by rustmc; it takes data from `rustmc_data`."""
     import rustmc as rmc
-    import rustmc._rustmc as extension
 
-    from benchmarks.build_provenance import build_provenance
-
-    meta: dict[str, Any] = {
-        "provenance": {"rustmc": build_provenance(rmc),
-                       "extension_sha256": file_sha256(extension.__file__)},
-        "compile_cache_files_before": None,
-    }
-    start = time.perf_counter()
     b = rmc.ModelBuilder()
     if cell.model == "eight_schools":
         # The known per-school scale divides both sides: y / sigma ~ Normal(theta /
@@ -468,18 +460,74 @@ def prepare_rustmc(cell: Cell) -> tuple[dict[str, Any], Callable[[int, dict], di
             b.bernoulli_logit_likelihood("obs", eta, "y")
         else:
             b.poisson_log_likelihood("obs", eta, "y")
-    compiled = b.compile()
+    return b.compile()
+
+
+def rustmc_data(cell: Cell, data: dict[str, np.ndarray]) -> dict[str, Any]:
+    """Dataset `data` of `cell` as the rustmc model binds it."""
+    if cell.model == "eight_schools":
+        return {"school": np.arange(8.0), "inv_sigma": 1.0 / data["sigma"],
+                "y_scaled": data["y"] / data["sigma"]}
+    if cell.model == "varying_intercept":
+        return {"group": data["group"].astype(float), "y": data["y"]}
+    return data
+
+
+def build_pymc_model(cell: Cell, first: dict[str, np.ndarray]):
+    """The cell's PyMC model, holding dataset `first`; nutpie's `with_data` swaps
+    in another."""
+    import pymc as pm
+
+    with pm.Model() as model:
+        if cell.model == "eight_schools":
+            mu = pm.Normal("mu", 0.0, 5.0)
+            tau = pm.HalfNormal("tau", 5.0)
+            z = pm.Normal("z", 0.0, 1.0, shape=8)
+            pm.Normal("obs", mu + tau * z, first["sigma"], observed=first["y"])
+        elif cell.model == "varying_intercept":
+            group = pm.Data("group", first["group"])
+            y = pm.Data("y", first["y"])
+            mu = pm.Normal("mu", 0.0, 5.0)
+            tau = pm.HalfNormal("tau", 1.0)
+            z = pm.Normal("z", 0.0, 1.0, shape=cell.columns)
+            sigma = pm.HalfNormal("sigma", 1.0)
+            pm.Normal("obs", mu + tau * z[group], sigma, observed=y, shape=group.shape[0])
+        else:
+            x = pm.Data("X", first["X"])
+            y = pm.Data("y", first["y"])
+            alpha = pm.Normal("alpha", 0.0, 5.0)
+            beta = pm.Normal("beta", 0.0, 1.0, shape=cell.columns)
+            eta = alpha + pm.math.dot(x, beta)
+            rows = x.shape[0]
+            if cell.model == "normal":
+                pm.Normal("obs", eta, 1.0, observed=y, shape=rows)
+            elif cell.model == "normal_sigma":
+                pm.Normal("obs", eta, pm.HalfNormal("sigma", 1.0), observed=y, shape=rows)
+            elif cell.model == "logistic":
+                pm.Bernoulli("obs", logit_p=eta, observed=y, shape=rows)
+            else:
+                pm.Poisson("obs", mu=pm.math.exp(eta), observed=y, shape=rows)
+    return model
+
+
+def prepare_rustmc(cell: Cell) -> tuple[dict[str, Any], Callable[[int, dict], dict]]:
+    import rustmc as rmc
+    import rustmc._rustmc as extension
+
+    from benchmarks.build_provenance import build_provenance
+
+    meta: dict[str, Any] = {
+        "provenance": {"rustmc": build_provenance(rmc),
+                       "extension_sha256": file_sha256(extension.__file__)},
+        "compile_cache_files_before": None,
+    }
+    start = time.perf_counter()
+    compiled = build_rustmc_model(cell)
     meta["compile_seconds"] = time.perf_counter() - start
     names = scalar_names(cell)
 
     def fit_one(index: int, data: dict) -> dict:
-        if cell.model == "eight_schools":
-            bound = {"school": np.arange(8.0), "inv_sigma": 1.0 / data["sigma"],
-                     "y_scaled": data["y"] / data["sigma"]}
-        elif cell.model == "varying_intercept":
-            bound = {"group": data["group"].astype(float), "y": data["y"]}
-        else:
-            bound = data
+        bound = rustmc_data(cell, data)
         start = time.perf_counter()
         fit = compiled.sample(bound, chains=cell.chains, warmup=cell.warmup, draws=cell.draws,
                               seed=cell.data_seed + index, threads=cell.threads,
@@ -514,42 +562,14 @@ def prepare_rustmc(cell: Cell) -> tuple[dict[str, Any], Callable[[int, dict], di
 def prepare_nutpie(cell: Cell, tune: int | None = None) -> tuple[dict[str, Any], Callable[[int, dict], dict]]:
     import nutpie
     import pandas as pd
-    import pymc as pm
+    import pymc  # noqa: F401 - imported before the compile timing starts, as before
 
     # `nutpie.sample` is the function; its module holds the conversion.
     sample_module = sys.modules["nutpie.sample"]
     first = make_data(cell, 0)
     meta: dict[str, Any] = {"provenance": {}, "compile_cache_files_before": compiled_cache_files()}
     start = time.perf_counter()
-    with pm.Model() as model:
-        if cell.model == "eight_schools":
-            mu = pm.Normal("mu", 0.0, 5.0)
-            tau = pm.HalfNormal("tau", 5.0)
-            z = pm.Normal("z", 0.0, 1.0, shape=8)
-            pm.Normal("obs", mu + tau * z, first["sigma"], observed=first["y"])
-        elif cell.model == "varying_intercept":
-            group = pm.Data("group", first["group"])
-            y = pm.Data("y", first["y"])
-            mu = pm.Normal("mu", 0.0, 5.0)
-            tau = pm.HalfNormal("tau", 1.0)
-            z = pm.Normal("z", 0.0, 1.0, shape=cell.columns)
-            sigma = pm.HalfNormal("sigma", 1.0)
-            pm.Normal("obs", mu + tau * z[group], sigma, observed=y, shape=group.shape[0])
-        else:
-            x = pm.Data("X", first["X"])
-            y = pm.Data("y", first["y"])
-            alpha = pm.Normal("alpha", 0.0, 5.0)
-            beta = pm.Normal("beta", 0.0, 1.0, shape=cell.columns)
-            eta = alpha + pm.math.dot(x, beta)
-            rows = x.shape[0]
-            if cell.model == "normal":
-                pm.Normal("obs", eta, 1.0, observed=y, shape=rows)
-            elif cell.model == "normal_sigma":
-                pm.Normal("obs", eta, pm.HalfNormal("sigma", 1.0), observed=y, shape=rows)
-            elif cell.model == "logistic":
-                pm.Bernoulli("obs", logit_p=eta, observed=y, shape=rows)
-            else:
-                pm.Poisson("obs", mu=pm.math.exp(eta), observed=y, shape=rows)
+    model = build_pymc_model(cell, first)
     compiled = nutpie.compile_pymc_model(model)
     meta["compile_seconds"] = time.perf_counter() - start
     coords = {name: pd.Index(values) for name, values in compiled.coords.items()}
