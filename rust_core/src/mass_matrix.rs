@@ -271,6 +271,123 @@ impl MassMatrix {
             .iter()
             .any(|block| matches!(block.kind, BlockKind::Dense { .. }))
     }
+
+    /// Experimental, for `benchmarks/adaptation_attribution.py`: a fixed
+    /// diagonal inverse metric (position variances) over every coordinate,
+    /// as one block. A diagonal metric acts element by element, so one
+    /// block gives the same dynamics as one per parameter.
+    pub(crate) fn from_inverse_diagonal(variances: &[f64]) -> Result<Self, String> {
+        if variances.is_empty() || variances.iter().any(|v| !(v.is_finite() && *v > 0.0)) {
+            return Err("an inverse metric needs finite, positive variances".into());
+        }
+        let dim = variances.len();
+        Ok(Self {
+            dim,
+            blocks: vec![MassBlock {
+                start: 0,
+                len: dim,
+                kind: BlockKind::Diagonal {
+                    variances: variances.to_vec(),
+                },
+            }],
+        })
+    }
+
+    /// Experimental, for `benchmarks/adaptation_attribution.py`: a fixed
+    /// dense inverse metric (a position covariance, row-major `dim * dim`)
+    /// over every coordinate, as one block, so it can correlate parameters
+    /// that the adapted metrics keep in separate blocks. The covariance must
+    /// be symmetric and positive definite; it is factored without jitter.
+    pub(crate) fn from_inverse_dense(covariance: &[f64], dim: usize) -> Result<Self, String> {
+        if dim == 0
+            || dim.checked_mul(dim) != Some(covariance.len())
+            || covariance.iter().any(|v| !v.is_finite())
+        {
+            return Err(format!(
+                "a dense inverse metric needs {dim} x {dim} finite values"
+            ));
+        }
+        for i in 0..dim {
+            for j in 0..i {
+                let (a, b) = (covariance[i * dim + j], covariance[j * dim + i]);
+                if (a - b).abs() > 1e-12 * a.abs().max(b.abs()).max(f64::MIN_POSITIVE) {
+                    return Err("a dense inverse metric must be symmetric".into());
+                }
+            }
+        }
+        let mut chol = covariance.to_vec();
+        if !cholesky_lower_in_place(&mut chol, dim) {
+            return Err("a dense inverse metric must be positive definite".into());
+        }
+        Ok(Self {
+            dim,
+            blocks: vec![MassBlock {
+                start: 0,
+                len: dim,
+                kind: BlockKind::Dense { chol },
+            }],
+        })
+    }
+
+    pub(crate) fn dim(&self) -> usize {
+        self.dim
+    }
+
+    /// Experimental, for `benchmarks/adaptation_attribution.py`: the inverse
+    /// metric block by block, a dense block as its covariance `L L^T`.
+    #[doc(hidden)]
+    pub fn inverse_metric_blocks(&self) -> Vec<InverseMetricBlock> {
+        self.blocks
+            .iter()
+            .map(|block| match &block.kind {
+                BlockKind::Scalar { variance } => InverseMetricBlock {
+                    start: block.start,
+                    len: 1,
+                    dense: false,
+                    values: vec![*variance],
+                },
+                BlockKind::Diagonal { variances } => InverseMetricBlock {
+                    start: block.start,
+                    len: block.len,
+                    dense: false,
+                    values: variances.clone(),
+                },
+                BlockKind::Dense { chol } => {
+                    let n = block.len;
+                    let mut values = vec![0.0; n * n];
+                    for i in 0..n {
+                        for j in 0..n {
+                            values[i * n + j] = (0..=i.min(j))
+                                .map(|k| chol[i * n + k] * chol[j * n + k])
+                                .sum();
+                        }
+                    }
+                    InverseMetricBlock {
+                        start: block.start,
+                        len: n,
+                        dense: true,
+                        values,
+                    }
+                }
+            })
+            .collect()
+    }
+}
+
+/// One block of an inverse metric as [`MassMatrix::inverse_metric_blocks`]
+/// reports it. Experimental, for `benchmarks/adaptation_attribution.py`; not
+/// a supported API.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct InverseMetricBlock {
+    /// First coordinate of the block.
+    pub start: usize,
+    /// Coordinates in the block.
+    pub len: usize,
+    /// Whether `values` is a row-major `len * len` covariance; otherwise it
+    /// holds `len` variances.
+    pub dense: bool,
+    pub values: Vec<f64>,
 }
 
 impl MassMatrixAccumulator {
@@ -1052,6 +1169,46 @@ mod tests {
             (actual - expected).abs() <= tolerance,
             "expected {expected} +/- {tolerance}, got {actual}"
         );
+    }
+
+    #[test]
+    fn fixed_inverse_metrics_give_the_kinetic_energy_of_a_known_momentum() {
+        // K(p) = p^T Sigma p / 2 and velocity Sigma p, written out by hand.
+        let mut scratch = [0.0; 2];
+        let mut velocity = [0.0; 2];
+        let diagonal = MassMatrix::from_inverse_diagonal(&[4.0, 0.25]).unwrap();
+        // (1.5^2 * 4 + 2^2 * 0.25) / 2 = (9 + 1) / 2.
+        assert_eq!(diagonal.kinetic_energy(&[1.5, 2.0], &mut scratch), 5.0);
+        diagonal.velocity_into(&[1.5, 2.0], &mut velocity, &mut scratch);
+        assert_eq!(velocity, [6.0, 0.5]);
+        assert_eq!(diagonal.inverse_metric_blocks()[0].values, vec![4.0, 0.25]);
+
+        let dense = MassMatrix::from_inverse_dense(&[4.0, 3.0, 3.0, 2.5], 2).unwrap();
+        // p = (1, -2): p^T Sigma p = 4 - 12 + 10 = 2; Sigma p = (-2, -2).
+        assert_close(dense.kinetic_energy(&[1.0, -2.0], &mut scratch), 1.0, 1e-12);
+        dense.velocity_into(&[1.0, -2.0], &mut velocity, &mut scratch);
+        assert_close(velocity[0], -2.0, 1e-12);
+        assert_close(velocity[1], -2.0, 1e-12);
+        let reported = &dense.inverse_metric_blocks()[0];
+        assert!(reported.dense);
+        for (value, expected) in reported.values.iter().zip([4.0, 3.0, 3.0, 2.5]) {
+            assert_close(*value, expected, 1e-12);
+        }
+
+        // Momentum drawn under the metric has covariance Sigma^-1, so the
+        // mean kinetic energy is d / 2 = 1 whatever Sigma is, and each
+        // coordinate of a diagonal draw has variance 1 / Sigma_ii.
+        let mut rng = ChaCha8Rng::seed_from_u64(5);
+        let mut p = [0.0; 2];
+        let (mut energy, mut square) = (0.0, 0.0);
+        let draws = 40_000;
+        for _ in 0..draws {
+            diagonal.sample_momentum_into(&mut rng, &mut p, &mut scratch);
+            square += p[0] * p[0];
+            energy += diagonal.kinetic_energy(&p, &mut scratch);
+        }
+        assert_close(square / draws as f64, 0.25, 0.01);
+        assert_close(energy / draws as f64, 1.0, 0.02);
     }
 
     #[test]

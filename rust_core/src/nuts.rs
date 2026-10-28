@@ -181,6 +181,63 @@ pub(crate) fn run_chain_with_evaluator(
     progress: Option<&ProgressState>,
     evaluator: &mut impl GradientEvaluator,
 ) -> ChainResult {
+    run_chain_reporting_metric(graph, config, rng, init, progress, evaluator, None).0
+}
+
+/// Experimental, for `benchmarks/adaptation_attribution.py`; not a supported
+/// API. A metric and step size that every transition of a chain uses, warmup
+/// included: warmup then adapts nothing and only moves the chain toward the
+/// typical set.
+#[doc(hidden)]
+#[derive(Debug, Clone)]
+pub struct FrozenAdaptation {
+    mass: MassMatrix,
+    step_size: f64,
+}
+
+impl FrozenAdaptation {
+    /// A diagonal inverse metric (position variances), one per coordinate.
+    pub fn diagonal(inverse_metric: &[f64], step_size: f64) -> Result<Self, String> {
+        Self::new(
+            MassMatrix::from_inverse_diagonal(inverse_metric)?,
+            step_size,
+        )
+    }
+
+    /// A dense inverse metric (a position covariance), row-major `dim * dim`.
+    pub fn dense(inverse_metric: &[f64], dim: usize, step_size: f64) -> Result<Self, String> {
+        Self::new(
+            MassMatrix::from_inverse_dense(inverse_metric, dim)?,
+            step_size,
+        )
+    }
+
+    fn new(mass: MassMatrix, step_size: f64) -> Result<Self, String> {
+        if !(step_size.is_finite() && step_size > 0.0) {
+            return Err("a frozen step size must be finite and positive".into());
+        }
+        Ok(Self { mass, step_size })
+    }
+
+    /// Coordinates the metric covers.
+    pub fn dim(&self) -> usize {
+        self.mass.dim()
+    }
+}
+
+/// [`run_chain_with_evaluator`], also returning the metric the draws were
+/// sampled with. With `frozen`, the chain uses its metric and step size from
+/// the first transition to the last and never adapts either;
+/// `config.step_size` and `config.metric` are then ignored.
+pub(crate) fn run_chain_reporting_metric(
+    graph: &Graph,
+    config: &NutsConfig,
+    rng: &mut ChaCha8Rng,
+    init: Vec<f64>,
+    progress: Option<&ProgressState>,
+    evaluator: &mut impl GradientEvaluator,
+    frozen: Option<&FrozenAdaptation>,
+) -> (ChainResult, MassMatrix) {
     // Every caller has validated the configuration it was built from.
     debug_assert_eq!(config.validate(), Ok(()));
     let dim = graph.param_count;
@@ -189,24 +246,33 @@ pub(crate) fn run_chain_with_evaluator(
     let q = init;
     let mut recorder = ChainRecorder::new(config.num_warmup, config.num_draws, progress);
 
-    let mut mass = MassMatrix::identity(graph);
     let mut scratch = vec![0.0f64; dim];
     let mut pool = PointPool::new(dim);
 
     // Windowed warmup: step-size-only buffers around doubling
     // metric-estimation windows; see `adaptation::WarmupSchedule`.
-    let (mut adapter, mut step_size) = WarmupAdapter::start(
-        graph,
-        config.num_warmup,
-        config.target_accept,
-        config.step_size,
-        config.metric,
-        evaluator,
-        &q,
-        &mass,
-        rng,
-        &mut scratch,
-    );
+    let (mut mass, mut adapter, mut step_size) = match frozen {
+        Some(frozen) => {
+            debug_assert_eq!(frozen.dim(), dim);
+            (frozen.mass.clone(), None, frozen.step_size)
+        }
+        None => {
+            let mass = MassMatrix::identity(graph);
+            let (adapter, step_size) = WarmupAdapter::start(
+                graph,
+                config.num_warmup,
+                config.target_accept,
+                config.step_size,
+                config.metric,
+                evaluator,
+                &q,
+                &mass,
+                rng,
+                &mut scratch,
+            );
+            (mass, Some(adapter), step_size)
+        }
+    };
 
     // Compute initial state
     evaluator.compute(graph, &q);
@@ -255,7 +321,7 @@ pub(crate) fn run_chain_with_evaluator(
         pool.give(proposal);
 
         let accept_stat = tree_stats.mean_accept_prob;
-        if is_warmup {
+        if let (true, Some(adapter)) = (is_warmup, adapter.as_mut()) {
             step_size = adapter.after_transition(
                 iter,
                 accept_stat,
@@ -287,7 +353,7 @@ pub(crate) fn run_chain_with_evaluator(
         );
     }
 
-    recorder.finish(step_size)
+    (recorder.finish(step_size), mass)
 }
 
 struct TreeStats {
@@ -1315,5 +1381,301 @@ mod tests {
             mean_draw_leapfrog_steps(&graph, MetricKind::Diagonal, seed),
             mean_draw_leapfrog_steps(&graph, MetricKind::Dense, seed),
         )
+    }
+
+    /// Two independent normals with the given standard deviations.
+    fn scaled_normals(sd: [f64; 2]) -> Graph {
+        let mut graph = Graph::new();
+        let zero = graph.add_constant(0.0);
+        for (name, sd) in ["x1", "x2"].into_iter().zip(sd) {
+            let x = graph.add_param(name);
+            let sd = graph.add_constant(sd);
+            graph.normal_logp(x, zero, sd);
+        }
+        graph
+    }
+
+    /// One chain of the experimental entry point with `frozen` adaptation.
+    fn frozen_chain(
+        graph: Graph,
+        frozen: Option<FrozenAdaptation>,
+        init: Vec<f64>,
+    ) -> crate::sampler::ExperimentalNutsFit {
+        let binding = DataBinding::from_graph(&graph).unwrap();
+        let config = crate::sampler::SamplerConfig {
+            num_chains: 1,
+            num_warmup: 100,
+            num_draws: 1000,
+            seed: 7,
+            num_threads: 1,
+            show_progress: false,
+            ..Default::default()
+        };
+        crate::sampler::sample_nuts_experimental(
+            std::sync::Arc::new(graph.structure_only()),
+            binding,
+            config,
+            Some(vec![init]),
+            frozen.map(|frozen| vec![frozen]),
+        )
+        .unwrap()
+    }
+
+    fn leapfrog_counts(fit: &crate::sampler::ExperimentalNutsFit) -> Vec<usize> {
+        fit.result.transitions[0]
+            .iter()
+            .map(|t| t.num_leapfrog_steps)
+            .collect()
+    }
+
+    #[test]
+    fn a_frozen_diagonal_metric_whitens_the_target_exactly() {
+        // NUTS is affine invariant: on N(0, S) with inverse metric S it takes
+        // the same trajectories as on N(0, I) with the unit metric, given the
+        // same random numbers, with every position scaled by sqrt(S). The
+        // scales are powers of two, so the scaling is exact in floating
+        // point. This is the oracle that the frozen metric, and only it,
+        // drives every transition, warmup included.
+        let sd = [8.0, 0.25];
+        let step = 0.9;
+        let start = [0.3, -1.1];
+        let target = frozen_chain(
+            scaled_normals(sd),
+            Some(FrozenAdaptation::diagonal(&[64.0, 0.0625], step).unwrap()),
+            vec![sd[0] * start[0], sd[1] * start[1]],
+        );
+        let reference = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[1.0, 1.0], step).unwrap()),
+            start.to_vec(),
+        );
+        let counts = leapfrog_counts(&target);
+        assert_eq!(counts, leapfrog_counts(&reference));
+        assert!(counts.iter().any(|&n| n != counts[0]), "{counts:?}");
+        for (a, b) in target.result.samples[0]
+            .iter()
+            .zip(&reference.result.samples[0])
+        {
+            assert_eq!(a, &vec![sd[0] * b[0], sd[1] * b[1]]);
+        }
+        // Nothing was adapted: every transition used the frozen step, and
+        // the reported metric is the frozen one.
+        assert!(target.result.transitions[0]
+            .iter()
+            .all(|t| t.step_size == step));
+        assert_eq!(target.result.step_sizes, [step]);
+        assert_eq!(
+            target.inverse_metrics[0],
+            [crate::mass_matrix::InverseMetricBlock {
+                start: 0,
+                len: 2,
+                dense: false,
+                values: vec![64.0, 0.0625],
+            }]
+        );
+        // The check can fail: the unit metric on the scaled target, at the
+        // same step, needs far longer trajectories for the wide coordinate.
+        let unit = frozen_chain(
+            scaled_normals(sd),
+            Some(FrozenAdaptation::diagonal(&[1.0, 1.0], 0.2).unwrap()),
+            vec![sd[0] * start[0], sd[1] * start[1]],
+        );
+        let mean = |counts: Vec<usize>| counts.iter().sum::<usize>() as f64 / counts.len() as f64;
+        assert!(mean(leapfrog_counts(&unit)) > 4.0 * mean(counts));
+    }
+
+    #[test]
+    fn a_frozen_dense_metric_whitens_a_correlated_target() {
+        // x = L z for z ~ N(0, I) and L = [[2, 0], [1.5, 0.5]]: x1 ~ N(0, 2)
+        // and x2 | x1 ~ N(0.75 x1, 0.5), so Cov(x) = L L^T = [[4, 3], [3, 2.5]].
+        // With that covariance as a dense inverse metric, NUTS on x follows
+        // the unit-metric trajectories of z mapped through L.
+        let mut graph = Graph::new();
+        let x1 = graph.add_param("x1");
+        let x2 = graph.add_param("x2");
+        let zero = graph.add_constant(0.0);
+        let two = graph.add_constant(2.0);
+        let slope = graph.add_constant(0.75);
+        let half = graph.add_constant(0.5);
+        graph.normal_logp(x1, zero, two);
+        let mean = graph.mul(x1, slope);
+        graph.normal_logp(x2, mean, half);
+        let lower = [[2.0, 0.0], [1.5, 0.5]];
+        let map = |z: &[f64]| vec![lower[0][0] * z[0], lower[1][0] * z[0] + lower[1][1] * z[1]];
+        let step = 0.8;
+        let start = [0.4, 0.9];
+        let target = frozen_chain(
+            graph,
+            Some(FrozenAdaptation::dense(&[4.0, 3.0, 3.0, 2.5], 2, step).unwrap()),
+            map(&start),
+        );
+        let reference = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[1.0, 1.0], step).unwrap()),
+            start.to_vec(),
+        );
+        assert_eq!(leapfrog_counts(&target), leapfrog_counts(&reference));
+        for (a, b) in target.result.samples[0]
+            .iter()
+            .zip(&reference.result.samples[0])
+        {
+            let expected = map(b);
+            assert!(
+                (a[0] - expected[0]).abs() < 1e-9 && (a[1] - expected[1]).abs() < 1e-9,
+                "{a:?} against {expected:?}"
+            );
+        }
+        let reported = &target.inverse_metrics[0][0];
+        assert!(reported.dense);
+        for (value, expected) in reported.values.iter().zip([4.0, 3.0, 3.0, 2.5]) {
+            assert!((value - expected).abs() < 1e-12, "{:?}", reported.values);
+        }
+    }
+
+    #[test]
+    fn a_frozen_step_size_is_the_step_every_transition_takes() {
+        // On N(0, I), inverse metric v I at step e is the unit metric at step
+        // e sqrt(v): with p = p' / sqrt(v), each leapfrog moves q by
+        // e sqrt(v) p' and p' by e sqrt(v) grad. With v = 4 the two runs must
+        // match exactly. Both runs go through the hook, so this pins the step
+        // relative to the metric; the next test ties it to production's.
+        let start = [0.3, -1.1];
+        let reference = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[1.0, 1.0], 0.9).unwrap()),
+            start.to_vec(),
+        );
+        for frozen in [
+            FrozenAdaptation::diagonal(&[4.0, 4.0], 0.45).unwrap(),
+            FrozenAdaptation::dense(&[4.0, 0.0, 0.0, 4.0], 2, 0.45).unwrap(),
+        ] {
+            let scaled = frozen_chain(scaled_normals([1.0, 1.0]), Some(frozen), start.to_vec());
+            assert_eq!(leapfrog_counts(&scaled), leapfrog_counts(&reference));
+            assert_eq!(scaled.result.samples, reference.result.samples);
+            assert!(scaled.result.transitions[0]
+                .iter()
+                .all(|t| t.step_size == 0.45));
+        }
+        // And a different step does change the trajectories.
+        let other = frozen_chain(
+            scaled_normals([1.0, 1.0]),
+            Some(FrozenAdaptation::diagonal(&[4.0, 4.0], 0.3).unwrap()),
+            start.to_vec(),
+        );
+        assert_ne!(leapfrog_counts(&other), leapfrog_counts(&reference));
+    }
+
+    #[test]
+    fn a_frozen_unit_metric_takes_the_first_transition_production_takes() {
+        // Production NUTS with a requested step and no adaptation yet runs its
+        // first transition at exactly that step, on the unit metric, without
+        // drawing a random number first. A frozen unit metric at the same step
+        // must reproduce that transition chain by chain: the same tree, the
+        // same continuous acceptance statistic and energy. This ties the
+        // frozen step to production's: a frozen path that integrated its first
+        // transition at another step than production would, even while
+        // reporting the requested one, fails here. Both share the integrator,
+        // so an error inside it is out of reach, and production adapts after
+        // its first transition, so later frozen transitions rest on the
+        // relative tests above and the recorded steps.
+        let graph = scaled_normals([3.0, 0.5]);
+        let binding = DataBinding::from_graph(&graph).unwrap();
+        let graph = std::sync::Arc::new(graph.structure_only());
+        let step = 0.4;
+        let chains = 8;
+        let initial: Vec<Vec<f64>> = (0..chains)
+            .map(|c| vec![0.5 - 0.15 * c as f64, 0.1 * c as f64 - 0.3])
+            .collect();
+        let config = crate::sampler::SamplerConfig {
+            num_chains: chains,
+            num_warmup: 1,
+            num_draws: 1,
+            seed: 11,
+            num_threads: 1,
+            step_size: step,
+            show_progress: false,
+            ..Default::default()
+        };
+        let production = crate::sampler::sample_bound_with_init(
+            std::sync::Arc::clone(&graph),
+            binding.clone(),
+            config.clone(),
+            Some(initial.clone()),
+        )
+        .unwrap();
+        let frozen = crate::sampler::sample_nuts_experimental(
+            graph,
+            binding,
+            crate::sampler::SamplerConfig {
+                step_size: 0.0,
+                ..config
+            },
+            Some(initial),
+            Some(vec![
+                FrozenAdaptation::diagonal(&[1.0, 1.0], step).unwrap();
+                chains
+            ]),
+        )
+        .unwrap();
+        for c in 0..chains {
+            let (a, b) = (
+                &frozen.result.transitions[c][0],
+                &production.transitions[c][0],
+            );
+            assert_eq!(b.step_size, step);
+            assert_eq!(a.num_leapfrog_steps, b.num_leapfrog_steps, "chain {c}");
+            assert_eq!(a.tree_depth, b.tree_depth, "chain {c}");
+            assert_eq!(a.accept_prob, b.accept_prob, "chain {c}");
+            assert_eq!(a.energy, b.energy, "chain {c}");
+        }
+    }
+
+    #[test]
+    fn without_frozen_adaptation_the_experimental_entry_point_adapts() {
+        // The same entry point without a frozen metric adapts both, and
+        // reports the metric it adapted: on x1 ~ N(0, 8) its variance
+        // estimate is near 64, nowhere near the unit start.
+        let fit = frozen_chain(scaled_normals([8.0, 0.25]), None, vec![0.0, 0.0]);
+        let blocks = &fit.inverse_metrics[0];
+        assert_eq!(blocks.len(), 2);
+        assert!((20.0..200.0).contains(&blocks[0].values[0]), "{blocks:?}");
+        assert!((0.01..0.2).contains(&blocks[1].values[0]), "{blocks:?}");
+        let steps: Vec<f64> = fit.result.transitions[0]
+            .iter()
+            .map(|t| t.step_size)
+            .collect();
+        assert!(steps.iter().any(|&s| s != steps[0]));
+    }
+
+    #[test]
+    fn frozen_adaptation_rejects_unusable_settings() {
+        assert!(FrozenAdaptation::diagonal(&[1.0, 0.0], 0.5).is_err());
+        assert!(FrozenAdaptation::diagonal(&[1.0, f64::NAN], 0.5).is_err());
+        assert!(FrozenAdaptation::diagonal(&[1.0], 0.0).is_err());
+        assert!(FrozenAdaptation::diagonal(&[1.0], f64::INFINITY).is_err());
+        // Not positive definite, not symmetric, and the wrong size.
+        assert!(FrozenAdaptation::dense(&[1.0, 2.0, 2.0, 1.0], 2, 0.5).is_err());
+        assert!(FrozenAdaptation::dense(&[1.0, 0.5, 0.0, 1.0], 2, 0.5).is_err());
+        assert!(FrozenAdaptation::dense(&[1.0, 0.0, 0.0], 2, 0.5).is_err());
+        // A dimension whose square overflows is refused, not wrapped to a
+        // length that passes the check.
+        assert!(FrozenAdaptation::dense(&[], usize::MAX, 0.5).is_err());
+        assert!(FrozenAdaptation::dense(&[], 1 << (usize::BITS / 2), 0.5).is_err());
+        // A metric of the wrong dimension for the model.
+        let graph = scaled_normals([1.0, 1.0]);
+        let binding = DataBinding::from_graph(&graph).unwrap();
+        let error = crate::sampler::sample_nuts_experimental(
+            std::sync::Arc::new(graph.structure_only()),
+            binding,
+            crate::sampler::SamplerConfig {
+                num_chains: 1,
+                show_progress: false,
+                ..Default::default()
+            },
+            None,
+            Some(vec![FrozenAdaptation::diagonal(&[1.0], 0.5).unwrap()]),
+        )
+        .unwrap_err();
+        assert!(error.contains("one metric of dimension 2"), "{error}");
     }
 }
