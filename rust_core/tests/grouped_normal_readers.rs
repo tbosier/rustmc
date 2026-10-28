@@ -7,6 +7,12 @@
 //! log-likelihood are also checked against values computed from the draws by
 //! hand.
 //!
+//! The compiler builds a deterministic's own nodes, even for the same
+//! expression as a likelihood's mean, so a compiled deterministic never reads
+//! a fused chain. The test also adds a deterministic on the likelihood's mean
+//! node itself to the training graph, as a graph built by hand can, so the
+//! deterministic reader does read a vector the fused pass did not write.
+//!
 //! Fusion is switched for the whole process, so this file holds one test.
 
 use rand::SeedableRng;
@@ -137,6 +143,14 @@ fn readers(model: &GraphModel, fit: &ModelFit) -> Vec<(String, Vec<f64>)> {
         "log-likelihood".into(),
         fit.log_likelihood().unwrap().concat(),
     ));
+    let mut on_the_chain = graph.clone();
+    let mean = on_the_chain.observation_heads()[0].linpred;
+    on_the_chain.deterministics.push(("mean".into(), mean));
+    let values = fit.deterministics(&on_the_chain).unwrap();
+    out.push((
+        "deterministic on the chain".into(),
+        values[1].values.clone(),
+    ));
     for (label, graph) in [
         ("training", graph.clone()),
         (
@@ -206,11 +220,10 @@ fn every_reader_matches_the_unfused_path_to_the_bit() {
     let name = |n: &str| samples.param_names.iter().position(|p| p == n).unwrap();
     let (mu, tau, sigma) = (name("mu"), name("tau"), name("sigma"));
     let z: Vec<usize> = (0..GROUPS).map(|g| name(&format!("z[{g}]"))).collect();
-    let eta = &fused
-        .iter()
-        .find(|(label, _)| label == "deterministics training")
-        .unwrap()
-        .1;
+    let find = |name: &str| &fused.iter().find(|(label, _)| label == name).unwrap().1;
+    let eta = find("deterministics training");
+    // The chain's own mean node reads as the separate nodes wrote it.
+    assert_eq!(find("deterministic on the chain"), eta);
     let log_likelihood = &fused
         .iter()
         .find(|(label, _)| label == "log-likelihood")

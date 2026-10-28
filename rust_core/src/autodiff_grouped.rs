@@ -14,24 +14,32 @@
 //! norm of their deviations from it. The evaluator computes those three per
 //! group once, when it is built or its data are rebound: it sorts the rows by
 //! group (a stable counting sort) and reduces each group's contiguous segment.
-//! Every gradient then makes one pass over the groups that have rows, not over
-//! the rows, computing the term's log density and the adjoints of `mu`, `tau`,
-//! each `z_g` and `sigma` from their closed forms. A group with no rows takes
+//! No pass of a gradient then touches the rows. The forward pass transforms
+//! each effect of a group that has rows and makes one loop over those groups
+//! for the term's log density and the sums its adjoints need; the reverse
+//! pass makes one more over them, for the effects' adjoints, and takes the
+//! adjoints of `mu`, `tau` and `sigma` from the sums, all in closed form. A group with no rows takes
 //! no part, and the group effects are transformed once per group that has
 //! rows, so a gather with more groups than rows costs no more than its rows.
 //!
 //! Accuracy. The mean is kept as an unevaluated sum of two doubles, so
 //! `ybar_g - m_g` carries a few units of roundoff relative to itself, as one
 //! row's `y_i - m_g` did, even when the data sit far from zero; `S_g` is a
-//! scaled, compensated sum. The pass over the groups sums in four
-//! interleaved lanes. Each sum the term takes has at most as many rounded
-//! additions as groups that have rows, where the row loops had one per row,
-//! and each of its summands is at most the sum of the magnitudes of the row
-//! summands it replaces, so the usual bound on a recursive sum (`(k - 1) u`
-//! times the sum of magnitudes, for `k` summands and unit roundoff `u`) is no
-//! larger than the row loops'. That is a bound, not a promise for every
-//! input; the tests measure both against a double-double reference. The
-//! results are not the separate nodes' bits: sums are taken in another order.
+//! scaled, compensated norm. Observations within `2^-960` of zero, where
+//! the low half of the mean would be subnormal, send the chain to the
+//! separate nodes. The loop over the groups sums in four interleaved lanes.
+//! In exact arithmetic each group's summand equals the sum of its rows'
+//! summands, so its magnitude is at most theirs, and it carries a few units
+//! of roundoff of its own (the square of the rounded norm, the two-double
+//! mean). A sum over `G` groups is so within about `(G + c) u` of exact,
+//! relative to the sum of the row summands' magnitudes, where the row loops'
+//! bound was `(N + c) u` over `N` rows; `u` is the unit roundoff and `c` a
+//! small constant. That is a bound, not a promise for every input; the tests
+//! measure both paths against a double-double reference. Each per-row
+//! quantity is formed as the separate term formed it for one row and only
+//! then multiplied by the group's row count, so no intermediate overflows
+//! where the rows' did not. The results are not the separate nodes' bits:
+//! sums are taken in another order.
 //!
 //! Groups whose effects mix transforms run fused too, each transformed once
 //! with its own transform.
@@ -80,23 +88,29 @@ pub fn fused_grouped_normal_passes() -> (u64, u64) {
 }
 
 /// Allow or forbid fused grouped-Normal chains in every evaluator of this
-/// process, from its next call on, and return whether they were allowed.
-/// For tests that compare an output computed through the fused chains with
-/// the same output computed through the separate nodes; it is process-wide,
-/// so a test that turns fusion off must not run beside one that counts
-/// fused passes.
+/// process, and return whether they were allowed. Each forward pass reads
+/// the setting once, when it starts, so an evaluation already running
+/// finishes as it began. For tests that compare an output computed through
+/// the fused chains with the same output computed through the separate
+/// nodes. It is process-wide: a test that turns fusion off must not run
+/// beside one that counts fused passes, and changing it while a fit runs
+/// changes that fit's draws.
 #[doc(hidden)]
 pub fn set_grouped_normal_fusion(enabled: bool) -> bool {
     !FUSION_DISABLED.swap(!enabled, Ordering::Relaxed)
 }
 
 /// Whether [`set_grouped_normal_fusion`] allows fused chains.
-pub(super) fn fusion_allowed() -> bool {
+fn fusion_allowed() -> bool {
     !FUSION_DISABLED.load(Ordering::Relaxed)
 }
 
 /// No slot: a group of the gather that no row selects.
 const NO_SLOT: u32 = u32::MAX;
+
+/// `2^-960`. A chain whose observations come closer to zero than this,
+/// other than zero itself, runs as separate nodes; see [`GroupStats::build`].
+const TINY_OBSERVATION: f64 = f64::MIN_POSITIVE * (1u64 << 62) as f64;
 
 /// What the fused pass needs of a chain's observations, per group that has
 /// rows (a slot), in increasing group order.
@@ -220,12 +234,17 @@ impl GroupStats {
             self.spread
                 .push(norm(rows.map(|y| (y - mean_hi) - mean_lo)));
         }
-        self.usable = self
-            .mean_hi
-            .iter()
-            .chain(&self.mean_lo)
-            .chain(&self.spread)
-            .all(|v| v.is_finite());
+        // The mean's low half must not be subnormal, or it loses the digits
+        // that make `ybar_g - m_g` accurate: refuse observations within
+        // `2^-960` of zero, other than zero itself.
+        let tiny = obs.iter().any(|&y| y != 0.0 && y.abs() < TINY_OBSERVATION);
+        self.usable = !tiny
+            && self
+                .mean_hi
+                .iter()
+                .chain(&self.mean_lo)
+                .chain(&self.spread)
+                .all(|v| v.is_finite());
     }
 }
 
@@ -255,14 +274,15 @@ pub(super) struct GroupedNormal {
     /// Per slot, the group's transformed effect from the last forward pass,
     /// which [`Evaluator::grouped_value`] reads.
     values: Vec<f64>,
-    /// Per slot, the sum of the group's standardized residuals,
-    /// `n_g * (ybar_g - m_g) / sigma`, from the last forward pass.
-    residual_sums: Vec<f64>,
-    /// The term's sum of squared standardized residuals, the sum of
-    /// `residual_sums`, and that sum weighted by each group's effect.
+    /// Per slot, each of the group's rows' adjoint of its mean for a term
+    /// adjoint of one, `(ybar_g - m_g) / sigma^2`, from the last forward
+    /// pass: the value each row of the separate term would have added.
+    row_adjoints: Vec<f64>,
+    /// The term's sum of squared standardized residuals, the sum over rows
+    /// of `row_adjoints`, and that sum weighted by each row's effect.
     sum_sq: f64,
-    residual_total: f64,
-    weighted_total: f64,
+    mean_adjoint: f64,
+    scale_adjoint: f64,
 }
 
 /// The fused chains of an evaluator and where they start and end.
@@ -285,6 +305,8 @@ pub(super) struct GroupedPlan {
     /// chain fails a cheaper check first. Empty for a plan with no chains.
     readers: Vec<u32>,
     readers_counted: bool,
+    /// [`fusion_allowed`] as the current call found it when it began.
+    allowed: bool,
     forward_passes: u64,
     reverse_passes: u64,
 }
@@ -468,10 +490,10 @@ impl GroupedNormal {
             len,
             stats: GroupStats::default(),
             values: Vec::new(),
-            residual_sums: Vec::new(),
+            row_adjoints: Vec::new(),
             sum_sq: 0.0,
-            residual_total: 0.0,
-            weighted_total: 0.0,
+            mean_adjoint: 0.0,
+            scale_adjoint: 0.0,
         };
         if !(chain_ok && tau_ok && found.in_order_with_only_constants_between(graph)) {
             return None;
@@ -492,8 +514,8 @@ impl GroupedNormal {
         let slots = self.stats.groups.len();
         self.values.clear();
         self.values.reserve(slots);
-        self.residual_sums.clear();
-        self.residual_sums.resize(slots, 0.0);
+        self.row_adjoints.clear();
+        self.row_adjoints.resize(slots, 0.0);
     }
 
     /// The chain's gather, product and sum, those it has.
@@ -590,6 +612,7 @@ impl GroupedPlan {
             fused_this_call: Vec::new(),
             readers: Vec::new(),
             readers_counted: false,
+            allowed: true,
             forward_passes: 0,
             reverse_passes: 0,
         };
@@ -652,10 +675,17 @@ impl GroupedPlan {
         !self.chains.is_empty()
     }
 
-    /// Forget the reader counts of the previous call; the graph may have
-    /// changed since.
+    /// Forget the reader counts of the previous call, since the graph may
+    /// have changed, and read whether the process allows fusion, once for
+    /// the whole call.
     pub(super) fn begin_call(&mut self) {
         self.readers_counted = false;
+        self.allowed = fusion_allowed();
+    }
+
+    /// Whether the process allowed fusion when this call began.
+    pub(super) fn allowed(&self) -> bool {
+        self.allowed
     }
 
     /// Whether chain `c`'s vectors each have one reader in `graph`, counting
@@ -706,11 +736,14 @@ struct GroupPass<'a, const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bo
     tau: f64,
     mu: f64,
     sv: f64,
-    residual_sums: &'a mut [f64],
+    row_adjoints: &'a mut [f64],
 }
 
-/// One group's sum of standardized residuals, its share of the sum of
-/// squares, and the residual sum times the group's effect.
+/// One group's row adjoint `g = (ybar_g - m_g) / sigma^2`, its share of
+/// the sum of squares, and its rows' sums of `g` and of `g` times the
+/// effect. Each per-row quantity is formed as the separate term formed it
+/// for one row, `(y - m) / sigma` and then `/ sigma`, and multiplied by the
+/// group's rows last, so no intermediate overflows where the rows' did not.
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 fn group_terms<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool>(
@@ -722,7 +755,7 @@ fn group_terms<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool>(
     tau: f64,
     mu: f64,
     sv: f64,
-) -> (f64, f64, f64) {
+) -> (f64, f64, f64, f64) {
     let mut m = z;
     if PRODUCT {
         m = if SCALE_FIRST {
@@ -737,8 +770,8 @@ fn group_terms<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool>(
     }
     let e = ((mean_hi - m) + mean_lo) / sv;
     let s = spread / sv;
-    let r = n * e;
-    (r, s * s + r * e, r * z)
+    let g = e / sv;
+    (g, s * s + n * (e * e), n * g, n * (g * z))
 }
 
 impl<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool> pulp::WithSimd
@@ -752,7 +785,7 @@ impl<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool> pulp::WithSi
         let (values, counts) = (&self.values[..n], &self.counts[..n]);
         let (mean_hi, mean_lo) = (&self.mean_hi[..n], &self.mean_lo[..n]);
         let spread = &self.spread[..n];
-        let out = &mut self.residual_sums[..n];
+        let out = &mut self.row_adjoints[..n];
         let mut lanes = [[0.0f64; 4]; 3];
         let whole = n - n % 4;
         let term = |j: usize| {
@@ -762,20 +795,20 @@ impl<const PRODUCT: bool, const SCALE_FIRST: bool, const SUM: bool> pulp::WithSi
         };
         for start in (0..whole).step_by(4) {
             for lane in 0..4 {
-                let (r, q, rz) = term(start + lane);
-                out[start + lane] = r;
+                let (g, q, mean, scale) = term(start + lane);
+                out[start + lane] = g;
                 lanes[0][lane] += q;
-                lanes[1][lane] += r;
-                lanes[2][lane] += rz;
+                lanes[1][lane] += mean;
+                lanes[2][lane] += scale;
             }
         }
         let mut tails = [0.0f64; 3];
         for (j, slot) in out.iter_mut().enumerate().skip(whole) {
-            let (r, q, rz) = term(j);
-            *slot = r;
+            let (g, q, mean, scale) = term(j);
+            *slot = g;
             tails[0] += q;
-            tails[1] += r;
-            tails[2] += rz;
+            tails[1] += mean;
+            tails[2] += scale;
         }
         std::array::from_fn(|k| {
             let l = lanes[k];
@@ -824,7 +857,7 @@ impl Evaluator {
         let GroupedNormal {
             stats,
             values,
-            residual_sums,
+            row_adjoints,
             param_start,
             scale_first,
             obs,
@@ -854,12 +887,12 @@ impl Evaluator {
                     tau: tau.unwrap_or(0.0),
                     mu: mu.unwrap_or(0.0),
                     sv,
-                    residual_sums,
+                    row_adjoints,
                 })
             };
         }
         // One loop per shape of chain, so no group branches on the shape.
-        let [sum_sq, residual_total, weighted_total] =
+        let [sum_sq, mean_adjoint, scale_adjoint] =
             match (tau.is_some(), *scale_first, mu.is_some()) {
                 (false, _, false) => pass!(false, false, false),
                 (false, _, true) => pass!(false, false, true),
@@ -872,8 +905,8 @@ impl Evaluator {
         self.scalars[*obs] = *len as f64 * log_norm - 0.5 * sum_sq;
         let chain = &mut self.grouped.chains[c];
         chain.sum_sq = sum_sq;
-        chain.residual_total = residual_total;
-        chain.weighted_total = weighted_total;
+        chain.mean_adjoint = mean_adjoint;
+        chain.scale_adjoint = scale_adjoint;
     }
 
     /// Run chain `c` of the grouped plan in reverse, if this call's forward
@@ -882,10 +915,10 @@ impl Evaluator {
     /// instead.
     ///
     /// The term's adjoints in closed form, from the sums of the forward
-    /// pass: `mu` takes `a_s / sigma` times the sum of the standardized
-    /// residuals, `tau` the same weighted by each row's effect, each effect
-    /// its group's residual sum times `a_s * tau / sigma` and its transform's
-    /// derivative, and `sigma` `a_s * (sum_sq - n) / sigma`. An adjoint that
+    /// pass: `mu` takes `a_s` times the sum over rows of each row's adjoint
+    /// of its mean, `tau` the same weighted by each row's effect, each effect
+    /// its group's rows times `a_s * tau` times its row adjoint and its
+    /// transform's derivative, and `sigma` `a_s * (sum_sq - n) / sigma`. An adjoint that
     /// is zero is not added, as the separate passes skip a vector node whose
     /// adjoints are all zero, so a gradient later nodes left at -0.0 stays so.
     #[inline(never)]
@@ -912,41 +945,44 @@ impl Evaluator {
             self.adj_scalars[chain.sigma] += a_s * ((chain.sum_sq - chain.len as f64) / sv);
         }
         if let Some((_, mu)) = chain.sum {
-            if chain.residual_total != 0.0 {
-                self.adj_scalars[mu] += a_s * (chain.residual_total / sv);
+            if chain.mean_adjoint != 0.0 {
+                self.adj_scalars[mu] += a_s * chain.mean_adjoint;
             }
         }
         let tau = match chain.product {
             Some((_, tau)) => {
-                if chain.weighted_total != 0.0 {
-                    self.adj_scalars[tau] += a_s * (chain.weighted_total / sv);
+                if chain.scale_adjoint != 0.0 {
+                    self.adj_scalars[tau] += a_s * chain.scale_adjoint;
                 }
                 Some(self.scalars[tau])
             }
             None => None,
         };
         let grad = &mut self.grad[..];
-        for ((&g, &r), &value) in chain
+        for (((&group, &row_adjoint), &value), &n) in chain
             .stats
             .groups
             .iter()
-            .zip(&chain.residual_sums)
+            .zip(&chain.row_adjoints)
             .zip(&chain.values)
+            .zip(&chain.stats.counts)
         {
-            let mut adjoint = a_s * (r / sv);
+            // One row's adjoint of the gathered effect, as the separate
+            // product passed it to the gather, then the group's rows.
+            let mut adjoint = a_s * row_adjoint;
             if let Some(tau) = tau {
                 adjoint *= tau;
             }
             if adjoint == 0.0 {
                 continue;
             }
-            let k = chain.param_start + g;
+            let k = chain.param_start + group;
             let derivative = match graph.param_transforms[k] {
                 // The value the forward pass took is this derivative.
                 ParamTransform::Exp => value,
                 ref transform => transform.derivative(params[k]),
             };
-            grad[k] += adjoint * derivative;
+            grad[k] += n * (adjoint * derivative);
         }
         true
     }
@@ -1703,7 +1739,7 @@ mod tests {
             let r = r_ref.0 + r_ref.1;
             let errors_fused = [
                 (chain.sum_sq - q).abs() / q,
-                (chain.residual_total - r).abs() / magnitude,
+                (chain.mean_adjoint - r).abs() / magnitude,
             ];
             let errors_rows = [(q_rows - q).abs() / q, (r_rows - r).abs() / magnitude];
             let bound = (chain.stats.groups.len() + 16) as f64 * U;
@@ -1733,10 +1769,10 @@ mod tests {
 
     /// A grouped model whose responses equal its mean exactly at the checked
     /// point, so every residual is zero: the fused pass must find each
-    /// group's residual sum exactly zero, add no adjoint to the effects, and
+    /// group's row adjoint exactly zero, add no adjoint to the effects, and
     /// agree with the separate nodes.
     #[test]
-    fn zero_residuals_give_exactly_zero_residual_sums() {
+    fn zero_residuals_give_exactly_zero_row_adjoints() {
         let mut shape = Shape::from_flags(3, 0b1011);
         shape.constant_sigma = false;
         let group = default_groups(9, 3);
@@ -1754,8 +1790,9 @@ mod tests {
             .iter()
             .all(|&d| d == 0.0));
         let chain = &fused.grouped.chains[0];
-        assert!(chain.residual_sums.iter().all(|&r| r == 0.0));
-        assert_eq!(chain.residual_total, 0.0);
+        assert!(chain.row_adjoints.iter().all(|&g| g == 0.0));
+        assert_eq!(chain.mean_adjoint, 0.0);
+        assert_eq!(chain.scale_adjoint, 0.0);
         assert_eq!(chain.sum_sq, 0.0);
         assert_close(
             "zero residuals",
@@ -2155,6 +2192,64 @@ mod tests {
             let expected = if *still_fused { 2 } else { 1 };
             assert_eq!(evaluator.grouped.forward_passes, expected, "{label}");
         }
+    }
+
+    /// Inputs at the edge of the exponent range that the fused pass must
+    /// handle as the rows did: tiny scales whose per-row adjoints are finite
+    /// though their quotient by the scale alone is not, a huge effect whose
+    /// product with a residual sum would overflow before the division, and
+    /// subnormal observations, whose group mean two doubles cannot hold, which
+    /// must send the chain to the separate nodes.
+    #[test]
+    fn exponent_range_edges_match_the_separate_nodes() {
+        let compare = |label: &str, g: &Graph, point: &[f64], fused_expected: u64| {
+            let mut fused = Evaluator::new(g);
+            let mut separate = Evaluator::new(g);
+            separate.unfused_groups = true;
+            let f = everything(&mut fused, g, point);
+            let s = everything(&mut separate, g, point);
+            assert!(s.iter().all(|v| v.is_finite()), "{label}: {s:?}");
+            assert_nearly(label, &f, &s);
+            assert_eq!(fused.grouped.forward_passes, fused_expected, "{label}");
+        };
+        // Twenty rows at 1e-280 about a zero effect, scale and product scale
+        // 1e-294: each row's adjoint of its mean is 1e308, finite, and of
+        // the effect 1e14; their sum over the rows divided by the scale
+        // alone would overflow.
+        let mut g = Graph::new();
+        let z = g.add_vector_params("z", 1);
+        let group = g.add_data("group", vec![0.0; 20]);
+        let gathered = g.gather(z, 1, group);
+        let tiny = g.add_constant(1e-294);
+        let product = g.elementwise(ElementwiseOp::Mul, tiny, Some(gathered));
+        let sigma = g.add_constant(1e-294);
+        let obs = g.add_obs_data(vec![1e-280; 20]);
+        g.obs_logp_normal(product, sigma, obs);
+        compare("tiny scales", &g, &[0.0], 1);
+
+        // Two zero rows about an effect of 1e308 with scale 1e308: each row's
+        // adjoint of the product scale is -1.
+        let mut g = Graph::new();
+        let tau = g.add_param("tau");
+        let z = g.add_vector_params("z", 1);
+        let group = g.add_data("group", vec![0.0; 2]);
+        let gathered = g.gather(z, 1, group);
+        let product = g.elementwise(ElementwiseOp::Mul, tau, Some(gathered));
+        let sigma = g.add_constant(1e308);
+        let obs = g.add_obs_data(vec![0.0; 2]);
+        g.obs_logp_normal(product, sigma, obs);
+        compare("huge effect", &g, &[1.0, 1e308], 1);
+
+        // Observations 0 and the smallest subnormal, about a subnormal effect.
+        let mut g = Graph::new();
+        let z = g.add_vector_params("z", 1);
+        let group = g.add_data("group", vec![0.0; 2]);
+        let gathered = g.gather(z, 1, group);
+        let sigma = g.add_constant(1e-162);
+        let obs = g.add_obs_data(vec![0.0, f64::from_bits(1)]);
+        g.obs_logp_normal(gathered, sigma, obs);
+        compare("subnormal observations", &g, &[0.0], 0);
+        compare("subnormal effect", &g, &[f64::from_bits(1)], 0);
     }
 
     /// A gather whose adjoints are all zero must leave its gradients exactly

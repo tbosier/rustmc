@@ -894,7 +894,7 @@ impl Evaluator {
         if self.unfused_groups {
             return false;
         }
-        self.resolved_loops() && grouped::fusion_allowed()
+        self.resolved_loops() && self.grouped.allowed()
     }
 
     /// Whether a gather of `n_params` groups from `param_start` over `vl` rows
