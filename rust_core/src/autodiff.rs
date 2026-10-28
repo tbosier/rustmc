@@ -129,25 +129,23 @@ pub struct Evaluator {
     /// Bernoulli-logit or Poisson-log term took, `exp(-|eta|)` and
     /// `exp(eta)`. The reverse pass, which runs only after the forward pass
     /// on the same parameters, reads them instead of computing them again.
-    /// Empty for every other node.
+    /// Empty for every other node, and not written for the term of a grouped
+    /// chain that runs fused, whose reverse pass reads per-group sums instead.
     observation_cache: Vec<Vec<f64>>,
     /// Per-group values or derivatives for the `Op::Gather` being evaluated,
     /// reused across nodes and calls. Construction and a same-shape rebind
     /// size it for the widest gather of the graph they were given, so
     /// evaluating that graph never grows it.
     group_scratch: Vec<f64>,
-    /// Normal terms on a grouped linear predictor that run as one forward
-    /// and one reverse loop; see `autodiff_grouped.rs`.
+    /// Normal terms on a grouped linear predictor that run as one pass over
+    /// per-group statistics; see `autodiff_grouped.rs`.
     grouped: grouped::GroupedPlan,
-    /// The fused reverse loop's copy of a gather's gradients, sized like
-    /// `group_scratch`.
-    grouped_grad: Vec<f64>,
     /// Test-only: send every node through its per-element loop, so tests can
     /// compare the resolved loops with the code they replaced.
     #[cfg(test)]
     per_element: bool,
     /// Test-only: run every grouped Normal chain as its separate nodes, so
-    /// tests can compare the fused loops with them.
+    /// tests can compare the fused pass with them.
     #[cfg(test)]
     unfused_groups: bool,
 }
@@ -788,7 +786,6 @@ impl Evaluator {
             observation_cache,
             group_scratch: Vec::with_capacity(widest_gather(graph)),
             grouped,
-            grouped_grad: Vec::with_capacity(widest_gather(graph)),
             #[cfg(test)]
             per_element: false,
             #[cfg(test)]
@@ -836,8 +833,7 @@ impl Evaluator {
             fill_observation_cache(graph, &binding, &mut self.observation_cache);
             self.group_scratch.clear();
             self.group_scratch.reserve(widest_gather(graph));
-            self.grouped_grad.clear();
-            self.grouped_grad.reserve(widest_gather(graph));
+            self.grouped.rebind(&binding);
             self.binding = binding;
         } else {
             *self = Self::from_checked(graph, binding, node_lengths);
@@ -890,14 +886,15 @@ impl Evaluator {
         true
     }
 
-    /// Whether grouped Normal chains may run fused. The per-element test
-    /// mode turns them off too, since they read operands as resolved slices.
+    /// Whether grouped Normal chains may run fused: not when the process
+    /// turned fusion off (`set_grouped_normal_fusion`), and not in the
+    /// per-element test mode, which tests every node's own loop.
     fn fusion_enabled(&self) -> bool {
         #[cfg(test)]
         if self.unfused_groups {
             return false;
         }
-        self.resolved_loops()
+        self.resolved_loops() && self.grouped.allowed()
     }
 
     /// Whether a gather of `n_params` groups from `param_start` over `vl` rows
@@ -1107,8 +1104,16 @@ impl Evaluator {
         self.scalars[node.0]
     }
 
-    /// Read the i-th element of a vector node after `compute()`.
+    /// Read the i-th element of a vector node after `compute()` or
+    /// `forward()`. A fused grouped Normal chain does not write its vectors;
+    /// their elements are computed here instead, with the values the
+    /// separate nodes would have written.
     pub fn vec_elem(&self, node: NodeId, i: usize) -> f64 {
+        if self.grouped.has_chains() {
+            if let Some(value) = self.grouped_value(node.0, i) {
+                return value;
+            }
+        }
         self.read_vec(node.0, i)
     }
 
@@ -1143,8 +1148,9 @@ impl Evaluator {
                     continue;
                 }
                 if let Some(chain) = self.grouped.chain_ending_at(idx) {
-                    if self.grouped.fused(chain) {
-                        self.grouped_forward(graph, params, chain);
+                    // A chain outside the fused pass's range writes its
+                    // vectors and falls through to the separate term.
+                    if self.grouped.fused(chain) && self.grouped_forward(graph, params, chain) {
                         continue;
                     }
                 }
@@ -1637,7 +1643,21 @@ impl Evaluator {
     fn backward(&mut self, graph: &Graph, params: &[f64]) {
         // Zero adjoint buffers and gradient
         self.adj_scalars.iter_mut().for_each(|x| *x = 0.0);
-        self.adj_vec_buf.iter_mut().for_each(|x| *x = 0.0);
+        if self.grouped.has_chains() {
+            // The vectors of a chain this call runs fused take no adjoints,
+            // and only their chain reads them, so their slots are left as
+            // they are; a call that runs the chain's separate nodes zeroes
+            // them first. For a grouped term, they are most of the buffer.
+            for (node, kind) in self.node_kind.iter().enumerate() {
+                if let NodeKind::ComputedVec(off) = *kind {
+                    if !self.grouped.skips(node) {
+                        self.adj_vec_buf[off..off + self.node_lengths[node]].fill(0.0);
+                    }
+                }
+            }
+        } else {
+            self.adj_vec_buf.iter_mut().for_each(|x| *x = 0.0);
+        }
         self.grad.iter_mut().for_each(|x| *x = 0.0);
 
         // Seed
@@ -2200,7 +2220,7 @@ mod reference;
 
 #[path = "autodiff_grouped.rs"]
 mod grouped;
-pub use grouped::fused_grouped_normal_passes;
+pub use grouped::{fused_grouped_normal_passes, set_grouped_normal_fusion};
 #[cfg(test)]
 pub(crate) use reference::{eval_logp, grad_logp};
 

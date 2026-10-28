@@ -1,0 +1,340 @@
+# Grouped Normal terms from per-group statistics: gradient, build and rebind, many-term, plain-family and whole-fit timings
+# Model name: AMD Ryzen 9 5900X 12-Core Processor; Linux 6.18.58-1-lts; rustc 1.89.0; 2026-10-27
+# Base: main at a1e36fc (#48's fused loops). This branch: 28bbfcf (perf/grouped-one-pass).
+# The base build is `git archive a1e36fc` built in a scratch directory with its own target
+# directory and its own wheel. Its rust_core/examples/indexed_gradient_cost.rs was replaced by
+# this branch's copy, which adds the build and rebind columns and uses only public API that
+# main has, so both builds time the same program. grouped_scaling.rs, gradient_cost.rs and
+# benchmarks/grouped_normal_fits.py are unchanged between the two revisions.
+# Every run held /tmp/claude-1000/bench.lock and started at a 1-minute load below 1.5 (printed
+# per run, 1.02 to 1.47). Builds alternate, and every group of runs was repeated with builds
+# and shapes in the reverse order ("order B"). Commands, per build:
+#   target/release/examples/indexed_gradient_cost 500:20 5000:100 200:5000   (and reversed)
+#   target/release/examples/grouped_scaling 10 100 1000                       (and reversed)
+#   target/release/examples/gradient_cost 500 ; gradient_cost 5000
+#   PYTHONPATH=<build>/.pybuild python benchmarks/grouped_normal_fits.py <build> ROWS GROUPS
+# Other processes shared the machine during the session (the 1-minute load reached several
+# hundred two hours before these runs); the load gate is the only control for that.
+#
+# Summary (four runs per build: two in order A, two in order B; ranges are min to max)
+#   gradient, 500 rows x 20 groups     base 2.92-4.77 us    this branch 0.47-0.54 us   paired cut 81.9-89.9%
+#       (one base run at 4.77; the other three 2.92-2.99)
+#   gradient, 5000 rows x 100 groups   base 26.27-26.88 us  this branch 1.28-1.31 us   paired cut 95.0-95.2%
+#   gradient, 200 rows x 5000 groups   base 19.13-19.45 us  this branch 18.38-18.56 us paired cut 3.6-4.6%;
+#       base declines fusion here (0 fused passes), this branch fuses it (18000); the rest of the
+#       gradient is the 5,000-effect prior and gradient zeroing, which this change does not touch
+#   building an evaluator (Evaluator::new, median of 9 batches), paired difference:
+#       500 x 20     base 5.0-5.7 us     this branch 11.4-12.0 us    +5.9 to +7.0 us
+#       5000 x 100   base 40.1-89.7 us   this branch 96.3-144.1 us   +51.5 to +58.1 us
+#                    (both builds bimodal across runs)
+#       200 x 5000   base 87.9-88.9 us   this branch 101.0-102.7 us  +12.6 to +14.8 us
+#   rebinding the same data (Evaluator::rebind, median of 9 batches), paired difference:
+#       500 x 20     base 4.1-4.6 us     this branch 9.8-10.1 us     +5.5 to +5.9 us
+#       5000 x 100   base 33.9-39.0 us   this branch 88.9-91.2 us    +52.2 to +56.9 us
+#       200 x 5000   base 85.1-86.0 us   this branch 96.8-98.4 us    +10.8 to +13.3 us
+#   many grouped terms (20 rows, 5 groups each; per gradient):
+#       10 terms     base 2.68-2.72 us      this branch 1.55-1.60 us
+#       100 terms    base 25.75-26.14 us    this branch 13.93-14.19 us
+#       1000 terms   base 276.1-281.3 us    this branch 149.8-153.1 us   (0.150-0.153 us per term)
+#   many plain terms (no candidate chain): 10, 100 and 1000 terms within run-to-run spread
+#       (1000 terms: base 84.6-86.7 us, this branch 84.4-85.5 us)
+#   plain families (gradient_cost.rs, no grouped term; 50 shapes, 4 pairs each): paired changes
+#       from -10.8% to +11.0%, 173 of 200 within 5%. Eleven shapes were slower in all four
+#       pairs: at 500 rows Bernoulli-logit at 2, 8 and 32 columns (0.7% to 6.1%), Normal at 8
+#       (0.5% to 3.3%), Normal with an inferred scale at 2 (0.4% to 0.8%) and at 128 (0.4% to
+#       11.0%); at 5,000 rows Bernoulli-logit at 2, 8 and 512 (0.5% to 2.6%), LogNormal with an
+#       inferred scale at 2 (0.1% to 0.4%) and Normal with an inferred scale at 512 (1.4% to
+#       2.1%). Twelve were faster in all four, by 0.5% to 10.8%. Normal with an inferred scale at
+#       500 rows and 128 columns was also slower in all four pairs of an earlier round on
+#       15ac728 (6.3% to 9.7%; that round's raw output is this file as committed in 193320b,
+#       not repeated below). On a graph without a grouped chain this branch runs the same
+#       operations as base apart from a branch on whether there are chains, which points to code
+#       layout, but this data cannot rule out a real cost of a few percent on those shapes.
+#   fit, 500 x 20 (median of 3 datasets)     base 0.679-0.699 s  this branch 0.159-0.161 s  cut 76.3-77.1%
+#   fit, 5000 x 100 (median of 3 datasets)   base 5.340-5.459 s  this branch 0.401-0.421 s  cut 92.1-92.7%
+#   leapfrog steps over the 3 datasets differ, since the draws differ: 578,425 (base) and 522,137
+#   (this branch) at 500 x 20; 582,531 and 607,419 at 5000 x 100. Each fused run ran at least one
+#   fused reverse pass per step (522,486 and 607,785). Wall time per leapfrog step at 5000 x 100
+#   is 27.5-29.0 us on base and 1.92-2.05 us on this branch, including the sampler's own work;
+#   the 2026-10-27 head-to-head study measured nutpie at 11.10 us per step on this model
+#   (sampling seconds per step, its own harness, not rerun here; see "Where the sampling time
+#   goes" in benchmarks/results/2026-10-27-head-to-head.txt, not repeated below). ESS was not measured in
+#   these fits.
+#
+# Fits: rustmc.ModelBuilder, mu ~ N(0, 5), tau ~ HalfNormal(1), z ~ N(0, 1) per group,
+# sigma ~ HalfNormal(1), y ~ Normal(mu + tau * z["group"], sigma); 4 chains of 1000 warmup
+# and 1000 draws on one thread; 3 datasets drawn by the script, seeds 0 to 2.
+
+# indexed gradients, order A
+## base indexed 500:20 5000:100 200:5000 (load 1.47)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   500 rows    20 groups                2.99   fused reverse passes 18000   build 5.1   rebind 4.2
+  5000 rows   100 groups               26.27   fused reverse passes 18000   build 82.5   rebind 33.9
+   200 rows  5000 groups               19.13   fused reverse passes 0   build 87.9   rebind 85.1
+## new indexed 500:20 5000:100 200:5000 (load 1.47)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   500 rows    20 groups                0.54   fused reverse passes 18000   build 11.5   rebind 9.8
+  5000 rows   100 groups                1.28   fused reverse passes 18000   build 134.0   rebind 89.9
+   200 rows  5000 groups               18.45   fused reverse passes 18000   build 102.7   rebind 98.4
+## base indexed 500:20 5000:100 200:5000 (load 1.47)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   500 rows    20 groups                2.92   fused reverse passes 18000   build 5.7   rebind 4.6
+  5000 rows   100 groups               26.35   fused reverse passes 18000   build 89.7   rebind 39.0
+   200 rows  5000 groups               19.25   fused reverse passes 0   build 87.9   rebind 85.5
+## new indexed 500:20 5000:100 200:5000 (load 1.47)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   500 rows    20 groups                0.49   fused reverse passes 18000   build 11.6   rebind 10.1
+  5000 rows   100 groups                1.31   fused reverse passes 18000   build 144.1   rebind 91.2
+   200 rows  5000 groups               18.55   fused reverse passes 18000   build 101.6   rebind 97.9
+# indexed gradients, order B
+## new indexed 200:5000 5000:100 500:20 (load 1.43)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   200 rows  5000 groups               18.56   fused reverse passes 18000   build 101.7   rebind 97.9
+  5000 rows   100 groups                1.29   fused reverse passes 18000   build 98.2   rebind 91.2
+   500 rows    20 groups                0.48   fused reverse passes 18000   build 12.0   rebind 10.0
+## base indexed 200:5000 5000:100 500:20 (load 1.43)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   200 rows  5000 groups               19.45   fused reverse passes 0   build 88.9   rebind 85.9
+  5000 rows   100 groups               26.35   fused reverse passes 18000   build 40.1   rebind 34.3
+   500 rows    20 groups                4.77   fused reverse passes 18000   build 5.0   rebind 4.1
+## new indexed 200:5000 5000:100 500:20 (load 1.43)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   200 rows  5000 groups               18.38   fused reverse passes 18000   build 101.0   rebind 96.8
+  5000 rows   100 groups                1.28   fused reverse passes 18000   build 96.3   rebind 88.9
+   500 rows    20 groups                0.47   fused reverse passes 18000   build 11.4   rebind 9.9
+## base indexed 200:5000 5000:100 500:20 (load 1.43)
+varying intercept; microseconds per gradient, per evaluator built and per rebind (medians of 9 batches)
+   200 rows  5000 groups               19.22   fused reverse passes 0   build 88.4   rebind 86.0
+  5000 rows   100 groups               26.88   fused reverse passes 18000   build 40.8   rebind 34.5
+   500 rows    20 groups                2.96   fused reverse passes 18000   build 5.1   rebind 4.2
+# many terms, order A
+## base scaling 10 100 1000 (load 1.43)
+microseconds per gradient (median of 9 batches) and per term
+ grouped    10 terms       2.72    0.272 per term   fused reverse passes per gradient 10
+ grouped   100 terms      25.79    0.258 per term   fused reverse passes per gradient 100
+ grouped  1000 terms     276.14    0.276 per term   fused reverse passes per gradient 1000
+   plain    10 terms       0.90    0.090 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.16    0.082 per term   fused reverse passes per gradient 0
+   plain  1000 terms      84.62    0.085 per term   fused reverse passes per gradient 0
+## new scaling 10 100 1000 (load 1.40)
+microseconds per gradient (median of 9 batches) and per term
+ grouped    10 terms       1.60    0.160 per term   fused reverse passes per gradient 10
+ grouped   100 terms      13.93    0.139 per term   fused reverse passes per gradient 100
+ grouped  1000 terms     149.77    0.150 per term   fused reverse passes per gradient 1000
+   plain    10 terms       0.90    0.090 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.19    0.082 per term   fused reverse passes per gradient 0
+   plain  1000 terms      84.42    0.084 per term   fused reverse passes per gradient 0
+## base scaling 10 100 1000 (load 1.40)
+microseconds per gradient (median of 9 batches) and per term
+ grouped    10 terms       2.71    0.271 per term   fused reverse passes per gradient 10
+ grouped   100 terms      26.14    0.261 per term   fused reverse passes per gradient 100
+ grouped  1000 terms     278.53    0.279 per term   fused reverse passes per gradient 1000
+   plain    10 terms       0.91    0.091 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.21    0.082 per term   fused reverse passes per gradient 0
+   plain  1000 terms      85.72    0.086 per term   fused reverse passes per gradient 0
+## new scaling 10 100 1000 (load 1.40)
+microseconds per gradient (median of 9 batches) and per term
+ grouped    10 terms       1.57    0.157 per term   fused reverse passes per gradient 10
+ grouped   100 terms      14.19    0.142 per term   fused reverse passes per gradient 100
+ grouped  1000 terms     151.26    0.151 per term   fused reverse passes per gradient 1000
+   plain    10 terms       0.92    0.092 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.20    0.082 per term   fused reverse passes per gradient 0
+   plain  1000 terms      84.97    0.085 per term   fused reverse passes per gradient 0
+# many terms, order B
+## new scaling 1000 100 10 (load 1.36)
+microseconds per gradient (median of 9 batches) and per term
+ grouped  1000 terms     153.06    0.153 per term   fused reverse passes per gradient 1000
+ grouped   100 terms      14.15    0.141 per term   fused reverse passes per gradient 100
+ grouped    10 terms       1.58    0.158 per term   fused reverse passes per gradient 10
+   plain  1000 terms      85.10    0.085 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.29    0.083 per term   fused reverse passes per gradient 0
+   plain    10 terms       0.93    0.093 per term   fused reverse passes per gradient 0
+## base scaling 1000 100 10 (load 1.36)
+microseconds per gradient (median of 9 batches) and per term
+ grouped  1000 terms     278.71    0.279 per term   fused reverse passes per gradient 1000
+ grouped   100 terms      25.75    0.258 per term   fused reverse passes per gradient 100
+ grouped    10 terms       2.68    0.268 per term   fused reverse passes per gradient 10
+   plain  1000 terms      85.55    0.086 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.16    0.082 per term   fused reverse passes per gradient 0
+   plain    10 terms       0.91    0.091 per term   fused reverse passes per gradient 0
+## new scaling 1000 100 10 (load 1.36)
+microseconds per gradient (median of 9 batches) and per term
+ grouped  1000 terms     151.11    0.151 per term   fused reverse passes per gradient 1000
+ grouped   100 terms      14.10    0.141 per term   fused reverse passes per gradient 100
+ grouped    10 terms       1.55    0.155 per term   fused reverse passes per gradient 10
+   plain  1000 terms      85.50    0.086 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.18    0.082 per term   fused reverse passes per gradient 0
+   plain    10 terms       0.92    0.092 per term   fused reverse passes per gradient 0
+## base scaling 1000 100 10 (load 1.36)
+microseconds per gradient (median of 9 batches) and per term
+ grouped  1000 terms     281.28    0.281 per term   fused reverse passes per gradient 1000
+ grouped   100 terms      25.84    0.258 per term   fused reverse passes per gradient 100
+ grouped    10 terms       2.71    0.271 per term   fused reverse passes per gradient 10
+   plain  1000 terms      86.67    0.087 per term   fused reverse passes per gradient 0
+   plain   100 terms       8.28    0.083 per term   fused reverse passes per gradient 0
+   plain    10 terms       0.92    0.092 per term   fused reverse passes per gradient 0
+# plain families, order A
+## base plain 500 (load 1.34)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.09    1.86    3.77   14.65   53.39
+NormalWithInferredScale         2.56    2.36    4.46   15.24   54.12
+LogNormalWithInferredScale      2.56    2.37    4.48   16.98   55.32
+BernoulliLogit                  9.93    9.67   11.30   22.64   65.13
+PoissonLog                      6.74    6.54    8.62   21.08   63.15
+## base plain 5000 (load 1.31)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.64   19.17   41.36  157.35  530.35
+NormalWithInferredScale        24.92   23.17   47.31  173.55  508.30
+LogNormalWithInferredScale     25.35   23.39   46.30  161.62  541.22
+BernoulliLogit                 98.82   95.91  116.57  219.80  573.35
+PoissonLog                     67.40   65.60   88.35  203.95  577.11
+## new plain 500 (load 1.22)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.08    1.89    3.76   15.44   53.89
+NormalWithInferredScale         2.57    2.37    4.45   16.92   53.86
+LogNormalWithInferredScale      2.58    2.38    4.48   15.98   56.22
+BernoulliLogit                 10.00    9.81   11.47   21.83   62.30
+PoissonLog                      6.39    6.28    8.16   20.14   62.17
+## new plain 5000 (load 1.19)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.44   18.79   41.35  156.99  516.36
+NormalWithInferredScale        25.37   23.57   48.24  172.66  519.17
+LogNormalWithInferredScale     25.43   22.95   46.01  158.61  498.73
+BernoulliLogit                101.35   98.16  118.39  219.05  583.05
+PoissonLog                     65.14   63.34   86.15  198.44  543.13
+## base plain 500 (load 1.10)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.03    1.83    3.68   14.97   53.39
+NormalWithInferredScale         2.56    2.36    4.45   15.71   54.42
+LogNormalWithInferredScale      2.56    2.38    4.49   16.83   55.20
+BernoulliLogit                  9.93    9.65   11.32   22.61   64.78
+PoissonLog                      6.73    6.53    8.62   20.84   63.40
+## base plain 5000 (load 1.08)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.69   18.40   41.19  157.99  531.37
+NormalWithInferredScale        25.34   23.03   48.73  175.77  521.52
+LogNormalWithInferredScale     25.35   22.93   46.48  159.24  547.60
+BernoulliLogit                 99.05   96.25  118.95  219.86  580.07
+PoissonLog                     67.55   65.23   89.22  202.21  594.60
+## new plain 500 (load 1.04)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.24    1.89    3.76   14.72   52.69
+NormalWithInferredScale         2.58    2.37    4.46   16.94   54.15
+LogNormalWithInferredScale      2.59    2.40    4.50   15.25   55.61
+BernoulliLogit                 10.01    9.91   11.48   21.86   64.15
+PoissonLog                      6.61    6.49    8.38   20.30   62.54
+## new plain 5000 (load 1.04)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.95   19.68   42.79  157.49  505.88
+NormalWithInferredScale        25.41   23.65   48.40  173.43  530.62
+LogNormalWithInferredScale     25.38   23.71   46.19  159.26  497.07
+BernoulliLogit                100.46   98.31  118.25  218.70  586.85
+PoissonLog                     64.64   62.93   85.64  199.04  545.75
+# plain families, order B
+## new plain 5000 (load 1.37)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.78   18.43   41.91  156.25  509.72
+NormalWithInferredScale        25.43   23.06   48.48  174.11  523.08
+LogNormalWithInferredScale     25.48   23.02   46.11  159.47  496.45
+BernoulliLogit                100.53   97.64  117.94  219.05  580.74
+PoissonLog                     64.56   62.03   86.04  195.91  538.59
+## new plain 500 (load 1.24)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.08    1.88    3.76   14.64   54.18
+NormalWithInferredScale         2.59    2.37    4.46   17.37   55.52
+LogNormalWithInferredScale      2.60    2.38    4.49   15.72   55.49
+BernoulliLogit                 10.04    9.81   12.01   21.50   64.82
+PoissonLog                      6.48    6.56    8.76   20.06   62.66
+## base plain 5000 (load 1.20)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.70   18.43   41.68  158.88  533.70
+NormalWithInferredScale        25.37   23.38   48.05  175.23  516.01
+LogNormalWithInferredScale     25.39   22.94   45.59  158.85  543.67
+BernoulliLogit                 99.18   96.34  116.18  218.57  572.54
+PoissonLog                     67.64   66.59   89.24  202.51  580.60
+## base plain 500 (load 1.31)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.08    1.87    3.76   15.56   53.72
+NormalWithInferredScale         2.57    2.36    4.46   15.84   54.96
+LogNormalWithInferredScale      2.55    2.37    4.50   17.27   55.58
+BernoulliLogit                  9.92    9.68   11.32   22.83   63.84
+PoissonLog                      6.76    6.54    8.63   20.39   62.62
+## new plain 5000 (load 1.29)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.70   18.58   41.74  158.12  515.10
+NormalWithInferredScale        25.37   23.74   48.40  172.51  516.62
+LogNormalWithInferredScale     25.37   23.56   46.05  160.34  500.67
+BernoulliLogit                100.25   98.05  118.00  220.12  575.22
+PoissonLog                     64.87   63.41   86.07  200.29  541.80
+## new plain 500 (load 1.14)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.09    1.90    3.76   15.33   54.10
+NormalWithInferredScale         2.58    2.37    4.46   16.22   53.90
+LogNormalWithInferredScale      2.57    2.38    4.49   15.50   55.70
+BernoulliLogit                  9.99    9.81   11.47   21.34   67.88
+PoissonLog                      6.51    6.30    8.19   19.77   62.07
+## base plain 5000 (load 1.12)
+5000 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                         20.60   18.58   41.45  157.72  530.04
+NormalWithInferredScale        25.43   23.07   48.45  174.78  506.96
+LogNormalWithInferredScale     25.34   22.93   46.12  160.88  539.58
+BernoulliLogit                 98.11   96.79  116.56  220.58  572.17
+PoissonLog                     67.52   65.08   88.82  203.67  574.11
+## base plain 500 (load 1.03)
+500 rows; microseconds per gradient (median of 9 batches)
+likelihood                       p=2     p=8    p=32   p=128   p=512
+Normal                          2.13    1.88    3.76   15.66   52.97
+NormalWithInferredScale         2.56    2.37    4.48   16.15   55.34
+LogNormalWithInferredScale      2.57    2.40    4.51   17.38   54.56
+BernoulliLogit                  9.92    9.71   11.34   22.95   65.11
+PoissonLog                      6.74    6.57    8.68   21.28   62.01
+# whole fits, order A
+## base fit 500 20 (load 1.03)
+{"build": "base", "rows": 500, "groups": 20, "seconds": [0.787, 0.681, 0.641], "median_seconds": 0.681, "leapfrog_steps": [218150, 189041, 171234], "fused_reverse_passes": 578789}
+## new fit 500 20 (load 1.02)
+{"build": "new", "rows": 500, "groups": 20, "seconds": [0.242, 0.161, 0.111], "median_seconds": 0.161, "leapfrog_steps": [230387, 158982, 132768], "fused_reverse_passes": 522486}
+## base fit 500 20 (load 1.02)
+{"build": "base", "rows": 500, "groups": 20, "seconds": [0.789, 0.679, 0.641], "median_seconds": 0.679, "leapfrog_steps": [218150, 189041, 171234], "fused_reverse_passes": 578789}
+## new fit 500 20 (load 1.02)
+{"build": "new", "rows": 500, "groups": 20, "seconds": [0.243, 0.159, 0.111], "median_seconds": 0.159, "leapfrog_steps": [230387, 158982, 132768], "fused_reverse_passes": 522486}
+## base fit 5000 100 (load 1.02)
+{"build": "base", "rows": 5000, "groups": 100, "seconds": [5.774, 5.102, 5.34], "median_seconds": 5.34, "leapfrog_steps": [208635, 185416, 188480], "fused_reverse_passes": 582933}
+## new fit 5000 100 (load 1.02)
+{"build": "new", "rows": 5000, "groups": 100, "seconds": [0.42, 0.369, 0.402], "median_seconds": 0.402, "leapfrog_steps": [214873, 183403, 209143], "fused_reverse_passes": 607785}
+## base fit 5000 100 (load 1.02)
+{"build": "base", "rows": 5000, "groups": 100, "seconds": [5.776, 5.139, 5.358], "median_seconds": 5.358, "leapfrog_steps": [208635, 185416, 188480], "fused_reverse_passes": 582933}
+## new fit 5000 100 (load 1.16)
+{"build": "new", "rows": 5000, "groups": 100, "seconds": [0.422, 0.367, 0.421], "median_seconds": 0.421, "leapfrog_steps": [214873, 183403, 209143], "fused_reverse_passes": 607785}
+# whole fits, order B
+## new fit 5000 100 (load 1.15)
+{"build": "new", "rows": 5000, "groups": 100, "seconds": [0.42, 0.375, 0.417], "median_seconds": 0.417, "leapfrog_steps": [214873, 183403, 209143], "fused_reverse_passes": 607785}
+## base fit 5000 100 (load 1.15)
+{"build": "base", "rows": 5000, "groups": 100, "seconds": [5.79, 5.209, 5.445], "median_seconds": 5.445, "leapfrog_steps": [208635, 185416, 188480], "fused_reverse_passes": 582933}
+## new fit 5000 100 (load 1.11)
+{"build": "new", "rows": 5000, "groups": 100, "seconds": [0.424, 0.376, 0.401], "median_seconds": 0.401, "leapfrog_steps": [214873, 183403, 209143], "fused_reverse_passes": 607785}
+## base fit 5000 100 (load 1.11)
+{"build": "base", "rows": 5000, "groups": 100, "seconds": [5.828, 5.191, 5.459], "median_seconds": 5.459, "leapfrog_steps": [208635, 185416, 188480], "fused_reverse_passes": 582933}
+## new fit 500 20 (load 1.15)
+{"build": "new", "rows": 500, "groups": 20, "seconds": [0.244, 0.161, 0.11], "median_seconds": 0.161, "leapfrog_steps": [230387, 158982, 132768], "fused_reverse_passes": 522486}
+## base fit 500 20 (load 1.15)
+{"build": "base", "rows": 500, "groups": 20, "seconds": [0.788, 0.679, 0.648], "median_seconds": 0.679, "leapfrog_steps": [218150, 189041, 171234], "fused_reverse_passes": 578789}
+## new fit 500 20 (load 1.15)
+{"build": "new", "rows": 500, "groups": 20, "seconds": [0.243, 0.16, 0.111], "median_seconds": 0.16, "leapfrog_steps": [230387, 158982, 132768], "fused_reverse_passes": 522486}
+## base fit 500 20 (load 1.15)
+{"build": "base", "rows": 500, "groups": 20, "seconds": [0.787, 0.699, 0.639], "median_seconds": 0.699, "leapfrog_steps": [218150, 189041, 171234], "fused_reverse_passes": 578789}
+# end load 1.14 1.25 1.43
