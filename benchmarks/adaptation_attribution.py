@@ -43,17 +43,20 @@ For each dataset it runs:
 It also runs rustmc's adaptation with ``metric="diag"``, since under the
 default ``"auto"`` a vector parameter can get a dense block.
 
-The draws gap splits exactly along three paths. Path C is the one that
-isolates the kernel: rustmc's adapted run over ``R@0.8`` (where its step
-adaptation lands relative to its own target), ``R@0.8`` over ``N/N`` (the
-metric), and ``N/N`` over nutpie's draws (the kernel: the same metric and
-per-chain steps, so tree building, mainly the U-turn test, and nutpie's step
-jitter). Path A ends in ``R@0.8`` over ``N@0.8`` and ``N@0.8`` over nutpie
-instead, and path B swaps the order of metric and step. Their last term, the
-"rest", is not the kernel: it also replaces nutpie's per-chain steps with one
-calibrated step shared by the chains, and on 5000x100 that flips its sign. The crossed
-runs ``R/N`` and ``N/R`` are kept as data, but a metric run at a step it cannot
-sustain diverges, so they do not split the gap. Warmup steps are reported
+The draws gap splits exactly along three paths, and no single path holds
+everything else fixed at each step. Path C isolates the kernel: rustmc's
+adapted run over ``R@0.8`` (where its step adaptation lands relative to its
+own target), ``R@0.8`` over ``N/N`` (the metric together with a change of step
+policy, from one calibrated step shared by the chains to nutpie's per-chain
+steps), and ``N/N`` over nutpie's draws (the kernel: the same metric and
+per-chain steps, so tree building and nutpie's step jitter; which part of
+tree building is not separated). Path A isolates the metric: ``R@0.8`` over
+``N@0.8`` changes only the metric, each at one step shared by the chains and
+tuned to the same acceptance, and ends in ``N@0.8`` over nutpie. Path B swaps the order of
+metric and step. The last term of paths A and B, the "rest", is not the
+kernel: it also replaces nutpie's per-chain steps with one shared step, and
+on 5000x100 that flips its sign. The crossed runs ``R/N`` and ``N/R`` are kept
+as data, but a metric run at a step it cannot sustain diverges, so they do not split the gap. Warmup steps are reported
 separately, by iteration bin, since the study's ratio counts them.
 
     python -m benchmarks.adaptation_attribution --output results.json
@@ -80,9 +83,17 @@ import numpy as np
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from benchmarks.head_to_head import (Cell, build_pymc_model, build_rustmc_model, draw_statistics,
-                                     make_data, parameters, rustmc_data, scalar_names,
-                                     wait_for_quiet)
+from benchmarks.head_to_head import (
+    Cell,
+    build_pymc_model,
+    build_rustmc_model,
+    draw_statistics,
+    make_data,
+    parameters,
+    rustmc_data,
+    scalar_names,
+    wait_for_quiet,
+)
 
 CELLS = (Cell("varying_intercept", 500, 20, 1), Cell("varying_intercept", 5000, 100, 1),
          Cell("normal", 1000, 16, 1))
@@ -429,7 +440,7 @@ def attribution(record: dict[str, Any]) -> dict[str, float]:
         "path B step: N@a over N@0.8": log_ratio(s["N@a"], s["N@0.8"]),
         "path B rest: N@0.8 over nutpie": log_ratio(s["N@0.8"], s["nutpie"]),
         "path C step: adapted over R@0.8": log_ratio(s["rustmc adapted"], s["R@0.8"]),
-        "path C metric: R@0.8 over N/N": log_ratio(s["R@0.8"], s["N/N"]),
+        "path C metric and steps: R@0.8 over N/N": log_ratio(s["R@0.8"], s["N/N"]),
         "path C kernel: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
         "hook: R/R over adapted": log_ratio(s["R/R"], s["rustmc adapted"]),
         "kernel at nutpie's step: N/N over nutpie": log_ratio(s["N/N"], s["nutpie"]),
@@ -608,7 +619,11 @@ def main(argv: list[str] | None = None) -> int:
     import rustmc
 
     from benchmarks.head_to_head import _revision
-    from benchmarks.protocol import BenchmarkConfig, environment_metadata, package_version
+    from benchmarks.protocol import (
+        BenchmarkConfig,
+        environment_metadata,
+        package_version,
+    )
 
     record: dict[str, Any] = {
         "revision": _revision(),

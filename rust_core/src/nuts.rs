@@ -1538,7 +1538,7 @@ mod tests {
         // e sqrt(v): with p = p' / sqrt(v), each leapfrog moves q by
         // e sqrt(v) p' and p' by e sqrt(v) grad. With v = 4 the two runs must
         // match exactly. Both runs go through the hook, so this pins the step
-        // relative to the metric; the next test pins it absolutely.
+        // relative to the metric; the next test ties it to production's.
         let start = [0.3, -1.1];
         let reference = frozen_chain(
             scaled_normals([1.0, 1.0]),
@@ -1571,9 +1571,13 @@ mod tests {
         // first transition at exactly that step, on the unit metric, without
         // drawing a random number first. A frozen unit metric at the same step
         // must reproduce that transition chain by chain: the same tree, the
-        // same continuous acceptance statistic and energy. This anchors the
-        // frozen step to production's, so a hook that integrated at any other
-        // step, even one that it reported correctly, fails here.
+        // same continuous acceptance statistic and energy. This ties the
+        // frozen step to production's: a frozen path that integrated its first
+        // transition at another step than production would, even while
+        // reporting the requested one, fails here. Both share the integrator,
+        // so an error inside it is out of reach, and production adapts after
+        // its first transition, so later frozen transitions rest on the
+        // relative tests above and the recorded steps.
         let graph = scaled_normals([3.0, 0.5]);
         let binding = DataBinding::from_graph(&graph).unwrap();
         let graph = std::sync::Arc::new(graph.structure_only());
