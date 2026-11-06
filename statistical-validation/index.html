@@ -1,0 +1,2746 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Bayesian models in Python. Inference in Rust.">
+      
+      
+      
+        <link rel="canonical" href="https://tbosier.github.io/rustmc/statistical-validation/">
+      
+      
+        <link rel="prev" href="../architecture/compiled-model/">
+      
+      
+        <link rel="next" href="../releasing/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.8.0">
+    
+    
+      
+        <title>Statistical release checks - rustmc</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.57a0d79d.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.fb2fffe2.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="orange">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#statistical-release-checks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="rustmc" class="md-header__button md-logo" aria-label="rustmc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            rustmc
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Statistical release checks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="orange"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="orange"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/tbosier/rustmc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tbosier/rustmc
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/" class="md-tabs__link">
+          
+  
+  
+  Get started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../custom-models/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../examples/simple-example/" class="md-tabs__link">
+          
+  
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  API reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture/compiled-model/" class="md-tabs__link">
+          
+  
+  
+  Project
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="rustmc" class="md-nav__button md-logo" aria-label="rustmc" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    rustmc
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/tbosier/rustmc" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    tbosier/rustmc
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install and fit a model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_1" id="__nav_3_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Building models
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Building models
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../custom-models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom graph models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../native-models/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Use a model from Rust
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../streaming-batches/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stream many datasets
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Forecasting
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Forecasting
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../forecasting-workflows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation and workflows
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../structural-forecasting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Structural composition
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../regression-forecasting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Regression and calendar seasonality
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../interventions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Interventions and changepoints
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../dynamic-glm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dynamic counts, amounts, and pooling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../forecast-batches/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Independent batches and diagnostics
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconciliation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Forecast reconciliation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sparse-amounts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Sparse amounts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runoff/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Payment-count runoff
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../decisions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decisions from forecast draws
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/simple-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linear regression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/repeated-calibration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Repeated calibration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/hierarchical-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/partial-pooling-template/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hierarchical templates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/site-effects/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Site effects
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/batch-inference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Batch inference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/large-linear-regression/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    High-dimensional regression
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../examples/forecast-calibration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Forecast calibration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Project
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Project
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_1" id="__nav_6_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/compiled-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compiled models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Statistical release checks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Statistical release checks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#exactness-at-the-shipped-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exactness at the shipped defaults
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Exactness at the shipped defaults">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-auto-chooses-a-dense-metric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How auto chooses a dense metric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#power-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Power controls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#false-alarm-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        False-alarm rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#static-hmc-an-open-finding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static HMC: an open finding
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recovery-suite-at-the-shipped-target-acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recovery suite at the shipped target acceptance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-posteriors-for-three-gibbs-samplers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact posteriors for three Gibbs samplers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitation-forecasting-samplers-mixing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitation: forecasting samplers' mixing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../releasing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Releasing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/tbosier/rustmc/blob/main/CONTRIBUTING.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="https://github.com/tbosier/rustmc/blob/main/benchmarks/README.md" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmark protocol
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#exactness-at-the-shipped-defaults" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exactness at the shipped defaults
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Exactness at the shipped defaults">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#how-auto-chooses-a-dense-metric" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How auto chooses a dense metric
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#power-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Power controls
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#false-alarm-rate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        False-alarm rate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cost" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Cost
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#static-hmc-an-open-finding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Static HMC: an open finding
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recovery-suite-at-the-shipped-target-acceptance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recovery suite at the shipped target acceptance
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exact-posteriors-for-three-gibbs-samplers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exact posteriors for three Gibbs samplers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitation-forecasting-samplers-mixing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitation: forecasting samplers' mixing
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="statistical-release-checks">Statistical release checks</h1>
+<p>This page describes the gate that has to pass before a release: a fixed set of models
+whose exact posteriors are known analytically, refitted and compared against them. It
+is for contributors and for anyone judging how much the samplers are checked. You do
+not need it to use the library.</p>
+<p>Run <code>python -m benchmarks.validate_posteriors --output /tmp/posteriors.json</code> after
+building rustmc. The command returns a nonzero status if a fit or gate fails.</p>
+<p>Four fixed datasets have analytic posterior moments: Normal location, correlated
+Gaussian regression, Beta–Bernoulli, and Gamma–Poisson. Each runs under three seeds.
+The run fails if any of those cases does not produce its three records, or if a case
+outside that list is attempted; the report's <code>case_coverage</code> block records what ran
+against what was required.</p>
+<p>Checks require R-hat &lt;= 1.01, bulk and tail ESS &gt;= 400, no divergences, and bounded
+errors in posterior means and covariance. Every parameter is checked separately,
+against the full range each diagnostic can take rather than only against its threshold.
+A missing, non-finite, non-numeric, or out-of-range R-hat or ESS for any single
+parameter fails the run on its own and names that parameter in the report; the bounds
+are derived from the estimators themselves, so a value outside them did not come from a
+fit. Divergence telemetry must be one whole non-negative count per chain, since a sum of
+counts can cancel and cannot show a missing chain. Failed values are kept in the report,
+written as JSON null where they are not finite. These checks compare with the posterior
+for the observed dataset, rather than only with the parameter that generated the data.</p>
+<p>A separate experiment draws regression coefficients from the stated prior, simulates
+data with NumPy, and refits each dataset. It retains parameter coverage and rank
+histograms, every attempted fit, and numerical or convergence failures. Coverage uses
+independent replicate counts and a stated conservative finite-sample bound. Rank
+histograms are exploratory because the retained MCMC draws are autocorrelated.
+A small experiment has limited power; passing is not proof of calibration for every model.</p>
+<p>The JSON records source revision, native module hash, versions, command, seeds, and
+reference values. CI runs 32 replicates and uploads the report even if a gate fails,
+including failures while building a case, failures while simulating a replicate, and
+diagnostics that cannot be serialized. No report is written if importing <code>rustmc</code>
+fails, or if the trailing <code>git rev-parse</code> and native-hash calls raise.
+The default local run uses 64. Increase the replicate count for a more precise study.</p>
+<p>The coverage check passes when each coefficient's 90% interval coverage lies within
+<code>sqrt(ln(4000) / (2n))</code> of the nominal 0.90, where <code>n</code> is the replicate count. At the
+32 replicates CI runs, that accepts any coverage from 0.54 to 1.00, so the per-PR run
+is a smoke check that catches only gross miscalibration. At the local default of 64
+the accepted band is about 0.65 to 1.00, and 256 replicates narrow it to about 0.77 to
+1.00. The band reaches 1.00 at every one of these counts, so over-wide intervals are
+not caught at all. The report records the tolerance it used as <code>coverage_tolerance</code>.</p>
+<p>The fixed reference cases above run at <code>target_accept=0.95</code>, not the shipped 0.80.
+The exactness gate below runs at the shipped defaults. The Rust recovery suite runs at
+the shipped <code>target_accept=0.8</code>, with its own draws, warmup and tree depths (2000 or
+4000 draws, 1000 to 1500 warmup, tree depth 8 to 12), so it does not test the shipped draw and
+warmup counts.</p>
+<h2 id="exactness-at-the-shipped-defaults">Exactness at the shipped defaults</h2>
+<p><code>rust_core/tests/exactness.rs</code> fits targets whose moments are known in closed form,
+so the only error left is Monte Carlo error. Every fit uses <code>SamplerConfig::default()</code>
+apart from the seed: NUTS, 4 chains, 500 warmup, 1000 draws, <code>target_accept=0.8</code>,
+metric <code>auto</code>, tree depth 10. A fit passes when it has no divergences, the bulk ESS of
+every series whose Monte Carlo standard error (MCSE) is used below is at least 400, and
+these standardized errors are all below 4 MCSE:</p>
+<ul>
+<li>each coordinate's mean against its exact mean, with the MCSE the diagnostics report;</li>
+<li>each coordinate's variance: the draws of <code>(x - exact mean)^2</code> have expectation exactly
+  the exact variance, so their mean is held to the same bound, with an MCSE from those
+  squared draws' own effective sample size;</li>
+<li>once per fit, the squared norm of the whitened draw. Each target is
+  <code>w = A x - c ~ Normal(0, I)</code>, so <code>|w|^2</code> has expectation exactly the dimension. A bias
+  spread thinly over many directions adds up here while the noise grows only as the
+  square root of the dimension.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>Path</th>
+<th>Gate seed</th>
+<th>Worst mean error</th>
+<th>Worst variance error</th>
+<th>Squared norm error</th>
+<th>Min bulk ESS</th>
+<th>Max R-hat</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100 independent normals, scales 0.5 to 2</td>
+<td>custom target</td>
+<td>2101</td>
+<td>2.22</td>
+<td>2.56</td>
+<td>1.69</td>
+<td>4180</td>
+<td>1.0053</td>
+</tr>
+<tr>
+<td>100 independent normals</td>
+<td>graph</td>
+<td>2111</td>
+<td>3.93</td>
+<td>2.34</td>
+<td>-0.15</td>
+<td>4095</td>
+<td>1.0050</td>
+</tr>
+<tr>
+<td>50-d Gaussian, AR(1) correlation 0.8</td>
+<td>custom target</td>
+<td>2201</td>
+<td>0.93</td>
+<td>2.22</td>
+<td>1.66</td>
+<td>1742</td>
+<td>1.0031</td>
+</tr>
+<tr>
+<td>50-d Gaussian, AR(1) correlation 0.95</td>
+<td>custom target</td>
+<td>2201</td>
+<td>0.92</td>
+<td>1.18</td>
+<td>-0.33</td>
+<td>696</td>
+<td>1.0056</td>
+</tr>
+<tr>
+<td>50-d Gaussian, AR(1) correlation 0.95</td>
+<td>graph</td>
+<td>2211</td>
+<td>1.74</td>
+<td>1.97</td>
+<td>1.57</td>
+<td>4148</td>
+<td>1.0030</td>
+</tr>
+<tr>
+<td>10-coefficient regression, known noise</td>
+<td>graph</td>
+<td>2301</td>
+<td>1.00</td>
+<td>1.21</td>
+<td>0.60</td>
+<td>4070</td>
+<td>1.0024</td>
+</tr>
+</tbody>
+</table>
+<p>Errors are in MCSE; the mean and variance columns give the largest magnitude over
+coordinates. The 0.95 correlated target's correlation matrix has condition number 989
+and its covariance 1481 (77 and 116 at correlation 0.8, the case this gate started
+with). The custom-target path (<code>target::sample_target</code>) gives every parameter a
+diagonal metric; the graph path holds one vector parameter, for which <code>auto</code> may choose
+a dense block. The regression's posterior is computed in closed form and its graph is
+written the way a user writes one (<code>vector_normal_logp</code> prior, <code>mat_vec_mul</code>, Normal
+likelihood with a constant scale). All six pass. The independent-normals graph case
+passes with little room: its worst mean error is 3.93 against the bound of 4. The gate
+does not check R-hat: R-hat is a warning about a fit, not a measure of its exactness.
+In 0.14.0 the correlated graph fit's 1.012 was above the 1.01 the release checks use;
+it is 1.003 since <code>auto</code> chooses a dense metric there.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>cargo test --release -p rustmc_core --test exactness -- --nocapture
+</code></pre></div>
+<p>On the 0.95 correlated target the default <code>auto</code> metric chooses a dense block on the
+graph path. At gate seeds 2211 to 2213, <code>auto</code> spent 36.4 to 38.5 leapfrog steps
+(warmup included) per unit of the smallest bulk ESS, <code>diagonal</code> 454.5 to 840.6 and
+<code>dense</code> 25.2 to 26.7, with a smallest bulk ESS of 4049 to 4452 for <code>auto</code>, 381 to 793
+for <code>diagonal</code> and 4253 to 4397 for <code>dense</code>. In 0.14.0 <code>auto</code> stayed diagonal there and
+spent 317 to 683. All nine fits but one diagonal fit (bulk ESS 381) pass the gate. The
+output is <code>benchmarks/results/2026-10-19-exactness-metric-choice.log</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+<a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    metric_choice_on_the_ill_conditioned_graph_target
+</code></pre></div>
+<h3 id="how-auto-chooses-a-dense-metric">How <code>auto</code> chooses a dense metric</h3>
+<p>0.14.0 compared the condition number of a window's sample correlation matrix with a
+noise bound computed from the window's effective draws, counted from the average
+lag-one autocorrelation. On the 0.95 correlated target that count left fewer effective
+draws than dimensions, so the dense estimate was never trusted. Two other counts were
+tried and not kept: one for a covariance, <code>n (1 - rho^2) / (1 + rho^2)</code>, went dense on a
+curved target and lost most of a fit's ESS there, and the least count over coordinates
+went dense on simulated noise and stayed diagonal when a single coordinate mixed
+slowly. The count itself was the weak point: draws whose coordinates mix at different
+speeds have no single effective sample size.</p>
+<p>0.15.0 scores both metrics on held-out draws instead. Each half of a window estimates a
+diagonal and a dense metric, and each estimate is scored by the condition number it
+leaves the other half's sample covariance. The dense metric is used when the geometric
+mean of its two scores is lower than the diagonal's: by any amount in the early
+windows, whose metric only samples the next window, and by a factor of 2 in the last
+window, whose metric the draws are sampled with. The metric installed, though, comes
+from the whole window, whose covariance also holds any shift between the halves'
+means, so a second check scores the whole-window diagonal and dense metrics, with the
+regularization they are installed with, on each half, and the block stays diagonal
+unless the dense one still conditions the halves better on average. Two halves
+correlated at 0.95 and centered 20 apart pass the first check, while the whole-window
+dense metric would leave them a condition number near 4000 against 39 for the
+diagonal one; the second check keeps them diagonal. The rule needs no estimate of the
+window's effective sample size, which the old rule's noise bound did. Each half must
+hold more draws than the vector has elements.</p>
+<p>What the rule cannot see is a direction that neither half has explored. When the chain
+mixes slowly along a direction off the coordinate axes, both halves understate its
+variance alike, and a dense estimate that shares the shortfall scores well. In
+simulated warmup windows of stationary AR(1) coordinates, 30 per case, two coordinates
+with identity covariance, one mixing at 0.99 and both rotated 45 degrees, went dense in
+17 of 30 at a margin of 2 (30 of 30 at 0.999), where the old rule chose dense in none
+at 0.99 and 21 at 0.999. In 40 dimensions the same pattern, 20 slow coordinates rotated
+in pairs, went dense in none of 30 under the new rule and 30 of 30 under the old. The
+curved target below, which NUTS crosses slowly along its curve, is a real target where
+this can happen, and its fits moved both ways.</p>
+<p>In the other cases, the rule at a margin of 2 chose dense in none of the uncorrelated
+windows and in all 30 windows of every 0.95 correlated case, while the old rule chose
+dense in none of the 0.95 correlated windows whose coordinates mixed at 0.8. At a
+margin of 1, uncorrelated windows whose halves held barely more draws than dimensions
+went dense in 3 and 28 of 30, and the two-dimensional window with one coordinate at 0.9
+in 12, which is why the last window asks for 2. The table is
+<code>benchmarks/results/2026-10-19-auto-metric-noise.txt</code>. It tests the rule on stationary
+draws, which real warmup draws are not.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>python -m benchmarks.auto_metric_noise
+</code></pre></div>
+<p>On NUTS, <code>benchmarks/auto_metric_targets.py</code> fits nine targets with ten seeds, 4 chains
+and 1000 draws. Median leapfrog steps (warmup included) per unit of the smallest bulk
+ESS at 1000 warmup iterations, and the median over seeds of the paired ratio:</p>
+<table>
+<thead>
+<tr>
+<th>Target</th>
+<th>0.14.0</th>
+<th>0.15.0</th>
+<th>Paired ratio</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>isotropic, 50 dimensions</td>
+<td>10.7</td>
+<td>10.7</td>
+<td>1.000</td>
+</tr>
+<tr>
+<td>isotropic, 100 dimensions</td>
+<td>20.3</td>
+<td>20.4</td>
+<td>1.000</td>
+</tr>
+<tr>
+<td>correlated regression, 10 coefficients</td>
+<td>10.1</td>
+<td>10.3</td>
+<td>1.002</td>
+</tr>
+<tr>
+<td>correlated regression, 20 coefficients</td>
+<td>13.7</td>
+<td>13.9</td>
+<td>1.017</td>
+</tr>
+<tr>
+<td>scaled correlated regression, 6 coefficients</td>
+<td>115.0</td>
+<td>92.8</td>
+<td>0.823</td>
+</tr>
+<tr>
+<td>logistic regression, 8 coefficients</td>
+<td>10.4</td>
+<td>10.2</td>
+<td>0.962</td>
+</tr>
+<tr>
+<td>eight schools, noncentered</td>
+<td>34.6</td>
+<td>34.7</td>
+<td>1.000</td>
+</tr>
+<tr>
+<td>eight schools, centered</td>
+<td>920.0</td>
+<td>2090.7</td>
+<td>1.079</td>
+</tr>
+<tr>
+<td>banana</td>
+<td>1568.2</td>
+<td>1044.1</td>
+<td>0.945</td>
+</tr>
+</tbody>
+</table>
+<p>At 500 warmup iterations the 20-coefficient regression is the one target that is
+clearly dearer, 15.8 against 13.9 (paired ratio 1.103). The centered eight schools
+diverged in every fit in all four records and the banana in 5 to 9 of 10, so their
+medians move with the seeds in both directions: at 500 warmup the centered eight schools fell from 2183.8
+to 917.5 and the banana from 1851.3 to 838.0, while the banana's worst seed rose from
+4367.2 to 12368.1. The records are <code>benchmarks/results/2026-10-15-targets-old-*.json</code>,
+run on 0.14.0's <code>main</code> (<code>d5f3e1f</code>), and <code>2026-10-19-targets-new-*.json</code>; each holds every
+fit and the revision of its build.</p>
+<p>On the curved two-dimensional target of <code>benchmarks/curved_metric_choice.py</code>,
+<code>x ~ Normal(0, 25)</code> and <code>y | x ~ Normal(0.5 (x^2 - 25), 1)</code> written as one vector
+parameter, seeds 100 to 139 at 500 warmup, all 40 fits changed. The median smallest
+bulk ESS rose from 86.7 to 123.8, fits below 50 fell from 17 to 12, and divergences
+from 451 to 348, in 32 fits each time. Single fits moved both ways: seed 108 rose from
+10.6 to 419.9, and seed 105 fell from 226.3 to 24.5 with 18 divergences. A dense metric
+fitted to a curved target can be worse than none, which a condition-number score cannot
+see. The records are <code>benchmarks/results/2026-10-15-curved-old.json</code> and
+<code>2026-10-19-curved-new.json</code>.</p>
+<p>Near the rule's edge, whether a fit keeps the dense metric's benefit turns on rounding.
+On a 400-row regression with 50 coefficients whose columns are correlated at 0.9, at
+500 warmup and 200 draws, <code>auto</code> took under half the diagonal metric's leapfrog steps
+and at most 1.5 times the dense metric's on 52 of 60 datasets with faer's matrix
+products and on 51 of 60 with the fused loops that replaced them for narrow designs.
+The misses fell on different datasets, all but one: data seed 28 missed under both. Of
+the 8 and 9 misses, 4 and 7 were narrow, at 1.5 to 2 times dense's steps; the others
+lost the dense metric and took 4 to 13 times. The test below asks datasets 1 to 10 to
+keep the benefit on at least 6 and to hold auto's total steps to 3.5 times dense's.
+<code>benchmarks/auto_dense_panels.py</code> applies that assertion to 200,000 sets of 10 held-out
+datasets from the record: 412 sets failed it under faer and 72 under the loops. It
+catches a rule that stops choosing dense or loses it on about half the datasets; a
+smaller loss needs the study. The per-dataset numbers are in
+<code>benchmarks/results/2026-10-24-auto-dense-50d.txt</code>, from the ignored study test
+<code>correlated_coefficients_study</code> in <code>rust_core/src/nuts.rs</code>, and
+<code>default_metric_keeps_the_dense_benefit_for_correlated_coefficients</code> checks datasets
+1 to 10 by count and by total cost.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>PYTHONPATH=.pybuild python -m benchmarks.auto_metric_targets --warmup 1000 --metrics auto
+<a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>PYTHONPATH=.pybuild python -m benchmarks.curved_metric_choice --first-seed 100 --seeds 40
+<a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>python -m benchmarks.compare_metric_records OLD.json NEW.json
+</code></pre></div>
+<h3 id="power-controls">Power controls</h3>
+<p>The <code>fault-injection</code> cargo feature (off by default, compiled out otherwise) adds two
+faults to the NUTS kernel. CI runs <code>rust_core/tests/exactness_power.rs</code>, which fits
+every gate case at its gate seed and the two seeds after it (18 fits) under each fault
+and requires a moment check to fail, meaning a finite standardized error of 4 MCSE or
+more; failing only the ESS floor or a divergence check does not count.</p>
+<ul>
+<li>Biased multinomial merge: every merge of two subtrees, and every doubling, takes the
+  newer subtree's proposal whatever the weights say. Required in at least 15 of the 18
+  fits.</li>
+<li>Step size 30% too large without the Metropolis correction: after warmup the kernel
+  integrates with 1.3 times the adapted step size and weights every non-divergent leaf
+  equally. Required in all 18.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>cargo test --release -p rustmc_core --features fault-injection --test exactness_power
+</code></pre></div>
+<p>Both faults were caught in all 18 fits. Over 200 more seeds per case (from 20,000), the
+gate caught:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Biased merge: caught</th>
+<th>Per-coordinate checks alone</th>
+<th>Overstep: caught</th>
+<th>Per-coordinate checks alone</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100 independent normals, custom target</td>
+<td>188/200</td>
+<td>18/200</td>
+<td>200/200</td>
+<td>157/200</td>
+</tr>
+<tr>
+<td>100 independent normals, graph</td>
+<td>190/200</td>
+<td>31/200</td>
+<td>200/200</td>
+<td>168/200</td>
+</tr>
+<tr>
+<td>50-d correlation 0.8, custom target</td>
+<td>200/200</td>
+<td>20/200</td>
+<td>200/200</td>
+<td>0/200</td>
+</tr>
+<tr>
+<td>50-d correlation 0.95, custom target</td>
+<td>200/200</td>
+<td>182/200</td>
+<td>200/200</td>
+<td>0/200</td>
+</tr>
+<tr>
+<td>50-d correlation 0.95, graph</td>
+<td>200/200</td>
+<td>25/200</td>
+<td>200/200</td>
+<td>150/200</td>
+</tr>
+<tr>
+<td>10-coefficient regression, graph</td>
+<td>195/200</td>
+<td>52/200</td>
+<td>200/200</td>
+<td>186/200</td>
+</tr>
+</tbody>
+</table>
+<p>The per-coordinate checks alone missed most biased merges, and almost every overstep
+on the correlated custom-target cases: there the too-large step distorts the stiff
+whitened directions, which barely move any one coordinate's variance. The squared-norm
+check was added for that reason. On the 0.95 correlated graph case, where <code>auto</code> now
+chooses a dense metric, the per-coordinate checks alone catch 150 of 200 oversteps
+against 1 in 0.14.0. With the squared-norm check, the median size of its error was 13.6
+to 21.5 MCSE under the overstep (smallest 10.0) and 5.9 to 11.6 MCSE under the biased
+merge. The biased merge is a mild fault on Gaussians, and the gate misses it in up to
+12 fits in 200. That is why the CI test asks for 15 of 18 rather than all 18: from
+these rates, all 18 would turn it red on about 34% of changes that move the draws with
+nothing wrong, and 15 of 18 on about 0.04%. A correct sampler fails the gate on about
+2% of fits, so it cannot reach 15. The run is recorded in
+<code>benchmarks/results/2026-10-19-exactness-detection.log</code> (101 s, on a shared machine); 0.14.0's is the
+<code>2026-10-14</code> log beside it.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>RUSTMC_EXACTNESS_SEEDS=200 cargo test --release -p rustmc_core --features fault-injection \
+<a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>    --test exactness_power -- --ignored --nocapture detection_rate_over_seeds
+</code></pre></div>
+<h3 id="false-alarm-rate">False-alarm rate</h3>
+<p>The correct sampler was run on every case for 2000 seeds (10,000 to 11,999). The
+nominal rate is what the moment checks would give if every standardized error were an
+independent standard normal: two checks per coordinate and the squared norm, each
+beyond 4 with probability 6.3e-5. Expected nominal counts per 2000 fits are 25.3 for
+100 dimensions, 12.8 for 50 and 2.6 for 10.</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Fits failing the gate</th>
+<th>Failing a moment check</th>
+<th>Nominal</th>
+<th>Failing the ESS floor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>100 independent normals, custom target</td>
+<td>53 (2.65%)</td>
+<td>53 (2.65%)</td>
+<td>1.27%</td>
+<td>0</td>
+</tr>
+<tr>
+<td>100 independent normals, graph</td>
+<td>47 (2.35%)</td>
+<td>47 (2.35%)</td>
+<td>1.27%</td>
+<td>0</td>
+</tr>
+<tr>
+<td>50-d correlation 0.8, custom target</td>
+<td>35 (1.75%)</td>
+<td>35 (1.75%)</td>
+<td>0.64%</td>
+<td>0</td>
+</tr>
+<tr>
+<td>50-d correlation 0.95, custom target</td>
+<td>47 (2.35%)</td>
+<td>21 (1.05%)</td>
+<td>0.64%</td>
+<td>26</td>
+</tr>
+<tr>
+<td>50-d correlation 0.95, graph</td>
+<td>15 (0.75%)</td>
+<td>15 (0.75%)</td>
+<td>0.64%</td>
+<td>0</td>
+</tr>
+<tr>
+<td>10-coefficient regression, graph</td>
+<td>1 (0.05%)</td>
+<td>1 (0.05%)</td>
+<td>0.13%</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p>No fit diverged. The moment checks fail a correct sampler more often than nominal: 2.1,
+1.9 and 2.7 times on the independent normals and the 0.8 correlated target, where the
+counts are large enough to tell. The excesses of 1.6 and 1.2 times on the 0.95
+correlated target rest on 21 and 15 failures and are not clearly outside chance, and
+the regression's single failure is below nominal. Most of the excess is in the variance
+checks. Pooled over coordinates and seeds, the mean errors are close to what a correct
+MCSE predicts (4.5% to 4.9% beyond 2 MCSE against a nominal 4.55%, standard deviation
+0.994 to 1.006), though on the 0.8 correlated target 0.020% were beyond 4 against
+0.0063%. The variance errors have nearly the right spread (standard deviation 1.000 to
+1.037) but a heavier lower tail: 0.005% to 0.048% beyond 4 MCSE, up to eight times
+nominal and above it in every case but the regression. 131 fits failed a variance
+check; the log names one as the reason in 130 of them, and each of those 130 was below
+the exact value (the 40 mean failures split 20 below, 20 above). The likely reason is that the squared deviations are right-skewed: a
+sample whose squared deviations happen to be small also has a small estimated MCSE, so
+the self-normalized error reaches far below zero more often than above. The ESS floor
+also fails on its own on the 0.95 correlated custom target, whose smallest bulk ESS at
+the defaults ranged from 410 to 720 over the ten seeds of the cost record below; on the
+graph path, where <code>auto</code> now goes dense, it ranged from 3479 to 4937, and the floor
+failed no fit there (13 in 0.14.0).</p>
+<p>Taking the six cases together, a correct sampler fails at least one of them about 10%
+of the time. The gate seeds are fixed, so CI is deterministic, but a change that moves
+the draws has about that chance of turning the gate red with nothing wrong. Before
+treating a red gate as a bug, run the study on the change and compare it with this
+table. The 12,000 fits took 545 s on a 24-thread AMD Ryzen 9 5900X shared with other
+work (496 s for 0.14.0's run); the tallies are in
+<code>benchmarks/results/2026-10-19-exactness-false-alarm.json</code> and the output, with every
+failing fit, in the <code>.log</code> beside it. 0.14.0's run is the <code>2026-10-14</code> pair.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>RUSTMC_EXACTNESS_SEEDS=2000 RUSTMC_EXACTNESS_JSON=$PWD/false-alarm.json \
+<a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>    cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+<a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    false_alarm_rate_over_seeds
+</code></pre></div>
+<h3 id="cost">Cost</h3>
+<p><code>benchmarks/results/2026-10-19-exactness.json</code> records, for each case over ten seeds,
+the leapfrog steps in warmup and draw transitions of all four chains divided by the
+smallest bulk ESS. The step-size searches warmup runs are not transitions and are not
+counted. Medians, warmup included: 17.6 and 17.3 for the independent normals (custom,
+graph), 106 for the 0.8 correlated target, 553 and 38.9 for the 0.95 one (custom,
+graph), and 12.3 for the regression. In 0.14.0's record, <code>2026-10-14-exactness.json</code>,
+the 0.95 graph case took 519 and the regression 13.4; the others are unchanged.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>RUSTMC_EXACTNESS_JSON=$PWD/benchmarks/results/2026-10-19-exactness.json \
+<a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>    cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture \
+<a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>    exactness_cost_report
+</code></pre></div>
+<h3 id="static-hmc-an-open-finding">Static HMC: an open finding</h3>
+<p>The same checks on static HMC at its default 15 leapfrog steps are ignored tests,
+because HMC fails them. On the independent normals at seed 2102 the worst coordinate's
+bulk ESS is 6 and the largest R-hat 1.78: the adapted step size puts 15 steps near a
+full period of a standardized coordinate, so a transition returns almost to where it
+started. On the 0.8 correlated target at seed 2202 every coordinate's bulk ESS is at
+least 627, but the squared norm's is 110, below the floor, and the largest R-hat is
+1.016. Whether that second failure is the same resonance has not been shown.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>cargo test --release -p rustmc_core --test exactness -- --ignored --nocapture hmc_
+</code></pre></div>
+<h2 id="recovery-suite-at-the-shipped-target-acceptance">Recovery suite at the shipped target acceptance</h2>
+<p><code>rust_core/tests/recovery_suite.rs</code> ran every case at <code>target_accept=0.999</code> from when
+the release gate began demanding zero divergences. Rerun at 0.80 with the same seeds,
+draws, warmup and assertions, every case passed, so the suite now runs at 0.80:</p>
+<table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Divergences</th>
+<th>Max R-hat</th>
+<th>Min bulk ESS</th>
+<th>Min tail ESS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Intercept-only Gaussian</td>
+<td>0</td>
+<td>1.0007</td>
+<td>6077</td>
+<td>5211</td>
+</tr>
+<tr>
+<td>Linear regression</td>
+<td>0</td>
+<td>1.0009</td>
+<td>7739</td>
+<td>5559</td>
+</tr>
+<tr>
+<td>Logistic regression</td>
+<td>0</td>
+<td>1.0011</td>
+<td>3554</td>
+<td>4013</td>
+</tr>
+<tr>
+<td>Poisson GLM</td>
+<td>0</td>
+<td>1.0009</td>
+<td>3619</td>
+<td>4140</td>
+</tr>
+<tr>
+<td>AR(1)-style regression</td>
+<td>0</td>
+<td>1.0020</td>
+<td>3237</td>
+<td>3308</td>
+</tr>
+<tr>
+<td>Ridge regression</td>
+<td>0</td>
+<td>1.0007</td>
+<td>10395</td>
+<td>5997</td>
+</tr>
+<tr>
+<td>Non-centred partial pooling panel</td>
+<td>0</td>
+<td>1.0056</td>
+<td>921</td>
+<td>1626</td>
+</tr>
+<tr>
+<td>Non-centred hierarchical Poisson</td>
+<td>0</td>
+<td>1.0022</td>
+<td>1303</td>
+<td>2189</td>
+</tr>
+<tr>
+<td>Non-centred eight schools</td>
+<td>0</td>
+<td>1.0011</td>
+<td>2242</td>
+<td>1879</td>
+</tr>
+<tr>
+<td>Non-centred funnel</td>
+<td>0</td>
+<td>1.0002</td>
+<td>14068</td>
+<td>10308</td>
+</tr>
+<tr>
+<td>Centred eight schools (negative control, must be flagged)</td>
+<td>219</td>
+<td>1.0178</td>
+<td>310</td>
+<td>155</td>
+</tr>
+<tr>
+<td>Centred funnel (negative control, must be flagged)</td>
+<td>1666</td>
+<td>1.0356</td>
+<td>97</td>
+<td>29</td>
+</tr>
+</tbody>
+</table>
+<p>That is one seeded run. With the sampler seed moved by 1 to 20
+(<code>RUSTMC_RECOVERY_SEED_OFFSET</code>; the simulated data stay the same), 7 of the 20 runs at
+0.80 had a failing case. Two positive cases failed, each time on the zero-divergence
+requirement with exactly one divergence: non-centred eight schools in 6 of 20 runs and
+the non-centred hierarchical Poisson in 2 of 20. Every other positive case passed all
+20, and both negative controls were flagged in all 20 (at least 61 divergences each).
+At 0.999, 13 of the 20 runs had a failing case, all of them negative controls missing
+their signal: centred eight schools in 6 (5 with no divergences at all) and the centred
+funnel in 11 (divergences present, R-hat and ESS within the healthy standard); every
+positive case passed all 20. Each run's output is in
+<code>benchmarks/results/2026-10-14-recovery-target-accept.log</code>. The seeded suite took
+10.6 s at 0.80 and 61.5 s at 0.999 on one test thread, with 21 runs sharing the machine.
+Rerun at 0.80 under 0.15.0's <code>auto</code> metric rule, the 21 runs gave the same table and
+the same failures, run for run. Only the ridge regression's draws changed, in 14 of the
+21 runs, and it passed in all of them; that output is
+<code>benchmarks/results/2026-10-19-recovery-target-accept.log</code>.</p>
+<div class="highlight"><pre><span></span><code><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>for ta in 0.8 0.999; do for off in $(seq 0 20); do
+<a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>  RUSTMC_RECOVERY_TARGET_ACCEPT=$ta RUSTMC_RECOVERY_SEED_OFFSET=$off \
+<a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a>    cargo test --release -p rustmc_core --test recovery_suite -- --nocapture --test-threads 1
+<a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a>done; done
+</code></pre></div>
+<p>Rust recovery tests enforce the same convergence thresholds for positive cases.
+The Gaussian partial-pooling case uses noncentered effects. Centered funnel and
+centered eight-schools cases remain negative controls: poor recovery must produce a
+diagnostic signal. None of these checks establishes calibration under misspecification.</p>
+<h2 id="exact-posteriors-for-three-gibbs-samplers">Exact posteriors for three Gibbs samplers</h2>
+<p>The local level, the seasonal local level and the Gaussian hierarchical mean are each
+checked against moments of their exact joint posterior, by a unit test in each
+sampler's module using <code>rust_core/src/exact_reference.rs</code>. Given its variances, each
+model is a sum of independent normal terms, so the observations' covariance is written
+from the model's definition, without the filter, FFBS or Gibbs conditionals the
+samplers use. A trapezoid rule over a grid of log variances, weighted by the
+inverse-gamma priors, gives the moments of the variances and, by Gaussian
+conditioning, of the latent means: the terminal level or state, and the hierarchy's
+population, group and program means.</p>
+<p>Two checks guard each grid, and a test fails if either does. Along each variance's
+axis in turn, the integral on every other point must agree with the full grid to 1e-4
+of the quantities' standard deviations, so an axis too coarse for its posterior fails.
+The integral on a grid at least two units wider at each end must agree to 1e-6, so an
+axis that cuts off a tail fails. Agreement is evidence that the grid has converged,
+not a bound on its error. Separate unit tests check the integration against a
+conjugate variance's closed form and the conditioning against a normal update, both to
+1e-9 or better, and check that a grid too coarse or too narrow is refused.</p>
+<p>Each test fits 4 chains of 25,000 draws on a short series or ragged collection with
+missing values. It compares each quantity's mean and variance, the covariance of every
+pair, and each variance times each latent's squared deviation, where a hierarchy's
+dependence between a spread and the means it governs shows: 11, 47 and 152 comparisons
+in the three tests. Each estimate must lie within a tolerance, below, in Monte Carlo
+standard errors of its exact value and rest on a bulk ESS of at least 400, as in the
+NUTS gate, so draws that never move or chains stuck apart fail. A mean's MCSE uses the exact standard
+deviation, so an outlier cannot widen its own tolerance. The second-moment checks have
+no exact fourth moments to use, estimate theirs from the draws, and a few symmetric
+outliers could still hide in them. Matching these moments is necessary for the right
+posterior, not sufficient: higher moments are not compared.</p>
+<p>Each test has two controls that must fail for the reason they exist. The variances'
+draws, compared with the prior's mean and variance, must miss them, so a sampler that
+ignored the data fails. The same draws with each quantity rotated by a different
+number of iterations, which keeps every marginal's values and takes the quantities'
+draws from different iterations, must miss a dependence check. The hierarchy gives
+each variance its own prior, a nonzero population prior mean and unequal, interleaved
+groups, and the seasonal test uses nonzero initial effects placed as documented, one
+cycle in forecast order. The initial states' independence and variances are taken from
+the constructor rather than checked.</p>
+<p><code>scripts/plant_gibbs_bugs.py</code> plants 16 bugs of those kinds and in the conjugate
+updates' counts and sums, and counts one as caught only when its test ran and missed a
+moment, not when it failed only on the ESS floor or a control. Every one is caught; the
+narrowest, reading the initial seasonal effects in reverse, misses by 5.9 MCSE.</p>
+<p>Each comparison's tolerance is the normal quantile that would hold the chance of any
+of a test's comparisons missing to 0.1% if their standardized errors were normal, and
+never below 4 MCSE: 4.00, 4.25 and 4.51 in the three tests. Estimated MCMC errors are
+only roughly normal, so 0.1% is a target. At a flat 4 MCSE the hierarchy failed 4 of
+100 seeds of the correct sampler, each by a single comparison at 4.1 to 4.3, which is
+how the rule was chosen. <code>scripts/plant_gibbs_bugs.py --seeds 100 101</code> reruns each test
+on seed offsets 101 to 200, which were not used to choose it: 1 of the 300 runs failed,
+the seasonal test at offset 161 (sampler seed 168), by one comparison at 4.42 MCSE.
+One failure in 300 neither confirms nor rules out the target. The committed tests use
+fixed seeds, so a chance failure can only appear when a change moves the samplers'
+draws.</p>
+<p>These are small fixed datasets. They check that each sampler targets the right
+posterior, not how fast it mixes on long series. The hierarchy's test integrates about
+2.1 million grid points; the three tests together took 16 seconds in a release build on
+a 12-core Ryzen 9 5900X. CI runs them on Linux only.</p>
+<h2 id="known-limitation-forecasting-samplers-mixing">Known limitation: forecasting samplers' mixing</h2>
+<p>None of these gates covers the forecasting samplers' mixing. Several Gibbs/FFBS
+samplers mix their state variances slowly, including the local linear trend fitted
+with <code>exog</code>; the plain local linear trend integrates its states out and does not.
+<code>benchmarks/state_variance_mixing.py</code> measures them, and the reference's
+<a href="../reference/#slow-state-variance-mixing">slow state-variance mixing</a> section lists
+which fits carry a <code>known_limitation</code> record.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/tbosier/rustmc" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/rustmc" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 444.7a20.4 20.4 0 1 1 0-40.7 20.4 20.4 0 1 1 0 40.7M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.6-183.4a20.4 20.4 0 1 1 0 40.8 20.4 20.4 0 1 1 0-40.8"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.tabs.link", "content.code.copy", "content.code.annotate"], "search": "../assets/javascripts/workers/search.a7633da7.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.c21346df.min.js"></script>
+      
+    
+  </body>
+</html>
