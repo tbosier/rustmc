@@ -6,6 +6,8 @@ versioning while the public API is stabilized.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-06
+
 ### Performance
 
 - **Design matrices up to 64 columns are multiplied with fused multiply-add loops
@@ -1365,7 +1367,9 @@ you are on 0.12.0 and pass a 2-D `X` that is not C-contiguous, upgrade.
 
 - Last public PyPI release before the fitted forecasting and 0.9 correctness work.
 
-[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tbosier/rustmc/compare/v0.16.0...HEAD
+[0.16.0]: https://github.com/tbosier/rustmc/compare/v0.15.0...v0.16.0
+[0.15.0]: https://github.com/tbosier/rustmc/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tbosier/rustmc/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/tbosier/rustmc/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/tbosier/rustmc/compare/v0.11.0...v0.12.0
