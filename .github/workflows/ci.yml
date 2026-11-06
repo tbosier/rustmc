@@ -178,7 +178,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]
+        # ubuntu-latest (26.04) has no Python 3.9, which requires-python still covers.
+        os: [ubuntu-24.04]
         python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
         # Add macos-latest / windows-latest here once someone has verified
         # the steps below on those platforms (see CONTRIBUTING.md).
